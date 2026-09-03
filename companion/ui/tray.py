@@ -79,6 +79,11 @@ class CompanionTrayIcon:
             logger.info(f"Created new profile for: {proc_name} (ID: {new_p.id})")
         return handler
 
+    def _open_dashboard(self, icon, item):
+        html_path = Path(__file__).parent / "dashboard.html"
+        if html_path.exists():
+            os.system(f'start "" "{str(html_path.resolve())}"')
+
     def _open_config_folder(self, icon, item):
         cfg_path = str(self.profile_manager.config_dir.resolve())
         os.startfile(cfg_path)
@@ -101,11 +106,17 @@ class CompanionTrayIcon:
                 )
             )
 
-        running_procs = self.process_watcher.list_running_executables()[:15]
+        running_procs = self.process_watcher.list_running_executables(visible_windows_only=True)[:15]
         proc_items = []
         for proc in running_procs:
+            label = proc['name']
+            if proc.get('windowTitle'):
+                title = proc['windowTitle']
+                if len(title) > 20:
+                    title = title[:17] + "..."
+                label = f"{proc['name']} ({title})"
             proc_items.append(
-                item(f"Add: {proc['name']}", self._on_add_profile_from_process(proc['name']))
+                item(f"Add: {label}", self._on_add_profile_from_process(proc['name']))
             )
 
         target_proc = self.state.current_scaled_target.get("processName") or "None"
@@ -130,8 +141,9 @@ class CompanionTrayIcon:
                 checked=lambda item: self.state.auto_scale_enabled
             ),
             Menu.SEPARATOR,
+            item("🎛️ Open Profile Dashboard", self._open_dashboard),
             item("Profiles", Menu(*profiles_items)),
-            item("Create Profile From App", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
+            item("Quick Add Running App", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
             Menu.SEPARATOR,
             item("Open Settings Folder", self._open_config_folder),
             item("Exit", self._on_exit)

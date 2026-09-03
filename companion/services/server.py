@@ -13,14 +13,16 @@ from ..core.models import AppConfig, BrowserFullscreenEvent, Profile
 from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
 from .input_simulator import InputSimulator
+from .process_watcher import ProcessWatcher
 
 logger = logging.getLogger("LosslessCompanion.Server")
 
 
 class CompanionWebSocketServer:
-    def __init__(self, profile_manager: ProfileManager, state: AppState):
+    def __init__(self, profile_manager: ProfileManager, state: AppState, process_watcher: Optional[ProcessWatcher] = None):
         self.profile_manager = profile_manager
         self.state = state
+        self.process_watcher = process_watcher
         self.config: AppConfig = profile_manager.config
         self.clients: Set[WebSocketServerProtocol] = set()
         self.server = None
@@ -77,6 +79,28 @@ class CompanionWebSocketServer:
 
             if msg_type == "MANUAL_TRIGGER":
                 await self.handle_manual_trigger(msg)
+                return
+
+            if msg_type == "GET_STATE_AND_PROCESSES":
+                visible_only = msg.get("visibleOnly", True)
+                await self.send_full_data_update(websocket, visible_windows_only=visible_only)
+                return
+
+            if msg_type == "SAVE_PROFILE":
+                prof_data = msg.get("profile")
+                if prof_data:
+                    prof = Profile.model_validate(prof_data)
+                    self.profile_manager.add_or_update_profile(prof)
+                    logger.info(f"Saved profile: {prof.name}")
+                    await self.broadcast_full_data_update()
+                return
+
+            if msg_type == "DELETE_PROFILE":
+                prof_id = msg.get("profileId")
+                if prof_id:
+                    self.profile_manager.delete_profile(prof_id)
+                    logger.info(f"Deleted profile ID: {prof_id}")
+                    await self.broadcast_full_data_update()
                 return
 
         except Exception as e:
@@ -141,6 +165,30 @@ class CompanionWebSocketServer:
         )
         self.state.mark_scaling_toggled()
         await self.broadcast_state()
+
+    async def send_full_data_update(self, websocket: WebSocketServerProtocol, visible_windows_only: bool = True) -> None:
+        procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
+        payload = json.dumps({
+            "type": "FULL_DATA_UPDATE",
+            "processes": procs,
+            "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
+            "activeProfileId": self.profile_manager.config.active_profile_id,
+            "isScalingActive": self.state.is_scaling_active
+        })
+        await websocket.send(payload)
+
+    async def broadcast_full_data_update(self, visible_windows_only: bool = True) -> None:
+        if not self.clients:
+            return
+        procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
+        payload = json.dumps({
+            "type": "FULL_DATA_UPDATE",
+            "processes": procs,
+            "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
+            "activeProfileId": self.profile_manager.config.active_profile_id,
+            "isScalingActive": self.state.is_scaling_active
+        })
+        await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
 
     async def broadcast_state(self) -> None:
         if not self.clients:

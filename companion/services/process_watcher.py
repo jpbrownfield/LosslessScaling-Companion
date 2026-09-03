@@ -69,41 +69,121 @@ class ProcessWatcher:
             return None
 
     @staticmethod
-    def list_running_executables(filter_system: bool = True) -> List[Dict]:
+    def get_processes_with_visible_windows() -> Dict[int, str]:
+        """
+        Enumerates all top-level visible non-cloaked windows that have non-empty titles
+        and standard window sizes, returning a map of PID -> Window Title.
+        """
+        pid_to_title: Dict[int, str] = {}
+
+        # DWM Cloaked window attribute constant
+        DWMWA_CLOAKED = 14
+        dwmapi = None
+        try:
+            dwmapi = ctypes.windll.dwmapi
+        except Exception:
+            pass
+
+        def enum_window_callback(hwnd, extra):
+            # Check basic visibility
+            if not user32.IsWindowVisible(hwnd):
+                return True
+
+            # Ignore tooltips, dialogs without taskbar presence or zero-sized windows
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            width = rect.right - rect.left
+            height = rect.bottom - rect.top
+            if width <= 100 or height <= 100:
+                return True
+
+            # Check DWM Cloaked state (virtual desktop / UWP suspended background apps)
+            if dwmapi:
+                cloaked = ctypes.c_int(0)
+                res = dwmapi.DwmGetWindowAttribute(
+                    hwnd,
+                    ctypes.c_uint(DWMWA_CLOAKED),
+                    ctypes.byref(cloaked),
+                    ctypes.sizeof(cloaked)
+                )
+                if res == 0 and cloaked.value != 0:
+                    return True
+
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+
+            buff = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buff, length + 1)
+            title = buff.value.strip()
+
+            if not title:
+                return True
+
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value and pid.value not in pid_to_title:
+                pid_to_title[pid.value] = title
+
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(enum_window_callback), 0)
+        return pid_to_title
+
+    @classmethod
+    def list_running_executables(cls, visible_windows_only: bool = True, filter_system: bool = True) -> List[Dict]:
         """
         Lists interactive running processes for user profile selection.
+        If visible_windows_only=True, only includes processes with real visible GUI windows.
         """
         results = []
         ignored_system = {
             'svchost.exe', 'system', 'registry', 'smss.exe', 'csrss.exe',
             'wininit.exe', 'services.exe', 'lsass.exe', 'winlogon.exe',
             'fontdrvhost.exe', 'dwm.exe', 'runtimebroker.exe', 'searchhost.exe',
-            'taskhostw.exe', 'sihost.exe', 'ctfmon.exe', 'conhost.exe'
+            'taskhostw.exe', 'sihost.exe', 'ctfmon.exe', 'conhost.exe',
+            'losslessscaling.exe', 'applicationframehost.exe', 'shellexperiencehost.exe'
         }
+
+        # Step 1: Query visible top-level windows
+        visible_window_map = cls.get_processes_with_visible_windows()
 
         seen_names = set()
         for p in psutil.process_iter(['pid', 'name', 'exe']):
             try:
+                pid = p.info['pid']
                 name = p.info['name']
                 if not name:
                     continue
                 name_lower = name.lower()
+
                 if filter_system and name_lower in ignored_system:
                     continue
+
+                # If filtering for active windows, require the PID to own a visible GUI window
+                has_window = pid in visible_window_map
+                if visible_windows_only and not has_window:
+                    continue
+
                 if name_lower in seen_names:
                     continue
 
                 exe = p.info.get('exe') or ""
+                window_title = visible_window_map.get(pid, "")
+
                 seen_names.add(name_lower)
                 results.append({
-                    "pid": p.info['pid'],
+                    "pid": pid,
                     "name": name,
-                    "exePath": exe
+                    "exePath": exe,
+                    "windowTitle": window_title,
+                    "hasVisibleWindow": has_window
                 })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-        results.sort(key=lambda x: x['name'].lower())
+        results.sort(key=lambda x: (not x.get('hasVisibleWindow', False), x['name'].lower()))
         return results
 
     def check_is_lossless_scaling_running(self) -> bool:

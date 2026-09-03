@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lossless Companion - Profile & Process Manager</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #151c2c;
+      --card-border: #232d42;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --primary: #0284c7;
+      --primary-hover: #0369a1;
+      --accent: #38bdf8;
+      --success: #10b981;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
+    .container { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    @media (max-width: 900px) { .container { grid-template-columns: 1fr; } }
+
+    header { max-width: 1100px; margin: 0 auto 24px auto; display: flex; justify-content: space-between; align-items: center; }
+    .title-group h1 { font-size: 22px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 10px; }
+    .status-pill { padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 600; text-transform: uppercase; background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .card h2 { font-size: 16px; margin-bottom: 14px; color: var(--accent); display: flex; justify-content: space-between; align-items: center; }
+
+    .search-input { width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; color: #fff; font-size: 13px; margin-bottom: 12px; }
+    .search-input:focus { outline: none; border-color: var(--primary); }
+
+    .process-list, .profile-list { max-height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+    .process-item, .profile-item { background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; transition: all 0.15s ease; }
+    .process-item:hover, .profile-item:hover { border-color: var(--primary); background: #131d33; }
+
+    .item-info { display: flex; flex-direction: column; gap: 3px; max-width: 65%; }
+    .item-title { font-weight: 600; font-size: 14px; color: #fff; }
+    .item-sub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .btn { padding: 7px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-secondary { background: #334155; color: #cbd5e1; }
+    .btn-secondary:hover { background: #475569; }
+    .btn-danger { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+
+    /* Modal Form */
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; }
+    .modal.active { display: flex; }
+    .modal-content { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; width: 500px; max-width: 90vw; padding: 24px; max-height: 90vh; overflow-y: auto; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .form-group { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
+    .form-group input, .form-group select { padding: 9px 12px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; font-size: 13px; }
+    .form-group input:focus { outline: none; border-color: var(--primary); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .checkbox-group { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .checkbox-group input { width: auto; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="title-group">
+      <h1><span>⚡</span> Lossless Companion Profile Manager</h1>
+    </div>
+    <div id="statusPill" class="status-pill">Connected</div>
+  </header>
+
+  <div class="container">
+    <!-- Left Column: Running Executables Scanner -->
+    <div class="card">
+      <h2>
+        <span>Running Executables</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <label style="font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; text-transform: none; cursor: pointer;">
+            <input type="checkbox" id="visibleWindowsOnlyToggle" checked> Active Windows Only
+          </label>
+          <button id="refreshProcsBtn" class="btn btn-secondary">🔄 Refresh</button>
+        </div>
+      </h2>
+      <input type="text" id="procSearch" class="search-input" placeholder="Search running processes or window titles...">
+      <div id="processList" class="process-list">
+        <div style="text-align:center; padding: 20px; color: var(--text-muted);">Scanning running processes...</div>
+      </div>
+    </div>
+
+    <!-- Right Column: Configured Profiles -->
+    <div class="card">
+      <h2>
+        <span>Active Profiles</span>
+        <button id="newCustomProfileBtn" class="btn btn-primary">+ New Profile</button>
+      </h2>
+      <input type="text" id="profileSearch" class="search-input" placeholder="Search profiles...">
+      <div id="profileList" class="profile-list"></div>
+    </div>
+  </div>
+
+  <!-- Profile Edit / Create Modal -->
+  <div id="profileModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle" style="color: var(--accent);">Create Profile</h3>
+        <button id="closeModalBtn" style="background:none; border:none; color: var(--text-muted); font-size: 20px; cursor:pointer;">&times;</button>
+      </div>
+      <form id="profileForm">
+        <input type="hidden" id="profileId">
+
+        <div class="form-group">
+          <label>Profile Name</label>
+          <input type="text" id="profileName" required placeholder="e.g., Cyberpunk 2077 UHD">
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Target Executable</label>
+            <input type="text" id="targetProcess" placeholder="e.g. Cyberpunk2077.exe">
+          </div>
+          <div class="form-group">
+            <label>Target Web Domain</label>
+            <input type="text" id="targetDomain" placeholder="e.g. youtube.com">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Hotkey Key</label>
+            <input type="text" id="hotkeyKey" value="s">
+          </div>
+          <div class="form-group">
+            <label>Modifiers (comma-separated)</label>
+            <input type="text" id="hotkeyModifiers" value="ctrl, alt">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Activation Delay (ms)</label>
+          <input type="number" id="activationDelay" value="300">
+        </div>
+
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="autoScaleFullscreen" checked>
+          <label for="autoScaleFullscreen" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Scale on Fullscreen</label>
+        </div>
+
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="autoScaleDemaximize" checked>
+          <label for="autoScaleDemaximize" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Descale on Demaximize / Exit Fullscreen</label>
+        </div>
+
+        <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Preset (Optional)</h4>
+          <div class="form-group">
+            <label>ReShade.ini Path</label>
+            <input type="text" id="reshadeIniPath" placeholder="D:\Games\Game\ReShade.ini">
+          </div>
+          <div class="form-group">
+            <label>Preset .ini Path</label>
+            <input type="text" id="reshadePresetPath" placeholder="D:\ReShade\Presets\Preset.ini">
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="cancelModalBtn" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Profile</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let runningProcesses = [];
+    let profiles = [];
+    let activeProfileId = null;
+
+    function connectWS() {
+      ws = new WebSocket('ws://127.0.0.1:24892/ws');
+
+      ws.onopen = () => {
+        document.getElementById('statusPill').textContent = 'Connected';
+        document.getElementById('statusPill').style.color = '#10b981';
+        requestProcesses();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'FULL_DATA_UPDATE' || msg.type === 'PROCESSES_AND_PROFILES') {
+            runningProcesses = msg.processes || [];
+            profiles = msg.profiles || [];
+            activeProfileId = msg.activeProfileId;
+            renderProcesses();
+            renderProfiles();
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      };
+
+      ws.onclose = () => {
+        document.getElementById('statusPill').textContent = 'Disconnected';
+        document.getElementById('statusPill').style.color = '#ef4444';
+        setTimeout(connectWS, 3000);
+      };
+    }
+
+    function requestProcesses() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const visibleOnly = document.getElementById('visibleWindowsOnlyToggle').checked;
+        ws.send(JSON.stringify({ type: 'GET_STATE_AND_PROCESSES', visibleOnly }));
+      }
+    }
+
+    function renderProcesses() {
+      const query = document.getElementById('procSearch').value.toLowerCase();
+      const listEl = document.getElementById('processList');
+      const filtered = runningProcesses.filter(p => 
+        p.name.toLowerCase().includes(query) || 
+        (p.windowTitle && p.windowTitle.toLowerCase().includes(query)) ||
+        (p.exePath && p.exePath.toLowerCase().includes(query))
+      );
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-muted);">No matching processes found.</div>';
+        return;
+      }
+
+      listEl.innerHTML = filtered.map(p => `
+        <div class="process-item">
+          <div class="item-info">
+            <span class="item-title">${escapeHtml(p.name)} ${p.windowTitle ? `<span style="font-size:11px; font-weight:normal; color:var(--accent);"> - "${escapeHtml(p.windowTitle)}"</span>` : ''}</span>
+            <span class="item-sub" title="${escapeHtml(p.exePath || '')}">PID: ${p.pid} | ${escapeHtml(p.exePath || 'System Process')}</span>
+          </div>
+          <button class="btn btn-primary" onclick="createProfileFromProc('${escapeHtml(p.name)}', '${escapeHtml(p.windowTitle || '')}')">+ Add Profile</button>
+        </div>
+      `).join('');
+    }
+
+    function renderProfiles() {
+      const query = document.getElementById('profileSearch').value.toLowerCase();
+      const listEl = document.getElementById('profileList');
+      const filtered = profiles.filter(p => p.name.toLowerCase().includes(query) || (p.target_process && p.target_process.toLowerCase().includes(query)));
+
+      listEl.innerHTML = filtered.map(p => `
+        <div class="profile-item">
+          <div class="item-info">
+            <span class="item-title">${p.id === activeProfileId ? '✓ ' : ''}${escapeHtml(p.name)}</span>
+            <span class="item-sub">Target: ${escapeHtml(p.target_process || p.target_domain || 'Global Fallback')} | Hotkey: ${p.hotkey.modifiers.join('+')}+${p.hotkey.key.toUpperCase()}</span>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>
+            <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">&times;</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(text) {
+      return (text || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+
+    function openModal(profile = null) {
+      const modal = document.getElementById('profileModal');
+      document.getElementById('profileForm').reset();
+
+      if (profile) {
+        document.getElementById('modalTitle').textContent = 'Edit Profile';
+        document.getElementById('profileId').value = profile.id;
+        document.getElementById('profileName').value = profile.name;
+        document.getElementById('targetProcess').value = profile.target_process || '';
+        document.getElementById('targetDomain').value = profile.target_domain || '';
+        document.getElementById('hotkeyKey').value = profile.hotkey.key;
+        document.getElementById('hotkeyModifiers').value = profile.hotkey.modifiers.join(', ');
+        document.getElementById('activationDelay').value = profile.hotkey.activation_delay_ms;
+        document.getElementById('autoScaleFullscreen').checked = profile.auto_scale_on_fullscreen;
+        document.getElementById('autoScaleDemaximize').checked = profile.auto_scale_on_demaximize;
+        if (profile.reshade) {
+          document.getElementById('reshadeIniPath').value = profile.reshade.reshade_ini_path || '';
+          document.getElementById('reshadePresetPath').value = profile.reshade.preset_path || '';
+        }
+      } else {
+        document.getElementById('modalTitle').textContent = 'Create Profile';
+        document.getElementById('profileId').value = '';
+      }
+
+      modal.classList.add('active');
+    }
+
+    window.createProfileFromProc = function(procName, winTitle) {
+      let displayName = procName.replace('.exe', '') + ' Profile';
+      if (winTitle && winTitle.length > 0 && !winTitle.includes(procName)) {
+        displayName = winTitle.length > 25 ? winTitle.substring(0, 22) + '...' : winTitle;
+      }
+      openModal({
+        id: '',
+        name: displayName,
+        target_process: procName,
+        target_domain: '',
+        auto_scale_on_fullscreen: true,
+        auto_scale_on_demaximize: true,
+        hotkey: { key: 's', modifiers: ['ctrl', 'alt'], activation_delay_ms: 300 }
+      });
+    };
+
+    window.editProfile = function(profileId) {
+      const p = profiles.find(item => item.id === profileId);
+      if (p) openModal(p);
+    };
+
+    window.deleteProfile = function(profileId) {
+      if (confirm('Delete this profile?')) {
+        ws.send(JSON.stringify({ type: 'DELETE_PROFILE', profileId }));
+      }
+    };
+
+    document.getElementById('closeModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
+    document.getElementById('cancelModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
+    document.getElementById('newCustomProfileBtn').onclick = () => openModal();
+    document.getElementById('refreshProcsBtn').onclick = requestProcesses;
+    document.getElementById('visibleWindowsOnlyToggle').onchange = requestProcesses;
+
+    document.getElementById('procSearch').oninput = renderProcesses;
+    document.getElementById('profileSearch').oninput = renderProfiles;
+
+    document.getElementById('profileForm').onsubmit = (e) => {
+      e.preventDefault();
+      const id = document.getElementById('profileId').value;
+      const payload = {
+        type: 'SAVE_PROFILE',
+        profile: {
+          id: id || undefined,
+          name: document.getElementById('profileName').value,
+          target_process: document.getElementById('targetProcess').value || null,
+          target_domain: document.getElementById('targetDomain').value || null,
+          auto_scale_on_fullscreen: document.getElementById('autoScaleFullscreen').checked,
+          auto_scale_on_demaximize: document.getElementById('autoScaleDemaximize').checked,
+          hotkey: {
+            modifiers: document.getElementById('hotkeyModifiers').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+            key: document.getElementById('hotkeyKey').value.trim().toLowerCase(),
+            activation_delay_ms: parseInt(document.getElementById('activationDelay').value) || 300
+          },
+          reshade: document.getElementById('reshadeIniPath').value ? {
+            enabled: true,
+            reshade_ini_path: document.getElementById('reshadeIniPath').value,
+            preset_path: document.getElementById('reshadePresetPath').value
+          } : null
+        }
+      };
+
+      ws.send(JSON.stringify(payload));
+      document.getElementById('profileModal').classList.remove('active');
+    };
+
+    connectWS();
+  </script>
+</body>
+</html>

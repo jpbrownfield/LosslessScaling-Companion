@@ -35,7 +35,7 @@ class CompanionApplication:
         self.state = AppState()
         self.ls_inspector = LosslessScalingInspector()
         self.process_watcher = ProcessWatcher(self.profile_manager, self.state)
-        self.server = CompanionWebSocketServer(self.profile_manager, self.state)
+        self.server = CompanionWebSocketServer(self.profile_manager, self.state, self.process_watcher)
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.server_thread: Optional[threading.Thread] = None
