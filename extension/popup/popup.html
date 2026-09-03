@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lossless Scaling Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="title-group">
+      <span class="logo-icon">⚡</span>
+      <h2>LS Bridge</h2>
+    </div>
+    <div id="statusBadge" class="badge disconnected">Offline</div>
+  </div>
+
+  <div class="content">
+    <div class="toggle-card">
+      <div class="label-group">
+        <label for="enableToggle" class="main-label">Auto-Scale Video</label>
+        <span class="sub-label">Trigger when videos enter fullscreen</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="enableToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-card">
+      <div class="label-group">
+        <label for="onlyVideosToggle" class="main-label">Videos Only</label>
+        <span class="sub-label">Ignore non-video fullscreen</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="onlyVideosToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="actions-group">
+      <button id="triggerBtn" class="btn btn-primary">
+        <span>⚡</span> Toggle Scaling Now
+      </button>
+      <button id="reconnectBtn" class="btn btn-secondary">
+        <span>🔄</span> Reconnect Companion
+      </button>
+    </div>
+
+    <div class="info-footer">
+      <span id="companionInfo">Target: ws://127.0.0.1:24892</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
