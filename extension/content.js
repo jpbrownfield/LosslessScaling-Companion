@@ -5,6 +5,8 @@
 
 (function () {
   let isFullscreenActive = false;
+  let fullscreenWasVideo = false;
+  let lastVideoMeta = null;
   let debounceTimer = null;
 
   function findActiveVideo(fullscreenEl) {
@@ -37,14 +39,16 @@
       isFullscreenActive = isNowFullscreen;
       const videoEl = findActiveVideo(fsElement);
       const videoMeta = getVideoMetadata(videoEl);
+      const eventIsVideo = isNowFullscreen ? !!videoEl : fullscreenWasVideo;
+      const eventVideoMeta = isNowFullscreen ? videoMeta : lastVideoMeta;
 
       const eventPayload = {
         type: isNowFullscreen ? 'FULLSCREEN_ENTER' : 'FULLSCREEN_EXIT',
         url: window.location.href,
         domain: window.location.hostname,
         title: document.title,
-        isVideo: !!videoEl,
-        video: videoMeta,
+        isVideo: eventIsVideo,
+        video: eventVideoMeta,
         timestamp: Date.now()
       };
 
@@ -57,6 +61,9 @@
         // Context might be invalidated on extension reload
         console.debug('[LS Bridge] Message send error:', err);
       }
+
+      fullscreenWasVideo = isNowFullscreen && !!videoEl;
+      lastVideoMeta = isNowFullscreen ? videoMeta : null;
     }, 150); // 150ms debounce for smoother transitions
   }
 

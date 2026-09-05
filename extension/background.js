@@ -8,7 +8,9 @@ const DEFAULT_SETTINGS = {
   wsPort: 24892,
   onlyForVideos: true,
   autoScaleOnEnter: true,
-  autoScaleOnExit: true
+  autoScaleOnExit: true,
+  browserProcess: 'chrome.exe',
+  serverState: null
 };
 
 let socket = null;
@@ -107,6 +109,15 @@ function sendToServer(msg) {
 
 function handleServerMessage(msg) {
   if (msg.type === 'PONG') return;
+  if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE' || msg.type === 'FULL_DATA_UPDATE') {
+    chrome.storage.local.set({
+      serverState: {
+        isScalingActive: !!msg.isScalingActive,
+        activeProfile: msg.activeProfile || null,
+        scalingTarget: msg.scalingTarget || null
+      }
+    });
+  }
   console.log('[LS Bridge] Received from companion:', msg);
 }
 
@@ -119,6 +130,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     const data = message.data;
+    if (data.type === 'FULLSCREEN_ENTER' && !cachedSettings.autoScaleOnEnter) {
+      sendResponse({ status: 'ignored_enter_disabled' });
+      return true;
+    }
+    if (data.type === 'FULLSCREEN_EXIT' && !cachedSettings.autoScaleOnExit) {
+      sendResponse({ status: 'ignored_exit_disabled' });
+      return true;
+    }
     if (cachedSettings.onlyForVideos && !data.isVideo) {
       console.log('[LS Bridge] Fullscreen ignored (no video element found)');
       sendResponse({ status: 'ignored_not_video' });
@@ -133,7 +152,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       title: data.title,
       isVideo: data.isVideo,
       video: data.video,
-      processName: 'chrome.exe',
+      processName: cachedSettings.browserProcess || 'chrome.exe',
       timestamp: data.timestamp
     };
 

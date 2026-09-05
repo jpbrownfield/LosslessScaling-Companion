@@ -56,7 +56,7 @@
     .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
     .form-group { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
     .form-group label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
-    .form-group input, .form-group select { padding: 9px 12px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; font-size: 13px; }
+    .form-group input, .form-group select, .form-group textarea { padding: 9px 12px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; font-size: 13px; }
     .form-group input:focus { outline: none; border-color: var(--primary); }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .checkbox-group { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
@@ -71,6 +71,7 @@
       <h1><span>⚡</span> Lossless Companion Profile Manager</h1>
     </div>
     <div id="statusPill" class="status-pill">Connected</div>
+    <div id="runtimeInfo" style="font-size:12px; color:var(--text-muted)">Scaling state unavailable</div>
   </header>
 
   <div class="container">
@@ -100,6 +101,78 @@
       <input type="text" id="profileSearch" class="search-input" placeholder="Search profiles...">
       <div id="profileList" class="profile-list"></div>
     </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2><span>Scaling Control Ownership</span></h2>
+      <p class="item-sub" style="white-space:normal; margin-bottom:12px">Lossless Scaling has one global activation hotkey. The helper uses this hotkey for every profile and keeps native Auto Scale disabled so foreground detection has a single owner.</p>
+      <div class="form-row">
+        <div class="form-group"><label>Synchronization</label><select id="hotkeySyncMode"><option value="helper_controls_lossless">Helper controls Lossless Scaling</option><option value="follow_lossless">Follow Lossless Scaling</option><option value="warn_only">Warn only</option></select></div>
+        <div class="form-group"><label>Key</label><input id="globalHotkeyKey" value="s"></div>
+        <div class="form-group"><label>Modifiers (comma-separated)</label><input id="globalHotkeyModifiers" value="ctrl, alt"></div>
+        <div class="form-group"><label>Key hold (ms)</label><input id="globalHotkeyHold" type="number" min="30" value="50"></div>
+        <div class="form-group checkbox-group"><input id="disableNativeAutoScale" type="checkbox" checked><label for="disableNativeAutoScale">Disable native Auto Scale</label></div>
+      </div>
+      <button id="saveControlSettingsBtn" class="btn btn-primary">Save and synchronize</button>
+      <div id="controlSettingsStatus" class="item-sub" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2><span>Lossless Scaling Settings.xml</span></h2>
+      <div id="lsSettingsPath" class="item-sub" style="margin-bottom:12px">Loading configuration...</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Profile</label>
+          <select id="lsProfileSelect"></select>
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button id="saveLsSettingsBtn" class="btn btn-primary" type="button">Save XML Profile</button>
+          <button id="importLsProfileBtn" class="btn btn-secondary" type="button">Import / Refresh Helper Profile</button>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Scaling Type</label><input id="lsScalingType" type="text" placeholder="LS1"></div>
+        <div class="form-group"><label>Fit Mode</label><input id="lsFitMode" type="text" placeholder="Fullscreen"></div>
+        <div class="form-group"><label>Frame Generation</label><input id="lsFrameGeneration" type="text" placeholder="LSFG3"></div>
+        <div class="form-group"><label>FG Multiplier</label><input id="lsFgMultiplier" type="number" min="1" max="20"></div>
+        <div class="form-group"><label>Capture API</label><input id="lsCaptureApi" type="text" placeholder="WGC"></div>
+        <div class="form-group checkbox-group"><input id="lsHdrSupport" type="checkbox"><label for="lsHdrSupport">HDR</label></div>
+        <div class="form-group checkbox-group"><input id="lsDrawFps" type="checkbox"><label for="lsDrawFps">Draw FPS</label></div>
+      </div>
+      <div class="form-group">
+        <label>Advanced / Unknown Profile Values (JSON)</label>
+        <textarea id="lsProfileValues" rows="8"></textarea>
+      </div>
+      <div id="nativeImportStatus" class="item-sub">Lossless Scaling must be closed before saving. A one-time .xml.bak backup is created.</div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1">
+      <h2><span>Managed Graphics Releases</span><button id="refreshGraphicsBtn" class="btn btn-secondary">Refresh installed</button></h2>
+      <div id="assetStorePath" class="item-sub" style="margin-bottom:12px">Loading asset store...</div>
+      <div class="form-row">
+        <div class="form-group"><label>Provider</label><select id="graphicsProvider"></select></div>
+        <div class="form-group"><label>Channel</label><select id="graphicsChannel"><option value="stable">Stable</option><option value="prerelease">Prerelease</option></select></div>
+      </div>
+      <div style="display:flex; gap:8px; margin-bottom:14px">
+        <button id="checkGraphicsBtn" class="btn btn-primary">Check official releases</button>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Release</label><select id="graphicsRelease"></select></div>
+        <div class="form-group"><label>Release asset</label><select id="graphicsReleaseAsset"></select></div>
+      </div>
+      <button id="stageGraphicsBtn" class="btn btn-primary">Download, verify, and stage</button>
+      <div style="border-top:1px solid var(--card-border); margin:16px 0 12px"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Manual asset path</label><input id="manualAssetPath" type="text" placeholder="C:\Downloads\nvngx_dlssnr.dll"></div>
+        <div class="form-group"><label>Expected SHA-256 (optional)</label><input id="manualAssetHash" type="text"></div>
+        <div class="form-group"><label>Package version/tag</label><input id="manualPackageVersion" type="text" placeholder="v1.0.0"></div>
+      </div>
+      <div style="display:flex; gap:8px">
+        <button id="importAssetBtn" class="btn btn-secondary">Import DLSSNR runtime</button>
+        <button id="importPackageBtn" class="btn btn-secondary">Import as selected provider package</button>
+      </div>
+      <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No release operation running.</div>
+      <div id="installedPackages" class="item-sub" style="margin-top:8px; white-space:normal"></div>
+    </div>
   </div>
 
   <!-- Profile Edit / Create Modal -->
@@ -128,14 +201,24 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label>Target Executable Path (detection only; never modified)</label>
+          <input type="text" id="targetExecutablePath" placeholder="D:\Games\Game\Game.exe">
+        </div>
+
+        <div class="form-group">
+          <label>Lossless Scaling Profile Title</label>
+          <input type="text" id="losslessProfileTitle" placeholder="Default">
+        </div>
+
         <div class="form-row">
           <div class="form-group">
-            <label>Hotkey Key</label>
-            <input type="text" id="hotkeyKey" value="s">
+            <label>Global Hotkey Key</label>
+            <input type="text" id="hotkeyKey" value="s" disabled>
           </div>
           <div class="form-group">
-            <label>Modifiers (comma-separated)</label>
-            <input type="text" id="hotkeyModifiers" value="ctrl, alt">
+            <label>Global Modifiers</label>
+            <input type="text" id="hotkeyModifiers" value="ctrl, alt" disabled>
           </div>
         </div>
 
@@ -144,9 +227,25 @@
           <input type="number" id="activationDelay" value="300">
         </div>
 
+        <div class="form-group">
+          <label>Hotkey Hold (ms)</label>
+          <input type="number" id="holdDelay" value="50" min="30">
+        </div>
+
         <div class="form-group checkbox-group">
           <input type="checkbox" id="autoScaleFullscreen" checked>
           <label for="autoScaleFullscreen" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Scale on Fullscreen</label>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="autoScaleFocus">
+            <label for="autoScaleFocus" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Scale on Focus</label>
+          </div>
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="autoScaleBlur" checked>
+            <label for="autoScaleBlur" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Disable on Blur</label>
+          </div>
         </div>
 
         <div class="form-group checkbox-group">
@@ -155,14 +254,54 @@
         </div>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
-          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Preset (Optional)</h4>
-          <div class="form-group">
-            <label>ReShade.ini Path</label>
-            <input type="text" id="reshadeIniPath" placeholder="D:\Games\Game\ReShade.ini">
-          </div>
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Lossless Scaling ReShade Preset (Optional)</h4>
+          <p class="muted">Applied only to ReShade.ini beside LosslessScaling.exe. Game directories are never modified.</p>
           <div class="form-group">
             <label>Preset .ini Path</label>
             <input type="text" id="reshadePresetPath" placeholder="D:\ReShade\Presets\Preset.ini">
+          </div>
+          <div class="form-group">
+            <label>Reload Hotkey</label>
+            <input type="text" id="reshadeReloadHotkey" placeholder="Home">
+          </div>
+        </div>
+
+        <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">LS Graphics Stack</h4>
+          <div class="form-group"><label>Neural Rendering</label><select id="neuralImplementation"><option value="disabled">Disabled</option><option value="lsp_neural_render">LSP-NeuralRender (recommended)</option><option value="ls_reshade_feeder">Experimental LS ReShade/Feeder</option></select></div>
+          <div class="form-row">
+            <div class="form-group checkbox-group"><input id="losslessProxyEnabled" type="checkbox"><label for="losslessProxyEnabled">LosslessProxy</label></div>
+            <div class="form-group"><label>LosslessProxy Version</label><input id="losslessProxyVersion" type="text" placeholder="v0.3.0"></div>
+            <div class="form-group"><label>LosslessProxy Updates</label><select id="losslessProxyUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
+            <div class="form-group"><label>Neural Package Version</label><input id="neuralPackageVersion" type="text" placeholder="v0.2.0"></div>
+            <div class="form-group"><label>Neural Updates</label><select id="neuralUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
+            <div class="form-group"><label>DLSSNR Runtime SHA-256</label><input id="neuralRuntimeHash" type="text" placeholder="Imported asset hash"></div>
+            <div class="form-group"><label>Working Scale</label><input id="neuralWorkingScale" type="number" value="0.35" min="0.1" max="1" step="0.01"></div>
+            <div class="form-group"><label>Style</label><select id="neuralStyle"><option value="standard">Standard</option><option value="natural">Natural</option><option value="cinematic">Cinematic</option></select></div>
+            <div class="form-group"><label>Intensity</label><input id="neuralIntensity" type="number" value="1" min="0" max="1" step="0.05"></div>
+            <div class="form-group"><label>Local Structure</label><input id="neuralLocalStructure" type="number" value="1" min="-10" max="10" step="0.05"></div>
+            <div class="form-group"><label>Local Tone</label><input id="neuralLocalTone" type="number" value="1" min="-10" max="10" step="0.05"></div>
+            <div class="form-group"><label>Skin Structure</label><input id="neuralSkinStructure" type="number" value="-1" min="-10" max="10" step="0.05"></div>
+            <div class="form-group"><label>Apply Strength</label><input id="neuralApplyStrength" type="number" value="1" min="0" max="4" step="0.05"></div>
+            <div class="form-group"><label>Max Delta</label><input id="neuralMaxDelta" type="number" value="0.5" min="0" max="1" step="0.05"></div>
+            <div class="form-group"><label>Highlight Protection</label><input id="neuralHighlightProtection" type="number" value="0.85" min="0" max="1" step="0.05"></div>
+            <div class="form-group"><label>Watchdog (ms)</label><input id="neuralWatchdog" type="number" value="80" min="10" max="5000"></div>
+            <div class="form-group checkbox-group"><input id="neuralAutoMask" type="checkbox" checked><label for="neuralAutoMask">Automatic skin mask</label></div>
+            <div class="form-group checkbox-group"><input id="neuralOpticalFlow" type="checkbox" checked><label for="neuralOpticalFlow">Use LSFG optical flow</label></div>
+            <div class="form-group checkbox-group"><input id="neuralLsPriority" type="checkbox" checked><label for="neuralLsPriority">Prioritize LS GPU work</label></div>
+            <div class="form-group"><label>ReShade Version</label><input id="managedReshadeVersion" type="text"></div>
+            <div class="form-group"><label>ReShade Updates</label><select id="reshadeUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
+            <div class="form-group"><label>Special K Version</label><input id="specialKVersion" type="text"></div>
+            <div class="form-group"><label>Special K Updates</label><select id="specialKUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
+          </div>
+          <p class="item-sub" style="white-space:normal">All selected packages resolve beneath LosslessScaling.exe. LSP-NeuralRender and the Feeder recipe are mutually exclusive.</p>
+        </div>
+
+        <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">DLL Overrides (Optional)</h4>
+          <div class="form-group">
+            <label>JSON Array (Lossless Scaling directory only)</label>
+            <textarea id="dllOverrides" rows="5" placeholder='[{"enabled":true,"source_dll_path":"D:\\Mods\\dxgi.dll","target_dll_name":"dxgi.dll","deployment_mode":"copy","deployment_target":"lossless_scaling"}]'></textarea>
           </div>
         </div>
 
@@ -179,14 +318,21 @@
     let runningProcesses = [];
     let profiles = [];
     let activeProfileId = null;
+    let losslessSettings = null;
+    let nativeImportPreview = [];
+    let graphicsReleases = [];
+    let controlSettings = null;
 
     function connectWS() {
-      ws = new WebSocket('ws://127.0.0.1:24892/ws');
+      ws = new WebSocket(`ws://${location.host}/ws?token=__COMPANION_TOKEN__`);
 
       ws.onopen = () => {
         document.getElementById('statusPill').textContent = 'Connected';
         document.getElementById('statusPill').style.color = '#10b981';
         requestProcesses();
+        ws.send(JSON.stringify({ type: 'GET_LOSSLESS_SETTINGS' }));
+        ws.send(JSON.stringify({ type: 'GET_NATIVE_IMPORT_PREVIEW' }));
+        ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
       };
 
       ws.onmessage = (event) => {
@@ -196,8 +342,51 @@
             runningProcesses = msg.processes || [];
             profiles = msg.profiles || [];
             activeProfileId = msg.activeProfileId;
+            controlSettings = msg.controlSettings || controlSettings;
             renderProcesses();
             renderProfiles();
+            renderRuntime(msg);
+            renderControlSettings();
+          } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
+            renderRuntime(msg);
+          } else if (msg.type === 'LOSSLESS_SETTINGS') {
+            const settings = msg.settings || {};
+            losslessSettings = settings;
+            renderLosslessSettings();
+            document.getElementById('runtimeInfo').title = settings.exists
+              ? `Lossless settings: ${settings.path} (${(settings.profiles || []).length} profiles)`
+              : `Lossless Settings.xml not found: ${settings.path || ''}`;
+          } else if (msg.type === 'ERROR') {
+            document.getElementById('statusPill').textContent = msg.message || 'Error';
+            document.getElementById('statusPill').style.color = '#ef4444';
+          } else if (msg.type === 'LOSSLESS_SETTINGS_UPDATED') {
+            ws.send(JSON.stringify({ type: 'GET_LOSSLESS_SETTINGS' }));
+          } else if (msg.type === 'NATIVE_IMPORT_PREVIEW') {
+            nativeImportPreview = msg.profiles || [];
+            renderSelectedLosslessProfile();
+          } else if (msg.type === 'NATIVE_PROFILE_IMPORTED') {
+            document.getElementById('nativeImportStatus').textContent = `Imported ${msg.profile.name}`;
+            ws.send(JSON.stringify({ type: 'GET_NATIVE_IMPORT_PREVIEW' }));
+          } else if (msg.type === 'GRAPHICS_STATUS') {
+            renderGraphicsStatus(msg);
+          } else if (msg.type === 'GRAPHICS_RELEASES') {
+            graphicsReleases = msg.releases || [];
+            renderGraphicsReleases();
+            setGraphicsStatus(`Found ${graphicsReleases.length} release(s) for ${msg.provider}.`);
+          } else if (msg.type === 'GRAPHICS_RELEASE_STAGED') {
+            setGraphicsStatus(`Staged ${msg.package.provider} ${msg.package.version}.`);
+            ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+          } else if (msg.type === 'GRAPHICS_ASSET_IMPORTED') {
+            setGraphicsStatus(`Imported ${msg.asset.filename}; SHA-256 ${msg.asset.sha256}`);
+          } else if (msg.type === 'GRAPHICS_PACKAGE_IMPORTED') {
+            setGraphicsStatus(`Imported ${msg.package.provider} ${msg.package.version} without executing it.`);
+            ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+          } else if (msg.type === 'CONTROL_SETTINGS_SAVED') {
+            controlSettings = msg.controlSettings;
+            renderControlSettings();
+            document.getElementById('controlSettingsStatus').textContent = msg.synchronized
+              ? 'Saved and synchronized with Lossless Scaling.'
+              : 'Saved. Native synchronization is pending because Lossless Scaling settings were unavailable.';
           }
         } catch (err) {
           console.error(err);
@@ -209,6 +398,99 @@
         document.getElementById('statusPill').style.color = '#ef4444';
         setTimeout(connectWS, 3000);
       };
+    }
+
+    function renderRuntime(msg) {
+      const profile = msg.activeProfile && msg.activeProfile.name;
+      const target = msg.scalingTarget && msg.scalingTarget.processName;
+      document.getElementById('runtimeInfo').textContent =
+        `${msg.isScalingActive ? 'Scaling active' : 'Idle'}` +
+        `${profile ? ` · ${profile}` : ''}` + `${target ? ` · ${target}` : ''}`;
+    }
+
+    function renderControlSettings() {
+      if (!controlSettings) return;
+      const hotkey = controlSettings.hotkey || {};
+      document.getElementById('hotkeySyncMode').value = controlSettings.mode || 'helper_controls_lossless';
+      document.getElementById('globalHotkeyKey').value = hotkey.key || 's';
+      document.getElementById('globalHotkeyModifiers').value = (hotkey.modifiers || ['ctrl', 'alt']).join(', ');
+      document.getElementById('globalHotkeyHold').value = hotkey.hold_delay_ms || 50;
+      document.getElementById('disableNativeAutoScale').checked = controlSettings.disableNativeAutoScale !== false;
+      document.getElementById('hotkeyKey').value = hotkey.key || 's';
+      document.getElementById('hotkeyModifiers').value = (hotkey.modifiers || ['ctrl', 'alt']).join(', ');
+    }
+
+    function renderLosslessSettings() {
+      const settings = losslessSettings || {};
+      const profileSelect = document.getElementById('lsProfileSelect');
+      document.getElementById('lsSettingsPath').textContent = settings.exists
+        ? settings.path : `Not found: ${settings.path || ''}`;
+      profileSelect.innerHTML = (settings.profiles || []).map((profile, index) =>
+        `<option value="${index}">${escapeHtml(profile.Title || `Profile ${index + 1}`)}</option>`
+      ).join('');
+      renderSelectedLosslessProfile();
+    }
+
+    function renderSelectedLosslessProfile() {
+      const index = Number(document.getElementById('lsProfileSelect').value || 0);
+      const profile = losslessSettings && losslessSettings.profiles && losslessSettings.profiles[index];
+      document.getElementById('lsProfileValues').value = profile ? JSON.stringify(profile, null, 2) : '';
+      document.getElementById('lsScalingType').value = profile && profile.ScalingType || '';
+      document.getElementById('lsFitMode').value = profile && profile.ScalingFitMode || '';
+      document.getElementById('lsFrameGeneration').value = profile && profile.FrameGeneration || '';
+      document.getElementById('lsFgMultiplier').value = profile && profile.LSFG3Multiplier || '';
+      document.getElementById('lsCaptureApi').value = profile && profile.CaptureApi || '';
+      document.getElementById('lsHdrSupport').checked = !!profile && String(profile.HdrSupport).toLowerCase() === 'true';
+      document.getElementById('lsDrawFps').checked = !!profile && String(profile.DrawFps).toLowerCase() === 'true';
+      const preview = profile && nativeImportPreview.find(item => item.title === profile.Title);
+      document.getElementById('nativeImportStatus').textContent = preview
+        ? `Helper import status: ${preview.status}${preview.suggestedProfileName ? ` · ${preview.suggestedProfileName}` : ''}`
+        : 'Lossless Scaling must be closed before saving. A one-time .xml.bak backup is created.';
+    }
+
+    function setGraphicsStatus(text) {
+      document.getElementById('graphicsStatus').textContent = text;
+    }
+
+    function renderGraphicsStatus(msg) {
+      document.getElementById('assetStorePath').textContent = `Asset store: ${msg.assetStore}`;
+      const provider = document.getElementById('graphicsProvider');
+      const selected = provider.value;
+      provider.innerHTML = '';
+      (msg.providers || []).forEach(value => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        provider.appendChild(option);
+      });
+      if ([...provider.options].some(option => option.value === selected)) provider.value = selected;
+      document.getElementById('installedPackages').textContent = (msg.packages || []).length
+        ? `Installed: ${(msg.packages || []).map(item => `${item.provider} ${item.version}`).join(', ')}`
+        : 'No managed release packages installed.';
+    }
+
+    function renderGraphicsReleases() {
+      const releaseSelect = document.getElementById('graphicsRelease');
+      releaseSelect.innerHTML = '';
+      graphicsReleases.forEach((release, index) => {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = `${release.version}${release.prerelease ? ' (prerelease)' : ''}`;
+        releaseSelect.appendChild(option);
+      });
+      renderGraphicsAssets();
+    }
+
+    function renderGraphicsAssets() {
+      const release = graphicsReleases[Number(document.getElementById('graphicsRelease').value || 0)];
+      const assetSelect = document.getElementById('graphicsReleaseAsset');
+      assetSelect.innerHTML = '';
+      ((release && release.assets) || []).forEach(asset => {
+        const option = document.createElement('option');
+        option.value = asset.name;
+        option.textContent = `${asset.name}${asset.size ? ` (${Math.ceil(asset.size / 1048576)} MiB)` : ''}`;
+        assetSelect.appendChild(option);
+      });
     }
 
     function requestProcesses() {
@@ -238,7 +520,7 @@
             <span class="item-title">${escapeHtml(p.name)} ${p.windowTitle ? `<span style="font-size:11px; font-weight:normal; color:var(--accent);"> - "${escapeHtml(p.windowTitle)}"</span>` : ''}</span>
             <span class="item-sub" title="${escapeHtml(p.exePath || '')}">PID: ${p.pid} | ${escapeHtml(p.exePath || 'System Process')}</span>
           </div>
-          <button class="btn btn-primary" onclick="createProfileFromProc('${escapeHtml(p.name)}', '${escapeHtml(p.windowTitle || '')}')">+ Add Profile</button>
+          <button class="btn btn-primary" onclick="createProfileFromProc(${p.pid})">+ Add Profile</button>
         </div>
       `).join('');
     }
@@ -255,6 +537,7 @@
             <span class="item-sub">Target: ${escapeHtml(p.target_process || p.target_domain || 'Global Fallback')} | Hotkey: ${p.hotkey.modifiers.join('+')}+${p.hotkey.key.toUpperCase()}</span>
           </div>
           <div style="display:flex; gap:6px;">
+            <button class="btn btn-primary" onclick="activateProfile('${p.id}')" ${p.id === activeProfileId ? 'disabled' : ''}>Activate</button>
             <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>
             <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">&times;</button>
           </div>
@@ -275,16 +558,48 @@
         document.getElementById('profileId').value = profile.id;
         document.getElementById('profileName').value = profile.name;
         document.getElementById('targetProcess').value = profile.target_process || '';
+        document.getElementById('targetExecutablePath').value = profile.target_executable_path || '';
         document.getElementById('targetDomain').value = profile.target_domain || '';
+        document.getElementById('losslessProfileTitle').value = profile.lossless_profile_title || '';
         document.getElementById('hotkeyKey').value = profile.hotkey.key;
         document.getElementById('hotkeyModifiers').value = profile.hotkey.modifiers.join(', ');
         document.getElementById('activationDelay').value = profile.hotkey.activation_delay_ms;
+        document.getElementById('holdDelay').value = profile.hotkey.hold_delay_ms;
         document.getElementById('autoScaleFullscreen').checked = profile.auto_scale_on_fullscreen;
         document.getElementById('autoScaleDemaximize').checked = profile.auto_scale_on_demaximize;
+        document.getElementById('autoScaleFocus').checked = !!profile.auto_scale_on_focus;
+        document.getElementById('autoScaleBlur').checked = profile.auto_scale_on_blur !== false;
         if (profile.reshade) {
-          document.getElementById('reshadeIniPath').value = profile.reshade.reshade_ini_path || '';
           document.getElementById('reshadePresetPath').value = profile.reshade.preset_path || '';
+          document.getElementById('reshadeReloadHotkey').value = profile.reshade.reload_hotkey || '';
         }
+        const graphics = profile.graphics || {};
+        const neural = graphics.neural_render || {};
+        document.getElementById('neuralImplementation').value = neural.implementation || 'disabled';
+        document.getElementById('losslessProxyEnabled').checked = !!(graphics.lossless_proxy && graphics.lossless_proxy.enabled);
+        document.getElementById('losslessProxyVersion').value = graphics.lossless_proxy && graphics.lossless_proxy.version || '';
+        document.getElementById('losslessProxyUpdatePolicy').value = graphics.lossless_proxy && graphics.lossless_proxy.update_policy || 'notify';
+        document.getElementById('neuralPackageVersion').value = neural.package && neural.package.version || '';
+        document.getElementById('neuralUpdatePolicy').value = neural.package && neural.package.update_policy || 'notify';
+        document.getElementById('neuralRuntimeHash').value = neural.runtime_asset_sha256 || '';
+        document.getElementById('neuralWorkingScale').value = neural.working_scale == null ? 0.35 : neural.working_scale;
+        document.getElementById('neuralStyle').value = neural.style || 'standard';
+        document.getElementById('neuralIntensity').value = neural.intensity == null ? 1 : neural.intensity;
+        document.getElementById('neuralLocalStructure').value = neural.local_structure == null ? 1 : neural.local_structure;
+        document.getElementById('neuralLocalTone').value = neural.local_tone == null ? 1 : neural.local_tone;
+        document.getElementById('neuralSkinStructure').value = neural.skin_structure == null ? -1 : neural.skin_structure;
+        document.getElementById('neuralApplyStrength').value = neural.apply_strength == null ? 1 : neural.apply_strength;
+        document.getElementById('neuralMaxDelta').value = neural.max_delta == null ? 0.5 : neural.max_delta;
+        document.getElementById('neuralHighlightProtection').value = neural.protect_highlights_above == null ? 0.85 : neural.protect_highlights_above;
+        document.getElementById('neuralWatchdog').value = neural.watchdog_ms == null ? 80 : neural.watchdog_ms;
+        document.getElementById('neuralAutoMask').checked = neural.auto_skin_mask !== false;
+        document.getElementById('neuralOpticalFlow').checked = neural.use_lsfg_optical_flow !== false;
+        document.getElementById('neuralLsPriority').checked = neural.prioritize_ls_gpu_work !== false;
+        document.getElementById('managedReshadeVersion').value = graphics.reshade && graphics.reshade.version || '';
+        document.getElementById('reshadeUpdatePolicy').value = graphics.reshade && graphics.reshade.update_policy || 'notify';
+        document.getElementById('specialKVersion').value = graphics.special_k && graphics.special_k.version || '';
+        document.getElementById('specialKUpdatePolicy').value = graphics.special_k && graphics.special_k.update_policy || 'notify';
+        document.getElementById('dllOverrides').value = JSON.stringify(profile.dll_overrides || [], null, 2);
       } else {
         document.getElementById('modalTitle').textContent = 'Create Profile';
         document.getElementById('profileId').value = '';
@@ -293,7 +608,12 @@
       modal.classList.add('active');
     }
 
-    window.createProfileFromProc = function(procName, winTitle) {
+    window.createProfileFromProc = function(pid) {
+      const process = runningProcesses.find(item => item.pid === pid);
+      if (!process) return;
+      const procName = process.name;
+      const winTitle = process.windowTitle || '';
+      const exePath = process.exePath || '';
       let displayName = procName.replace('.exe', '') + ' Profile';
       if (winTitle && winTitle.length > 0 && !winTitle.includes(procName)) {
         displayName = winTitle.length > 25 ? winTitle.substring(0, 22) + '...' : winTitle;
@@ -302,6 +622,7 @@
         id: '',
         name: displayName,
         target_process: procName,
+        target_executable_path: exePath,
         target_domain: '',
         auto_scale_on_fullscreen: true,
         auto_scale_on_demaximize: true,
@@ -320,6 +641,10 @@
       }
     };
 
+    window.activateProfile = function(profileId) {
+      ws.send(JSON.stringify({ type: 'SET_ACTIVE_PROFILE', profileId }));
+    };
+
     document.getElementById('closeModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
     document.getElementById('cancelModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
     document.getElementById('newCustomProfileBtn').onclick = () => openModal();
@@ -328,29 +653,178 @@
 
     document.getElementById('procSearch').oninput = renderProcesses;
     document.getElementById('profileSearch').oninput = renderProfiles;
+    document.getElementById('lsProfileSelect').onchange = renderSelectedLosslessProfile;
+    document.getElementById('graphicsRelease').onchange = renderGraphicsAssets;
+    document.getElementById('saveControlSettingsBtn').onclick = () => {
+      ws.send(JSON.stringify({
+        type: 'SAVE_CONTROL_SETTINGS',
+        mode: document.getElementById('hotkeySyncMode').value,
+        disableNativeAutoScale: document.getElementById('disableNativeAutoScale').checked,
+        hotkey: {
+          key: document.getElementById('globalHotkeyKey').value.trim().toLowerCase(),
+          modifiers: document.getElementById('globalHotkeyModifiers').value.split(',').map(value => value.trim().toLowerCase()).filter(Boolean),
+          hold_delay_ms: Number(document.getElementById('globalHotkeyHold').value),
+          activation_delay_ms: controlSettings && controlSettings.hotkey && controlSettings.hotkey.activation_delay_ms || 350
+        }
+      }));
+    };
+    document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+    document.getElementById('checkGraphicsBtn').onclick = () => {
+      setGraphicsStatus('Checking official release metadata...');
+      ws.send(JSON.stringify({
+        type: 'CHECK_GRAPHICS_RELEASES',
+        provider: document.getElementById('graphicsProvider').value,
+        channel: document.getElementById('graphicsChannel').value
+      }));
+    };
+    document.getElementById('stageGraphicsBtn').onclick = () => {
+      const release = graphicsReleases[Number(document.getElementById('graphicsRelease').value || 0)];
+      const assetName = document.getElementById('graphicsReleaseAsset').value;
+      if (!release || !assetName) return alert('Select a downloadable release asset.');
+      if (!confirm(`Download and verify ${assetName} from the official release?`)) return;
+      setGraphicsStatus(`Staging ${assetName}...`);
+      ws.send(JSON.stringify({
+        type: 'STAGE_GRAPHICS_RELEASE',
+        provider: document.getElementById('graphicsProvider').value,
+        channel: document.getElementById('graphicsChannel').value,
+        version: release.version,
+        assetName,
+        operationId: crypto.randomUUID().replaceAll('-', '')
+      }));
+    };
+    document.getElementById('importAssetBtn').onclick = () => {
+      const path = document.getElementById('manualAssetPath').value.trim();
+      if (!path) return alert('Select a local asset path.');
+      if (!confirm(`Import ${path} into the protected asset store without executing it?`)) return;
+      ws.send(JSON.stringify({
+        type: 'IMPORT_GRAPHICS_ASSET',
+        path,
+        sha256: document.getElementById('manualAssetHash').value.trim() || null
+      }));
+    };
+    document.getElementById('importPackageBtn').onclick = () => {
+      const path = document.getElementById('manualAssetPath').value.trim();
+      const version = document.getElementById('manualPackageVersion').value.trim();
+      const provider = document.getElementById('graphicsProvider').value;
+      if (!path || !version) return alert('A local package path and version/tag are required.');
+      if (!confirm(`Import ${path} as ${provider} ${version} without executing it?`)) return;
+      ws.send(JSON.stringify({
+        type: 'IMPORT_GRAPHICS_PACKAGE', provider, version, path,
+        sha256: document.getElementById('manualAssetHash').value.trim() || null
+      }));
+    };
+    document.getElementById('importLsProfileBtn').onclick = () => {
+      const profile = losslessSettings && losslessSettings.profiles && losslessSettings.profiles[Number(document.getElementById('lsProfileSelect').value || 0)];
+      if (!profile) return;
+      const preview = nativeImportPreview.find(item => item.title === profile.Title);
+      ws.send(JSON.stringify({
+        type: 'IMPORT_LOSSLESS_PROFILE',
+        title: profile.Title,
+        profileId: preview && preview.suggestedProfileId || null
+      }));
+    };
+    document.getElementById('saveLsSettingsBtn').onclick = () => {
+      try {
+        const values = JSON.parse(document.getElementById('lsProfileValues').value);
+        const title = values.Title;
+        if (!title) throw new Error('Profile JSON must contain Title');
+        delete values.Title;
+        values.ScalingType = document.getElementById('lsScalingType').value;
+        values.ScalingFitMode = document.getElementById('lsFitMode').value;
+        values.FrameGeneration = document.getElementById('lsFrameGeneration').value;
+        const multiplier = document.getElementById('lsFgMultiplier').value;
+        if (multiplier !== '') values.LSFG3Multiplier = Number(multiplier);
+        values.CaptureApi = document.getElementById('lsCaptureApi').value;
+        values.HdrSupport = document.getElementById('lsHdrSupport').checked;
+        values.DrawFps = document.getElementById('lsDrawFps').checked;
+        ws.send(JSON.stringify({ type: 'UPDATE_LOSSLESS_PROFILE', title, values }));
+      } catch (error) {
+        alert(`Invalid Lossless Scaling profile JSON: ${error.message}`);
+      }
+    };
 
     document.getElementById('profileForm').onsubmit = (e) => {
       e.preventDefault();
       const id = document.getElementById('profileId').value;
+      let dllOverrides;
+      try {
+        dllOverrides = JSON.parse(document.getElementById('dllOverrides').value || '[]');
+        if (!Array.isArray(dllOverrides)) throw new Error('DLL overrides must be an array');
+        if (dllOverrides.some(item => item.deployment_target && item.deployment_target !== 'lossless_scaling')) {
+          throw new Error('DLL overrides may target only Lossless Scaling');
+        }
+        dllOverrides = dllOverrides.map(item => ({ ...item, deployment_target: 'lossless_scaling' }));
+      } catch (error) {
+        alert(`Invalid DLL override JSON: ${error.message}`);
+        return;
+      }
       const payload = {
         type: 'SAVE_PROFILE',
         profile: {
           id: id || undefined,
           name: document.getElementById('profileName').value,
           target_process: document.getElementById('targetProcess').value || null,
+          target_executable_path: document.getElementById('targetExecutablePath').value || null,
           target_domain: document.getElementById('targetDomain').value || null,
+          lossless_profile_title: document.getElementById('losslessProfileTitle').value || null,
           auto_scale_on_fullscreen: document.getElementById('autoScaleFullscreen').checked,
           auto_scale_on_demaximize: document.getElementById('autoScaleDemaximize').checked,
+          auto_scale_on_focus: document.getElementById('autoScaleFocus').checked,
+          auto_scale_on_blur: document.getElementById('autoScaleBlur').checked,
           hotkey: {
             modifiers: document.getElementById('hotkeyModifiers').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
             key: document.getElementById('hotkeyKey').value.trim().toLowerCase(),
-            activation_delay_ms: parseInt(document.getElementById('activationDelay').value) || 300
+            activation_delay_ms: Number(document.getElementById('activationDelay').value),
+            hold_delay_ms: Number(document.getElementById('holdDelay').value) || 50
           },
-          reshade: document.getElementById('reshadeIniPath').value ? {
+          reshade: document.getElementById('reshadePresetPath').value ? {
             enabled: true,
-            reshade_ini_path: document.getElementById('reshadeIniPath').value,
-            preset_path: document.getElementById('reshadePresetPath').value
-          } : null
+            reshade_ini_path: null,
+            preset_path: document.getElementById('reshadePresetPath').value,
+            reload_hotkey: document.getElementById('reshadeReloadHotkey').value || null
+          } : null,
+          graphics: {
+            lossless_proxy: {
+              enabled: document.getElementById('losslessProxyEnabled').checked,
+              version: document.getElementById('losslessProxyVersion').value.trim() || null,
+              channel: 'stable',
+              update_policy: document.getElementById('losslessProxyUpdatePolicy').value
+            },
+            neural_render: {
+              implementation: document.getElementById('neuralImplementation').value,
+              package: {
+                enabled: document.getElementById('neuralImplementation').value !== 'disabled',
+                version: document.getElementById('neuralPackageVersion').value.trim() || null,
+                channel: 'stable',
+                update_policy: document.getElementById('neuralUpdatePolicy').value
+              },
+              runtime_asset_sha256: document.getElementById('neuralRuntimeHash').value.trim().replace(/^sha256:/, '') || null,
+              style: document.getElementById('neuralStyle').value,
+              intensity: Number(document.getElementById('neuralIntensity').value),
+              working_scale: Number(document.getElementById('neuralWorkingScale').value),
+              local_structure: Number(document.getElementById('neuralLocalStructure').value),
+              local_tone: Number(document.getElementById('neuralLocalTone').value),
+              skin_structure: Number(document.getElementById('neuralSkinStructure').value),
+              auto_skin_mask: document.getElementById('neuralAutoMask').checked,
+              use_lsfg_optical_flow: document.getElementById('neuralOpticalFlow').checked,
+              prioritize_ls_gpu_work: document.getElementById('neuralLsPriority').checked,
+              apply_strength: Number(document.getElementById('neuralApplyStrength').value),
+              max_delta: Number(document.getElementById('neuralMaxDelta').value),
+              protect_highlights_above: Number(document.getElementById('neuralHighlightProtection').value),
+              watchdog_ms: Number(document.getElementById('neuralWatchdog').value)
+            },
+            reshade: {
+              enabled: !!document.getElementById('managedReshadeVersion').value.trim(),
+              version: document.getElementById('managedReshadeVersion').value.trim() || null,
+              channel: 'stable', update_policy: document.getElementById('reshadeUpdatePolicy').value
+            },
+            special_k: {
+              enabled: !!document.getElementById('specialKVersion').value.trim(),
+              version: document.getElementById('specialKVersion').value.trim() || null,
+              channel: 'stable', update_policy: document.getElementById('specialKUpdatePolicy').value
+            }
+          },
+          dll_overrides: dllOverrides
         }
       };
 

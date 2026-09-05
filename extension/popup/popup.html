@@ -29,6 +29,25 @@
 
     <div class="toggle-card">
       <div class="label-group">
+        <label for="autoExitToggle" class="main-label">Disable on Exit</label>
+        <span class="sub-label">Turn scaling off after leaving fullscreen</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoExitToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-card">
+      <div class="label-group">
+        <label for="browserProcessInput" class="main-label">Browser Process</label>
+        <span class="sub-label">chrome.exe, msedge.exe, brave.exe, etc.</span>
+      </div>
+      <input id="browserProcessInput" type="text" value="chrome.exe" style="width:110px">
+    </div>
+
+    <div class="toggle-card">
+      <div class="label-group">
         <label for="onlyVideosToggle" class="main-label">Videos Only</label>
         <span class="sub-label">Ignore non-video fullscreen</span>
       </div>
@@ -51,6 +70,7 @@
 
     <div class="info-footer">
       <span id="companionInfo">Target: ws://127.0.0.1:24892</span>
+      <span id="scalingInfo">Scaling: unknown</span>
     </div>
   </div>
 

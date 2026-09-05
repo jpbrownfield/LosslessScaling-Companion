@@ -15,6 +15,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import psutil
+from .ls_settings import LosslessSettingsXml
 
 logger = logging.getLogger("LosslessCompanion.LSInspector")
 
@@ -56,11 +57,16 @@ class ScaledTargetInfo:
 
 
 class LosslessScalingInspector:
-    def __init__(self, custom_log_path: Optional[str] = None):
+    def __init__(
+        self,
+        custom_log_path: Optional[str] = None,
+        settings_xml_path: Optional[str] = None,
+    ):
         self.custom_log_path = custom_log_path
         self.active_log_file: Optional[Path] = None
         self._last_log_pos: int = 0
         self.last_known_target = ScaledTargetInfo()
+        self.settings_xml = LosslessSettingsXml(settings_xml_path)
         self._find_log_file()
 
     def _find_log_file(self) -> Optional[Path]:
@@ -144,6 +150,14 @@ class LosslessScalingInspector:
 
                 elif re.search(r"scaling\s+(stopped|terminated|closed|ended)", line_str, re.IGNORECASE):
                     self.last_known_target.is_active = False
+                    self.last_known_target.source = "log_file"
+
+                capture_match = re.search(r"capture(?:\s+(?:method|api))?[:=]\s*([A-Za-z0-9_-]+)", line_str, re.IGNORECASE)
+                if capture_match:
+                    self.last_known_target.capture_mode = capture_match.group(1)
+                scale_match = re.search(r"scal(?:ing|e)(?:\s+(?:mode|factor))?[:=]\s*([A-Za-z0-9_.-]+)", line_str, re.IGNORECASE)
+                if scale_match:
+                    self.last_known_target.scale_factor = scale_match.group(1)
 
             return self.last_known_target
 
@@ -198,7 +212,11 @@ class LosslessScalingInspector:
 
         return overlay_found, overlay_hwnd
 
-    def inspect_current_scaling_target(self, fallback_foreground: bool = True) -> ScaledTargetInfo:
+    def inspect_current_scaling_target(
+        self,
+        fallback_foreground: bool = True,
+        settings_profile_title: Optional[str] = None,
+    ) -> ScaledTargetInfo:
         """
         Combines log parsing + Win32 overlay checks + foreground tracking
         to accurately report what application is being scaled.
@@ -212,12 +230,19 @@ class LosslessScalingInspector:
         # 3. Formulate target report
         target = ScaledTargetInfo()
         target.is_active = is_overlay_present or (log_info.is_active if log_info else self.last_known_target.is_active)
+        target.capture_mode = self.last_known_target.capture_mode
+        target.scale_factor = self.last_known_target.scale_factor
+        target.source = "overlay_window" if is_overlay_present else ("log_file" if log_info else "unknown")
+
+        settings_profile = self.settings_xml.get_profile(settings_profile_title)
+        if settings_profile:
+            target.capture_mode = target.capture_mode or settings_profile.get("CaptureApi")
+            target.scale_factor = target.scale_factor or settings_profile.get("ScaleFactor") or settings_profile.get("ScalingType")
 
         if self.last_known_target.process_name:
             target.process_name = self.last_known_target.process_name
             target.window_title = self.last_known_target.window_title
             target.pid = self.last_known_target.pid
-            target.source = "log_file"
 
         # If log didn't specify the PID/process, resolve from current/tracked foreground window
         if target.is_active and not target.process_name and fallback_foreground:

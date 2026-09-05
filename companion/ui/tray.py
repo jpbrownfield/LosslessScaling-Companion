@@ -6,6 +6,7 @@ import os
 import subprocess
 import threading
 import logging
+import webbrowser
 from typing import Callable, Optional
 from PIL import Image, ImageDraw
 import pystray
@@ -13,9 +14,9 @@ from pystray import MenuItem as item, Menu
 
 from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
-from ..services.input_simulator import InputSimulator
 from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
+from ..services.automation import AutomationController
 
 logger = logging.getLogger("LosslessCompanion.Tray")
 
@@ -27,12 +28,14 @@ class CompanionTrayIcon:
         state: AppState,
         process_watcher: ProcessWatcher,
         ls_inspector: Optional[LosslessScalingInspector] = None,
+        automation: Optional[AutomationController] = None,
         on_exit_callback: Optional[Callable] = None
     ):
         self.profile_manager = profile_manager
         self.state = state
         self.process_watcher = process_watcher
         self.ls_inspector = ls_inspector
+        self.automation = automation or AutomationController(profile_manager, state)
         self.on_exit_callback = on_exit_callback
         self.icon: Optional[pystray.Icon] = None
 
@@ -55,34 +58,37 @@ class CompanionTrayIcon:
         return image
 
     def _on_toggle_scale(self, icon, item):
-        profile = self.state.current_active_profile or self.profile_manager.config.profiles[0]
-        hotkey = profile.hotkey
-        logger.info(f"Tray triggered scaling with profile '{profile.name}'")
-        InputSimulator.trigger_hotkey(modifiers=hotkey.modifiers, key=hotkey.key, hold_ms=hotkey.hold_delay_ms)
-        self.state.mark_scaling_toggled()
+        profile = self.state.current_active_profile
+        if not profile and self.profile_manager.config.active_profile_id:
+            profile = self.profile_manager.get_profile_by_id(self.profile_manager.config.active_profile_id)
+        logger.info("Tray triggered scaling with profile '%s'", profile.name if profile else "global")
+        self.automation.toggle_scaling(profile, reason="tray")
+        self.update_menu()
 
     def _on_toggle_auto_scale(self, icon, item):
         self.state.auto_scale_enabled = not self.state.auto_scale_enabled
         logger.info(f"Auto-scale set to: {self.state.auto_scale_enabled}")
+        self.update_menu()
 
     def _on_select_profile(self, profile_id: str):
         def handler(icon, item):
             self.profile_manager.config.active_profile_id = profile_id
             self.profile_manager.save_config()
-            self.state.current_active_profile = self.profile_manager.get_profile_by_id(profile_id)
-            logger.info(f"Active profile changed to: {self.state.current_active_profile.name}")
+            selected = self.profile_manager.get_profile_by_id(profile_id)
+            self.automation.activate_profile(selected, selected.target_executable_path if selected else None)
+            logger.info(f"Active profile changed to: {selected.name}")
+            self.update_menu()
         return handler
 
     def _on_add_profile_from_process(self, proc_name: str):
         def handler(icon, item):
             new_p = self.profile_manager.create_profile_from_process(proc_name)
             logger.info(f"Created new profile for: {proc_name} (ID: {new_p.id})")
+            self.update_menu()
         return handler
 
     def _open_dashboard(self, icon, item):
-        html_path = Path(__file__).parent / "dashboard.html"
-        if html_path.exists():
-            os.system(f'start "" "{str(html_path.resolve())}"')
+        webbrowser.open(f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard")
 
     def _open_config_folder(self, icon, item):
         cfg_path = str(self.profile_manager.config_dir.resolve())
@@ -164,3 +170,4 @@ class CompanionTrayIcon:
     def update_menu(self) -> None:
         if self.icon:
             self.icon.menu = self._build_menu()
+            self.icon.update_menu()

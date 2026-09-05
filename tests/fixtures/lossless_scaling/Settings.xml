@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Test fixture normalized from a public Lossless Scaling Settings.xml example.
+  Source and compatibility notes are documented in README.md beside this file.
+  This file is not intended to replace a user's live configuration.
+-->
+<Settings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Hotkey>S</Hotkey>
+  <HotkeyModifierKeys>Alt Control</HotkeyModifierKeys>
+  <GpuPreference>0</GpuPreference>
+  <GpuPreferenceChangeCount>0</GpuPreferenceChangeCount>
+  <SetupPhase>0</SetupPhase>
+  <StartAsAdmin>false</StartAsAdmin>
+  <StartAtWindowsStartup>false</StartAtWindowsStartup>
+  <MinimizeToTray>false</MinimizeToTray>
+  <Language>System</Language>
+  <Theme>System</Theme>
+  <FrameGenerationCollapsed>false</FrameGenerationCollapsed>
+  <CursorOptionsCollapsed>false</CursorOptionsCollapsed>
+  <RenderingOptionsCollapsed>false</RenderingOptionsCollapsed>
+  <CaptureOptionsCollapsed>false</CaptureOptionsCollapsed>
+  <GpuDisplayOptionsCollapsed>false</GpuDisplayOptionsCollapsed>
+  <CropInputOptionsCollapsed>false</CropInputOptionsCollapsed>
+  <BehaviorCollapsed>false</BehaviorCollapsed>
+  <LegacyOptionsCollapsed>false</LegacyOptionsCollapsed>
+  <GameProfiles>
+    <Profile>
+      <Title>Fixture Default</Title>
+      <AutoScale>false</AutoScale>
+      <AutoScaleDelay>0</AutoScaleDelay>
+      <ScalingMode>Auto</ScalingMode>
+      <ScalingFitMode>Fullscreen</ScalingFitMode>
+      <ScaleFactor>1.5</ScaleFactor>
+      <ResizeBeforeScaling>false</ResizeBeforeScaling>
+      <WindowedMode>false</WindowedMode>
+      <ScalingType>LS1</ScalingType>
+      <FSRType>ORIGINAL</FSRType>
+      <LS1Type>BALANCED</LS1Type>
+      <LSFGType>BALANCED</LSFGType>
+      <LSFG2Mode>X2</LSFG2Mode>
+      <LSFG3Mode>X2</LSFG3Mode>
+      <LSFGResolutionScale>50</LSFGResolutionScale>
+      <LSFG3Multiplier>2</LSFG3Multiplier>
+      <Anime4kType>S</Anime4kType>
+      <Sharpness>5</Sharpness>
+      <LS1Sharpness>0</LS1Sharpness>
+      <VRS>false</VRS>
+      <FrameGeneration>LSFG3</FrameGeneration>
+      <ClipCursor>true</ClipCursor>
+      <AdjustCursorSpeed>false</AdjustCursorSpeed>
+      <HideCursor>false</HideCursor>
+      <ScaleCursor>false</ScaleCursor>
+      <SyncMode>DEFAULT</SyncMode>
+      <MaxFrameLatency>3</MaxFrameLatency>
+      <DoubleBuffering>false</DoubleBuffering>
+      <GsyncSupport>false</GsyncSupport>
+      <HdrSupport>true</HdrSupport>
+      <DrawFps>true</DrawFps>
+      <CaptureApi>WGC</CaptureApi>
+      <PreferredGpuId>0</PreferredGpuId>
+      <OutputDisplayId>0</OutputDisplayId>
+      <CropInputLeft>0</CropInputLeft>
+      <CropInputTop>0</CropInputTop>
+      <CropInputRight>0</CropInputRight>
+      <CropInputBottom>0</CropInputBottom>
+      <MultiDisplayMode>false</MultiDisplayMode>
+    </Profile>
+  </GameProfiles>
+</Settings>

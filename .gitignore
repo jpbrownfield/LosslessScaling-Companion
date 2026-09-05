@@ -1,0 +1,9 @@
+.venv/
+.deps/
+.tmp/
+__pycache__/
+*.py[cod]
+companion/config/settings.json
+test-results/
+dist/
+build/

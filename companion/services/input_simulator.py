@@ -1,5 +1,5 @@
 """
-Hardware-level Windows Input Simulator using ctypes & SendInput.
+Native Windows input simulator using ctypes and SendInput.
 Provides ultra-reliable, low-latency keystroke injection for Lossless Scaling.
 """
 
@@ -33,6 +33,9 @@ VK_MAPPINGS = {
     'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
     'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
     'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+    'f13': 0x7C, 'f14': 0x7D, 'f15': 0x7E, 'f16': 0x7F,
+    'f17': 0x80, 'f18': 0x81, 'f19': 0x82, 'f20': 0x83,
+    'f21': 0x84, 'f22': 0x85, 'f23': 0x86, 'f24': 0x87,
     'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22,
     'insert': 0x2D, 'delete': 0x2E,
     'space': 0x20, 'enter': 0x0D, 'tab': 0x09, 'escape': 0x1B,
@@ -120,10 +123,12 @@ class InputSimulator:
         inp.union.ki.time = 0
         inp.union.ki.dwExtraInfo = 0
 
-        user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        sent = user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if sent != 1:
+            raise ctypes.WinError()
 
     @classmethod
-    def trigger_hotkey(cls, modifiers: List[str], key: str, hold_ms: int = 50, activation_delay_ms: int = 0) -> None:
+    def trigger_hotkey(cls, modifiers: List[str], key: str, hold_ms: int = 50, activation_delay_ms: int = 0) -> bool:
         """
         Sends a hardware-level hotkey combination (e.g. Ctrl + Alt + S).
         """
@@ -153,6 +158,7 @@ class InputSimulator:
             for vk in reversed(mod_vks):
                 cls.send_scancode_event(vk, keyup=True)
                 time.sleep(0.01)
+            return True
 
         except Exception as e:
             print(f"[InputSimulator] Error triggering hotkey: {e}")
@@ -162,3 +168,4 @@ class InputSimulator:
                     cls.send_scancode_event(vk, keyup=True)
                 except Exception:
                     pass
+            return False
