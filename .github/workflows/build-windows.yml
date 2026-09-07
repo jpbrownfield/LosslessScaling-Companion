@@ -1,0 +1,54 @@
+name: Build Windows executable
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+          cache: pip
+          cache-dependency-path: companion/requirements.txt
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r companion/requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Compile executable
+        shell: pwsh
+        run: python -m PyInstaller --clean --noconfirm LosslessCompanion.spec
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $executable = Resolve-Path -LiteralPath "dist/LosslessCompanion/LosslessCompanion.exe" -ErrorAction Stop
+          $size = (Get-Item -LiteralPath $executable).Length
+          if ($size -le 0) {
+            throw "Compiled executable is empty"
+          }
+          Write-Host "Built $executable ($size bytes)"
+
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v4
+        with:
+          name: LosslessCompanion-windows-x64-${{ github.sha }}
+          path: dist/LosslessCompanion/
+          if-no-files-found: error
+          retention-days: 30

@@ -40,8 +40,7 @@ class ProfileManager:
             id="default-chrome",
             name="Chrome Video Auto-Scaler",
             target_process="chrome.exe",
-            auto_scale_on_fullscreen=True,
-            auto_scale_on_demaximize=True,
+            auto_scale=False,
             hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s", activation_delay_ms=300),
             custom_notes="Default profile for browser fullscreen video scaling."
         )
@@ -51,8 +50,7 @@ class ProfileManager:
             name="YouTube 2x Enhancer",
             target_process="chrome.exe",
             target_domain="youtube.com",
-            auto_scale_on_fullscreen=True,
-            auto_scale_on_demaximize=True,
+            auto_scale=False,
             hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s", activation_delay_ms=250),
             custom_notes="Optimized profile for YouTube videos."
         )
@@ -174,8 +172,7 @@ class ProfileManager:
             name=name,
             target_process=process_name,
             target_executable_path=None,
-            auto_scale_on_fullscreen=False,
-            auto_scale_on_demaximize=False,
+            auto_scale=self.config.default_profile_auto_scale,
             hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s")
         )
         self.add_or_update_profile(new_prof)
@@ -275,7 +272,11 @@ class ProfileManager:
             raise ValueError("Native profile is missing Title")
         path = str(native_profile.get("Path") or "").strip() or None
         existing = self.get_profile_by_id(existing_profile_id) if existing_profile_id else None
-        profile = existing.model_copy(deep=True) if existing else Profile(name=title)
+        profile = (
+            existing.model_copy(deep=True)
+            if existing
+            else Profile(name=title, auto_scale=False)
+        )
         profile.name = profile.name or title
         profile.lossless_profile_title = title
         profile.lossless_profile_path = path
@@ -285,8 +286,6 @@ class ProfileManager:
         profile.native_scaling_settings = {
             key: value for key, value in native_profile.items() if key not in {"Title", "Path"}
         }
-        if self.config.disable_native_auto_scale:
-            profile.native_scaling_settings["AutoScale"] = "false"
         profile.last_imported_hash = self.native_profile_hash(native_profile)
         self.add_or_update_profile(profile)
         return profile

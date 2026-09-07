@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS = {
   wsPort: 24892,
   onlyForVideos: true,
   autoScaleOnEnter: true,
-  autoScaleOnExit: true,
+  autoScaleOnExit: false,
   browserProcess: 'chrome.exe',
   serverState: null
 };

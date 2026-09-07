@@ -2,14 +2,17 @@
   "manifest_version": 3,
   "name": "Lossless Scaling Bridge",
   "version": "1.0.0",
+  "minimum_chrome_version": "116",
   "description": "Automatically triggers Lossless Scaling when videos enter or exit fullscreen.",
   "permissions": [
-    "storage",
-    "tabs"
+    "storage"
   ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -23,6 +26,10 @@
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Lossless Scaling Bridge"
+    "default_title": "Lossless Scaling Bridge",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   }
 }

@@ -22,6 +22,15 @@ class AppState:
         self.scaling_owner_profile_id: Optional[str] = None
         self.scaling_trigger: Optional[str] = None
         self.current_foreground_exe_path: Optional[str] = None
+        self.current_foreground_hwnd: Optional[int] = None
+        self.dynamic_limiter_status: Dict[str, Any] = {
+            "state": "inactive",
+            "message": "Dynamic limiter inactive",
+        }
+        self.scaling_control_status: Dict[str, Any] = {
+            "state": "idle",
+            "message": "No scaling command pending",
+        }
         self._lock = threading.RLock()
 
     def mark_scaling_toggled(self, new_state: Optional[bool] = None) -> bool:

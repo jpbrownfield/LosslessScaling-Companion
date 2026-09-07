@@ -10,6 +10,7 @@ from companion.services.process_watcher import ProcessWatcher
 class ProcessWatcherScalingControlTests(unittest.TestCase):
     def make_watcher(self):
         config = SimpleNamespace(
+            lossless_control_configured=True,
             disable_native_auto_scale=True,
             hotkey_sync_mode="helper_controls_lossless",
             global_hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s"),
@@ -53,6 +54,16 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
 
         stop.assert_not_called()
         launch.assert_not_called()
+
+    def test_unconfigured_install_does_not_touch_native_settings(self):
+        watcher, settings = self.make_watcher()
+        watcher.profile_manager.config.lossless_control_configured = False
+
+        self.assertFalse(watcher.enforce_helper_scaling_control())
+
+        settings.ensure_initial_backup.assert_not_called()
+        settings.control_changes_required.assert_not_called()
+        settings.update_control_settings.assert_not_called()
 
 
 if __name__ == "__main__":

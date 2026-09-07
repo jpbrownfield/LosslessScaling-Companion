@@ -245,7 +245,7 @@ class LosslessScalingInspector:
             target.pid = self.last_known_target.pid
 
         # If log didn't specify the PID/process, resolve from current/tracked foreground window
-        if target.is_active and not target.process_name and fallback_foreground:
+        if target.is_active and (not target.process_name or not target.pid) and fallback_foreground:
             hwnd = user32.GetForegroundWindow()
             if hwnd:
                 pid = wintypes.DWORD()
@@ -253,8 +253,10 @@ class LosslessScalingInspector:
                 if pid.value:
                     try:
                         proc = psutil.Process(pid.value)
+                        if target.process_name and proc.name().casefold() != target.process_name.casefold():
+                            return target
                         target.pid = pid.value
-                        target.process_name = proc.name()
+                        target.process_name = target.process_name or proc.name()
                         target.exe_path = proc.exe()
                         
                         length = user32.GetWindowTextLengthW(hwnd)

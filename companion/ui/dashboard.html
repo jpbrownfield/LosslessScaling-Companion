@@ -48,6 +48,8 @@
     .btn-secondary:hover { background: #475569; }
     .btn-danger { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); }
     .btn-danger:hover { background: var(--danger); color: #fff; }
+    .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .btn-danger-outline:hover { background: rgba(239,68,68,0.14); }
 
     /* Modal Form */
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; }
@@ -62,6 +64,10 @@
     .checkbox-group { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
     .checkbox-group input { width: auto; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    .integration-section { margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px; }
+    .integration-section.disabled { opacity: 0.48; }
+    .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+    a { color: var(--accent); }
   </style>
 </head>
 <body>
@@ -103,16 +109,35 @@
     </div>
 
     <div class="card" style="grid-column:1/-1">
-      <h2><span>Scaling Control Ownership</span></h2>
-      <p class="item-sub" style="white-space:normal; margin-bottom:12px">Lossless Scaling has one global activation hotkey. The helper uses this hotkey for every profile and keeps native Auto Scale disabled so foreground detection has a single owner.</p>
+      <h2><span>General Settings</span></h2>
+      <div class="form-row">
+        <div class="form-group checkbox-group"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows sign-in (elevated scheduled task)</label></div>
+        <div class="form-group checkbox-group"><input type="checkbox" checked disabled><label>Tray-only companion</label></div>
+        <div class="form-group checkbox-group"><input type="checkbox" checked disabled><label>Closing the browser dashboard leaves it running</label></div>
+      </div>
+      <p class="item-sub" style="white-space:normal; margin-bottom:12px">Lossless Scaling has one global activation hotkey. Existing Lossless Scaling profiles are left untouched during installation and initialization. Saving this section explicitly enables the selected hotkey synchronization and native Auto Scale policy after the original Settings.xml has been backed up.</p>
       <div class="form-row">
         <div class="form-group"><label>Synchronization</label><select id="hotkeySyncMode"><option value="helper_controls_lossless">Helper controls Lossless Scaling</option><option value="follow_lossless">Follow Lossless Scaling</option><option value="warn_only">Warn only</option></select></div>
         <div class="form-group"><label>Key</label><input id="globalHotkeyKey" value="s"></div>
         <div class="form-group"><label>Modifiers (comma-separated)</label><input id="globalHotkeyModifiers" value="ctrl, alt"></div>
         <div class="form-group"><label>Key hold (ms)</label><input id="globalHotkeyHold" type="number" min="30" value="50"></div>
         <div class="form-group checkbox-group"><input id="disableNativeAutoScale" type="checkbox" checked><label for="disableNativeAutoScale">Disable native Auto Scale</label></div>
+        <div class="form-group checkbox-group"><input id="defaultProfileAutoScale" type="checkbox" checked><label for="defaultProfileAutoScale">Autoscale new profiles by default</label></div>
+        <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor</label></div>
+        <div class="form-group checkbox-group"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode</label></div>
+        <div class="form-group"><label>Process Lasso CSV log override (optional)</label><input id="processLassoLogPath" type="text" placeholder="Blank uses automatic detection"><div id="processLassoDetectedPath" class="item-sub"></div></div>
+        <div class="form-group checkbox-group"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
+        <div class="form-group"><label>RTSS install directory override (optional)</label><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><div id="rtssStatus" class="item-sub" style="white-space:normal"></div></div>
+        <div class="form-group"><label>Default RTSS Limit Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
+        <div class="form-group"><label>Default minimum Lossless Scaling GPU target (%)</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
       </div>
-      <button id="saveControlSettingsBtn" class="btn btn-primary">Save and synchronize</button>
+      <p class="item-sub" style="white-space:normal; margin-bottom:12px">The monitor option restores only windows minimized by the helper when scaling stops. Process Lasso integration tails new CSV entries only and requires an existing helper profile plus a visible target window; it never deploys files to that application. The global RTSS switch suspends or reapplies all selected profile limits without forgetting their configured FPS or limiter method.</p>
+      <div style="display:flex; gap:10px; flex-wrap:wrap">
+        <button id="saveControlSettingsBtn" class="btn btn-primary">Save general settings</button>
+        <button id="revertAllChangesBtn" class="btn btn-danger-outline" type="button" title="Restore the original Lossless Scaling XML and remove helper-managed integrations">
+          <span aria-hidden="true">&#128465;</span> Revert all changes &amp; remove integrations
+        </button>
+      </div>
       <div id="controlSettingsStatus" class="item-sub" style="margin-top:10px"></div>
     </div>
 
@@ -167,10 +192,11 @@
         <div class="form-group"><label>Package version/tag</label><input id="manualPackageVersion" type="text" placeholder="v1.0.0"></div>
       </div>
       <div style="display:flex; gap:8px">
-        <button id="importAssetBtn" class="btn btn-secondary">Import DLSSNR runtime</button>
+      <button id="importAssetBtn" class="btn btn-secondary">Import DLSSNR runtime</button>
         <button id="importPackageBtn" class="btn btn-secondary">Import as selected provider package</button>
       </div>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No release operation running.</div>
+      <div class="item-sub" style="margin-top:8px; white-space:normal">NVIDIA does not currently publish a standalone official <code>nvngx_dlssnr.dll</code> download. Obtain it from software you are licensed to use, then import it above. <a href="https://github.com/NVIDIA/DLSS" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Official NVIDIA DLSS resources</a> · <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">LSP-NeuralRender guide</a></div>
       <div id="installedPackages" class="item-sub" style="margin-top:8px; white-space:normal"></div>
     </div>
   </div>
@@ -233,25 +259,10 @@
         </div>
 
         <div class="form-group checkbox-group">
-          <input type="checkbox" id="autoScaleFullscreen" checked>
-          <label for="autoScaleFullscreen" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Scale on Fullscreen</label>
+          <input type="checkbox" id="autoScale" checked>
+          <label for="autoScale" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Automatically scale this application</label>
         </div>
-
-        <div class="form-row">
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="autoScaleFocus">
-            <label for="autoScaleFocus" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Scale on Focus</label>
-          </div>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="autoScaleBlur" checked>
-            <label for="autoScaleBlur" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Disable on Blur</label>
-          </div>
-        </div>
-
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="autoScaleDemaximize" checked>
-          <label for="autoScaleDemaximize" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Auto-Descale on Demaximize / Exit Fullscreen</label>
-        </div>
+        <p class="item-sub" style="white-space:normal; margin-bottom:14px">Application scaling stays active when focus changes. For automatic browser-video scaling, install the optional <a href="https://github.com/jpbrownfield/Lossless-Scaling-Helper/archive/refs/heads/main.zip" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Lossless Scaling Bridge extension</a>, extract the archive, and load its <code>extension</code> folder as an unpacked browser extension.</p>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Lossless Scaling ReShade Preset (Optional)</h4>
@@ -264,6 +275,50 @@
             <label>Reload Hotkey</label>
             <input type="text" id="reshadeReloadHotkey" placeholder="Home">
           </div>
+        </div>
+
+        <div id="rtssProfileSection" class="integration-section">
+          <h4 style="font-size:13px; color:var(--accent); margin-bottom:8px">RTSS Frame Limiter</h4>
+          <p id="rtssProfileDisabledNotice" class="item-sub" style="white-space:normal; margin-bottom:10px"></p>
+          <fieldset id="rtssProfileFields">
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="rtssEnabled">
+              <label for="rtssEnabled" style="text-transform:none; font-size:13px; color:#fff">Create and manage an RTSS profile for this executable</label>
+            </div>
+            <div class="form-group">
+              <label>Limit Mode</label>
+              <select id="rtssLimitMode"><option value="inherit">Use global default</option><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select>
+            </div>
+            <div id="rtssStaticSettings" class="form-group">
+              <label>RTSS Framerate Limit <span id="rtssTargetHelper" style="text-transform:none; color:var(--accent)">Target (2x: 120, 3x: 180)</span></label>
+              <input type="number" id="rtssFramerateLimit" value="60" min="1" max="1000">
+            </div>
+            <div id="rtssDynamicSettings">
+              <div class="form-row">
+                <div class="form-group"><label>Minimum LS GPU target (%)</label><input id="rtssGpuTargetPercent" type="number" min="1" max="100" step="0.5" placeholder="Use global target"></div>
+                <div class="form-group"><label>Minimum game FPS</label><input id="rtssMinimumFramerate" type="number" value="30" min="1" max="1000"></div>
+                <div class="form-group"><label>Maximum game FPS</label><input id="rtssMaximumFramerate" type="number" value="240" min="1" max="1000"></div>
+              </div>
+              <div id="rtssCalibrationStatus" class="item-sub" style="white-space:normal; margin-bottom:10px">No dynamic calibration data.</div>
+              <div style="display:flex; gap:8px; margin-bottom:8px">
+                <button type="button" id="resetRtssCalibrationBtn" class="btn btn-danger">Reset automatic calibration</button>
+                <button type="button" id="manualRtssCalibrationBtn" class="btn btn-secondary">Calibrate manually</button>
+              </div>
+              <p class="item-sub" style="white-space:normal; margin-bottom:6px"><strong>Reset automatic calibration:</strong> Erases all recorded game GPU-utilization metrics, gameplay baselines, and identified frame limits for this profile. Calibration restarts from the configured maximum FPS.</p>
+              <p class="item-sub" style="white-space:normal"><strong>Calibrate manually:</strong> Starts a five-minute window. Play a representative section so gameplay GPU activity can be captured and an accurate frame limit identified.</p>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>RTSS Limit Method</label>
+                <select id="rtssLimitMethod">
+                  <option value="async">Async</option>
+                  <option value="front_edge_sync">Front Edge Sync</option>
+                  <option value="back_edge_sync">Back Edge Sync</option>
+                  <option value="nvidia_reflex">NVIDIA Reflex</option>
+                </select>
+              </div>
+            </div>
+          </fieldset>
         </div>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
@@ -322,6 +377,9 @@
     let nativeImportPreview = [];
     let graphicsReleases = [];
     let controlSettings = null;
+    let editingOriginalProfile = null;
+    let rtssDetectionTimer = null;
+    let rtssDetectionChecks = 0;
 
     function connectWS() {
       ws = new WebSocket(`ws://${location.host}/ws?token=__COMPANION_TOKEN__`);
@@ -333,6 +391,7 @@
         ws.send(JSON.stringify({ type: 'GET_LOSSLESS_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_NATIVE_IMPORT_PREVIEW' }));
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
       };
 
       ws.onmessage = (event) => {
@@ -346,9 +405,11 @@
             renderProcesses();
             renderProfiles();
             renderRuntime(msg);
+            renderDynamicLimiterStatus(msg.dynamicLimiter);
             renderControlSettings();
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
             renderRuntime(msg);
+            renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'LOSSLESS_SETTINGS') {
             const settings = msg.settings || {};
             losslessSettings = settings;
@@ -359,6 +420,7 @@
           } else if (msg.type === 'ERROR') {
             document.getElementById('statusPill').textContent = msg.message || 'Error';
             document.getElementById('statusPill').style.color = '#ef4444';
+            document.getElementById('revertAllChangesBtn').disabled = false;
           } else if (msg.type === 'LOSSLESS_SETTINGS_UPDATED') {
             ws.send(JSON.stringify({ type: 'GET_LOSSLESS_SETTINGS' }));
           } else if (msg.type === 'NATIVE_IMPORT_PREVIEW') {
@@ -387,6 +449,41 @@
             document.getElementById('controlSettingsStatus').textContent = msg.synchronized
               ? 'Saved and synchronized with Lossless Scaling.'
               : 'Saved. Native synchronization is pending because Lossless Scaling settings were unavailable.';
+          } else if (msg.type === 'GENERAL_SETTINGS' || msg.type === 'GENERAL_SETTINGS_SAVED') {
+            controlSettings = msg.controlSettings;
+            document.getElementById('runAtStartup').checked = !!msg.runAtStartup;
+            renderControlSettings();
+            if (msg.type === 'GENERAL_SETTINGS_SAVED') {
+              document.getElementById('controlSettingsStatus').textContent =
+                `Saved. Startup task: ${msg.runAtStartup ? 'enabled' : 'disabled'}. ` +
+                (msg.synchronized ? 'Native controls synchronized.' : 'Native synchronization pending.');
+            }
+          } else if (msg.type === 'RTSS_STATUS') {
+            controlSettings = controlSettings || {};
+            controlSettings.rtssStatus = msg.status || {};
+            renderRtssStatus(controlSettings.rtssStatus);
+            renderRtssProfileAvailability();
+            if (msg.status && msg.status.installed && rtssDetectionTimer) {
+              clearInterval(rtssDetectionTimer);
+              rtssDetectionTimer = null;
+            }
+          } else if (msg.type === 'RTSS_CALIBRATION_STATUS') {
+            renderDynamicLimiterStatus(msg.status);
+          } else if (msg.type === 'ALL_CHANGES_REVERTED') {
+            const button = document.getElementById('revertAllChangesBtn');
+            button.disabled = false;
+            const details = [
+              msg.settingsRestored ? 'original Settings.xml restored' : 'no original Settings.xml backup was present',
+              msg.addonsReverted ? 'managed add-ons removed/restored' : 'add-on cleanup incomplete',
+              `${msg.rtssProfilesReverted || 0} RTSS profile(s) reverted`,
+              msg.startupTaskRemoved ? 'startup task removed' : 'startup task cleanup incomplete'
+            ];
+            if (msg.failures && msg.failures.length) details.push(`Failures: ${msg.failures.join('; ')}`);
+            document.getElementById('controlSettingsStatus').textContent = details.join('. ') + '.';
+            document.getElementById('statusPill').textContent = msg.ok ? 'Cleanup complete' : 'Cleanup incomplete';
+            document.getElementById('statusPill').style.color = msg.ok ? '#10b981' : '#ef4444';
+            ws.send(JSON.stringify({ type: 'GET_LOSSLESS_SETTINGS' }));
+            ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
           }
         } catch (err) {
           console.error(err);
@@ -403,9 +500,13 @@
     function renderRuntime(msg) {
       const profile = msg.activeProfile && msg.activeProfile.name;
       const target = msg.scalingTarget && msg.scalingTarget.processName;
+      const control = msg.scalingControl || {};
       document.getElementById('runtimeInfo').textContent =
         `${msg.isScalingActive ? 'Scaling active' : 'Idle'}` +
-        `${profile ? ` · ${profile}` : ''}` + `${target ? ` · ${target}` : ''}`;
+        `${profile ? ` · ${profile}` : ''}` + `${target ? ` · ${target}` : ''}` +
+        `${control.state === 'error' ? ` · ${control.message}` : ''}`;
+      document.getElementById('runtimeInfo').style.color =
+        control.state === 'error' ? '#ef4444' : 'var(--text-muted)';
     }
 
     function renderControlSettings() {
@@ -416,8 +517,101 @@
       document.getElementById('globalHotkeyModifiers').value = (hotkey.modifiers || ['ctrl', 'alt']).join(', ');
       document.getElementById('globalHotkeyHold').value = hotkey.hold_delay_ms || 50;
       document.getElementById('disableNativeAutoScale').checked = controlSettings.disableNativeAutoScale !== false;
+      document.getElementById('defaultProfileAutoScale').checked = controlSettings.defaultProfileAutoScale !== false;
+      document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
+      document.getElementById('processLassoPerformanceModeScaling').checked = !!controlSettings.processLassoPerformanceModeScaling;
+      document.getElementById('processLassoLogPath').value = controlSettings.processLassoLogPath || '';
+      document.getElementById('processLassoDetectedPath').textContent = controlSettings.processLassoDetectedLogPath
+        ? `Detected: ${controlSettings.processLassoDetectedLogPath}`
+        : 'No Process Lasso log detected yet.';
+      document.getElementById('rtssFrameLimitingEnabled').checked = !!controlSettings.rtssFrameLimitingEnabled;
+      document.getElementById('rtssInstallPath').value = controlSettings.rtssInstallPath || '';
+      document.getElementById('rtssDefaultLimitMode').value = controlSettings.rtssDefaultLimitMode || 'static';
+      document.getElementById('rtssDefaultGpuTargetPercent').value = controlSettings.rtssDefaultGpuTargetPercent == null ? 15 : controlSettings.rtssDefaultGpuTargetPercent;
+      renderRtssStatus(controlSettings.rtssStatus || {});
+      renderRtssProfileAvailability();
+      renderRtssModeSettings();
       document.getElementById('hotkeyKey').value = hotkey.key || 's';
       document.getElementById('hotkeyModifiers').value = (hotkey.modifiers || ['ctrl', 'alt']).join(', ');
+    }
+
+    function renderRtssStatus(status) {
+      const element = document.getElementById('rtssStatus');
+      if (!element) return;
+      if (status.installed) {
+        element.textContent = `Detected: ${status.path}${status.running ? ' (running)' : ''}`;
+        return;
+      }
+      element.innerHTML = 'RTSS was not detected. <a id="rtssDownloadLink" href="' +
+        escapeHtml(status.downloadUrl || 'https://www.guru3d.com/download/rtss-rivatuner-statistics-server-download/') +
+        '" target="_blank" rel="noopener noreferrer">Download RTSS from Guru3D</a>. Detection will run every 5 seconds for up to 5 minutes after opening the link.';
+      const link = document.getElementById('rtssDownloadLink');
+      if (link) link.onclick = startRtssDetection;
+    }
+
+    function startRtssDetection() {
+      if (rtssDetectionTimer) clearInterval(rtssDetectionTimer);
+      rtssDetectionChecks = 0;
+      const check = () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        rtssDetectionChecks += 1;
+        ws.send(JSON.stringify({ type: 'GET_RTSS_STATUS' }));
+        if (rtssDetectionChecks >= 60 && rtssDetectionTimer) {
+          clearInterval(rtssDetectionTimer);
+          rtssDetectionTimer = null;
+        }
+      };
+      check();
+      rtssDetectionTimer = setInterval(check, 5000);
+    }
+
+    function updateRtssTargetHelper() {
+      const limit = Math.max(1, Number(document.getElementById('rtssFramerateLimit').value) || 0);
+      document.getElementById('rtssTargetHelper').textContent = `Target (2x: ${limit * 2}, 3x: ${limit * 3})`;
+    }
+
+    function effectiveRtssMode() {
+      const selected = document.getElementById('rtssLimitMode').value || 'inherit';
+      return selected === 'inherit'
+        ? (controlSettings && controlSettings.rtssDefaultLimitMode || 'static')
+        : selected;
+    }
+
+    function renderRtssModeSettings() {
+      const staticMode = effectiveRtssMode() === 'static';
+      document.getElementById('rtssStaticSettings').style.display = staticMode ? 'flex' : 'none';
+      document.getElementById('rtssDynamicSettings').style.display = staticMode ? 'none' : 'block';
+    }
+
+    function renderDynamicLimiterStatus(status) {
+      if (!status) return;
+      const profileId = document.getElementById('profileId').value;
+      if (status.profileId && profileId && status.profileId !== profileId) return;
+      const parts = [status.message || 'Dynamic limiter inactive'];
+      if (status.lossless_gpu_percent != null) parts.push(`LS GPU ${status.lossless_gpu_percent}% / ≥${status.target_percent}%`);
+      if (status.game_gpu_percent != null) parts.push(`Game GPU ${status.game_gpu_percent}%`);
+      if (status.current_limit != null) parts.push(`Limit ${status.current_limit} FPS`);
+      if (status.manual_remaining_seconds) {
+        const minutes = Math.floor(status.manual_remaining_seconds / 60);
+        const seconds = String(status.manual_remaining_seconds % 60).padStart(2, '0');
+        parts.push(`Manual window ${minutes}:${seconds}`);
+      }
+      document.getElementById('rtssCalibrationStatus').textContent = parts.join(' · ');
+    }
+
+    function renderRtssProfileAvailability() {
+      const section = document.getElementById('rtssProfileSection');
+      if (!section) return;
+      const globallyEnabled = !!(controlSettings && controlSettings.rtssFrameLimitingEnabled);
+      const installed = !!(controlSettings && controlSettings.rtssStatus && controlSettings.rtssStatus.installed);
+      const available = globallyEnabled && installed;
+      section.classList.toggle('disabled', !available);
+      document.getElementById('rtssProfileFields').disabled = !available;
+      document.getElementById('rtssProfileDisabledNotice').textContent = !globallyEnabled
+        ? 'Turn on Enable RTSS Frame Limiting in General Settings to configure this profile.'
+        : !installed
+          ? 'Install RTSS (or set its install directory) in General Settings to configure this profile.'
+          : 'The helper changes RTSS only; it never places files in the target application directory.';
     }
 
     function renderLosslessSettings() {
@@ -534,7 +728,7 @@
         <div class="profile-item">
           <div class="item-info">
             <span class="item-title">${p.id === activeProfileId ? '✓ ' : ''}${escapeHtml(p.name)}</span>
-            <span class="item-sub">Target: ${escapeHtml(p.target_process || p.target_domain || 'Global Fallback')} | Hotkey: ${p.hotkey.modifiers.join('+')}+${p.hotkey.key.toUpperCase()}</span>
+            <span class="item-sub">Target: ${escapeHtml(p.target_process || p.target_domain || 'Global Fallback')} | Hotkey: ${p.hotkey.modifiers.join('+')}+${p.hotkey.key.toUpperCase()}${p.rtss && p.rtss.enabled ? ` | RTSS: ${p.rtss.learned_framerate_limit ? `learned ${p.rtss.learned_framerate_limit}` : p.rtss.framerate_limit} FPS` : ''}</span>
           </div>
           <div style="display:flex; gap:6px;">
             <button class="btn btn-primary" onclick="activateProfile('${p.id}')" ${p.id === activeProfileId ? 'disabled' : ''}>Activate</button>
@@ -552,6 +746,7 @@
     function openModal(profile = null) {
       const modal = document.getElementById('profileModal');
       document.getElementById('profileForm').reset();
+      editingOriginalProfile = profile ? JSON.parse(JSON.stringify(profile)) : null;
 
       if (profile) {
         document.getElementById('modalTitle').textContent = 'Edit Profile';
@@ -565,10 +760,18 @@
         document.getElementById('hotkeyModifiers').value = profile.hotkey.modifiers.join(', ');
         document.getElementById('activationDelay').value = profile.hotkey.activation_delay_ms;
         document.getElementById('holdDelay').value = profile.hotkey.hold_delay_ms;
-        document.getElementById('autoScaleFullscreen').checked = profile.auto_scale_on_fullscreen;
-        document.getElementById('autoScaleDemaximize').checked = profile.auto_scale_on_demaximize;
-        document.getElementById('autoScaleFocus').checked = !!profile.auto_scale_on_focus;
-        document.getElementById('autoScaleBlur').checked = profile.auto_scale_on_blur !== false;
+        document.getElementById('autoScale').checked = profile.auto_scale !== false;
+        const rtss = profile.rtss || {};
+        document.getElementById('rtssEnabled').checked = !!rtss.enabled;
+        document.getElementById('rtssLimitMode').value = rtss.limit_mode || 'inherit';
+        document.getElementById('rtssFramerateLimit').value = rtss.framerate_limit || 60;
+        document.getElementById('rtssGpuTargetPercent').value = rtss.gpu_target_percent == null ? '' : rtss.gpu_target_percent;
+        document.getElementById('rtssMinimumFramerate').value = rtss.minimum_framerate_limit || 30;
+        document.getElementById('rtssMaximumFramerate').value = rtss.maximum_framerate_limit || 240;
+        document.getElementById('rtssLimitMethod').value = rtss.limit_method || 'async';
+        document.getElementById('rtssCalibrationStatus').textContent = rtss.learned_framerate_limit
+          ? `Saved learned limit: ${rtss.learned_framerate_limit} FPS${rtss.game_gpu_baseline_percent == null ? '' : ` · Gameplay baseline: ${rtss.game_gpu_baseline_percent.toFixed(1)}%`}${rtss.automatic_calibration_disabled ? ' · Manual calibration locked; reset to resume automatic learning' : ''}`
+          : 'No dynamic calibration data.';
         if (profile.reshade) {
           document.getElementById('reshadePresetPath').value = profile.reshade.preset_path || '';
           document.getElementById('reshadeReloadHotkey').value = profile.reshade.reload_hotkey || '';
@@ -603,8 +806,12 @@
       } else {
         document.getElementById('modalTitle').textContent = 'Create Profile';
         document.getElementById('profileId').value = '';
+        document.getElementById('autoScale').checked = !controlSettings || controlSettings.defaultProfileAutoScale !== false;
       }
 
+      updateRtssTargetHelper();
+      renderRtssModeSettings();
+      renderRtssProfileAvailability();
       modal.classList.add('active');
     }
 
@@ -624,8 +831,7 @@
         target_process: procName,
         target_executable_path: exePath,
         target_domain: '',
-        auto_scale_on_fullscreen: true,
-        auto_scale_on_demaximize: true,
+        auto_scale: !controlSettings || controlSettings.defaultProfileAutoScale !== false,
         hotkey: { key: 's', modifiers: ['ctrl', 'alt'], activation_delay_ms: 300 }
       });
     };
@@ -636,8 +842,13 @@
     };
 
     window.deleteProfile = function(profileId) {
-      if (confirm('Delete this profile?')) {
-        ws.send(JSON.stringify({ type: 'DELETE_PROFILE', profileId }));
+      const profile = profiles.find(item => item.id === profileId);
+      const managesRtss = !!(profile && profile.rtss && profile.rtss.enabled);
+      const warning = managesRtss
+        ? 'Delete this helper profile and its associated RTSS limiter profile? This will remove helper-created RTSS data or restore the limiter values that existed before the helper managed it.'
+        : 'Delete this profile?';
+      if (confirm(warning)) {
+        ws.send(JSON.stringify({ type: 'DELETE_PROFILE', profileId, confirmRtssRemoval: managesRtss }));
       }
     };
 
@@ -655,11 +866,44 @@
     document.getElementById('profileSearch').oninput = renderProfiles;
     document.getElementById('lsProfileSelect').onchange = renderSelectedLosslessProfile;
     document.getElementById('graphicsRelease').onchange = renderGraphicsAssets;
+    document.getElementById('rtssFramerateLimit').oninput = updateRtssTargetHelper;
+    document.getElementById('rtssLimitMode').onchange = renderRtssModeSettings;
+    document.getElementById('rtssDefaultLimitMode').onchange = renderRtssModeSettings;
+    document.getElementById('resetRtssCalibrationBtn').onclick = () => {
+      const profileId = document.getElementById('profileId').value;
+      if (!profileId) return alert('Save this profile before resetting calibration.');
+      if (!confirm('Erase all learned GPU-utilization metrics, gameplay baselines, and identified frame limits for this profile?')) return;
+      ws.send(JSON.stringify({ type: 'RESET_RTSS_CALIBRATION', profileId }));
+    };
+    document.getElementById('manualRtssCalibrationBtn').onclick = () => {
+      const profileId = document.getElementById('profileId').value;
+      if (!profileId) return alert('Save and activate this profile before starting manual calibration.');
+      if (!confirm('Start a five-minute manual calibration window? Begin playing a representative gameplay section now.')) return;
+      ws.send(JSON.stringify({ type: 'START_RTSS_MANUAL_CALIBRATION', profileId }));
+    };
     document.getElementById('saveControlSettingsBtn').onclick = () => {
+      const rtssEnabled = document.getElementById('rtssFrameLimitingEnabled').checked;
+      const rtssPath = document.getElementById('rtssInstallPath').value.trim();
+      const managedCount = profiles.filter(profile => profile.rtss && profile.rtss.enabled).length;
+      const deactivatesRtss = !!(controlSettings && controlSettings.rtssFrameLimitingEnabled) &&
+        (!rtssEnabled || (controlSettings.rtssInstallPath || '').toLowerCase() !== rtssPath.toLowerCase());
+      if (managedCount && deactivatesRtss && !confirm(
+        `This will deactivate ${managedCount} managed RTSS limiter profile(s). Their FPS limits, methods, and enabled selections will remain saved and will be reapplied when RTSS integration is enabled again. Continue?`
+      )) return;
       ws.send(JSON.stringify({
-        type: 'SAVE_CONTROL_SETTINGS',
+        type: 'SAVE_GENERAL_SETTINGS',
+        runAtStartup: document.getElementById('runAtStartup').checked,
         mode: document.getElementById('hotkeySyncMode').value,
         disableNativeAutoScale: document.getElementById('disableNativeAutoScale').checked,
+        defaultProfileAutoScale: document.getElementById('defaultProfileAutoScale').checked,
+        minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
+        processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
+        processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
+        rtssFrameLimitingEnabled: rtssEnabled,
+        rtssInstallPath: rtssPath,
+        rtssDefaultLimitMode: document.getElementById('rtssDefaultLimitMode').value,
+        rtssDefaultGpuTargetPercent: Number(document.getElementById('rtssDefaultGpuTargetPercent').value),
+        confirmRtssGlobalChange: managedCount > 0 && deactivatesRtss,
         hotkey: {
           key: document.getElementById('globalHotkeyKey').value.trim().toLowerCase(),
           modifiers: document.getElementById('globalHotkeyModifiers').value.split(',').map(value => value.trim().toLowerCase()).filter(Boolean),
@@ -667,6 +911,14 @@
           activation_delay_ms: controlSettings && controlSettings.hotkey && controlSettings.hotkey.activation_delay_ms || 350
         }
       }));
+    };
+    document.getElementById('revertAllChangesBtn').onclick = () => {
+      const warning = 'Revert every change managed by this helper? This restores the original Lossless Scaling Settings.xml, removes or restores all helper-managed RTSS profiles, and removes deployed add-on files from the Lossless Scaling directory. Downloaded assets and ordinary helper profiles are kept, but their add-on and RTSS selections are cleared. This cannot be undone from the helper.';
+      if (!confirm(warning)) return;
+      const button = document.getElementById('revertAllChangesBtn');
+      button.disabled = true;
+      document.getElementById('controlSettingsStatus').textContent = 'Stopping Lossless Scaling and reverting helper-managed changes...';
+      ws.send(JSON.stringify({ type: 'REVERT_ALL_CHANGES', confirmRevertAll: true }));
     };
     document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
     document.getElementById('checkGraphicsBtn').onclick = () => {
@@ -767,15 +1019,21 @@
           target_executable_path: document.getElementById('targetExecutablePath').value || null,
           target_domain: document.getElementById('targetDomain').value || null,
           lossless_profile_title: document.getElementById('losslessProfileTitle').value || null,
-          auto_scale_on_fullscreen: document.getElementById('autoScaleFullscreen').checked,
-          auto_scale_on_demaximize: document.getElementById('autoScaleDemaximize').checked,
-          auto_scale_on_focus: document.getElementById('autoScaleFocus').checked,
-          auto_scale_on_blur: document.getElementById('autoScaleBlur').checked,
+          auto_scale: document.getElementById('autoScale').checked,
           hotkey: {
             modifiers: document.getElementById('hotkeyModifiers').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
             key: document.getElementById('hotkeyKey').value.trim().toLowerCase(),
             activation_delay_ms: Number(document.getElementById('activationDelay').value),
             hold_delay_ms: Number(document.getElementById('holdDelay').value) || 50
+          },
+          rtss: {
+            enabled: document.getElementById('rtssEnabled').checked,
+            limit_mode: document.getElementById('rtssLimitMode').value,
+            framerate_limit: Number(document.getElementById('rtssFramerateLimit').value),
+            gpu_target_percent: document.getElementById('rtssGpuTargetPercent').value === '' ? null : Number(document.getElementById('rtssGpuTargetPercent').value),
+            minimum_framerate_limit: Number(document.getElementById('rtssMinimumFramerate').value),
+            maximum_framerate_limit: Number(document.getElementById('rtssMaximumFramerate').value),
+            limit_method: document.getElementById('rtssLimitMethod').value
           },
           reshade: document.getElementById('reshadePresetPath').value ? {
             enabled: true,
@@ -827,6 +1085,22 @@
           dll_overrides: dllOverrides
         }
       };
+
+      const oldRtssEnabled = !!(editingOriginalProfile && editingOriginalProfile.rtss && editingOriginalProfile.rtss.enabled);
+      const newRtssEnabled = payload.profile.rtss.enabled;
+      const rtssTarget = profile => {
+        if (!profile) return '';
+        if (profile.target_process) return profile.target_process.toLowerCase();
+        return (profile.target_executable_path || '').split(/[\\/]/).pop().toLowerCase();
+      };
+      const oldTarget = rtssTarget(editingOriginalProfile);
+      const newTarget = rtssTarget(payload.profile);
+      const removesRtss = oldRtssEnabled && (!newRtssEnabled || oldTarget !== newTarget);
+      if (removesRtss) {
+        const accepted = confirm('This change will remove the existing RTSS limiter profile for the old executable. Helper-created RTSS data will be deleted; pre-existing limiter values will be restored. Continue?');
+        if (!accepted) return;
+        payload.confirmRtssRemoval = true;
+      }
 
       ws.send(JSON.stringify(payload));
       document.getElementById('profileModal').classList.remove('active');

@@ -69,7 +69,7 @@ class ProfileManagerTests(unittest.TestCase):
             name="Helper name",
             target_domain="example.com",
             custom_notes="keep me",
-            auto_scale_on_focus=True,
+            auto_scale=True,
         )
         self.manager.add_or_update_profile(profile)
 
@@ -78,6 +78,7 @@ class ProfileManagerTests(unittest.TestCase):
                 "Title": "Native profile",
                 "Path": r"D:\Games\ExampleGame.exe",
                 "ScalingType": "LS1",
+                "AutoScale": "true",
                 "FutureSetting": "preserve",
             },
             existing_profile_id=profile.id,
@@ -85,9 +86,38 @@ class ProfileManagerTests(unittest.TestCase):
 
         self.assertEqual(refreshed.target_domain, "example.com")
         self.assertEqual(refreshed.custom_notes, "keep me")
-        self.assertTrue(refreshed.auto_scale_on_focus)
+        self.assertTrue(refreshed.auto_scale)
         self.assertEqual(refreshed.native_scaling_settings["FutureSetting"], "preserve")
-        self.assertEqual(refreshed.native_scaling_settings["AutoScale"], "false")
+        self.assertEqual(refreshed.native_scaling_settings["AutoScale"], "true")
+
+    def test_global_autoscale_default_applies_only_to_new_profiles(self):
+        default_created = self.manager.create_profile_from_process("DefaultGame.exe")
+        self.assertTrue(self.manager.config.default_profile_auto_scale)
+        self.assertTrue(default_created.auto_scale)
+        imported_before_change = self.manager.import_native_profile(
+            {"Title": "Existing LS", "Path": r"D:\Games\ExistingLS.exe"}
+        )
+        self.assertFalse(imported_before_change.auto_scale)
+        existing = Profile(id="existing", name="Existing", auto_scale=True)
+        self.manager.add_or_update_profile(existing)
+        self.manager.config.default_profile_auto_scale = False
+
+        created = self.manager.create_profile_from_process("NewGame.exe")
+        imported = self.manager.import_native_profile(
+            {"Title": "Imported", "Path": r"D:\Games\Imported.exe"}
+        )
+
+        self.assertFalse(created.auto_scale)
+        self.assertFalse(imported.auto_scale)
+        self.assertTrue(self.manager.get_profile_by_id("existing").auto_scale)
+
+    def test_profile_schema_contains_only_the_single_autoscale_field(self):
+        dumped = Profile(name="Game").model_dump()
+        self.assertFalse(dumped["auto_scale"])
+        self.assertNotIn("auto_scale_on_fullscreen", dumped)
+        self.assertNotIn("auto_scale_on_demaximize", dumped)
+        self.assertNotIn("auto_scale_on_focus", dumped)
+        self.assertNotIn("auto_scale_on_blur", dumped)
 
 
 if __name__ == "__main__":

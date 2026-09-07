@@ -14,7 +14,14 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.legacy.server import WebSocketServerProtocol, serve
 from websockets.exceptions import ConnectionClosed
 
-from ..core.models import AppConfig, BrowserFullscreenEvent, HotkeyConfig, Profile
+from ..core.models import (
+    AppConfig,
+    BrowserFullscreenEvent,
+    GraphicsStackConfig,
+    HotkeyConfig,
+    Profile,
+    RtssLimiterConfig,
+)
 from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
 from .process_watcher import ProcessWatcher
@@ -22,6 +29,10 @@ from .automation import AutomationController
 from .ls_settings import LosslessSettingsXml
 from .asset_store import AssetStore
 from .release_providers import ReleaseManager
+from .startup_manager import StartupTaskManager
+from .process_lasso_monitor import ProcessLassoLogTailer
+from .rtss_manager import RtssProfileManager
+from .dynamic_limiter import DynamicLimiterController
 
 logger = logging.getLogger("LosslessCompanion.Server")
 
@@ -36,6 +47,9 @@ class CompanionWebSocketServer:
         ls_settings: Optional[LosslessSettingsXml] = None,
         asset_store: Optional[AssetStore] = None,
         release_manager: Optional[ReleaseManager] = None,
+        startup_manager: Optional[StartupTaskManager] = None,
+        rtss_manager: Optional[RtssProfileManager] = None,
+        dynamic_limiter: Optional[DynamicLimiterController] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -46,6 +60,11 @@ class CompanionWebSocketServer:
         )
         self.asset_store = asset_store or self.automation.asset_store
         self.release_manager = release_manager or ReleaseManager(self.asset_store)
+        self.startup_manager = startup_manager or StartupTaskManager()
+        self.rtss_manager = rtss_manager or RtssProfileManager(
+            profile_manager.config.rtss_install_path
+        )
+        self.dynamic_limiter = dynamic_limiter
         self.config: AppConfig = profile_manager.config
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
@@ -102,6 +121,8 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,
+            "dynamicLimiter": self.state.dynamic_limiter_status,
+            "scalingControl": self.state.scaling_control_status,
         }))
 
         try:
@@ -131,6 +152,10 @@ class CompanionWebSocketServer:
                 "IMPORT_GRAPHICS_ASSET",
                 "IMPORT_GRAPHICS_PACKAGE",
                 "SAVE_CONTROL_SETTINGS",
+                "SAVE_GENERAL_SETTINGS",
+                "RESET_RTSS_CALIBRATION",
+                "START_RTSS_MANUAL_CALIBRATION",
+                "REVERT_ALL_CHANGES",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
             authority = self.client_authority.get(websocket, "readonly")
@@ -194,6 +219,51 @@ class CompanionWebSocketServer:
                 }))
                 return
 
+            if msg_type == "GET_GENERAL_SETTINGS":
+                await websocket.send(json.dumps({
+                    "type": "GENERAL_SETTINGS",
+                    "runAtStartup": await asyncio.to_thread(self.startup_manager.is_enabled),
+                    "startupTaskName": self.startup_manager.TASK_NAME,
+                    "trayOnly": True,
+                    "controlSettings": self._control_settings_payload(),
+                }))
+                return
+
+            if msg_type == "GET_RTSS_STATUS":
+                await websocket.send(json.dumps({
+                    "type": "RTSS_STATUS",
+                    "status": self.rtss_manager.status(self.config.rtss_install_path),
+                }))
+                return
+
+            if msg_type == "RESET_RTSS_CALIBRATION":
+                if self.dynamic_limiter is None:
+                    raise RuntimeError("Dynamic limiter service is unavailable")
+                result = await asyncio.to_thread(
+                    self.dynamic_limiter.reset, str(msg.get("profileId") or "")
+                )
+                await websocket.send(json.dumps({"type": "RTSS_CALIBRATION_STATUS", "status": result}))
+                await self.broadcast_full_data_update()
+                return
+
+            if msg_type == "START_RTSS_MANUAL_CALIBRATION":
+                if self.dynamic_limiter is None:
+                    raise RuntimeError("Dynamic limiter service is unavailable")
+                result = await asyncio.to_thread(
+                    self.dynamic_limiter.start_manual, str(msg.get("profileId") or "")
+                )
+                await websocket.send(json.dumps({"type": "RTSS_CALIBRATION_STATUS", "status": result}))
+                await self.broadcast_state()
+                return
+
+            if msg_type == "REVERT_ALL_CHANGES":
+                if not bool(msg.get("confirmRevertAll")):
+                    raise ValueError("Confirm revert of all helper-managed changes")
+                result = await self._revert_all_changes()
+                await websocket.send(json.dumps({"type": "ALL_CHANGES_REVERTED", **result}))
+                await self.broadcast_full_data_update()
+                return
+
             if msg_type == "SAVE_CONTROL_SETTINGS":
                 hotkey = HotkeyConfig.model_validate(msg.get("hotkey") or {})
                 mode = str(msg.get("mode") or "")
@@ -201,13 +271,160 @@ class CompanionWebSocketServer:
                     raise ValueError("Unsupported hotkey synchronization mode")
                 self.config.global_hotkey = hotkey
                 self.config.hotkey_sync_mode = mode
+                self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = bool(msg.get("disableNativeAutoScale", True))
+                self.config.minimize_other_windows_on_scale = bool(
+                    msg.get(
+                        "minimizeOtherWindowsOnScale",
+                        self.config.minimize_other_windows_on_scale,
+                    )
+                )
+                self.config.process_lasso_performance_mode_scaling = bool(
+                    msg.get(
+                        "processLassoPerformanceModeScaling",
+                        self.config.process_lasso_performance_mode_scaling,
+                    )
+                )
+                self.config.process_lasso_log_path = str(
+                    msg.get("processLassoLogPath") or ""
+                ).strip() or None
+                self.config.rtss_frame_limiting_enabled = bool(
+                    msg.get(
+                        "rtssFrameLimitingEnabled",
+                        self.config.rtss_frame_limiting_enabled,
+                    )
+                )
+                self.config.rtss_install_path = str(
+                    msg.get("rtssInstallPath", self.config.rtss_install_path) or ""
+                ).strip() or None
+                self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                await asyncio.to_thread(
+                    self.automation.reconcile_window_management_setting
+                )
                 synchronized = await asyncio.to_thread(
                     self.process_watcher.enforce_helper_scaling_control
                 ) if self.process_watcher else False
                 await websocket.send(json.dumps({
                     "type": "CONTROL_SETTINGS_SAVED",
+                    "synchronized": synchronized,
+                    "controlSettings": self._control_settings_payload(),
+                }))
+                return
+
+            if msg_type == "SAVE_GENERAL_SETTINGS":
+                hotkey = HotkeyConfig.model_validate(msg.get("hotkey") or {})
+                mode = str(msg.get("mode") or "")
+                if mode not in {"helper_controls_lossless", "follow_lossless", "warn_only"}:
+                    raise ValueError("Unsupported hotkey synchronization mode")
+                run_at_startup = bool(msg.get("runAtStartup", False))
+                enable_rtss = bool(msg.get("rtssFrameLimitingEnabled", False))
+                requested_default_mode = str(msg.get("rtssDefaultLimitMode") or "static")
+                if requested_default_mode not in {"static", "dynamic"}:
+                    raise ValueError("Unsupported default RTSS limiter mode")
+                requested_gpu_target = float(msg.get("rtssDefaultGpuTargetPercent", 15.0))
+                if not 1.0 <= requested_gpu_target <= 100.0:
+                    raise ValueError("Default Lossless Scaling GPU target must be between 1 and 100")
+                requested_rtss_path = str(msg.get("rtssInstallPath") or "").strip() or None
+                requested_default_auto_scale = bool(
+                    msg.get("defaultProfileAutoScale", True)
+                )
+                managed_rtss_profiles = [
+                    profile for profile in self.config.profiles if profile.rtss.enabled
+                ]
+                disabling_rtss = self.config.rtss_frame_limiting_enabled and not enable_rtss
+                relocating_rtss = (
+                    self.config.rtss_frame_limiting_enabled
+                    and enable_rtss
+                    and (self.config.rtss_install_path or "").casefold()
+                    != (requested_rtss_path or "").casefold()
+                )
+                strategy_changed = (
+                    requested_default_mode != self.config.rtss_default_limit_mode
+                    or requested_gpu_target != self.config.rtss_default_gpu_target_percent
+                )
+                if (
+                    managed_rtss_profiles
+                    and (disabling_rtss or relocating_rtss)
+                    and not bool(msg.get("confirmRtssGlobalChange"))
+                ):
+                    raise ValueError(
+                        "Confirm deactivation of all currently managed RTSS limiter profiles"
+                    )
+                startup = await asyncio.to_thread(
+                    self.startup_manager.set_enabled, run_at_startup
+                )
+
+                if disabling_rtss or relocating_rtss:
+                    for profile in managed_rtss_profiles:
+                        if profile.rtss.managed_target_process:
+                            await asyncio.to_thread(
+                                self.rtss_manager.remove_profile,
+                                profile,
+                                self.config.rtss_install_path,
+                            )
+
+                if enable_rtss and (
+                    not self.config.rtss_frame_limiting_enabled or relocating_rtss or strategy_changed
+                ):
+                    updated_profiles = []
+                    for profile in managed_rtss_profiles:
+                        updated = profile.model_copy(deep=True)
+                        if strategy_changed and updated.rtss.limit_mode == "inherit":
+                            updated.rtss.learned_framerate_limit = None
+                            updated.rtss.game_gpu_baseline_percent = None
+                            updated.rtss.game_gpu_high_water_percent = None
+                            updated.rtss.automatic_calibration_disabled = False
+                        previous = (
+                            updated
+                            if updated.rtss.managed_target_process and not relocating_rtss
+                            else None
+                        )
+                        await asyncio.to_thread(
+                            self.rtss_manager.apply_profile,
+                            updated,
+                            previous,
+                            requested_rtss_path,
+                            framerate_limit=self._rtss_limit_for_profile(
+                                updated, requested_default_mode
+                            ),
+                        )
+                        updated_profiles.append((profile, updated))
+                    for profile, updated in updated_profiles:
+                        profile.rtss = updated.rtss
+
+                self.config.run_at_startup = run_at_startup
+                self.config.default_profile_auto_scale = requested_default_auto_scale
+                self.config.global_hotkey = hotkey
+                self.config.hotkey_sync_mode = mode
+                self.config.lossless_control_configured = True
+                self.config.disable_native_auto_scale = bool(msg.get("disableNativeAutoScale", True))
+                self.config.minimize_other_windows_on_scale = bool(
+                    msg.get("minimizeOtherWindowsOnScale", False)
+                )
+                self.config.process_lasso_performance_mode_scaling = bool(
+                    msg.get("processLassoPerformanceModeScaling", False)
+                )
+                self.config.process_lasso_log_path = str(
+                    msg.get("processLassoLogPath") or ""
+                ).strip() or None
+                self.config.rtss_frame_limiting_enabled = enable_rtss
+                self.config.rtss_install_path = requested_rtss_path
+                self.config.rtss_default_limit_mode = requested_default_mode
+                self.config.rtss_default_gpu_target_percent = requested_gpu_target
+                self.rtss_manager.configured_path = self.config.rtss_install_path
+                self.profile_manager.save_config()
+                await asyncio.to_thread(
+                    self.automation.reconcile_window_management_setting
+                )
+                synchronized = await asyncio.to_thread(
+                    self.process_watcher.enforce_helper_scaling_control
+                ) if self.process_watcher else False
+                await websocket.send(json.dumps({
+                    "type": "GENERAL_SETTINGS_SAVED",
+                    "runAtStartup": startup["enabled"],
+                    "startupTaskName": startup["taskName"],
+                    "trayOnly": True,
                     "synchronized": synchronized,
                     "controlSettings": self._control_settings_payload(),
                 }))
@@ -285,7 +502,10 @@ class CompanionWebSocketServer:
                 if not isinstance(title, str) or not isinstance(values, dict):
                     raise ValueError("title and values are required")
                 values = dict(values)
-                if self.config.disable_native_auto_scale:
+                if (
+                    self.config.lossless_control_configured
+                    and self.config.disable_native_auto_scale
+                ):
                     values["AutoScale"] = False
                 was_running = bool(
                     self.process_watcher
@@ -311,6 +531,19 @@ class CompanionWebSocketServer:
                 profile = self.profile_manager.get_profile_by_id(msg.get("profileId", ""))
                 if not profile:
                     raise ValueError("Unknown profile")
+                if (
+                    self.state.is_scaling_active
+                    and self.state.current_active_profile
+                    and self.state.current_active_profile.id != profile.id
+                ):
+                    stopped = await asyncio.to_thread(
+                        self.automation.set_scaling,
+                        False,
+                        self.state.current_active_profile,
+                        reason="manual_profile_switch",
+                    )
+                    if not stopped:
+                        raise RuntimeError("Stop scaling before switching profiles")
                 self.profile_manager.config.active_profile_id = profile.id
                 self.profile_manager.save_config()
                 await asyncio.to_thread(
@@ -326,6 +559,60 @@ class CompanionWebSocketServer:
                 prof_data = msg.get("profile")
                 if prof_data:
                     prof = Profile.model_validate(prof_data)
+                    previous = self.profile_manager.get_profile_by_id(prof.id)
+                    if previous:
+                        calibration_changed = (
+                            previous.target_process != prof.target_process
+                            or previous.target_executable_path != prof.target_executable_path
+                            or previous.rtss.limit_mode != prof.rtss.limit_mode
+                            or previous.rtss.gpu_target_percent != prof.rtss.gpu_target_percent
+                            or previous.rtss.minimum_framerate_limit != prof.rtss.minimum_framerate_limit
+                            or previous.rtss.maximum_framerate_limit != prof.rtss.maximum_framerate_limit
+                        )
+                        if not calibration_changed:
+                            prof.rtss.learned_framerate_limit = previous.rtss.learned_framerate_limit
+                            prof.rtss.game_gpu_baseline_percent = previous.rtss.game_gpu_baseline_percent
+                            prof.rtss.game_gpu_high_water_percent = previous.rtss.game_gpu_high_water_percent
+                            prof.rtss.automatic_calibration_disabled = previous.rtss.automatic_calibration_disabled
+                    removing_rtss = bool(previous and previous.rtss.enabled and not prof.rtss.enabled)
+                    changing_rtss_target = False
+                    if previous and previous.rtss.enabled and prof.rtss.enabled:
+                        changing_rtss_target = (
+                            self.rtss_manager._target_process(previous).casefold()
+                            != self.rtss_manager._target_process(prof).casefold()
+                        )
+                    if (removing_rtss or changing_rtss_target) and not bool(msg.get("confirmRtssRemoval")):
+                        raise ValueError(
+                            "Confirm removal of the existing RTSS limiter profile before saving"
+                        )
+                    if previous and previous.rtss.enabled and (removing_rtss or changing_rtss_target):
+                        await asyncio.to_thread(
+                            self.rtss_manager.remove_profile,
+                            previous,
+                            self.config.rtss_install_path,
+                        )
+                        self.rtss_manager.clear_metadata(prof)
+                        previous = None
+                    if prof.rtss.enabled:
+                        if not self.config.rtss_frame_limiting_enabled:
+                            raise ValueError("Turn on RTSS Frame Limiting in General Settings first")
+                        target_name = self.rtss_manager._target_process(prof).casefold()
+                        for other in self.config.profiles:
+                            if other.id == prof.id or not other.rtss.enabled:
+                                continue
+                            if self.rtss_manager._target_process(other).casefold() == target_name:
+                                raise ValueError(
+                                    f"RTSS limiting is already managed by helper profile '{other.name}' for this executable"
+                                )
+                        await asyncio.to_thread(
+                            self.rtss_manager.apply_profile,
+                            prof,
+                            previous,
+                            self.config.rtss_install_path,
+                            framerate_limit=self._rtss_limit_for_profile(prof),
+                        )
+                    else:
+                        self.rtss_manager.clear_metadata(prof)
                     self.profile_manager.add_or_update_profile(prof)
                     logger.info(f"Saved profile: {prof.name}")
                     if self.state.current_active_profile and self.state.current_active_profile.id == prof.id:
@@ -341,8 +628,28 @@ class CompanionWebSocketServer:
             if msg_type == "DELETE_PROFILE":
                 prof_id = msg.get("profileId")
                 if prof_id:
+                    profile = self.profile_manager.get_profile_by_id(prof_id)
+                    if profile and profile.rtss.enabled:
+                        if not bool(msg.get("confirmRtssRemoval")):
+                            raise ValueError(
+                                "Confirm deletion of the associated RTSS limiter profile"
+                            )
+                        await asyncio.to_thread(
+                            self.rtss_manager.remove_profile,
+                            profile,
+                            self.config.rtss_install_path,
+                        )
                     if self.state.current_active_profile and self.state.current_active_profile.id == prof_id:
-                        await asyncio.to_thread(self.automation.activate_profile, None)
+                        if self.state.is_scaling_active:
+                            stopped = await asyncio.to_thread(
+                                self.automation.set_scaling,
+                                False,
+                                self.state.current_active_profile,
+                                reason="profile_deleted",
+                            )
+                            if not stopped:
+                                raise RuntimeError("Stop scaling before deleting the active profile")
+                        await asyncio.to_thread(self.automation.activate_profile, None, force=True)
                     self.profile_manager.delete_profile(prof_id)
                     logger.info(f"Deleted profile ID: {prof_id}")
                     await self.broadcast_full_data_update()
@@ -354,6 +661,102 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({"type": "ERROR", "message": str(e)}))
             except Exception:
                 pass
+
+    async def _revert_all_changes(self) -> Dict:
+        """Return LS, RTSS, and deployed add-ons to their pre-helper state."""
+        was_running = bool(
+            self.process_watcher
+            and await asyncio.to_thread(
+                self.process_watcher.check_is_lossless_scaling_running
+            )
+        )
+        if was_running and not await asyncio.to_thread(
+            self.process_watcher.stop_lossless_scaling
+        ):
+            raise RuntimeError("Lossless Scaling could not be stopped; no cleanup was attempted")
+
+        failures = []
+        addons_reverted = False
+        xml_restored = False
+        rtss_reverted = 0
+        startup_task_removed = False
+        try:
+            try:
+                await asyncio.to_thread(self.automation.revert_managed_addons)
+                addons_reverted = True
+            except Exception as error:
+                failures.append(f"Lossless Scaling add-ons: {error}")
+
+            try:
+                xml_restored = await asyncio.to_thread(
+                    self.ls_settings.restore_initial_backup
+                )
+            except Exception as error:
+                failures.append(f"Settings.xml: {error}")
+
+            for profile in self.config.profiles:
+                managed = bool(
+                    profile.rtss.managed_target_process
+                    or profile.rtss.managed_profile_created
+                    or profile.rtss.original_values
+                )
+                if managed:
+                    try:
+                        await asyncio.to_thread(
+                            self.rtss_manager.remove_profile,
+                            profile,
+                            self.config.rtss_install_path,
+                        )
+                        rtss_reverted += 1
+                    except Exception as error:
+                        failures.append(f"RTSS profile {profile.name}: {error}")
+                        continue
+                profile.rtss = RtssLimiterConfig()
+
+            if addons_reverted:
+                for profile in self.config.profiles:
+                    profile.graphics = GraphicsStackConfig()
+                    profile.dll_overrides = []
+                    profile.reshade = None
+
+            try:
+                startup = await asyncio.to_thread(
+                    self.startup_manager.set_enabled, False
+                )
+                startup_task_removed = not bool(startup.get("enabled"))
+            except Exception as error:
+                failures.append(f"Startup task: {error}")
+
+            # Keep the restored XML and removed RTSS profiles from being recreated.
+            self.config.lossless_control_configured = False
+            self.config.rtss_frame_limiting_enabled = False
+            self.config.run_at_startup = not startup_task_removed
+            self.config.process_lasso_performance_mode_scaling = False
+            self.config.active_profile_id = None
+            self.rtss_manager.configured_path = self.config.rtss_install_path
+            self.profile_manager.save_config()
+            if self.dynamic_limiter is not None:
+                self.state.dynamic_limiter_status = {
+                    "state": "inactive",
+                    "message": "RTSS integration was disabled by revert all",
+                }
+        finally:
+            if was_running:
+                restarted = await asyncio.to_thread(
+                    self.process_watcher.launch_lossless_scaling, force=True
+                )
+                if not restarted:
+                    failures.append("Lossless Scaling could not be restarted")
+
+        return {
+            "ok": not failures,
+            "settingsRestored": xml_restored,
+            "settingsBackupFound": self.ls_settings.initial_backup_path.is_file(),
+            "addonsReverted": addons_reverted,
+            "rtssProfilesReverted": rtss_reverted,
+            "startupTaskRemoved": startup_task_removed,
+            "failures": failures,
+        }
 
     def is_origin_allowed(self, origin: Optional[str]) -> bool:
         if origin is None:
@@ -403,11 +806,25 @@ class CompanionWebSocketServer:
         domain = data.get("domain", "")
         process_name = data.get("processName", "chrome.exe")
 
-        profile = self.profile_manager.match_profile(process_name=process_name, domain=domain)
+        profile = self.profile_manager.match_target_profile(
+            process_name=process_name,
+            domain=domain,
+        )
+        foreground = self.process_watcher.get_foreground_window_info() if self.process_watcher else None
+        if (
+            foreground is None
+            or foreground.name.casefold() != process_name.casefold()
+            or not foreground.hwnd
+        ):
+            logger.info("Ignored browser video event because its exact browser window is not foreground")
+            return
         await asyncio.to_thread(
             self.automation.activate_profile,
             profile,
-            profile.target_executable_path if profile else None,
+            foreground.exe_path,
+            target_pid=foreground.pid,
+            target_hwnd=foreground.hwnd,
+            suppress_auto_scale=True,
         )
 
         logger.info(f"Received {event_type} from {domain} (matched profile: {profile.name if profile else 'Default'})")
@@ -415,17 +832,35 @@ class CompanionWebSocketServer:
         if not profile:
             return
 
-        if event_type == "FULLSCREEN_ENTER" and profile.auto_scale_on_fullscreen:
+        if (
+            not self.state.current_active_profile
+            or self.state.current_active_profile.id != profile.id
+        ):
+            logger.info("Browser video event yielded to the currently scaled game profile")
+            return
+
+        if event_type == "FULLSCREEN_ENTER":
             logger.info(f"Triggering Lossless Scaling for fullscreen enter in {profile.hotkey.activation_delay_ms}ms...")
             # Run delay asynchronously without blocking the event loop
             await asyncio.sleep(profile.hotkey.activation_delay_ms / 1000.0)
             
             # Fire hardware hotkey
-            await asyncio.to_thread(self.automation.set_scaling, True, profile, reason="fullscreen")
+            await asyncio.to_thread(
+                self.automation.set_scaling,
+                True,
+                profile,
+                reason="browser_video",
+                target_pid=foreground.pid,
+                target_hwnd=foreground.hwnd,
+            )
             await self.broadcast_state()
 
-        elif event_type == "FULLSCREEN_EXIT" and profile.auto_scale_on_demaximize:
-            logger.info("Demaximize/Fullscreen exit detected. Toggling Lossless Scaling off...")
+        elif (
+            event_type == "FULLSCREEN_EXIT"
+            and self.state.scaling_owner_profile_id == profile.id
+            and self.state.scaling_trigger == "browser_video"
+        ):
+            logger.info("Browser video fullscreen exit detected. Toggling Lossless Scaling off...")
             await asyncio.sleep(0.15)
             await asyncio.to_thread(self.automation.set_scaling, False, profile, reason="fullscreen_exit")
             await self.broadcast_state()
@@ -465,6 +900,8 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
+            "dynamicLimiter": self.state.dynamic_limiter_status,
+            "scalingControl": self.state.scaling_control_status,
         })
         await websocket.send(payload)
 
@@ -481,15 +918,43 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
+            "dynamicLimiter": self.state.dynamic_limiter_status,
+            "scalingControl": self.state.scaling_control_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
 
     def _control_settings_payload(self) -> Dict:
+        detected_process_lasso_log = ProcessLassoLogTailer.resolve_path(None)
         return {
             "mode": self.config.hotkey_sync_mode,
             "disableNativeAutoScale": self.config.disable_native_auto_scale,
+            "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
+            "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
+            "processLassoLogPath": self.config.process_lasso_log_path or "",
+            "processLassoDetectedLogPath": (
+                str(detected_process_lasso_log) if detected_process_lasso_log else ""
+            ),
+            "rtssFrameLimitingEnabled": self.config.rtss_frame_limiting_enabled,
+            "rtssInstallPath": self.config.rtss_install_path or "",
+            "rtssStatus": self.rtss_manager.status(self.config.rtss_install_path),
+            "rtssDefaultLimitMode": self.config.rtss_default_limit_mode,
+            "rtssDefaultGpuTargetPercent": self.config.rtss_default_gpu_target_percent,
+            "defaultProfileAutoScale": self.config.default_profile_auto_scale,
+            "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
         }
+
+    def _rtss_limit_for_profile(
+        self, profile: Profile, default_mode: Optional[str] = None
+    ) -> int:
+        mode = (
+            default_mode or self.config.rtss_default_limit_mode
+            if profile.rtss.limit_mode == "inherit"
+            else profile.rtss.limit_mode
+        )
+        if mode == "static":
+            return profile.rtss.framerate_limit
+        return profile.rtss.learned_framerate_limit or profile.rtss.maximum_framerate_limit
 
     async def broadcast_state(self) -> None:
         if not self.clients:
@@ -499,5 +964,7 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,
+            "dynamicLimiter": self.state.dynamic_limiter_status,
+            "scalingControl": self.state.scaling_control_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)

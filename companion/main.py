@@ -26,6 +26,9 @@ from .services.automation import AutomationController
 from .services.ls_settings import LosslessSettingsXml
 from .services.asset_store import AssetStore
 from .services.release_providers import ReleaseManager
+from .services.process_lasso_monitor import ProcessLassoScalingMonitor
+from .services.rtss_manager import RtssProfileManager
+from .services.dynamic_limiter import DynamicLimiterController
 from .ui.tray import CompanionTrayIcon
 
 
@@ -34,6 +37,8 @@ class CompanionApplication:
         self.profile_manager = ProfileManager()
         self.state = AppState()
         self.ls_settings = LosslessSettingsXml(self.profile_manager.config.lossless_settings_xml_path)
+        self._settings_backup_ready = bool(self.ls_settings.ensure_initial_backup())
+        self._next_settings_backup_check = 0.0
         self.ls_inspector = LosslessScalingInspector(
             settings_xml_path=self.profile_manager.config.lossless_settings_xml_path
         )
@@ -53,7 +58,19 @@ class CompanionApplication:
             self.process_watcher,
             asset_store=self.asset_store,
         )
+        self.automation.scaling_state_probe = (
+            lambda: self.ls_inspector.detect_lossless_scaling_overlay_window()[0]
+        )
         self.process_watcher.on_profile_changed = self.automation.activate_profile
+        self.process_lasso_monitor = ProcessLassoScalingMonitor(
+            self.profile_manager, self.state, self.process_watcher, self.automation
+        )
+        self.rtss_manager = RtssProfileManager(
+            self.profile_manager.config.rtss_install_path
+        )
+        self.dynamic_limiter = DynamicLimiterController(
+            self.profile_manager, self.state, self.rtss_manager
+        )
         self.server = CompanionWebSocketServer(
             self.profile_manager,
             self.state,
@@ -62,6 +79,8 @@ class CompanionApplication:
             self.ls_settings,
             self.asset_store,
             self.release_manager,
+            rtss_manager=self.rtss_manager,
+            dynamic_limiter=self.dynamic_limiter,
         )
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -107,7 +126,16 @@ class CompanionApplication:
         while self.running:
             try:
                 if (
-                    not self._native_auto_scale_enforced
+                    not self._settings_backup_ready
+                    and time.monotonic() >= self._next_settings_backup_check
+                ):
+                    self._settings_backup_ready = bool(
+                        self.ls_settings.ensure_initial_backup()
+                    )
+                    self._next_settings_backup_check = time.monotonic() + 5.0
+                if (
+                    self.profile_manager.config.lossless_control_configured
+                    and not self._native_auto_scale_enforced
                     and time.monotonic() >= self._next_native_auto_scale_check
                 ):
                     self._native_auto_scale_enforced = (
@@ -115,6 +143,7 @@ class CompanionApplication:
                     )
                     self._next_native_auto_scale_check = time.monotonic() + 5.0
                 self.process_watcher.check_foreground_and_update()
+                self.process_lasso_monitor.poll()
                 self.process_watcher.check_is_lossless_scaling_running()
                 
                 # Check live scaling target via log / overlay
@@ -127,13 +156,16 @@ class CompanionApplication:
                 )
                 self.state.current_scaled_target = target_info.to_dict()
                 if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
-                    self.state.is_scaling_active = target_info.is_active
+                    self.automation.reconcile_observed_scaling_state(target_info.is_active)
+                self.dynamic_limiter.poll()
                 snapshot = (
                     self.state.is_scaling_active,
                     self.state.current_active_profile.id if self.state.current_active_profile else None,
                     self.state.current_foreground_process,
                     self.state.current_scaled_target.get("processName"),
                     tuple((p.id, p.name) for p in self.profile_manager.config.profiles),
+                    tuple(sorted(self.state.dynamic_limiter_status.items())),
+                    tuple(sorted(self.state.scaling_control_status.items())),
                 )
                 if snapshot != self._last_runtime_snapshot:
                     self._last_runtime_snapshot = snapshot
@@ -149,8 +181,9 @@ class CompanionApplication:
         self.running = True
 
         # Check / Launch Lossless Scaling
-        self._native_auto_scale_enforced = (
-            self.process_watcher.enforce_helper_scaling_control()
+        self._native_auto_scale_enforced = bool(
+            self.profile_manager.config.lossless_control_configured
+            and self.process_watcher.enforce_helper_scaling_control()
         )
         self.process_watcher.launch_lossless_scaling_if_needed()
 
@@ -183,6 +216,7 @@ class CompanionApplication:
         if self.monitor_thread and self.monitor_thread is not threading.current_thread():
             self.monitor_thread.join(timeout=2)
         self.automation.shutdown()
+        self.dynamic_limiter.close()
 
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(lambda: None)

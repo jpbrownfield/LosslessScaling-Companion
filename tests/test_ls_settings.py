@@ -11,6 +11,42 @@ FIXTURE = Path(__file__).parent / "fixtures" / "lossless_scaling" / "Settings.xm
 
 
 class LosslessSettingsXmlTests(unittest.TestCase):
+    def test_initialization_backup_is_an_untouched_byte_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Settings.xml"
+            shutil.copy2(FIXTURE, target)
+            original = target.read_bytes()
+            manager = LosslessSettingsXml(str(target))
+
+            backup = manager.ensure_initial_backup()
+
+            self.assertEqual(backup, target.with_suffix(".xml.bak"))
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertEqual(target.read_bytes(), original)
+
+    def test_invalid_settings_are_not_accepted_as_initial_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Settings.xml"
+            target.write_text("<invalid", encoding="utf-8")
+            manager = LosslessSettingsXml(str(target))
+
+            self.assertIsNone(manager.ensure_initial_backup())
+            self.assertFalse(target.with_suffix(".xml.bak").exists())
+
+    def test_restore_initial_backup_is_atomic_and_retains_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Settings.xml"
+            shutil.copy2(FIXTURE, target)
+            manager = LosslessSettingsXml(str(target))
+            original = target.read_bytes()
+            backup = manager.ensure_initial_backup()
+            target.write_text("<Settings><Hotkey>F12</Hotkey></Settings>", encoding="utf-8")
+
+            self.assertTrue(manager.restore_initial_backup())
+
+            self.assertEqual(target.read_bytes(), original)
+            self.assertEqual(backup.read_bytes(), original)
+
     def test_reads_public_fixture(self):
         settings = LosslessSettingsXml(str(FIXTURE)).read()
         self.assertTrue(settings["exists"])

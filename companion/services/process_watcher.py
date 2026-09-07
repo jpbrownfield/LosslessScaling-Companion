@@ -24,11 +24,12 @@ kernel32 = ctypes.windll.kernel32
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 class ProcessInfo:
-    def __init__(self, pid: int, name: str, exe_path: str, title: str):
+    def __init__(self, pid: int, name: str, exe_path: str, title: str, hwnd: Optional[int] = None):
         self.pid = pid
         self.name = name
         self.exe_path = exe_path
         self.title = title
+        self.hwnd = hwnd
 
     def to_dict(self) -> Dict:
         return {
@@ -50,6 +51,7 @@ class ProcessWatcher:
         self.profile_manager = profile_manager
         self.state = state
         self._last_foreground_pid: Optional[int] = None
+        self._last_foreground_hwnd: Optional[int] = None
         self.on_profile_changed = on_profile_changed
         self.lossless_settings = lossless_settings
 
@@ -74,7 +76,7 @@ class ProcessWatcher:
             proc = psutil.Process(pid.value)
             exe_path = proc.exe()
             name = proc.name()
-            return ProcessInfo(pid=pid.value, name=name, exe_path=exe_path, title=title)
+            return ProcessInfo(pid=pid.value, name=name, exe_path=exe_path, title=title, hwnd=int(hwnd))
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             return None
 
@@ -140,6 +142,82 @@ class ProcessWatcher:
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
         user32.EnumWindows(WNDENUMPROC(enum_window_callback), 0)
         return pid_to_title
+
+    @classmethod
+    def find_visible_window_for_process(
+        cls, *, process_name: Optional[str] = None, pid: Optional[int] = None
+    ) -> Optional[ProcessInfo]:
+        """Find a real visible top-level window, preferring an exact Process Lasso PID."""
+        requested_name = process_name.casefold() if process_name else None
+        for item in cls.list_running_executables(visible_windows_only=True, filter_system=False):
+            if pid is not None and item["pid"] != pid:
+                continue
+            if requested_name and item["name"].casefold() != requested_name:
+                continue
+            hwnd = cls._visible_hwnd_for_pid(item["pid"])
+            if hwnd:
+                return ProcessInfo(
+                    item["pid"], item["name"], item["exePath"], item["windowTitle"], hwnd
+                )
+        return None
+
+    @staticmethod
+    def _visible_hwnd_for_pid(pid: int) -> Optional[int]:
+        result = []
+
+        def callback(hwnd, _extra):
+            owner_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value != pid or not user32.IsWindowVisible(hwnd):
+                return True
+            if user32.GetWindowTextLengthW(hwnd) <= 0:
+                return True
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            if rect.right - rect.left > 100 and rect.bottom - rect.top > 100:
+                result.append(int(hwnd))
+                return False
+            return True
+
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(callback_type(callback), 0)
+        return result[0] if result else None
+
+    def focus_window(self, info: ProcessInfo) -> bool:
+        """Focus the confirmed target so Lossless Scaling's global hotkey targets it."""
+        if not self.focus_window_identity(info.pid, info.hwnd):
+            return False
+        self._last_foreground_pid = info.pid
+        self._last_foreground_hwnd = info.hwnd
+        self.state.current_foreground_process = info.name
+        self.state.current_foreground_window_title = info.title
+        self.state.current_foreground_exe_path = info.exe_path
+        self.state.current_foreground_hwnd = info.hwnd
+        return True
+
+    def focus_window_identity(self, pid: int, hwnd: Optional[int]) -> bool:
+        """Focus and verify the exact PID/HWND pair selected for auto-scaling."""
+        if not pid or not hwnd or not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd):
+            return False
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value != pid:
+            return False
+        if int(user32.GetForegroundWindow() or 0) != int(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            if not user32.SetForegroundWindow(hwnd):
+                return False
+        time.sleep(0.1)
+        focused_hwnd = int(user32.GetForegroundWindow() or 0)
+        focused_pid = wintypes.DWORD()
+        if focused_hwnd:
+            user32.GetWindowThreadProcessId(focused_hwnd, ctypes.byref(focused_pid))
+        return focused_hwnd == int(hwnd) and focused_pid.value == pid
+
+    def invalidate_foreground_cache(self) -> None:
+        """Force the next monitor tick to reconsider the current foreground app."""
+        self._last_foreground_pid = None
+        self._last_foreground_hwnd = None
 
     @classmethod
     def list_running_executables(cls, visible_windows_only: bool = True, filter_system: bool = True) -> List[Dict]:
@@ -269,7 +347,11 @@ class ProcessWatcher:
         if (not force and not cfg.auto_launch_lossless_scaling) or not cfg.lossless_scaling_exe_path:
             return False
 
-        if cfg.disable_native_auto_scale and self.lossless_settings:
+        if (
+            cfg.lossless_control_configured
+            and cfg.disable_native_auto_scale
+            and self.lossless_settings
+        ):
             native_enabled = self.lossless_settings.native_auto_scale_enabled()
             if native_enabled and not self.lossless_settings.disable_native_auto_scale():
                 logger.error("Lossless Scaling launch aborted: native Auto Scale could not be disabled")
@@ -296,8 +378,14 @@ class ProcessWatcher:
     def enforce_helper_scaling_control(self) -> bool:
         """Synchronize hotkey/Auto Scale with at most one Lossless Scaling restart."""
         config = self.profile_manager.config
+        if not config.lossless_control_configured:
+            logger.info("Native Lossless Scaling controls are unchanged until General Settings is saved")
+            return False
         if not self.lossless_settings:
             logger.warning("Lossless Scaling settings ownership cannot be enforced without Settings.xml access")
+            return False
+        if self.lossless_settings.ensure_initial_backup() is None:
+            logger.error("Native controls were not changed because the initial Settings.xml backup failed")
             return False
 
         desired_hotkey = config.global_hotkey
@@ -356,11 +444,13 @@ class ProcessWatcher:
         if not info:
             return None
 
-        if info.pid != self._last_foreground_pid:
+        if info.pid != self._last_foreground_pid or info.hwnd != self._last_foreground_hwnd:
             self._last_foreground_pid = info.pid
+            self._last_foreground_hwnd = info.hwnd
             self.state.current_foreground_process = info.name
             self.state.current_foreground_window_title = info.title
             self.state.current_foreground_exe_path = info.exe_path
+            self.state.current_foreground_hwnd = info.hwnd
             
             # Match profile if process changed
             matched = self.profile_manager.match_target_profile(
@@ -369,7 +459,12 @@ class ProcessWatcher:
             if matched and matched != self.state.current_active_profile:
                 logger.info(f"Switched active profile to: '{matched.name}' for {info.name}")
             if self.on_profile_changed:
-                self.on_profile_changed(matched, info.exe_path)
+                self.on_profile_changed(
+                    matched,
+                    info.exe_path,
+                    target_pid=info.pid,
+                    target_hwnd=info.hwnd,
+                )
             else:
                 self.state.current_active_profile = matched
 

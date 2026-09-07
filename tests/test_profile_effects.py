@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from companion.core.models import DllOverrideConfig, Profile, ReshadeConfig
 from companion.core.profile_manager import ProfileManager
@@ -69,6 +69,35 @@ class ProfileEffectsTests(unittest.TestCase):
             self.assertFalse(DllManager.deploy_override(override, str(game_dir)))
             self.assertFalse((game_dir / "dxgi.dll").exists())
 
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_monitor_windows_are_minimized_and_restored_with_scaling(self, _trigger):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            state.current_foreground_hwnd = 1234
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+
+            automation.set_scaling(True, reason="test")
+            automation.set_scaling(False, reason="test")
+
+            windows.minimize_others_on_target_monitor.assert_called_once_with(1234)
+            windows.restore_managed_windows.assert_called_once_with()
+
+    def test_disabling_monitor_window_management_restores_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = False
+            state = AppState()
+            state.is_scaling_active = True
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+
+            automation.reconcile_window_management_setting()
+
+            windows.restore_managed_windows.assert_called_once_with()
+
     @patch("companion.services.automation.ReshadeManager.trigger_reshade_reload")
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_activation_applies_and_cleans_profile(self, trigger_hotkey, reload_reshade):
@@ -89,7 +118,7 @@ class ProfileEffectsTests(unittest.TestCase):
                 name="Integrated",
                 target_process="game.exe",
                 target_executable_path=str(root / "game" / "game.exe"),
-                auto_scale_on_focus=True,
+                auto_scale=True,
                 reshade=ReshadeConfig(
                     enabled=True,
                     reshade_ini_path=str(reshade_ini),
@@ -109,10 +138,134 @@ class ProfileEffectsTests(unittest.TestCase):
             reload_reshade.assert_called_once_with("Home")
             trigger_hotkey.assert_called_once()
 
+            # Losing focus no longer de-scales or unloads the active profile.
             automation.activate_profile(None)
+            self.assertTrue(state.is_scaling_active)
+            self.assertTrue((lossless_dir / "dxgi.dll").exists())
+
+            automation.set_scaling(False, profile, reason="test_cleanup")
+            automation.activate_profile(None, force=True)
             self.assertFalse(state.is_scaling_active)
             self.assertFalse((lossless_dir / "dxgi.dll").exists())
             self.assertIn("CurrentPresetPath=old.ini", reshade_ini.read_text(encoding="utf-8"))
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_exact_window_is_verified_and_scaling_is_confirmed(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            observations = iter((False, False, True))
+            automation = AutomationController(
+                manager,
+                state,
+                watcher,
+                scaling_state_probe=lambda: next(observations, True),
+            )
+            profile = Profile(name="Game", target_process="Game.exe")
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    profile,
+                    reason="focus",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        watcher.focus_window_identity.assert_called_once_with(123, 456)
+        trigger_hotkey.assert_called_once()
+        self.assertTrue(state.is_scaling_active)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_unverified_window_refuses_auto_scaling(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = False
+            state = AppState()
+            automation = AutomationController(manager, state, watcher)
+
+            self.assertFalse(
+                automation.set_scaling(
+                    True,
+                    Profile(name="Game"),
+                    reason="focus",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        trigger_hotkey.assert_not_called()
+        self.assertFalse(state.is_scaling_active)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_game_profile_takes_precedence_over_scaled_browser(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            browser = Profile(
+                id="browser",
+                name="Browser",
+                target_process="chrome.exe",
+                target_domain="youtube.com",
+            )
+            game = Profile(
+                id="game",
+                name="Game",
+                target_process="Game.exe",
+                auto_scale=True,
+                hotkey={"modifiers": ["ctrl", "alt"], "key": "s", "activation_delay_ms": 0},
+            )
+            manager.config.profiles = [browser, game]
+            state = AppState()
+            state.current_active_profile = browser
+            state.is_scaling_active = True
+            state.scaling_owner_profile_id = browser.id
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            automation = AutomationController(manager, state, watcher)
+
+            automation.activate_profile(
+                game,
+                r"C:\Games\Game.exe",
+                target_pid=123,
+                target_hwnd=456,
+            )
+
+        self.assertEqual(trigger_hotkey.call_count, 2)
+        self.assertEqual(state.current_active_profile.id, game.id)
+        self.assertTrue(state.is_scaling_active)
+        self.assertEqual(state.scaling_owner_profile_id, game.id)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_browser_cannot_replace_an_active_game_profile(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            game = Profile(id="game", name="Game", target_process="Game.exe")
+            browser = Profile(
+                id="browser",
+                name="Browser",
+                target_process="chrome.exe",
+                target_domain="youtube.com",
+            )
+            state = AppState()
+            state.current_active_profile = game
+            state.is_scaling_active = True
+            state.scaling_owner_profile_id = game.id
+            automation = AutomationController(manager, state, Mock())
+
+            automation.activate_profile(
+                browser,
+                r"C:\Chrome\chrome.exe",
+                target_pid=123,
+                target_hwnd=456,
+            )
+
+        trigger_hotkey.assert_not_called()
+        self.assertEqual(state.current_active_profile.id, game.id)
+        self.assertTrue(state.is_scaling_active)
 
     def test_dll_profile_restarts_running_lossless_scaling(self):
         events = []

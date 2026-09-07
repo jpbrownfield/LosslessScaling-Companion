@@ -55,6 +55,53 @@ class LosslessSettingsXml:
             "profiles": profiles,
         }
 
+    @property
+    def initial_backup_path(self) -> Path:
+        return self.path.with_suffix(".xml.bak")
+
+    def ensure_initial_backup(self) -> Optional[Path]:
+        """Preserve the first untouched Settings.xml before any helper writes."""
+        if not self.path.is_file():
+            return None
+        backup_path = self.initial_backup_path
+        if backup_path.is_file():
+            return backup_path
+        try:
+            # Validate the source before declaring it the recoverable original.
+            ET.parse(self.path)
+            shutil.copy2(self.path, backup_path)
+            logger.info("Created initial Lossless Scaling settings backup: %s", backup_path)
+            return backup_path
+        except (ET.ParseError, OSError) as error:
+            logger.error("Could not create initial Lossless Scaling settings backup: %s", error)
+            return None
+
+    def restore_initial_backup(self) -> bool:
+        """Atomically restore the untouched Settings.xml while retaining the backup."""
+        backup_path = self.initial_backup_path
+        if not backup_path.is_file():
+            return False
+        try:
+            # Never replace a usable settings file with a corrupt backup.
+            ET.parse(backup_path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.", suffix=".restore.tmp", dir=self.path.parent
+            )
+            os.close(fd)
+            try:
+                shutil.copy2(backup_path, temp_name)
+                os.replace(temp_name, self.path)
+            finally:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
+            logger.info("Restored initial Lossless Scaling settings backup: %s", backup_path)
+            return True
+        except (ET.ParseError, OSError) as error:
+            raise OSError(
+                f"Could not restore initial Lossless Scaling settings backup: {error}"
+            ) from error
+
     def get_profile(self, title: Optional[str] = None) -> Optional[Dict[str, Optional[str]]]:
         profiles = self.read()["profiles"]
         if title:
@@ -199,9 +246,8 @@ class LosslessSettingsXml:
     def _write_tree(self, tree: ET.ElementTree, *, backup: bool) -> None:
         """Write Settings.xml atomically, preserving the first original backup."""
         if backup:
-            backup_path = self.path.with_suffix(".xml.bak")
-            if not backup_path.exists():
-                shutil.copy2(self.path, backup_path)
+            if self.ensure_initial_backup() is None:
+                raise OSError("Cannot write Lossless Scaling settings without an initial backup")
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(

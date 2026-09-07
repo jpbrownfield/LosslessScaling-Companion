@@ -4,7 +4,7 @@ Data models and schemas for Lossless Companion.
 
 from typing import List, Optional, Dict, Any, Literal
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import uuid
 
 
@@ -79,6 +79,41 @@ class ReshadeConfig(BaseModel):
     reload_hotkey: Optional[str] = None  # e.g., "Home" or "F8"
 
 
+class RtssLimiterConfig(BaseModel):
+    enabled: bool = False
+    limit_mode: Literal["inherit", "static", "dynamic"] = "inherit"
+    framerate_limit: int = Field(default=60, ge=1, le=1000)
+    gpu_target_percent: Optional[float] = Field(default=None, ge=1.0, le=100.0)
+    minimum_framerate_limit: int = Field(default=30, ge=1, le=1000)
+    maximum_framerate_limit: int = Field(default=240, ge=1, le=1000)
+    limit_method: Literal[
+        "async", "front_edge_sync", "back_edge_sync", "nvidia_reflex"
+    ] = "async"
+    learned_framerate_limit: Optional[int] = Field(default=None, ge=1, le=1000)
+    game_gpu_baseline_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    game_gpu_high_water_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    # A completed manual calibration is authoritative until the user resets it.
+    automatic_calibration_disabled: bool = False
+    # Bookkeeping is persisted so disabling/deleting can safely undo only the
+    # values this helper changed in RTSS.
+    managed_profile_created: bool = False
+    managed_target_process: Optional[str] = None
+    managed_install_path: Optional[str] = None
+    original_values: Dict[str, Optional[int]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_dynamic_range(self):
+        if self.maximum_framerate_limit < self.minimum_framerate_limit:
+            raise ValueError("maximum RTSS framerate must be at least the minimum")
+        if self.learned_framerate_limit is not None and not (
+            self.minimum_framerate_limit
+            <= self.learned_framerate_limit
+            <= self.maximum_framerate_limit
+        ):
+            raise ValueError("learned RTSS limit must be inside the configured range")
+        return self
+
+
 class DllOverrideConfig(BaseModel):
     enabled: bool = False
     source_dll_path: str
@@ -109,16 +144,14 @@ class Profile(BaseModel):
     target_process: Optional[str] = None  # e.g., "chrome.exe", "Cyberpunk2077.exe"
     target_executable_path: Optional[str] = None
     target_domain: Optional[str] = None   # e.g., "youtube.com", "twitch.tv"
-    auto_scale_on_fullscreen: bool = True
-    auto_scale_on_demaximize: bool = True
-    auto_scale_on_focus: bool = False
-    auto_scale_on_blur: bool = True
+    auto_scale: bool = False
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     lossless_profile_title: Optional[str] = None
     lossless_profile_path: Optional[str] = None
     last_imported_hash: Optional[str] = None
     native_scaling_settings: Dict[str, Any] = Field(default_factory=dict)
     graphics: GraphicsStackConfig = Field(default_factory=GraphicsStackConfig)
+    rtss: RtssLimiterConfig = Field(default_factory=RtssLimiterConfig)
     reshade: Optional[ReshadeConfig] = None
     dll_overrides: List[DllOverrideConfig] = Field(default_factory=list)
     custom_notes: Optional[str] = None
@@ -140,10 +173,20 @@ class AppConfig(BaseModel):
     lossless_scaling_exe_path: Optional[str] = r"C:\Program Files (x86)\Steam\steamapps\common\Lossless Scaling\LosslessScaling.exe"
     auto_launch_lossless_scaling: bool = True
     disable_native_auto_scale: bool = True
+    lossless_control_configured: bool = False
     hotkey_sync_mode: Literal["helper_controls_lossless", "follow_lossless", "warn_only"] = "helper_controls_lossless"
     lossless_settings_xml_path: Optional[str] = None
     asset_store_path: Optional[str] = None
     update_check_interval_hours: int = Field(default=24, ge=1, le=720)
+    default_profile_auto_scale: bool = True
+    run_at_startup: bool = False
+    minimize_other_windows_on_scale: bool = False
+    process_lasso_performance_mode_scaling: bool = False
+    process_lasso_log_path: Optional[str] = None
+    rtss_frame_limiting_enabled: bool = False
+    rtss_install_path: Optional[str] = None
+    rtss_default_limit_mode: Literal["static", "dynamic"] = "static"
+    rtss_default_gpu_target_percent: float = Field(default=15.0, ge=1.0, le=100.0)
     global_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     allowed_websocket_origins: List[str] = Field(
         default_factory=lambda: ["chrome-extension://"]
