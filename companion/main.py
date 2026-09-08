@@ -1,5 +1,5 @@
 """
-Main entry point for Lossless Companion.
+Main entry point for LS Companion.
 Runs the WebSocket server, process monitor, and system tray simultaneously.
 """
 
@@ -15,7 +15,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s",
     datefmt="%H:%M:%S"
 )
-logger = logging.getLogger("LosslessCompanion")
+logger = logging.getLogger("LSCompanion")
 
 from .core.profile_manager import ProfileManager
 from .core.state import AppState
@@ -36,8 +36,10 @@ class CompanionApplication:
     def __init__(self):
         self.profile_manager = ProfileManager()
         self.state = AppState()
+        self.state.auto_scale_enabled = self.profile_manager.config.disable_native_auto_scale
         self.ls_settings = LosslessSettingsXml(self.profile_manager.config.lossless_settings_xml_path)
         self._settings_backup_ready = bool(self.ls_settings.ensure_initial_backup())
+        self.profile_manager.ensure_lossless_default_profile(self.ls_settings.get_profile())
         self._next_settings_backup_check = 0.0
         self.ls_inspector = LosslessScalingInspector(
             settings_xml_path=self.profile_manager.config.lossless_settings_xml_path
@@ -57,6 +59,7 @@ class CompanionApplication:
             self.state,
             self.process_watcher,
             asset_store=self.asset_store,
+            lossless_settings=self.ls_settings,
         )
         self.automation.scaling_state_probe = (
             lambda: self.ls_inspector.detect_lossless_scaling_overlay_window()[0]
@@ -132,6 +135,10 @@ class CompanionApplication:
                     self._settings_backup_ready = bool(
                         self.ls_settings.ensure_initial_backup()
                     )
+                    if self._settings_backup_ready:
+                        self.profile_manager.ensure_lossless_default_profile(
+                            self.ls_settings.get_profile()
+                        )
                     self._next_settings_backup_check = time.monotonic() + 5.0
                 if (
                     self.profile_manager.config.lossless_control_configured
@@ -142,22 +149,25 @@ class CompanionApplication:
                         self.process_watcher.enforce_helper_scaling_control()
                     )
                     self._next_native_auto_scale_check = time.monotonic() + 5.0
-                self.process_watcher.check_foreground_and_update()
-                self.process_lasso_monitor.poll()
+                if not self.state.benchmark_mode_active:
+                    self.process_watcher.check_foreground_and_update()
+                    self.process_lasso_monitor.poll()
                 self.process_watcher.check_is_lossless_scaling_running()
                 
                 # Check live scaling target via log / overlay
-                settings_title = (
-                    self.state.current_active_profile.lossless_profile_title
-                    if self.state.current_active_profile else None
-                )
-                target_info = self.ls_inspector.inspect_current_scaling_target(
-                    settings_profile_title=settings_title
-                )
-                self.state.current_scaled_target = target_info.to_dict()
-                if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
-                    self.automation.reconcile_observed_scaling_state(target_info.is_active)
-                self.dynamic_limiter.poll()
+                if not self.state.benchmark_mode_active:
+                    settings_title = (
+                        self.state.current_active_profile.lossless_profile_title
+                        if self.state.current_active_profile else None
+                    )
+                    target_info = self.ls_inspector.inspect_current_scaling_target(
+                        settings_profile_title=settings_title
+                    )
+                    self.state.current_scaled_target = target_info.to_dict()
+                    if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
+                        self.automation.reconcile_observed_scaling_state(target_info.is_active)
+                    self.automation.reconcile_gpu_route()
+                    self.dynamic_limiter.poll()
                 snapshot = (
                     self.state.is_scaling_active,
                     self.state.current_active_profile.id if self.state.current_active_profile else None,
@@ -177,7 +187,7 @@ class CompanionApplication:
             time.sleep(1.0)
 
     def start(self):
-        logger.info("Initializing Lossless Companion...")
+        logger.info("Initializing LS Companion...")
         self.running = True
 
         # Check / Launch Lossless Scaling
@@ -195,7 +205,7 @@ class CompanionApplication:
         self.monitor_thread = threading.Thread(target=self._run_process_monitor, daemon=True, name="MonitorThread")
         self.monitor_thread.start()
 
-        logger.info("Lossless Companion is running. Check your Windows System Tray.")
+        logger.info("LS Companion is running. Check your Windows System Tray.")
 
         # Run Tray in Main Thread (Required for Windows Win32 message loop)
         try:
@@ -211,7 +221,7 @@ class CompanionApplication:
     def stop(self):
         if not self.running:
             return
-        logger.info("Shutting down Lossless Companion...")
+        logger.info("Shutting down LS Companion...")
         self.running = False
         if self.monitor_thread and self.monitor_thread is not threading.current_thread():
             self.monitor_thread.join(timeout=2)

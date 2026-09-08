@@ -1,1 +1,1 @@
-"""Services modules for Lossless Companion"""
+"""Service modules for LS Companion."""

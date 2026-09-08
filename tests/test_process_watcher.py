@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -35,10 +38,10 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertTrue(watcher.enforce_helper_scaling_control())
 
         stop.assert_called_once_with()
-        settings.update_control_settings.assert_called_once_with(
-            hotkey=watcher.profile_manager.config.global_hotkey,
-            disable_auto_scale=True,
-        )
+        self.assertEqual(watcher.profile_manager.config.global_hotkey.key, "x")
+        self.assertEqual(watcher.profile_manager.config.global_hotkey.modifiers, ["alt"])
+        self.assertEqual(watcher.profile_manager.config.hotkey_sync_mode, "follow_lossless")
+        settings.update_control_settings.assert_called_once_with(disable_auto_scale=True)
         launch.assert_called_once_with(force=True)
 
     def test_enforcement_leaves_running_process_alone_when_already_disabled(self):
@@ -64,6 +67,27 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
         settings.ensure_initial_backup.assert_not_called()
         settings.control_changes_required.assert_not_called()
         settings.update_control_settings.assert_not_called()
+
+    def test_lossless_scaling_launch_is_hidden(self):
+        watcher, settings = self.make_watcher()
+        settings.native_auto_scale_enabled.return_value = False
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            watcher.profile_manager.config.lossless_scaling_exe_path = str(executable)
+            process = SimpleNamespace(pid=4242)
+            with (
+                patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
+                patch("companion.services.process_watcher.subprocess.Popen", return_value=process) as popen,
+                patch("companion.services.process_watcher.time.sleep"),
+                patch.object(watcher, "_hide_process_windows") as hide,
+            ):
+                self.assertTrue(watcher.launch_lossless_scaling(force=True))
+
+            kwargs = popen.call_args.kwargs
+            self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
+            self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
+            hide.assert_called_once_with(4242)
 
 
 if __name__ == "__main__":

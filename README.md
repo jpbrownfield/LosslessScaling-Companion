@@ -1,4 +1,4 @@
-# Lossless Scaling Automation Bridge & Companion
+# LS Companion
 
 A Windows companion for **Lossless Scaling (LS)** that activates executable profiles from the foreground window, verifies the exact target window before sending the synchronized LS hotkey, manages Lossless Scaling ReShade presets and add-ons, and never modifies game directories. An optional browser extension adds automatic browser-video scaling.
 
@@ -21,7 +21,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Automatically matches the active window when switching tasks.
    - Offers one per-profile **Automatically scale this application** toggle; there is no blur-triggered de-scaling.
    - A checked-by-default General Settings option enables autoscaling only for profiles newly created through the companion. Imported Lossless Scaling profiles start with helper autoscaling off, and changing the default never rewrites existing profiles.
-   - Installation and initialization never rewrite Lossless Scaling's native profiles. Native hotkey and Auto Scale ownership begins only after the user explicitly saves General Settings.
+   - Installation and initialization never rewrite Lossless Scaling's native profiles. Native hotkey and Auto Scale ownership begins only after the user changes an auto-saved General Setting.
 
 4. **Lossless Scaling ReShade Preset Management:**
    - Programmatically swaps `CurrentPresetPath` in the `ReShade.ini` beside Lossless Scaling.
@@ -33,9 +33,9 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Game executable paths are used only for foreground profile detection.
 
 6. **Windows System Tray UI:**
-   - Shows live connection status and active profile.
-   - Quick one-click "Create Profile From Running App" menu.
-   - Quick toggle for manual scaling and auto-scaling mode.
+   - Opens the Profiles dashboard or jumps directly to its Settings view.
+   - Provides a compact **Quick Add Profile** menu for visible applications.
+   - Keeps advanced configuration-folder access in the dashboard's debug tools.
 
 7. **Process Lasso Performance Mode Trigger:**
    - Optionally tails new records in Process Lasso's CSV action log.
@@ -102,7 +102,7 @@ pip install -r companion/requirements.txt
 ```powershell
 python run_companion.py
 ```
-* You will see the **Lossless Companion** icon appear in your Windows System Tray (near the clock).
+* You will see the **LS Companion** icon appear in your Windows System Tray (near the clock).
 * The companion automatically hosts a local WebSocket server at `ws://127.0.0.1:24892/ws`.
 
 ### 3. Load the Chrome Extension
@@ -132,26 +132,30 @@ Download the [current source archive](https://github.com/jpbrownfield/Lossless-S
 
 The configuration is saved in `%LOCALAPPDATA%\LosslessScalingHelper\settings.json`.
 On first run, an existing legacy `companion/config/settings.json` is migrated. You
-can open the settings folder directly from the system tray.
+can open the settings folder from the red debug action at the bottom of the
+dashboard's Settings view.
 
-Lossless Scaling's own profiles can be inspected and edited from the dashboard at
-`http://127.0.0.1:24892/dashboard`. Its default configuration path is
-`%LOCALAPPDATA%\Lossless Scaling\Settings.xml`. Close Lossless Scaling before
-writing this file manually. Dashboard edits stop and restart Lossless Scaling as
-needed and create a first-original backup.
+Lossless Scaling's configuration is normally read from
+`%LOCALAPPDATA%\Lossless Scaling\Settings.xml`. LS Companion reads its activation
+hotkey and can disable native Auto Scale when Smart Auto Scale is enabled.
 
 On initialization, the companion creates an untouched, one-time
 `Settings.xml.bak` beside `Settings.xml`. If the source XML is invalid or the
 backup cannot be created, native settings writes fail closed. If Lossless Scaling
 has not created `Settings.xml` yet, the companion retries the backup when the file
-appears. No native hotkey or profile setting is changed until the user explicitly
-saves General Settings.
+appears. No native profile setting is changed until the user changes an
+auto-saved General Setting.
 
-The dashboard's General Settings section controls the global activation hotkey,
-native Auto Scale ownership, and an elevated `ONLOGON` Task Scheduler entry named
-`LosslessScalingHelper`. The companion has no native main window: it is always a
-tray process, and closing or minimizing the browser dashboard does not stop it.
-The red **Revert all changes & remove integrations** action stops Lossless Scaling,
+The tray opens one dedicated app-style Edge or Chrome window, re-focusing the
+existing dashboard instead of opening duplicates (and falling back to the default
+browser if neither is available). The window and tray share the LS Companion
+lightning icon. Its collapsible settings panels remember their expanded state.
+The dashboard always follows the
+activation hotkey configured in Lossless Scaling. The General Settings section
+controls Smart Auto Scale and an elevated `ONLOGON` Task Scheduler entry named
+`LosslessScalingHelper`. The companion remains a tray process, and closing or
+minimizing the dashboard window does not stop it.
+The red **Revert All Lossless Scaling Settings and Remove Addon Files (Uninstall Companion)** action asks for confirmation, stops Lossless Scaling,
 restores that untouched XML backup, rolls back only manifest-owned files in the
 Lossless Scaling directory, and removes or restores every RTSS profile managed by
 the helper. It also removes the helper's scheduled startup task, then disables
@@ -164,10 +168,83 @@ Lossless Scaling, the target application's other windows, the companion, shell
 windows, tool windows, and windows already minimized by the user are excluded.
 
 There is currently no standalone official NVIDIA download for
-`nvngx_dlssnr.dll`. The dashboard links to NVIDIA's official DLSS resources and
-the LSP-NeuralRender guide, but the runtime itself must be imported from software
-the user is licensed to use. The helper does not link to or download leaked or
-community-redistributed NVIDIA binaries.
+`nvngx_dlssnr.dll`. The dashboard links to NVIDIA's official DLSS resources, the
+third-party graphics-modding communities and the LSP-NeuralRender guide, but the runtime
+itself must be imported from a source the user is authorized to use. LS Companion
+does not host, download, or verify community-redistributed NVIDIA binaries.
+
+### Graphics stack compatibility evaluation
+
+After staging LSP-NeuralRender, ReShade, and Special K and configuring their
+versions plus the DLSSNR runtime on a profile, exit LS Companion from the tray
+and run the evaluator:
+
+```powershell
+python scripts/evaluate_graphics_stack.py
+```
+
+It selects the active profile by default (or asks which profile to use), performs
+the preflight, asks for one explicit confirmation, and runs every viable
+combination. To validate everything without changing the Lossless Scaling
+installation, use:
+
+```powershell
+python scripts/evaluate_graphics_stack.py --preflight-only
+```
+
+The evaluator stops and restarts Lossless Scaling for each case, pauses while you
+scale a representative application, records loaded modules and new Lossless
+Scaling/LSP-NeuralRender/ReShade/Special K log content beneath
+`diagnostics/graphics-stack`, and transactionally restores the managed deployment
+that was active before the test. It prints a result summary when finished. Use
+`--profile-id PROFILE_ID` to override the active profile,
+`--cases lsp,lsp+reshade` for a subset, or `--capture-seconds 30` for timed
+capture. It never deploys into a game directory. Logs establish load and runtime
+health; visual quality still requires observing or capturing the scaled image.
+
+### Performance benchmark
+
+The performance benchmark is a separate permanent test path; it does not modify
+or reuse the graphics-stack evaluator. Release builds embed the small,
+project-owned `LSBenchmark.exe` workload directly in LS Companion. In the
+dashboard's **Performance benchmark** panel, download and verify Intel's
+PresentMon once to unlock the test. On startup, Companion also checks the managed
+asset store, the user's Downloads folder, its own directory, common PresentMon
+install directories, and `PATH`; a discovered binary is accepted only when its
+x64 architecture and SHA-256 match an official GitHub Release. This detection is
+silent and does not prompt or notify the user. While the test runs, Companion pauses its normal foreground automation
+so the controlled test owns scaling. The dashboard test uses the Default
+profile's existing Lossless Scaling, add-on, and RTSS limiter settings. For a
+dynamic default it freezes the current learned limit, or the configured maximum
+when no learned limit exists; it never calibrates or saves a different limit.
+Raw CSV and a JSON summary are written under
+`%LOCALAPPDATA%\LosslessScalingHelper\benchmarks` in a packaged release or
+`diagnostics/performance-benchmark` in a source checkout.
+
+The deterministic shader-heavy Direct3D 11 workload has adjustable GPU pressure
+and a full-frame software-visible latency marker. A source checkout can also run
+the Python command below after building `benchmark_app/ls_benchmark.cpp` into
+`build/native/LSBenchmark.exe`.
+
+```powershell
+python scripts/benchmark_lossless_scaling.py `
+  --width 1920 --height 1080 --shader-load 64 `
+  --download-presentmon --use-default-profile --duration 90
+```
+
+When invoking the standalone Python command, exit the tray companion so it cannot
+react to foreground changes. Use `--no-scale` for an unscaled baseline.
+PresentMon latency fields are reported as software input/display observations,
+not physical display click-to-photon measurements; the report does not assume
+that source-process input is correlated to an LS-process output frame. With the
+bundled workload, F15 additionally produces a known cyan/magenta frame and the
+runner measures input injection to detection in Windows-composed screen output.
+Use `--benchmark-exe` to substitute another windowed workload; the visual marker
+measurement is unavailable for generic executables.
+
+The **Lossless Scaling Add-ons** settings panel stages verified packages for
+LosslessProxy, LSP-NeuralRender, DLSS5 Feeder, LSP-ReShade, ReShade, and Special K.
+Staged packages are loaded only when selected in a profile's LS Graphics Stack.
 
 ### Example Profile Configuration:
 
@@ -227,6 +304,13 @@ the complete `LosslessCompanion` directory together when moving or distributing
 it. The executable embeds a Windows `requireAdministrator` manifest, so Windows
 shows a UAC elevation prompt whenever it starts.
 
+Versioned GitHub Releases use a single `LosslessCompanion-Setup-x64.exe`
+installer. The installer requests administrative elevation and installs the full
+one-folder payload under Program Files by default, while allowing another install
+location. Its shortcut page enables a Start Menu shortcut by default and offers
+an unchecked desktop-shortcut option. The installed application retains its own
+`requireAdministrator` manifest.
+
 The build intentionally uses PyInstaller's one-folder mode. PyInstaller advises
 against granting administrator privileges to one-file bundles because they unpack
 executable dependencies into a temporary directory before starting.
@@ -234,7 +318,13 @@ executable dependencies into a temporary directory before starting.
 Every repository push also runs the **Build Windows executable** GitHub Actions
 workflow. Its `LosslessCompanion-windows-x64-<commit>` artifact contains the
 complete one-folder application and is retained with the workflow run for 30 days.
-The workflow can also be started manually from the Actions tab.
+The workflow can also be started manually from the Actions tab. To publish a
+versioned GitHub Release without manually creating a tag, include a semantic
+version marker such as `@1.2.3` anywhere in a commit message pushed to `main`.
+The workflow creates release tag `v1.2.3` and attaches the elevated
+`LosslessCompanion-Setup-x64.exe` installer.
+Release versions are immutable through this shortcut, so reusing an existing
+`@x.x.x` value fails instead of replacing its asset.
 
 ---
 

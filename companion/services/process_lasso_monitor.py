@@ -13,7 +13,7 @@ from typing import Callable, Iterable, Optional
 
 import psutil
 
-logger = logging.getLogger("LosslessCompanion.ProcessLasso")
+logger = logging.getLogger("LSCompanion.ProcessLasso")
 
 _PROCESS_RE = re.compile(r"(?i)([a-z0-9_.() -]+\.exe)\b")
 _PID_RE = re.compile(r"(?i)\bpid\s*[:=#]?\s*(\d+)\b")

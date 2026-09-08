@@ -1,5 +1,5 @@
 """
-Global runtime state for Lossless Companion.
+Global runtime state for LS Companion.
 """
 
 from typing import Optional, Set, Dict, Any
@@ -23,6 +23,10 @@ class AppState:
         self.scaling_trigger: Optional[str] = None
         self.current_foreground_exe_path: Optional[str] = None
         self.current_foreground_hwnd: Optional[int] = None
+        self.scaling_target_hwnd: Optional[int] = None
+        self.scaling_target_pid: Optional[int] = None
+        self.current_gpu_route_key: Optional[str] = None
+        self.benchmark_mode_active: bool = False
         self.dynamic_limiter_status: Dict[str, Any] = {
             "state": "inactive",
             "message": "Dynamic limiter inactive",

@@ -1,1 +1,1 @@
-"""Lossless Companion tests."""
+"""LS Companion tests."""

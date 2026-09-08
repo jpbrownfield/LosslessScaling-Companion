@@ -10,12 +10,15 @@ import shutil
 import stat
 import struct
 import tempfile
+import threading
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+_AUDIT_LOCK = threading.RLock()
 
 
 class UnsafeAssetError(ValueError):
@@ -56,6 +59,30 @@ class AssetStore:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def audit(self, event: str, *, outcome: str = "success", **details: object) -> None:
+        """Append a durable, human-readable receipt without affecting the operation.
+
+        Security logging is deliberately best-effort: a full or locked log directory
+        must never leave Lossless Scaling half-deployed.
+        """
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": str(event),
+            "outcome": str(outcome),
+            **details,
+        }
+        try:
+            encoded = json.dumps(record, sort_keys=True, default=str) + "\n"
+            with _AUDIT_LOCK:
+                audit_path = self.logs / "security-audit.jsonl"
+                with audit_path.open("a", encoding="utf-8", newline="\n") as stream:
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        except OSError:
+            # Deployment rollback and integrity checks remain the source of truth.
+            pass
 
     @staticmethod
     def pe_architecture(path: Path) -> Optional[str]:
@@ -141,6 +168,14 @@ class AssetStore:
             else None,
         }
         self._atomic_json(destination_dir / "asset.json", metadata)
+        self.audit(
+            "manual_asset_imported",
+            filename=source_path.name,
+            sha256=digest,
+            size=metadata["size"],
+            architecture=metadata["architecture"],
+            expected_sha256_supplied=bool(expected_sha256),
+        )
         return metadata
 
     @staticmethod
@@ -298,6 +333,20 @@ class AssetStore:
                 continue
         return packages
 
+    def list_imports(self) -> List[Dict]:
+        """Return valid metadata for immutable user-selected runtime files."""
+        imports = []
+        if not self.imports.exists():
+            return imports
+        for metadata_path in self.imports.glob("*/asset.json"):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if Path(str(metadata.get("path") or "")).is_file():
+                    imports.append(metadata)
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+        return imports
+
     def write_profile_manifest(self, profile_id: str, manifest: Dict) -> Path:
         profile_id = self._component(profile_id, "profile id")
         destination = self.profiles / profile_id / "manifest.json"
@@ -306,9 +355,17 @@ class AssetStore:
 
     def write_generated_json(self, profile_id: str, filename: str, data: Dict) -> Path:
         """Write deterministic, profile-owned generated input for a deployment plan."""
+        encoded = json.dumps(data, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        return self.write_generated_bytes(profile_id, filename, encoded)
+
+    def write_generated_text(self, profile_id: str, filename: str, text: str) -> Path:
+        """Write deterministic UTF-8 text owned by one profile."""
+        return self.write_generated_bytes(profile_id, filename, text.encode("utf-8"))
+
+    def write_generated_bytes(self, profile_id: str, filename: str, encoded: bytes) -> Path:
+        """Write deterministic, content-addressed bytes owned by one profile."""
         profile_id = self._component(profile_id, "profile id")
         filename = self._component(filename, "generated filename")
-        encoded = json.dumps(data, indent=2, sort_keys=True).encode("utf-8") + b"\n"
         digest = hashlib.sha256(encoded).hexdigest()
         destination = self.profiles / profile_id / "generated" / digest / filename
         if destination.is_file() and self.sha256(destination) == digest:

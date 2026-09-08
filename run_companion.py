@@ -1,5 +1,5 @@
 """
-Root launcher for Lossless Companion.
+Root launcher for LS Companion.
 Run: python run_companion.py
 """
 

@@ -20,7 +20,7 @@ from .asset_store import AssetStore, UnsafeAssetError
 
 
 USER_AGENT = "LosslessScalingHelper/1.0 (+local companion)"
-logger = logging.getLogger("LosslessCompanion.Releases")
+logger = logging.getLogger("LSCompanion.Releases")
 
 
 @dataclass
@@ -214,6 +214,11 @@ class ProviderRegistry:
             "special-k": GitHubReleaseProvider(
                 "special-k", "SpecialKO/SpecialK", r"\.(?:zip|7z)$"
             ),
+            "presentmon": GitHubReleaseProvider(
+                "presentmon",
+                "GameTechDev/PresentMon",
+                r"^PresentMon-(?!.*(?:arm|x86(?!_64)))[^/]*x64\.exe$",
+            ),
             "reshade": ReShadeReleaseProvider(),
         }
 
@@ -341,22 +346,71 @@ class ReleaseManager:
             if asset.size and destination.stat().st_size != asset.size:
                 raise UnsafeAssetError("Downloaded release size does not match metadata")
             expected_digest = asset.digest if asset.digest and asset.digest.startswith("sha256:") else None
-            metadata = {"release": release.to_dict(), "asset": asdict(asset)}
+            calculated_digest = self.store.sha256(destination)
+            if (
+                expected_digest
+                and calculated_digest.casefold()
+                != expected_digest.removeprefix("sha256:").casefold()
+            ):
+                raise UnsafeAssetError("Downloaded release SHA-256 does not match publisher metadata")
+            metadata = {
+                "release": release.to_dict(),
+                "asset": asdict(asset),
+                "verification": {
+                    "calculated_sha256": calculated_digest,
+                    "publisher_sha256": expected_digest.removeprefix("sha256:")
+                    if expected_digest
+                    else None,
+                    "publisher_digest_available": bool(expected_digest),
+                    "publisher_digest_verified": bool(expected_digest),
+                    "downloaded_over_https": True,
+                    "host_allowlisted": True,
+                },
+            }
+            self.store.audit(
+                "official_release_downloaded",
+                provider=provider_id,
+                version=version,
+                asset=asset.name,
+                sha256=calculated_digest,
+                publisher_digest_verified=bool(expected_digest),
+                size=destination.stat().st_size,
+            )
             if zipfile.is_zipfile(destination):
-                return self.store.import_release_archive(
+                result = self.store.import_release_archive(
                     str(destination),
                     provider=provider_id,
                     version=version,
                     expected_sha256=expected_digest,
                     source_metadata=metadata,
                 )
-            return self.store.import_release_file(
-                str(destination),
+            else:
+                result = self.store.import_release_file(
+                    str(destination),
+                    provider=provider_id,
+                    version=version,
+                    expected_sha256=expected_digest,
+                    source_metadata=metadata,
+                )
+            self.store.audit(
+                "official_release_staged",
                 provider=provider_id,
                 version=version,
-                expected_sha256=expected_digest,
-                source_metadata=metadata,
+                asset=asset.name,
+                archive_sha256=result.get("archive_sha256"),
             )
+            return result
+        except Exception as error:
+            self.store.audit(
+                "official_release_stage_failed",
+                outcome="failed",
+                provider=provider_id,
+                version=version,
+                asset=asset.name,
+                error=type(error).__name__,
+                message=str(error),
+            )
+            raise
         finally:
             import shutil
 

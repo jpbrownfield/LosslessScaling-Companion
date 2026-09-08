@@ -33,6 +33,12 @@ class CountingProvider(ReleaseProvider):
 
 
 class ReleaseManagerTests(unittest.TestCase):
+    def test_presentmon_provider_accepts_only_x64_console_binary(self):
+        provider = ProviderRegistry().get("presentmon")
+        self.assertIsNotNone(provider.asset_pattern.search("PresentMon-2.4.1-x64.exe"))
+        self.assertIsNone(provider.asset_pattern.search("PresentMon-2.4.1-x86.exe"))
+        self.assertIsNone(provider.asset_pattern.search("PresentMon-v2.4.1.msi"))
+
     def test_release_checks_use_persistent_interval_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             store = AssetStore(str(Path(directory) / "store"))

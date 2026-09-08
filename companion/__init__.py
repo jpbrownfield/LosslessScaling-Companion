@@ -1,1 +1,1 @@
-"""Lossless Companion Package"""
+"""LS Companion package."""

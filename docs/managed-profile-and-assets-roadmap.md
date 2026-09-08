@@ -291,7 +291,7 @@ GitHub release assets expose version, size, download URL, and may expose a SHA-2
 - LSP-NeuralRender is the preferred DLSS 5 path. It reads captured frames and
   LSFG optical flow inside Lossless Scaling, processes them on the LSFG GPU, and
   composes the result into LS-presented real and generated frames. It requires no
-  ReShade, RenoDX, DLSS5-Feeder, game files, game hooks, or game API detection.
+  ReShade, DLSS5-Feeder, game files, game hooks, or game API detection.
 - Treat `nvngx_dlssnr.dll` as a user-supplied runtime. NVIDIA has not publicly
   released the required snippet and LSP-NeuralRender intentionally neither ships
   nor links to it. The helper may validate and content-address a user import, but
@@ -315,7 +315,7 @@ but deploy every component into Lossless Scaling—not the detected game:
 - Use LosslessProxy plus LSP-ReShade only where needed to make the ReShade overlay
   controllable through the Lossless Scaling overlay.
 - Resolve Feeder releases from `jlrouzies-fr/DLSS5-Feeder` and pin the complete
-  package. Generic RenoDX management remains out of scope; any required neural
+  package. Generic game-side HDR-mod management remains out of scope; any required neural
   consumer/runtime without a stable official release source is manual-import only.
 - Label this recipe experimental and version-lock the whole chain. The official
   Feeder documentation describes application/game ReShade deployment rather than

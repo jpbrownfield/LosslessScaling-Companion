@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from ..core.models import DllOverrideConfig
 
-logger = logging.getLogger("LosslessCompanion.DllManager")
+logger = logging.getLogger("LSCompanion.DllManager")
 
 
 class DllManager:

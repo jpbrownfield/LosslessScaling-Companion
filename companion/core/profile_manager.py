@@ -1,5 +1,5 @@
 """
-Profile and configuration management for Lossless Companion.
+Profile and configuration management for LS Companion.
 """
 
 import json
@@ -156,7 +156,57 @@ class ProfileManager:
             self.config.profiles.append(profile)
         self.save_config()
 
+    def ensure_lossless_default_profile(self, native_profile: Optional[dict]) -> Optional[Profile]:
+        """Expose Lossless Scaling's first/native default as an editable helper profile."""
+        if not native_profile:
+            return None
+        before = self.config.model_dump()
+        title = str(native_profile.get("Title") or "Default").strip() or "Default"
+        path = str(native_profile.get("Path") or "").strip() or None
+        profile = next((item for item in self.config.profiles if item.is_default), None)
+        if profile is None:
+            profile = next(
+                (
+                    item for item in self.config.profiles
+                    if item.lossless_profile_title
+                    and item.lossless_profile_title.casefold() == title.casefold()
+                ),
+                None,
+            )
+        if profile is None:
+            profile_id = (
+                "lossless-default"
+                if self.get_profile_by_id("lossless-default") is None
+                else Profile(name="temporary").id
+            )
+            profile = Profile(
+                id=profile_id,
+                name=title,
+                is_default=True,
+                auto_scale=False,
+                lossless_profile_title=title,
+                lossless_profile_path=path,
+            )
+            self.config.profiles.insert(0, profile)
+        else:
+            profile.is_default = True
+            profile.lossless_profile_title = title
+            profile.lossless_profile_path = path
+        profile.native_scaling_settings = {
+            key: value for key, value in native_profile.items() if key not in {"Title", "Path"}
+        }
+        profile.last_imported_hash = self.native_profile_hash(native_profile)
+        for other in self.config.profiles:
+            if other.id != profile.id:
+                other.is_default = False
+        if self.config.model_dump() != before:
+            self.save_config()
+        return profile
+
     def delete_profile(self, profile_id: str) -> bool:
+        selected = self.get_profile_by_id(profile_id)
+        if selected and selected.is_default:
+            return False
         initial_len = len(self.config.profiles)
         self.config.profiles = [p for p in self.config.profiles if p.id != profile_id]
         if len(self.config.profiles) < initial_len:
@@ -166,14 +216,46 @@ class ProfileManager:
             return True
         return False
 
+    def new_profile_from_default(
+        self,
+        name: str,
+        *,
+        target_process: Optional[str] = None,
+        target_executable_path: Optional[str] = None,
+        target_domain: Optional[str] = None,
+    ) -> Profile:
+        """Clone configurable defaults while clearing identity and runtime bookkeeping."""
+        template = next((profile for profile in self.config.profiles if profile.is_default), None)
+        profile = (
+            template.model_copy(deep=True)
+            if template
+            else Profile(name=name)
+        )
+        profile.id = Profile(name="temporary").id
+        profile.name = name
+        profile.is_default = False
+        profile.target_process = target_process
+        profile.target_executable_path = target_executable_path
+        profile.target_domain = target_domain
+        profile.auto_scale = self.config.default_profile_auto_scale
+        profile.lossless_profile_title = None
+        profile.lossless_profile_path = None
+        profile.last_imported_hash = None
+        profile.rtss.learned_framerate_limit = None
+        profile.rtss.game_gpu_baseline_percent = None
+        profile.rtss.game_gpu_high_water_percent = None
+        profile.rtss.automatic_calibration_disabled = False
+        profile.rtss.managed_profile_created = False
+        profile.rtss.managed_target_process = None
+        profile.rtss.managed_install_path = None
+        profile.rtss.original_values = {}
+        return profile
+
     def create_profile_from_process(self, process_name: str, display_name: Optional[str] = None) -> Profile:
         name = display_name or f"Profile for {process_name}"
-        new_prof = Profile(
-            name=name,
+        new_prof = self.new_profile_from_default(
+            name,
             target_process=process_name,
-            target_executable_path=None,
-            auto_scale=self.config.default_profile_auto_scale,
-            hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s")
         )
         self.add_or_update_profile(new_prof)
         return new_prof

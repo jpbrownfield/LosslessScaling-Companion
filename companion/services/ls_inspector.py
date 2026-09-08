@@ -17,7 +17,7 @@ from typing import Optional, Dict, List, Tuple
 import psutil
 from .ls_settings import LosslessSettingsXml
 
-logger = logging.getLogger("LosslessCompanion.LSInspector")
+logger = logging.getLogger("LSCompanion.LSInspector")
 
 user32 = ctypes.windll.user32
 

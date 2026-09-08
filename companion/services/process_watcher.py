@@ -16,7 +16,7 @@ from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
 
-logger = logging.getLogger("LosslessCompanion.ProcessWatcher")
+logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -339,7 +339,7 @@ class ProcessWatcher:
         return True
 
     def launch_lossless_scaling(self, *, force: bool = False) -> bool:
-        """Launch Lossless Scaling, optionally ignoring the auto-launch preference."""
+        """Launch Lossless Scaling hidden, optionally ignoring the auto-launch preference."""
         if self.check_is_lossless_scaling_running():
             return True
 
@@ -363,17 +363,40 @@ class ProcessWatcher:
             return False
 
         try:
-            logger.info("Launching Lossless Scaling: %s", executable)
-            subprocess.Popen([str(executable)], cwd=str(executable.parent), close_fds=True)
+            logger.info("Launching Lossless Scaling hidden: %s", executable)
+            startup_info = subprocess.STARTUPINFO()
+            startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startup_info.wShowWindow = 0  # SW_HIDE
+            process = subprocess.Popen(
+                [str(executable)],
+                cwd=str(executable.parent),
+                close_fds=True,
+                startupinfo=startup_info,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
             self.state.lossless_scaling_running = True
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
+            self._hide_process_windows(process.pid)
             return True
         except Exception as exc:
             logger.error("Failed to launch Lossless Scaling: %s", exc)
             self.state.lossless_scaling_running = False
             return False
+
+    @staticmethod
+    def _hide_process_windows(pid: int) -> None:
+        """Hide any top-level configuration window created during a background launch."""
+        def callback(hwnd, _extra):
+            owner_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value == pid and user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            return True
+
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(callback_type(callback), 0)
 
     def enforce_helper_scaling_control(self) -> bool:
         """Synchronize hotkey/Auto Scale with at most one Lossless Scaling restart."""
@@ -388,36 +411,31 @@ class ProcessWatcher:
             logger.error("Native controls were not changed because the initial Settings.xml backup failed")
             return False
 
-        desired_hotkey = config.global_hotkey
+        # Lossless Scaling owns its one global activation hotkey. The helper
+        # reads it and uses the same combination for input injection.
         native_hotkey = self.lossless_settings.read_hotkey()
-        if config.hotkey_sync_mode == "follow_lossless":
-            if native_hotkey is None:
-                logger.warning("Native Lossless Scaling hotkey is unavailable")
-                return False
-            desired_hotkey = native_hotkey.model_copy(
-                update={
-                    "hold_delay_ms": config.global_hotkey.hold_delay_ms,
-                    "activation_delay_ms": config.global_hotkey.activation_delay_ms,
-                }
-            )
-            if desired_hotkey != config.global_hotkey:
-                config.global_hotkey = desired_hotkey
-                self.profile_manager.save_config()
+        if native_hotkey is None:
+            logger.warning("Native Lossless Scaling hotkey is unavailable")
+            return False
+        desired_hotkey = native_hotkey.model_copy(
+            update={
+                "hold_delay_ms": config.global_hotkey.hold_delay_ms,
+                "activation_delay_ms": config.global_hotkey.activation_delay_ms,
+            }
+        )
+        if desired_hotkey != config.global_hotkey or config.hotkey_sync_mode != "follow_lossless":
+            config.global_hotkey = desired_hotkey
+            config.hotkey_sync_mode = "follow_lossless"
+            self.profile_manager.save_config()
 
         inspected = self.lossless_settings.control_changes_required(
-            hotkey=desired_hotkey,
             disable_auto_scale=config.disable_native_auto_scale,
         )
         if inspected is None:
             logger.warning("Lossless Scaling control settings are unavailable")
             return False
 
-        hotkey_mismatch = inspected["hotkey"]
-        should_write_hotkey = config.hotkey_sync_mode == "helper_controls_lossless"
-        if config.hotkey_sync_mode == "warn_only" and hotkey_mismatch:
-            logger.warning("Helper and Lossless Scaling activation hotkeys differ")
-
-        needs_write = inspected["auto_scale"] or (should_write_hotkey and hotkey_mismatch)
+        needs_write = inspected["auto_scale"]
         if not needs_write:
             return True
 
@@ -426,7 +444,6 @@ class ProcessWatcher:
             return False
 
         updated = self.lossless_settings.update_control_settings(
-            hotkey=desired_hotkey if should_write_hotkey else None,
             disable_auto_scale=config.disable_native_auto_scale,
         )
         restarted = True

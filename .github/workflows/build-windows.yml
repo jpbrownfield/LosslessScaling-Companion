@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -31,6 +31,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r companion/requirements.txt "pyinstaller>=6.10,<7"
 
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build bundled GPU benchmark
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/native | Out-Null
+          cl /nologo /std:c++17 /O2 /EHsc /DUNICODE /D_UNICODE `
+            /Fo:build/native/ls_benchmark.obj /Fe:build/native/LSBenchmark.exe `
+            benchmark_app/ls_benchmark.cpp `
+            d3d11.lib dxgi.lib d3dcompiler.lib user32.lib shell32.lib
+          if (-not (Test-Path -LiteralPath build/native/LSBenchmark.exe)) {
+            throw "Bundled GPU benchmark was not produced"
+          }
+
       - name: Compile executable
         shell: pwsh
         run: python -m PyInstaller --clean --noconfirm LosslessCompanion.spec
@@ -43,7 +58,25 @@ jobs:
           if ($size -le 0) {
             throw "Compiled executable is empty"
           }
+          $benchmark = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSBenchmark.exe" -ErrorAction Stop
+          if ((Get-Item -LiteralPath $benchmark).Length -le 0) {
+            throw "Embedded benchmark executable is empty"
+          }
           Write-Host "Built $executable ($size bytes)"
+
+      - name: Publish SHA-256 manifest
+        shell: pwsh
+        run: |
+          $releaseRoot = Resolve-Path -LiteralPath "dist/LosslessCompanion" -ErrorAction Stop
+          $manifest = Join-Path $releaseRoot "SHA256SUMS.txt"
+          Get-ChildItem -LiteralPath $releaseRoot -Recurse -File |
+            Where-Object { $_.FullName -ne $manifest } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = [IO.Path]::GetRelativePath($releaseRoot, $_.FullName).Replace('\', '/')
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $relative"
+            } | Set-Content -LiteralPath $manifest -Encoding ascii
 
       - name: Upload Windows application
         uses: actions/upload-artifact@v4
@@ -52,3 +85,53 @@ jobs:
           path: dist/LosslessCompanion/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Resolve release version
+        id: release_version
+        shell: pwsh
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          $tag = ""
+          $fromCommit = "false"
+          if ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -match '^v\d+\.\d+\.\d+$') {
+            $tag = $env:REF_NAME
+          } elseif (
+            $env:REF_TYPE -eq "branch" -and
+            $env:REF_NAME -eq "main" -and
+            $env:COMMIT_MESSAGE -match '@(?<version>\d+\.\d+\.\d+)(?![\d.])'
+          ) {
+            $tag = "v$($Matches.version)"
+            $fromCommit = "true"
+          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "tag=$tag"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "from_commit=$fromCommit"
+
+      - name: Publish Windows release
+        if: steps.release_version.outputs.tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+          RELEASE_FROM_COMMIT: ${{ steps.release_version.outputs.from_commit }}
+        run: |
+          choco install innosetup --no-progress -y
+          $version = $env:RELEASE_TAG.TrimStart('v')
+          $compiler = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          & $compiler "/DMyAppVersion=$version" installer/LosslessCompanion.iss
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup compilation failed"
+          }
+          $installer = "dist/installer/LosslessCompanion-Setup-x64.exe"
+          $tag = $env:RELEASE_TAG
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            if ($env:RELEASE_FROM_COMMIT -eq "true") {
+              throw "Release $tag already exists; use a new @x.x.x version"
+            }
+            gh release upload $tag $installer --clobber
+          } else {
+            gh release create $tag $installer --target $env:GITHUB_SHA --generate-notes --title $tag
+          }

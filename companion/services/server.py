@@ -3,10 +3,14 @@ Async WebSocket server for communication with Chrome Extension and UI clients.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import re
 import secrets
-import zipfile
+import sys
+import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Dict, Set, Optional
@@ -18,7 +22,7 @@ from ..core.models import (
     AppConfig,
     BrowserFullscreenEvent,
     GraphicsStackConfig,
-    HotkeyConfig,
+    ManagedReshadeProfile,
     Profile,
     RtssLimiterConfig,
 )
@@ -27,14 +31,19 @@ from ..core.state import AppState
 from .process_watcher import ProcessWatcher
 from .automation import AutomationController
 from .ls_settings import LosslessSettingsXml
-from .asset_store import AssetStore
+from .asset_store import AssetStore, UnsafeAssetError
+from .graphics_source_detector import GraphicsSourceDetector
+from .reshade_profiles import ReshadeProfileService
 from .release_providers import ReleaseManager
 from .startup_manager import StartupTaskManager
 from .process_lasso_monitor import ProcessLassoLogTailer
 from .rtss_manager import RtssProfileManager
 from .dynamic_limiter import DynamicLimiterController
+from ..ui.icons import lightning_icon_png
+from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
+from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
 
-logger = logging.getLogger("LosslessCompanion.Server")
+logger = logging.getLogger("LSCompanion.Server")
 
 
 class CompanionWebSocketServer:
@@ -71,6 +80,15 @@ class CompanionWebSocketServer:
         self.server = None
         self.dashboard_token = secrets.token_urlsafe(32)
         self.client_authority: Dict[WebSocketServerProtocol, str] = {}
+        self.addon_update_task: Optional[asyncio.Task] = None
+        self.presentmon_detection_task: Optional[asyncio.Task] = None
+        self.addon_update_lock = asyncio.Lock()
+        self.addon_update_status: Optional[Dict] = None
+        self.benchmark_task: Optional[asyncio.Task] = None
+        self._benchmark_previous_profile: Optional[Profile] = None
+        self._detected_presentmon_path: Optional[Path] = None
+        self._detected_presentmon_sha256: Optional[str] = None
+        self.reshade_profiles = ReshadeProfileService(profile_manager)
 
     async def start(self) -> None:
         logger.info(f"Starting WebSocket server on {self.config.host}:{self.config.port}...")
@@ -80,9 +98,15 @@ class CompanionWebSocketServer:
             self.config.port,
             process_request=self.process_http_request,
         )
+        self.addon_update_task = asyncio.create_task(self._addon_update_loop())
+        self.presentmon_detection_task = asyncio.create_task(self._detect_presentmon_on_startup())
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
 
     async def stop(self) -> None:
+        if self.addon_update_task:
+            self.addon_update_task.cancel()
+        if self.presentmon_detection_task:
+            self.presentmon_detection_task.cancel()
         for task in self.fullscreen_tasks.values():
             task.cancel()
         self.fullscreen_tasks.clear()
@@ -90,6 +114,14 @@ class CompanionWebSocketServer:
             self.server.close()
             await self.server.wait_closed()
             logger.info("WebSocket server stopped.")
+        if self.addon_update_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.addon_update_task
+            self.addon_update_task = None
+        if self.presentmon_detection_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.presentmon_detection_task
+            self.presentmon_detection_task = None
 
     async def handle_client(self, websocket: WebSocketServerProtocol, path: str = "") -> None:
         parsed_path = urlsplit(path)
@@ -149,13 +181,20 @@ class CompanionWebSocketServer:
                 "DELETE_PROFILE",
                 "CHECK_GRAPHICS_RELEASES",
                 "STAGE_GRAPHICS_RELEASE",
-                "IMPORT_GRAPHICS_ASSET",
-                "IMPORT_GRAPHICS_PACKAGE",
+                "INSTALL_LATEST_GRAPHICS_ADDON",
+                "DOWNLOAD_BENCHMARK_TOOL",
+                "START_PERFORMANCE_BENCHMARK",
+                "SELECT_DLSSNR_RUNTIME",
                 "SAVE_CONTROL_SETTINGS",
                 "SAVE_GENERAL_SETTINGS",
                 "RESET_RTSS_CALIBRATION",
                 "START_RTSS_MANUAL_CALIBRATION",
                 "REVERT_ALL_CHANGES",
+                "OPEN_CONFIG_FOLDER",
+                "BROWSE_GENERAL_PATH",
+                "GET_RESHADE_PROFILES",
+                "SAVE_RESHADE_PROFILE",
+                "DELETE_RESHADE_PROFILE",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
             authority = self.client_authority.get(websocket, "readonly")
@@ -171,6 +210,37 @@ class CompanionWebSocketServer:
             if msg_type == "BROWSER_FULLSCREEN_EVENT":
                 event = BrowserFullscreenEvent.model_validate(msg)
                 self.schedule_fullscreen_event(event.model_dump())
+                return
+
+            if msg_type == "OPEN_CONFIG_FOLDER":
+                config_path = str(self.profile_manager.config_dir.resolve())
+                await asyncio.to_thread(os.startfile, config_path)
+                await websocket.send(json.dumps({
+                    "type": "CONFIG_FOLDER_OPENED",
+                    "path": config_path,
+                }))
+                return
+
+            if msg_type == "BROWSE_GENERAL_PATH":
+                kind = str(msg.get("kind") or "")
+                if kind == "process_lasso_log":
+                    detected = ProcessLassoLogTailer.resolve_path(None)
+                    current_path = self.config.process_lasso_log_path or (
+                        str(detected) if detected else None
+                    )
+                elif kind == "rtss_directory":
+                    status = self.rtss_manager.status(self.config.rtss_install_path)
+                    current_path = self.config.rtss_install_path or status.get("path")
+                else:
+                    raise ValueError("Unsupported settings path picker")
+                selected = await asyncio.to_thread(
+                    choose_general_setting_path, kind, current_path
+                )
+                await websocket.send(json.dumps({
+                    "type": "GENERAL_PATH_SELECTED",
+                    "kind": kind,
+                    "path": selected,
+                }))
                 return
 
             if msg_type == "MANUAL_TRIGGER":
@@ -211,12 +281,51 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "GET_GRAPHICS_STATUS":
+                dlssnr_runtimes = [
+                    asset for asset in self.asset_store.list_imports()
+                    if str(asset.get("filename") or "").casefold() == "nvngx_dlssnr.dll"
+                    and asset.get("architecture") == "x64"
+                ]
+                external_sources = await asyncio.to_thread(GraphicsSourceDetector.status)
                 await websocket.send(json.dumps({
                     "type": "GRAPHICS_STATUS",
-                    "providers": self.release_manager.registry.list_provider_ids(),
                     "packages": self.asset_store.list_packages(),
-                    "assetStore": str(self.asset_store.root),
+                    "dlssnrRuntimes": dlssnr_runtimes,
+                    "externalSources": external_sources,
                 }))
+                return
+
+            if msg_type == "GET_BENCHMARK_STATUS":
+                await websocket.send(json.dumps(self._benchmark_status_payload()))
+                return
+
+            if msg_type == "GET_RESHADE_PROFILES":
+                payload = await asyncio.to_thread(self.reshade_profiles.payload)
+                await websocket.send(json.dumps({"type": "RESHADE_PROFILES", **payload}))
+                return
+
+            if msg_type == "SAVE_RESHADE_PROFILE":
+                profile = ManagedReshadeProfile.model_validate(msg.get("profile") or {})
+                result = await asyncio.to_thread(self.reshade_profiles.save, profile)
+                await websocket.send(json.dumps({"type": "RESHADE_PROFILE_SAVED", "profile": result}))
+                return
+
+            if msg_type == "DELETE_RESHADE_PROFILE":
+                deleted = await asyncio.to_thread(
+                    self.reshade_profiles.delete, str(msg.get("profileId") or "")
+                )
+                await websocket.send(json.dumps({
+                    "type": "RESHADE_PROFILE_DELETED",
+                    "profileId": str(msg.get("profileId") or ""),
+                    "deleted": deleted,
+                }))
+                return
+
+            if msg_type == "GET_ADDON_UPDATES":
+                if self.addon_update_status is None:
+                    await self._refresh_addon_updates(force=False)
+                else:
+                    await websocket.send(json.dumps(self.addon_update_status))
                 return
 
             if msg_type == "GET_GENERAL_SETTINGS":
@@ -265,14 +374,13 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_CONTROL_SETTINGS":
-                hotkey = HotkeyConfig.model_validate(msg.get("hotkey") or {})
-                mode = str(msg.get("mode") or "")
-                if mode not in {"helper_controls_lossless", "follow_lossless", "warn_only"}:
-                    raise ValueError("Unsupported hotkey synchronization mode")
-                self.config.global_hotkey = hotkey
-                self.config.hotkey_sync_mode = mode
+                smart_auto_scale_enabled = bool(
+                    msg.get("smartAutoScaleEnabled", msg.get("disableNativeAutoScale", True))
+                )
+                self.config.hotkey_sync_mode = "follow_lossless"
                 self.config.lossless_control_configured = True
-                self.config.disable_native_auto_scale = bool(msg.get("disableNativeAutoScale", True))
+                self.config.disable_native_auto_scale = smart_auto_scale_enabled
+                self.state.auto_scale_enabled = smart_auto_scale_enabled
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get(
                         "minimizeOtherWindowsOnScale",
@@ -313,11 +421,22 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_GENERAL_SETTINGS":
-                hotkey = HotkeyConfig.model_validate(msg.get("hotkey") or {})
-                mode = str(msg.get("mode") or "")
-                if mode not in {"helper_controls_lossless", "follow_lossless", "warn_only"}:
-                    raise ValueError("Unsupported hotkey synchronization mode")
                 run_at_startup = bool(msg.get("runAtStartup", False))
+                smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
+                gpu_inventory = self.automation.gpu_router.detect()
+                detected_gpu_ids = {
+                    str(item.get("deviceId") or "").casefold()
+                    for item in gpu_inventory.get("gpus", [])
+                }
+                requested_gpu_id = str(
+                    msg.get("preferredScalingGpuDeviceId") or ""
+                ).strip() or None
+                if requested_gpu_id and requested_gpu_id.casefold() not in detected_gpu_ids:
+                    raise ValueError("Select a currently detected GPU")
+                requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
+                requested_rtx_hdr = bool(msg.get("nvidiaRtxHdrEnabled", False))
+                if requested_rtx_hdr and not gpu_inventory.get("hasNvidia"):
+                    raise ValueError("NVIDIA RTX HDR requires a detected NVIDIA GPU")
                 enable_rtss = bool(msg.get("rtssFrameLimitingEnabled", False))
                 requested_default_mode = str(msg.get("rtssDefaultLimitMode") or "static")
                 if requested_default_mode not in {"static", "dynamic"}:
@@ -351,9 +470,31 @@ class CompanionWebSocketServer:
                     raise ValueError(
                         "Confirm deactivation of all currently managed RTSS limiter profiles"
                     )
-                startup = await asyncio.to_thread(
-                    self.startup_manager.set_enabled, run_at_startup
-                )
+                if run_at_startup != self.config.run_at_startup:
+                    startup = await asyncio.to_thread(
+                        self.startup_manager.set_enabled, run_at_startup
+                    )
+                else:
+                    startup = {
+                        "enabled": run_at_startup,
+                        "taskName": self.startup_manager.TASK_NAME,
+                    }
+
+                if requested_rtx_hdr != self.config.nvidia_rtx_hdr_enabled:
+                    configured_exe = self.config.lossless_scaling_exe_path
+                    if not configured_exe:
+                        raise ValueError("Configure LosslessScaling.exe before changing RTX HDR")
+                    await asyncio.to_thread(
+                        self.automation.nvidia_profile_manager.set_lossless_scaling_rtx_hdr,
+                        configured_exe,
+                        requested_rtx_hdr,
+                    )
+                    self.asset_store.audit(
+                        "nvidia_application_profile_updated",
+                        executable=str(Path(configured_exe).resolve()),
+                        setting="rtx_hdr",
+                        enabled=requested_rtx_hdr,
+                    )
 
                 if disabling_rtss or relocating_rtss:
                     for profile in managed_rtss_profiles:
@@ -394,11 +535,14 @@ class CompanionWebSocketServer:
                         profile.rtss = updated.rtss
 
                 self.config.run_at_startup = run_at_startup
+                self.config.preferred_scaling_gpu_device_id = requested_gpu_id
+                self.config.auto_route_gpu_to_display = requested_auto_route
+                self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.default_profile_auto_scale = requested_default_auto_scale
-                self.config.global_hotkey = hotkey
-                self.config.hotkey_sync_mode = mode
+                self.config.hotkey_sync_mode = "follow_lossless"
                 self.config.lossless_control_configured = True
-                self.config.disable_native_auto_scale = bool(msg.get("disableNativeAutoScale", True))
+                self.config.disable_native_auto_scale = smart_auto_scale_enabled
+                self.state.auto_scale_enabled = smart_auto_scale_enabled
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get("minimizeOtherWindowsOnScale", False)
                 )
@@ -453,47 +597,131 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
                 return
 
-            if msg_type == "IMPORT_GRAPHICS_ASSET":
-                result = await asyncio.to_thread(
-                    self.asset_store.import_file,
-                    str(msg.get("path") or ""),
-                    expected_sha256=msg.get("sha256"),
-                    allowed_suffixes=(".dll",),
+            if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
+                provider = str(msg.get("provider") or "")
+                if provider not in {"lossless-proxy", "lsp-neural-render"}:
+                    raise ValueError("This add-on cannot be installed automatically")
+                releases = await asyncio.to_thread(
+                    self.release_manager.check, provider, channel="stable", force=True
                 )
-                await websocket.send(json.dumps({"type": "GRAPHICS_ASSET_IMPORTED", "asset": result}))
+                release = next((item for item in releases if item.get("assets")), None)
+                if release is None:
+                    raise ValueError(f"No downloadable stable release is available for {provider}")
+                assets = list(release.get("assets") or [])
+
+                def asset_priority(asset: Dict) -> tuple:
+                    name = str(asset.get("name") or "").casefold()
+                    unwanted = any(word in name for word in ("source", "debug", "symbol", "pdb"))
+                    if provider == "lossless-proxy":
+                        preferred = 0 if name.endswith(".zip") else 1
+                    elif provider == "lsp-neural-render":
+                        preferred = 0 if name.endswith(".zip") else 1
+                    else:
+                        preferred = 0 if "specialk" in name and name.endswith((".7z", ".zip")) else 1
+                    return (unwanted, preferred, name)
+
+                asset = min(assets, key=asset_priority)
+                result = await asyncio.to_thread(
+                    self.release_manager.stage_release,
+                    provider,
+                    str(release.get("version") or ""),
+                    str(asset.get("name") or ""),
+                    str(msg.get("operationId") or ""),
+                    channel="stable",
+                )
+                await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
                 return
 
-            if msg_type == "IMPORT_GRAPHICS_PACKAGE":
+            if msg_type == "DOWNLOAD_BENCHMARK_TOOL":
                 provider = str(msg.get("provider") or "")
-                self.release_manager.registry.get(provider)
-                version = str(msg.get("version") or "")
-                source = str(msg.get("path") or "")
-                expected = msg.get("sha256")
-                source_path = Path(source).resolve(strict=True)
-                metadata = {"manual_import": True, "original_path": str(source_path)}
-                if zipfile.is_zipfile(source_path):
-                    result = await asyncio.to_thread(
-                        self.asset_store.import_release_archive,
-                        source,
-                        provider=provider,
-                        version=version,
-                        source_metadata=metadata,
-                        expected_sha256=expected,
+                if provider != "presentmon":
+                    raise ValueError("Unsupported benchmark tool")
+                releases = await asyncio.to_thread(
+                    self.release_manager.check, provider, channel="stable", force=True
+                )
+                release = next((item for item in releases if item.get("assets")), None)
+                if release is None:
+                    raise ValueError(f"No downloadable stable release is available for {provider}")
+                asset = release["assets"][0]
+                if not str(asset.get("digest") or "").startswith("sha256:"):
+                    raise UnsafeAssetError(
+                        "GitHub has not published a SHA-256 digest for this release asset yet"
                     )
-                else:
-                    if source_path.suffix.casefold() not in {".dll", ".exe", ".7z"}:
-                        raise ValueError("Manual packages must be ZIP, DLL, EXE, or 7Z files")
-                    result = await asyncio.to_thread(
-                        self.asset_store.import_release_file,
-                        source,
-                        provider=provider,
-                        version=version,
-                        source_metadata=metadata,
-                        expected_sha256=expected,
-                    )
+                await asyncio.to_thread(
+                    self.release_manager.stage_release,
+                    provider,
+                    str(release.get("version") or ""),
+                    str(asset.get("name") or ""),
+                    str(msg.get("operationId") or ""),
+                    channel="stable",
+                )
                 await websocket.send(json.dumps({
-                    "type": "GRAPHICS_PACKAGE_IMPORTED", "package": result
+                    "type": "BENCHMARK_TOOL_STAGED",
+                    "provider": provider,
                 }))
+                await websocket.send(json.dumps(self._benchmark_status_payload()))
+                return
+
+            if msg_type == "START_PERFORMANCE_BENCHMARK":
+                status = self._benchmark_status_payload()
+                if not status["ready"]:
+                    raise RuntimeError("PresentMon or the embedded benchmark workload is unavailable")
+                if self.benchmark_task and not self.benchmark_task.done():
+                    raise RuntimeError("A performance benchmark is already running")
+                if self.state.is_scaling_active:
+                    raise RuntimeError("Stop the current scaling session before running the benchmark")
+                default_profile = next(
+                    (profile for profile in self.config.profiles if profile.is_default),
+                    None,
+                )
+                if default_profile is None:
+                    raise RuntimeError("The Lossless Scaling default profile is unavailable")
+                workload = self._embedded_benchmark_executable()
+                presentmon = self._presentmon_executable()
+                command = self._benchmark_launch_command(workload, presentmon)
+                self._benchmark_previous_profile = self.state.current_active_profile
+                self.state.benchmark_mode_active = True
+                try:
+                    await asyncio.to_thread(
+                        self.automation.activate_profile,
+                        default_profile,
+                        force=True,
+                        suppress_auto_scale=True,
+                    )
+                    if self.state.current_active_profile is not default_profile:
+                        raise RuntimeError("The default profile could not be activated")
+                    self.benchmark_task = asyncio.create_task(
+                        self._run_benchmark(command)
+                    )
+                except Exception:
+                    await asyncio.to_thread(
+                        self.automation.activate_profile,
+                        self._benchmark_previous_profile,
+                        force=True,
+                        suppress_auto_scale=True,
+                    )
+                    self._benchmark_previous_profile = None
+                    self.state.benchmark_mode_active = False
+                    raise
+                await websocket.send(json.dumps({
+                    "type": "BENCHMARK_STARTED",
+                }))
+                return
+
+            if msg_type == "SELECT_DLSSNR_RUNTIME":
+                selected = await asyncio.to_thread(choose_dlssnr_runtime)
+                if not selected:
+                    await websocket.send(json.dumps({"type": "DLSSNR_RUNTIME_SELECTION_CANCELLED"}))
+                    return
+                source = Path(selected).resolve(strict=True)
+                if source.name.casefold() != "nvngx_dlssnr.dll":
+                    raise UnsafeAssetError("Select a file named nvngx_dlssnr.dll")
+                if self.asset_store.pe_architecture(source) != "x64":
+                    raise UnsafeAssetError("The DLSS neural-rendering runtime must be a valid x64 DLL")
+                result = await asyncio.to_thread(
+                    self.asset_store.import_file, str(source), allowed_suffixes=(".dll",)
+                )
+                await websocket.send(json.dumps({"type": "DLSSNR_RUNTIME_SELECTED", "asset": result}))
                 return
 
             if msg_type == "UPDATE_LOSSLESS_PROFILE":
@@ -558,8 +786,50 @@ class CompanionWebSocketServer:
             if msg_type == "SAVE_PROFILE":
                 prof_data = msg.get("profile")
                 if prof_data:
+                    prof_data = dict(prof_data)
+                    requested_id = str(prof_data.get("id") or "")
+                    existing_requested = (
+                        self.profile_manager.get_profile_by_id(requested_id)
+                        if requested_id else None
+                    )
+                    if existing_requested is None:
+                        draft = self.profile_manager.new_profile_from_default(
+                            str(prof_data.get("name") or "New Profile"),
+                            target_process=prof_data.get("target_process"),
+                            target_executable_path=prof_data.get("target_executable_path"),
+                            target_domain=prof_data.get("target_domain"),
+                        ).model_dump()
+
+                        def merge_template(base, override):
+                            merged = dict(base)
+                            for key, value in override.items():
+                                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                                    merged[key] = merge_template(merged[key], value)
+                                else:
+                                    merged[key] = value
+                            return merged
+
+                        if not requested_id:
+                            prof_data.pop("id", None)
+                        prof_data = merge_template(draft, prof_data)
+                        prof_data["is_default"] = False
                     prof = Profile.model_validate(prof_data)
+                    if (
+                        prof.graphics.special_k.experimental_smooth_motion
+                        and not self.automation.gpu_router.detect().get("hasNvidia")
+                    ):
+                        raise ValueError("NVIDIA Smooth Motion requires a detected NVIDIA GPU")
+                    if prof.reshade and prof.reshade.enabled and prof.reshade.managed_profile_id:
+                        if not any(
+                            item.id == prof.reshade.managed_profile_id
+                            for item in self.config.reshade_profiles
+                        ):
+                            raise ValueError("Select an existing managed ReShade profile")
                     previous = self.profile_manager.get_profile_by_id(prof.id)
+                    if previous and previous.is_default:
+                        prof.is_default = True
+                    elif prof.is_default:
+                        raise ValueError("Only the native Lossless Scaling profile may be the default")
                     if previous:
                         calibration_changed = (
                             previous.target_process != prof.target_process
@@ -628,6 +898,9 @@ class CompanionWebSocketServer:
             if msg_type == "DELETE_PROFILE":
                 prof_id = msg.get("profileId")
                 if prof_id:
+                    selected_profile = self.profile_manager.get_profile_by_id(prof_id)
+                    if selected_profile and selected_profile.is_default:
+                        raise ValueError("The Lossless Scaling default profile cannot be deleted")
                     profile = self.profile_manager.get_profile_by_id(prof_id)
                     if profile and profile.rtss.enabled:
                         if not bool(msg.get("confirmRtssRemoval")):
@@ -714,6 +987,7 @@ class CompanionWebSocketServer:
                 profile.rtss = RtssLimiterConfig()
 
             if addons_reverted:
+                self.config.nvidia_rtx_hdr_enabled = False
                 for profile in self.config.profiles:
                     profile.graphics = GraphicsStackConfig()
                     profile.dll_overrides = []
@@ -777,7 +1051,16 @@ class CompanionWebSocketServer:
 
     async def process_http_request(self, path, request_headers):
         """Serve the dashboard from the WebSocket server's trusted origin."""
-        if path not in ("/", "/dashboard"):
+        request_path = urlsplit(path).path
+        if request_path == "/favicon.png":
+            body = lightning_icon_png()
+            return HTTPStatus.OK, [
+                ("Content-Type", "image/png"),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "public, max-age=86400"),
+                ("X-Content-Type-Options", "nosniff"),
+            ], body
+        if request_path not in ("/", "/dashboard"):
             return None
         dashboard = Path(__file__).parents[1] / "ui" / "dashboard.html"
         if not dashboard.is_file():
@@ -791,7 +1074,7 @@ class CompanionWebSocketServer:
             ("Referrer-Policy", "no-referrer"),
             (
                 "Content-Security-Policy",
-                "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
                 f"connect-src ws://127.0.0.1:{self.config.port} "
                 f"ws://localhost:{self.config.port} ws://[::1]:{self.config.port}",
             ),
@@ -889,6 +1172,290 @@ class CompanionWebSocketServer:
         await asyncio.to_thread(self.automation.toggle_scaling, profile, reason="manual")
         await self.broadcast_state()
 
+    @staticmethod
+    def _same_addon_version(left: str, right: str) -> bool:
+        def normalize(value: str):
+            text = str(value or "").strip().casefold()
+            numbers = tuple(int(part) for part in re.findall(r"\d+", text))
+            return numbers or text.removeprefix("v")
+
+        return bool(normalize(left)) and normalize(left) == normalize(right)
+
+    async def _refresh_addon_updates(self, *, force: bool) -> Dict:
+        async with self.addon_update_lock:
+            providers = ("lossless-proxy", "lsp-neural-render", "reshade", "special-k")
+
+            async def check(provider: str):
+                try:
+                    releases = await asyncio.to_thread(
+                        self.release_manager.check,
+                        provider,
+                        channel="stable",
+                        force=force,
+                    )
+                    return provider, (releases[0] if releases else None)
+                except Exception:
+                    logger.warning("Daily add-on update check failed for %s", provider, exc_info=True)
+                    return provider, None
+
+            checked, sources = await asyncio.gather(
+                asyncio.gather(*(check(provider) for provider in providers)),
+                asyncio.to_thread(GraphicsSourceDetector.status),
+            )
+            latest = {provider: release for provider, release in checked if release}
+            packages = self.asset_store.list_packages()
+            installed = {
+                provider: [str(item.get("version") or "") for item in packages if item.get("provider") == provider]
+                for provider in providers
+            }
+            source_versions = {
+                "reshade": str(sources.get("reshade", {}).get("version") or ""),
+                "special-k": str(sources.get("special-k", {}).get("version") or ""),
+            }
+            updates = []
+            labels = {
+                "lossless-proxy": "LosslessProxy",
+                "lsp-neural-render": "LSP-NeuralRender",
+                "reshade": "ReShade Full Add-On",
+                "special-k": "Special K",
+            }
+            for provider in providers:
+                release = latest.get(provider)
+                if not release:
+                    continue
+                latest_version = str(release.get("version") or "")
+                current_versions = installed[provider]
+                if provider in source_versions and source_versions[provider]:
+                    current_versions.append(source_versions[provider])
+                if not current_versions or any(
+                    self._same_addon_version(current, latest_version) for current in current_versions
+                ):
+                    continue
+                updates.append({
+                    "provider": provider,
+                    "name": labels[provider],
+                    "currentVersion": current_versions[-1],
+                    "latestVersion": latest_version,
+                })
+
+            self.addon_update_status = {
+                "type": "ADDON_UPDATES",
+                "checkedAt": int(time.time()),
+                "updates": updates,
+                "latestVersions": {
+                    provider: str(release.get("version") or "")
+                    for provider, release in latest.items()
+                },
+            }
+            if self.clients:
+                payload = json.dumps(self.addon_update_status)
+                await asyncio.gather(
+                    *(client.send(payload) for client in list(self.clients)),
+                    return_exceptions=True,
+                )
+            return self.addon_update_status
+
+    async def _addon_update_loop(self) -> None:
+        await asyncio.sleep(30)
+        force = False
+        while True:
+            try:
+                await self._refresh_addon_updates(force=force)
+            except Exception:
+                logger.warning("Daily add-on update check failed", exc_info=True)
+            force = True
+            await asyncio.sleep(24 * 60 * 60)
+
+    def _verified_benchmark_executable(self, provider: str) -> Optional[Path]:
+        """Return a staged x64 tool only while its immutable package still verifies."""
+        expected_names = {
+            "presentmon": lambda name: (
+                name.casefold().startswith("presentmon-")
+                and name.casefold().endswith("-x64.exe")
+            ),
+        }
+        matches_name = expected_names.get(provider)
+        if matches_name is None:
+            return None
+        for package in reversed(self.asset_store.list_packages()):
+            if package.get("provider") != provider:
+                continue
+            verification = (package.get("source") or {}).get("verification") or {}
+            if not verification.get("publisher_digest_verified"):
+                continue
+            try:
+                payload = Path(str(package.get("payload_path") or "")).resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            for item in package.get("files") or []:
+                relative = str(item.get("relative_path") or "")
+                try:
+                    candidate = (payload / relative).resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if candidate != payload and payload not in candidate.parents:
+                    continue
+                digest = self.asset_store.sha256(candidate) if candidate.is_file() else ""
+                expected_hashes = {
+                    str(item.get("sha256") or "").casefold(),
+                    str(package.get("archive_sha256") or "").casefold(),
+                    str(verification.get("calculated_sha256") or "").casefold(),
+                    str(verification.get("publisher_sha256") or "").casefold(),
+                }
+                if (
+                    matches_name(candidate.name)
+                    and item.get("architecture") == "x64"
+                    and digest
+                    and expected_hashes == {digest.casefold()}
+                ):
+                    return candidate
+        return None
+
+    def _presentmon_executable(self) -> Optional[Path]:
+        managed = self._verified_benchmark_executable("presentmon")
+        if managed:
+            return managed
+        candidate = self._detected_presentmon_path
+        expected = self._detected_presentmon_sha256
+        if (
+            candidate
+            and expected
+            and candidate.is_file()
+            and self.asset_store.pe_architecture(candidate) == "x64"
+            and self.asset_store.sha256(candidate).casefold() == expected.casefold()
+        ):
+            return candidate
+        return None
+
+    def _discover_official_presentmon(self) -> Optional[tuple[Path, str]]:
+        if self._verified_benchmark_executable("presentmon"):
+            return None
+        releases = self.release_manager.check("presentmon", channel="stable")
+        official_hashes = {
+            str(asset.get("name") or "").casefold(): str(asset.get("digest") or "").removeprefix("sha256:")
+            for release in releases
+            for asset in release.get("assets") or []
+            if str(asset.get("digest") or "").startswith("sha256:")
+        }
+        roots = [
+            Path.home() / "Downloads",
+            Path(sys.executable).resolve().parent,
+        ]
+        for variable in ("LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"):
+            value = os.environ.get(variable)
+            if value:
+                roots.extend((Path(value) / "PresentMon", Path(value) / "Intel" / "PresentMon"))
+        roots.extend(Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry)
+        seen = set()
+        for root in roots:
+            try:
+                resolved_root = root.resolve()
+            except OSError:
+                continue
+            root_key = os.path.normcase(str(resolved_root))
+            if root_key in seen or not resolved_root.is_dir():
+                continue
+            seen.add(root_key)
+            try:
+                candidates = resolved_root.glob("PresentMon-*-x64.exe")
+                for candidate in candidates:
+                    expected = official_hashes.get(candidate.name.casefold())
+                    if (
+                        expected
+                        and candidate.is_file()
+                        and self.asset_store.pe_architecture(candidate) == "x64"
+                        and self.asset_store.sha256(candidate).casefold() == expected.casefold()
+                    ):
+                        return candidate.resolve(), expected
+            except OSError:
+                continue
+        return None
+
+    async def _detect_presentmon_on_startup(self) -> None:
+        try:
+            detected = await asyncio.to_thread(self._discover_official_presentmon)
+            if detected:
+                self._detected_presentmon_path, self._detected_presentmon_sha256 = detected
+                logger.info("Detected verified PresentMon at %s", self._detected_presentmon_path)
+            if self.clients:
+                encoded = json.dumps(self._benchmark_status_payload())
+                await asyncio.gather(
+                    *(client.send(encoded) for client in self.clients),
+                    return_exceptions=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Startup PresentMon detection did not find a verified binary", exc_info=True)
+
+    def _embedded_benchmark_executable(self) -> Optional[Path]:
+        candidates = []
+        if getattr(sys, "frozen", False):
+            candidates.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tools" / "LSBenchmark.exe")
+        candidates.append(Path(__file__).resolve().parents[2] / "build" / "native" / "LSBenchmark.exe")
+        for candidate in candidates:
+            if candidate.is_file() and self.asset_store.pe_architecture(candidate) == "x64":
+                return candidate.resolve()
+        return None
+
+    async def _run_benchmark(self, arguments: list[str]) -> None:
+        return_code = 2
+        error_message = None
+        try:
+            return_code = await asyncio.to_thread(run_performance_benchmark, arguments)
+        except Exception as error:
+            error_message = str(error)
+            logger.exception("Performance benchmark runner failed")
+        finally:
+            try:
+                await asyncio.to_thread(
+                    self.automation.activate_profile,
+                    self._benchmark_previous_profile,
+                    force=True,
+                    suppress_auto_scale=True,
+                )
+            finally:
+                self._benchmark_previous_profile = None
+                self.state.benchmark_mode_active = False
+        if self.process_watcher:
+            self.process_watcher.invalidate_foreground_cache()
+        self.benchmark_task = None
+        payload = self._benchmark_status_payload()
+        payload["lastExitCode"] = return_code
+        payload["lastError"] = error_message
+        if self.clients:
+            encoded = json.dumps(payload)
+            await asyncio.gather(
+                *(client.send(encoded) for client in self.clients),
+                return_exceptions=True,
+            )
+
+    def _benchmark_launch_command(self, workload: Path, presentmon: Path) -> list[str]:
+        return [
+            "--benchmark-exe", str(workload),
+            "--presentmon-exe", str(presentmon),
+            "--use-default-profile",
+            "--yes",
+        ]
+
+    def _benchmark_status_payload(self) -> Dict:
+        workload = self._embedded_benchmark_executable()
+        managed_presentmon = self._verified_benchmark_executable("presentmon")
+        presentmon = managed_presentmon or self._presentmon_executable()
+        running = bool(self.benchmark_task and not self.benchmark_task.done())
+        return {
+            "type": "BENCHMARK_STATUS",
+            "ready": bool(workload and presentmon),
+            "running": running,
+            "tools": {
+                "workload": {"ready": bool(workload)},
+                "presentmon": {
+                    "ready": bool(presentmon),
+                    "source": "managed" if managed_presentmon else "detected" if presentmon else None,
+                },
+            },
+        }
+
     async def send_full_data_update(self, websocket: WebSocketServerProtocol, visible_windows_only: bool = True) -> None:
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
@@ -924,22 +1491,33 @@ class CompanionWebSocketServer:
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
 
     def _control_settings_payload(self) -> Dict:
-        detected_process_lasso_log = ProcessLassoLogTailer.resolve_path(None)
+        selected_process_lasso_log = ProcessLassoLogTailer.resolve_path(
+            self.config.process_lasso_log_path
+        )
+        process_lasso_detected = bool(
+            selected_process_lasso_log and selected_process_lasso_log.is_file()
+        )
+        gpu_inventory = self.automation.gpu_router.detect()
         return {
-            "mode": self.config.hotkey_sync_mode,
-            "disableNativeAutoScale": self.config.disable_native_auto_scale,
+            "smartAutoScaleEnabled": self.config.disable_native_auto_scale,
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
             "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
             "processLassoLogPath": self.config.process_lasso_log_path or "",
             "processLassoDetectedLogPath": (
-                str(detected_process_lasso_log) if detected_process_lasso_log else ""
+                str(selected_process_lasso_log) if process_lasso_detected else ""
             ),
+            "processLassoDetected": process_lasso_detected,
             "rtssFrameLimitingEnabled": self.config.rtss_frame_limiting_enabled,
             "rtssInstallPath": self.config.rtss_install_path or "",
             "rtssStatus": self.rtss_manager.status(self.config.rtss_install_path),
             "rtssDefaultLimitMode": self.config.rtss_default_limit_mode,
             "rtssDefaultGpuTargetPercent": self.config.rtss_default_gpu_target_percent,
             "defaultProfileAutoScale": self.config.default_profile_auto_scale,
+            "gpuInventory": gpu_inventory,
+            "hasNvidiaGpu": bool(gpu_inventory.get("hasNvidia")),
+            "preferredScalingGpuDeviceId": self.config.preferred_scaling_gpu_device_id or "",
+            "autoRouteGpuToDisplay": self.config.auto_route_gpu_to_display,
+            "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
         }

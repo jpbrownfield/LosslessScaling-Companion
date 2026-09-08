@@ -1,5 +1,5 @@
 """
-Data models and schemas for Lossless Companion.
+Data models and schemas for LS Companion.
 """
 
 from typing import List, Optional, Dict, Any, Literal
@@ -44,6 +44,21 @@ class ManagedPackageConfig(BaseModel):
     update_policy: Literal["pinned", "notify", "stage"] = "notify"
 
 
+class SpecialKConfig(ManagedPackageConfig):
+    sdr_to_hdr: bool = False
+    hdr_peak_brightness_nits: int = Field(default=1000, ge=80, le=10000)
+    hdr_paper_white_nits: int = Field(default=203, ge=80, le=1000)
+    temporary_windows_hdr: bool = False
+    experimental_reflex: bool = False
+    experimental_smooth_motion: bool = False
+
+    @model_validator(mode="after")
+    def validate_hdr_luminance(self):
+        if self.hdr_paper_white_nits > self.hdr_peak_brightness_nits:
+            raise ValueError("Special K HDR paper white cannot exceed peak brightness")
+        return self
+
+
 class NeuralRenderConfig(BaseModel):
     implementation: Literal["disabled", "lsp_neural_render", "ls_reshade_feeder"] = "disabled"
     package: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
@@ -67,16 +82,62 @@ class GraphicsStackConfig(BaseModel):
     lossless_proxy: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
     neural_render: NeuralRenderConfig = Field(default_factory=NeuralRenderConfig)
     reshade: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
-    special_k: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
+    special_k: SpecialKConfig = Field(default_factory=SpecialKConfig)
 
 
 class ReshadeConfig(BaseModel):
     enabled: bool = False
+    managed_profile_id: Optional[str] = None
     # Retained for legacy configuration compatibility. Runtime deployment always
     # targets ReShade.ini beside LosslessScaling.exe.
     reshade_ini_path: Optional[str] = None
     preset_path: Optional[str] = None
     reload_hotkey: Optional[str] = None  # e.g., "Home" or "F8"
+
+
+class ManagedReshadeProfile(BaseModel):
+    """A named, companion-owned ReShade configuration for Lossless Scaling."""
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = Field(min_length=1, max_length=120)
+    overlay_enabled: bool = False
+    shaders: Dict[str, List[str]] = Field(default_factory=dict)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if value in {".", ".."} or not value or len(value) > 128 or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            for char in value
+        ):
+            raise ValueError("ReShade profile id contains unsupported characters")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("ReShade profile name is required")
+        return value
+
+    @field_validator("shaders")
+    @classmethod
+    def validate_shaders(cls, value: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        clean: Dict[str, List[str]] = {}
+        for provider, files in value.items():
+            if not provider or len(provider) > 64 or not provider.replace("-", "").replace("_", "").isalnum():
+                raise ValueError("Invalid ReShade shader provider id")
+            selected = []
+            for filename in files:
+                filename = str(filename).strip()
+                if filename != Path(filename).name or not filename.casefold().endswith(".fx"):
+                    raise ValueError("ReShade shader selections must be .fx filenames")
+                if filename not in selected:
+                    selected.append(filename)
+            if selected:
+                clean[provider] = selected
+        return clean
 
 
 class RtssLimiterConfig(BaseModel):
@@ -141,6 +202,7 @@ class DllOverrideConfig(BaseModel):
 class Profile(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
+    is_default: bool = False
     target_process: Optional[str] = None  # e.g., "chrome.exe", "Cyberpunk2077.exe"
     target_executable_path: Optional[str] = None
     target_domain: Optional[str] = None   # e.g., "youtube.com", "twitch.tv"
@@ -174,12 +236,17 @@ class AppConfig(BaseModel):
     auto_launch_lossless_scaling: bool = True
     disable_native_auto_scale: bool = True
     lossless_control_configured: bool = False
-    hotkey_sync_mode: Literal["helper_controls_lossless", "follow_lossless", "warn_only"] = "helper_controls_lossless"
+    # Retained for settings-file compatibility. The helper always follows the
+    # activation hotkey configured in Lossless Scaling.
+    hotkey_sync_mode: Literal["helper_controls_lossless", "follow_lossless", "warn_only"] = "follow_lossless"
     lossless_settings_xml_path: Optional[str] = None
     asset_store_path: Optional[str] = None
     update_check_interval_hours: int = Field(default=24, ge=1, le=720)
     default_profile_auto_scale: bool = True
     run_at_startup: bool = False
+    preferred_scaling_gpu_device_id: Optional[str] = None
+    auto_route_gpu_to_display: bool = False
+    nvidia_rtx_hdr_enabled: bool = False
     minimize_other_windows_on_scale: bool = False
     process_lasso_performance_mode_scaling: bool = False
     process_lasso_log_path: Optional[str] = None
@@ -192,6 +259,7 @@ class AppConfig(BaseModel):
         default_factory=lambda: ["chrome-extension://"]
     )
     active_profile_id: Optional[str] = None
+    reshade_profiles: List[ManagedReshadeProfile] = Field(default_factory=list)
     profiles: List[Profile] = Field(default_factory=list)
 
 

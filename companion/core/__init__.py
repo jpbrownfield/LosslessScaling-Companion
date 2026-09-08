@@ -1,1 +1,1 @@
-"""Core modules for Lossless Companion"""
+"""Core modules for LS Companion."""

@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 from ..core.models import HotkeyConfig
 
 
-logger = logging.getLogger("LosslessCompanion.LosslessSettings")
+logger = logging.getLogger("LSCompanion.LosslessSettings")
 
 
 class LosslessSettingsXml:
@@ -297,5 +297,77 @@ class LosslessSettingsXml:
             else:
                 node.text = str(value)
 
+        self._write_tree(tree, backup=backup)
+        return True
+
+    @staticmethod
+    def _find_profile(root: ET.Element, title: Optional[str]) -> Optional[ET.Element]:
+        profiles = root.findall("./GameProfiles/Profile")
+        if title:
+            for profile in profiles:
+                if (LosslessSettingsXml._text(profile, "Title") or "").casefold() == title.casefold():
+                    return profile
+        return profiles[0] if profiles else None
+
+    def gpu_route_changes_required(
+        self, title: Optional[str], preferred_gpu_id: int, output_display_id: int
+    ) -> Optional[bool]:
+        """Return whether a profile's inferred LS GPU/display route differs."""
+        if preferred_gpu_id < 0 or output_display_id < 0:
+            raise ValueError("Lossless Scaling GPU and display IDs must be non-negative")
+        if not self.path.is_file():
+            return None
+        try:
+            root = ET.parse(self.path).getroot()
+        except (ET.ParseError, OSError) as error:
+            logger.error("Could not inspect Lossless Scaling GPU routing: %s", error)
+            return None
+        profile = self._find_profile(root, title)
+        if profile is None:
+            return None
+        return (
+            (self._text(profile, "PreferredGpuId") or "0").strip() != str(preferred_gpu_id)
+            or (self._text(profile, "OutputDisplayId") or "0").strip() != str(output_display_id)
+        )
+
+    def update_gpu_route(
+        self,
+        title: Optional[str],
+        preferred_gpu_id: int,
+        output_display_id: int,
+        *,
+        backup: bool = True,
+    ) -> bool:
+        """Atomically apply a GPU/display route to one Lossless Scaling profile."""
+        if preferred_gpu_id < 0 or output_display_id < 0:
+            raise ValueError("Lossless Scaling GPU and display IDs must be non-negative")
+        if not self.path.is_file():
+            return False
+        tree = ET.parse(self.path)
+        root = tree.getroot()
+        profile = self._find_profile(root, title)
+        if profile is None:
+            return False
+        changed = False
+        for name, value in (
+            ("PreferredGpuId", preferred_gpu_id),
+            ("OutputDisplayId", output_display_id),
+        ):
+            node = profile.find(name)
+            if node is None:
+                node = ET.SubElement(profile, name)
+            if (node.text or "").strip() != str(value):
+                node.text = str(value)
+                changed = True
+        if not changed:
+            return False
+        count = root.find("GpuPreferenceChangeCount")
+        if count is None:
+            count = ET.SubElement(root, "GpuPreferenceChangeCount")
+        try:
+            previous_count = int((count.text or "0").strip())
+        except ValueError:
+            previous_count = 0
+        count.text = str(previous_count + 1)
         self._write_tree(tree, backup=backup)
         return True

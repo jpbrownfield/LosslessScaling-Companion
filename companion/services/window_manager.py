@@ -11,7 +11,7 @@ from typing import Dict, Optional
 import psutil
 
 
-logger = logging.getLogger("LosslessCompanion.WindowManager")
+logger = logging.getLogger("LSCompanion.WindowManager")
 user32 = ctypes.windll.user32
 
 GWL_EXSTYLE = -20

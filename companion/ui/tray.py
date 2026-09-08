@@ -1,14 +1,10 @@
 """
-System Tray interface for Lossless Companion using pystray and Pillow.
+System Tray interface for LS Companion using pystray and Pillow.
 """
 
-import os
-import subprocess
-import threading
 import logging
-import webbrowser
 from typing import Callable, Optional
-from PIL import Image, ImageDraw
+from PIL import Image
 import pystray
 from pystray import MenuItem as item, Menu
 
@@ -17,8 +13,10 @@ from ..core.state import AppState
 from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
 from ..services.automation import AutomationController
+from .dashboard_window import open_dashboard_window
+from .icons import create_lightning_icon
 
-logger = logging.getLogger("LosslessCompanion.Tray")
+logger = logging.getLogger("LSCompanion.Tray")
 
 
 class CompanionTrayIcon:
@@ -40,45 +38,8 @@ class CompanionTrayIcon:
         self.icon: Optional[pystray.Icon] = None
 
     def _create_icon_image(self, width: int = 64, height: int = 64) -> Image.Image:
-        """Generates a dynamic 64x64 icon."""
-        image = Image.new("RGBA", (width, height), color=(0, 0, 0, 0))
-        draw = ImageDraw.Draw(image)
-        # Outer circle
-        draw.ellipse((4, 4, width - 4, height - 4), fill=(15, 23, 42), outline=(14, 165, 233), width=4)
-        # Inner lightning / scale glyph
-        points = [
-            (width * 0.55, height * 0.18),
-            (width * 0.30, height * 0.52),
-            (width * 0.48, height * 0.52),
-            (width * 0.42, height * 0.82),
-            (width * 0.70, height * 0.44),
-            (width * 0.52, height * 0.44),
-        ]
-        draw.polygon(points, fill=(56, 189, 248))
-        return image
-
-    def _on_toggle_scale(self, icon, item):
-        profile = self.state.current_active_profile
-        if not profile and self.profile_manager.config.active_profile_id:
-            profile = self.profile_manager.get_profile_by_id(self.profile_manager.config.active_profile_id)
-        logger.info("Tray triggered scaling with profile '%s'", profile.name if profile else "global")
-        self.automation.toggle_scaling(profile, reason="tray")
-        self.update_menu()
-
-    def _on_toggle_auto_scale(self, icon, item):
-        self.state.auto_scale_enabled = not self.state.auto_scale_enabled
-        logger.info(f"Auto-scale set to: {self.state.auto_scale_enabled}")
-        self.update_menu()
-
-    def _on_select_profile(self, profile_id: str):
-        def handler(icon, item):
-            self.profile_manager.config.active_profile_id = profile_id
-            self.profile_manager.save_config()
-            selected = self.profile_manager.get_profile_by_id(profile_id)
-            self.automation.activate_profile(selected, selected.target_executable_path if selected else None)
-            logger.info(f"Active profile changed to: {selected.name}")
-            self.update_menu()
-        return handler
+        """Return the same artwork used by the dashboard window."""
+        return create_lightning_icon(width, height)
 
     def _on_add_profile_from_process(self, proc_name: str):
         def handler(icon, item):
@@ -88,11 +49,12 @@ class CompanionTrayIcon:
         return handler
 
     def _open_dashboard(self, icon, item):
-        webbrowser.open(f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard")
+        url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard"
+        open_dashboard_window(url)
 
-    def _open_config_folder(self, icon, item):
-        cfg_path = str(self.profile_manager.config_dir.resolve())
-        os.startfile(cfg_path)
+    def _open_settings(self, icon, item):
+        url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings"
+        open_dashboard_window(url)
 
     def _on_exit(self, icon, item):
         logger.info("Tray Exit clicked.")
@@ -102,16 +64,6 @@ class CompanionTrayIcon:
             self.on_exit_callback()
 
     def _build_menu(self) -> Menu:
-        profiles_items = []
-        for p in self.profile_manager.config.profiles:
-            is_active = (self.profile_manager.config.active_profile_id == p.id)
-            profiles_items.append(
-                item(
-                    f"{'✓ ' if is_active else '   '}{p.name}",
-                    self._on_select_profile(p.id)
-                )
-            )
-
         running_procs = self.process_watcher.list_running_executables(visible_windows_only=True)[:15]
         proc_items = []
         for proc in running_procs:
@@ -125,33 +77,13 @@ class CompanionTrayIcon:
                 item(f"Add: {label}", self._on_add_profile_from_process(proc['name']))
             )
 
-        target_proc = self.state.current_scaled_target.get("processName") or "None"
-        scaled_title = self.state.current_scaled_target.get("windowTitle")
-        if scaled_title and len(scaled_title) > 25:
-            scaled_title = scaled_title[:22] + "..."
-
-        status_text = f"Status: {'Scaling Active' if self.state.is_scaling_active else 'Idle'}"
-        if self.state.is_scaling_active:
-            target_text = f"Target: {target_proc}" + (f" ({scaled_title})" if scaled_title else "")
-        else:
-            target_text = f"Focused: {self.state.current_foreground_process or 'None'}"
-
         menu_items = [
-            item(status_text, lambda icon, item: None, enabled=False),
-            item(target_text, lambda icon, item: None, enabled=False),
+            item("LS Companion", None, enabled=False),
             Menu.SEPARATOR,
-            item("⚡ Toggle Scaling (HotKey)", self._on_toggle_scale),
-            item(
-                "Enable Auto-Scaling",
-                self._on_toggle_auto_scale,
-                checked=lambda item: self.state.auto_scale_enabled
-            ),
+            item("Open Dashboard", self._open_dashboard, default=True),
+            item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
+            item("Open Settings", self._open_settings),
             Menu.SEPARATOR,
-            item("🎛️ Open Profile Dashboard", self._open_dashboard),
-            item("Profiles", Menu(*profiles_items)),
-            item("Quick Add Running App", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
-            Menu.SEPARATOR,
-            item("Open Settings Folder", self._open_config_folder),
             item("Exit", self._on_exit)
         ]
         return Menu(*menu_items)
@@ -162,8 +94,8 @@ class CompanionTrayIcon:
         self.icon = pystray.Icon(
             "lossless_companion",
             img,
-            "Lossless Companion",
-            menu=self._build_menu
+            "LS Companion",
+            menu=self._build_menu()
         )
         self.icon.run()
 

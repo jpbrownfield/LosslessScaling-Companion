@@ -98,6 +98,44 @@ class ProfileEffectsTests(unittest.TestCase):
 
             windows.restore_managed_windows.assert_called_once_with()
 
+    def test_smooth_motion_targets_lossless_scaling_profile_and_is_disabled_on_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(executable)
+            nvidia = Mock()
+            profile = Profile.model_validate({
+                "name": "Smooth Motion",
+                "graphics": {"special_k": {
+                    "enabled": True,
+                    "experimental_smooth_motion": True,
+                }},
+            })
+            automation = AutomationController(
+                manager, AppState(), nvidia_profile_manager=nvidia
+            )
+
+            automation._apply_profile_transition(
+                None, profile, False, [], park_runtime=False,
+                trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                suppress_auto_scale=True,
+            )
+            automation._apply_profile_transition(
+                profile, None, False, [], park_runtime=False,
+                trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                suppress_auto_scale=True,
+            )
+
+            self.assertEqual(
+                nvidia.set_lossless_scaling_smooth_motion.call_args_list,
+                [
+                    unittest.mock.call(str(executable), True),
+                    unittest.mock.call(str(executable), False),
+                ],
+            )
+
     @patch("companion.services.automation.ReshadeManager.trigger_reshade_reload")
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_activation_applies_and_cleans_profile(self, trigger_hotkey, reload_reshade):
@@ -178,6 +216,19 @@ class ProfileEffectsTests(unittest.TestCase):
         watcher.focus_window_identity.assert_called_once_with(123, 456)
         trigger_hotkey.assert_called_once()
         self.assertTrue(state.is_scaling_active)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_smart_auto_scale_master_switch_blocks_automatic_hotkey(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.disable_native_auto_scale = False
+            state = AppState()
+            profile = Profile(name="Game", target_process="Game.exe", auto_scale=True)
+
+            AutomationController(manager, state).activate_profile(profile)
+
+        trigger_hotkey.assert_not_called()
+        self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_unverified_window_refuses_auto_scaling(self, trigger_hotkey):

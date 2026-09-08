@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List
 from .input_simulator import InputSimulator
 
-logger = logging.getLogger("LosslessCompanion.ReshadeManager")
+logger = logging.getLogger("LSCompanion.ReshadeManager")
 
 
 class ReshadeManager:
@@ -123,4 +123,36 @@ class ReshadeManager:
             return True
         except Exception as e:
             logger.error(f"Failed to restore ReShade backup: {e}")
+            return False
+
+    @staticmethod
+    def apply_managed_config(reshade_ini_path: str, managed_config_path: str, backup: bool = True) -> bool:
+        """Atomically apply a companion-generated config only to Lossless Scaling."""
+        ini_file = Path(reshade_ini_path)
+        managed_file = Path(managed_config_path)
+        if not ReshadeManager._is_lossless_scaling_ini(ini_file):
+            logger.error("ReShade.ini must be beside LosslessScaling.exe: %s", ini_file)
+            return False
+        if not managed_file.is_file() or managed_file.name.casefold() != "reshade.ini":
+            logger.error("Managed ReShade config does not exist: %s", managed_file)
+            return False
+        try:
+            if backup and ini_file.exists():
+                backup_path = ini_file.with_suffix(".ini.bak")
+                if not backup_path.exists():
+                    shutil.copy2(ini_file, backup_path)
+            handle, temp_name = tempfile.mkstemp(prefix=f".{ini_file.name}.", suffix=".tmp", dir=ini_file.parent)
+            try:
+                with os.fdopen(handle, "wb") as stream, open(managed_file, "rb") as source:
+                    shutil.copyfileobj(source, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_name, ini_file)
+            finally:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
+            logger.info("Applied managed ReShade config: %s", managed_file)
+            return True
+        except OSError as error:
+            logger.error("Failed to apply managed ReShade config: %s", error)
             return False

@@ -4,13 +4,41 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from companion.core.models import DllOverrideConfig, Profile
+from companion.core.models import DllOverrideConfig, Profile, SpecialKConfig
 from companion.services.asset_store import AssetStore, UnsafeAssetError
 from companion.services.deployment_manager import DeploymentConflictError, DeploymentManager
 from companion.services.graphics_resolver import GraphicsResolutionError, GraphicsResolver
 
 
 class AssetStoreTests(unittest.TestCase):
+    def test_manual_import_writes_security_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "runtime.dll"
+            source.write_bytes(b"runtime")
+            store = AssetStore(str(root / "store"))
+
+            imported = store.import_file(str(source), allowed_suffixes=(".dll",))
+
+            records = [
+                json.loads(line)
+                for line in (store.logs / "security-audit.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(records[-1]["event"], "manual_asset_imported")
+            self.assertEqual(records[-1]["sha256"], imported["sha256"])
+
+    def test_list_imports_returns_imported_asset_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "runtime.dll"
+            source.write_bytes(b"runtime")
+            store = AssetStore(str(root / "store"))
+            imported = store.import_file(str(source), allowed_suffixes=(".dll",))
+
+            self.assertEqual(store.list_imports(), [imported])
+
     def test_release_archive_is_content_addressed_and_safely_extracted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -62,6 +90,42 @@ class AssetStoreTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.TestCase):
+    def test_runtime_addon_dlls_are_parked_and_reactivated_in_place(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            source = root / "ReShade64.dll.source"
+            source.write_bytes(b"reshade")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+            files = [{
+                "relative_path": "ReShade64.dll",
+                "source_path": str(source),
+                "role": "injector",
+                "source_package": "reshade/6.8.0/hash",
+            }]
+            manager.apply(profile_id="game", lossless_scaling_exe=str(executable), files=files)
+
+            self.assertTrue(manager.set_runtime_packages_active(
+                str(executable), {"reshade"}, active=False
+            ))
+            self.assertFalse((root / "ReShade64.dll").exists())
+            self.assertEqual((root / "ReShade64.dll.inactive").read_bytes(), b"reshade")
+            self.assertFalse(manager.needs_change(
+                "game", files, lossless_scaling_exe=str(executable)
+            ))
+
+            self.assertTrue(manager.set_runtime_packages_active(
+                str(executable), {"reshade"}, active=True
+            ))
+            self.assertEqual((root / "ReShade64.dll").read_bytes(), b"reshade")
+            self.assertFalse((root / "ReShade64.dll.inactive").exists())
+            audit = (manager.store.logs / "security-audit.jsonl").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"event": "runtime_addons_parked"', audit)
+            self.assertIn('"event": "runtime_addons_activated"', audit)
+
     def test_deploy_and_empty_plan_restore_original(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -247,6 +311,66 @@ class GraphicsResolverTests(unittest.TestCase):
             )
             self.assertTrue((ls_root / "Lossless.dll").read_bytes().endswith(b"proxy-engine"))
             self.assertEqual((ls_root / "Lossless_original.dll").read_bytes(), b"original-engine")
+
+    def test_special_k_plan_generates_profile_hdr_and_experimental_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            self._package(
+                store,
+                root,
+                "special-k",
+                "v1",
+                {
+                    "SpecialK64.dll": self._x64_pe(b"special-k"),
+                    "packaged.ini": b"[ignored]",
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [
+                            {"source": "SpecialK64.dll", "destination": "dxgi.dll", "role": "injector"},
+                            {"source": "packaged.ini", "destination": "dxgi.ini", "role": "config"},
+                        ],
+                    }),
+                },
+            )
+            profile = Profile.model_validate({
+                "id": "special-k-profile",
+                "name": "Special K",
+                "graphics": {"special_k": {
+                    "enabled": True,
+                    "version": "v1",
+                    "sdr_to_hdr": True,
+                    "hdr_peak_brightness_nits": 1000,
+                    "hdr_paper_white_nits": 200,
+                    "temporary_windows_hdr": True,
+                    "experimental_reflex": True,
+                    "experimental_smooth_motion": True,
+                }},
+            })
+
+            plan = GraphicsResolver(store).resolve(
+                profile, lossless_scaling_exe=str(executable)
+            )
+            by_destination = {item["relative_path"]: item for item in plan}
+            self.assertEqual(set(by_destination), {"dxgi.dll", "dxgi.ini"})
+            generated = Path(by_destination["dxgi.ini"]["source_path"]).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Use16BitSwapChain=true", generated)
+            self.assertIn("scRGBLuminance_[0]=12.5", generated)
+            self.assertIn("scRGBPaperWhite_[0]=2.5", generated)
+            self.assertIn("TemporaryDesktopHDRMode=true", generated)
+            self.assertIn("[NVIDIA.Reflex]\nEnable=true", generated)
+            self.assertIn("AllowFlipMetering=true", generated)
+
+    def test_special_k_rejects_paper_white_above_peak_brightness(self):
+        with self.assertRaises(ValueError):
+            SpecialKConfig(
+                hdr_peak_brightness_nits=400,
+                hdr_paper_white_nits=500,
+            )
 
 
 if __name__ == "__main__":

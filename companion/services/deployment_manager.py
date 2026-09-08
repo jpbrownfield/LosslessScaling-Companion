@@ -113,9 +113,115 @@ class DeploymentManager:
     def _active_matches_disk(self, root: Path, active: Dict) -> bool:
         for entry in active.get("files", []):
             destination = self._destination(root, entry["relative_path"])
+            if entry.get("inactive"):
+                destination = destination.with_name(destination.name + ".inactive")
             if not destination.is_file() or self._hash(destination) != entry.get("deployed_sha256"):
                 return False
         return True
+
+    @staticmethod
+    def _runtime_provider(entry: Dict) -> Optional[str]:
+        source = str(entry.get("source_package") or "").casefold()
+        for provider in ("reshade", "special-k"):
+            if source.startswith(provider + "/"):
+                suffix = Path(str(entry.get("relative_path") or "")).suffix.casefold()
+                if suffix in {".dll", ".addon32", ".addon64"}:
+                    return provider
+        return None
+
+    def set_runtime_packages_active(
+        self,
+        lossless_scaling_exe: str,
+        providers: Iterable[str],
+        *,
+        active: bool,
+    ) -> bool:
+        """Atomically park/unpark managed ReShade and Special K binaries in place."""
+        requested = {str(item).casefold() for item in providers}
+        if not requested:
+            return False
+        with self._lock:
+            root = self._lossless_root(lossless_scaling_exe)
+            manifest = self._read_manifest()
+            changes = []
+            for entry in manifest.get("files", []):
+                provider = self._runtime_provider(entry)
+                if provider not in requested or bool(entry.get("inactive")) == (not active):
+                    continue
+                enabled_path = self._destination(root, entry["relative_path"])
+                disabled_path = enabled_path.with_name(enabled_path.name + ".inactive")
+                source, destination = (
+                    (disabled_path, enabled_path) if active else (enabled_path, disabled_path)
+                )
+                if not source.is_file() or self._hash(source) != entry.get("deployed_sha256"):
+                    raise DeploymentConflictError(
+                        f"Managed runtime file is missing or modified: {source.name}"
+                    )
+                if destination.exists():
+                    raise DeploymentConflictError(
+                        f"Cannot {'activate' if active else 'deactivate'} {enabled_path.name}; {destination.name} already exists"
+                    )
+                changes.append((entry, source, destination))
+            completed = []
+            try:
+                for entry, source, destination in changes:
+                    os.replace(source, destination)
+                    entry["inactive"] = not active
+                    completed.append((entry, source, destination))
+                if changes:
+                    AssetStore._atomic_json(self.manifest_path, manifest)
+                    self.store.audit(
+                        "runtime_addons_activated" if active else "runtime_addons_parked",
+                        target=str(root),
+                        providers=sorted(requested),
+                        files=[item[0]["relative_path"] for item in changes],
+                    )
+                return bool(changes)
+            except Exception as error:
+                for entry, source, destination in reversed(completed):
+                    if destination.exists() and not source.exists():
+                        os.replace(destination, source)
+                    entry["inactive"] = active
+                self.store.audit(
+                    "runtime_addon_state_change_failed",
+                    outcome="failed",
+                    target=str(root),
+                    providers=sorted(requested),
+                    requested_active=active,
+                    error=type(error).__name__,
+                    message=str(error),
+                )
+                raise
+
+    def runtime_packages_need_state(self, providers: Iterable[str], *, active: bool) -> bool:
+        requested = {str(item).casefold() for item in providers}
+        manifest = self._read_manifest()
+        return any(
+            self._runtime_provider(entry) in requested
+            and bool(entry.get("inactive")) != (not active)
+            for entry in manifest.get("files", [])
+        )
+
+    def _unpark_for_redeployment(self, root: Path, manifest: Dict) -> None:
+        changed = False
+        for entry in manifest.get("files", []):
+            if not entry.get("inactive"):
+                continue
+            enabled = self._destination(root, entry["relative_path"])
+            disabled = enabled.with_name(enabled.name + ".inactive")
+            if enabled.exists():
+                raise DeploymentConflictError(
+                    f"Cannot prepare {enabled.name}; both active and inactive files exist"
+                )
+            if not disabled.is_file() or self._hash(disabled) != entry.get("deployed_sha256"):
+                raise DeploymentConflictError(
+                    f"Managed inactive file is missing or modified: {disabled.name}"
+                )
+            os.replace(disabled, enabled)
+            entry["inactive"] = False
+            changed = True
+        if changed:
+            AssetStore._atomic_json(self.manifest_path, manifest)
 
     def needs_change(
         self,
@@ -163,6 +269,7 @@ class DeploymentManager:
                 return active
 
             root = root or self._lossless_root(lossless_scaling_exe)
+            self._unpark_for_redeployment(root, active)
 
             active_by_path = {item["relative_path"].casefold(): item for item in active.get("files", [])}
             desired_by_path = {item["relative_path"].casefold(): item for item in desired}
@@ -172,7 +279,7 @@ class DeploymentManager:
                 entry = active_by_path[folded]
                 destination = self._destination(root, entry["relative_path"])
                 mutable_config = (
-                    entry.get("role") == "lossless_proxy_config"
+                    entry.get("role") in {"lossless_proxy_config", "special_k_config"}
                     and folded in desired_by_path
                 )
                 if (
@@ -196,6 +303,22 @@ class DeploymentManager:
                     snapshot.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(destination, snapshot)
                 rollback_state.append((destination, snapshot, existed))
+
+            self.store.audit(
+                "deployment_requested",
+                target=str(root),
+                profile_id=profile_id,
+                transaction_id=transaction_id,
+                files=[
+                    {
+                        "relative_path": item["relative_path"],
+                        "sha256": item["sha256"],
+                        "role": item["role"],
+                        "source_package": item.get("source_package"),
+                    }
+                    for item in desired
+                ],
+            )
 
             new_entries = []
             try:
@@ -245,8 +368,15 @@ class DeploymentManager:
                     "files": new_entries,
                 }
                 AssetStore._atomic_json(self.manifest_path, manifest)
+                self.store.audit(
+                    "deployment_applied",
+                    target=str(root),
+                    profile_id=profile_id,
+                    transaction_id=transaction_id,
+                    file_count=len(new_entries),
+                )
                 return manifest
-            except Exception:
+            except Exception as error:
                 for destination, snapshot, existed in reversed(rollback_state):
                     try:
                         if existed and snapshot.is_file():
@@ -256,6 +386,15 @@ class DeploymentManager:
                             destination.unlink()
                     except OSError:
                         pass
+                self.store.audit(
+                    "deployment_rolled_back",
+                    outcome="failed",
+                    target=str(root),
+                    profile_id=profile_id,
+                    transaction_id=transaction_id,
+                    error=type(error).__name__,
+                    message=str(error),
+                )
                 raise
 
     @staticmethod

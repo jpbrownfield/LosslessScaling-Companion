@@ -1,6 +1,7 @@
 import shutil
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from companion.core.models import HotkeyConfig
@@ -11,6 +12,28 @@ FIXTURE = Path(__file__).parent / "fixtures" / "lossless_scaling" / "Settings.xm
 
 
 class LosslessSettingsXmlTests(unittest.TestCase):
+    def test_updates_gpu_route_for_only_the_named_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "Settings.xml"
+            settings_path.write_text(
+                "<Settings><GpuPreferenceChangeCount>2</GpuPreferenceChangeCount>"
+                "<GameProfiles>"
+                "<Profile><Title>First</Title><PreferredGpuId>0</PreferredGpuId><OutputDisplayId>0</OutputDisplayId></Profile>"
+                "<Profile><Title>Second</Title><PreferredGpuId>0</PreferredGpuId><OutputDisplayId>0</OutputDisplayId></Profile>"
+                "</GameProfiles></Settings>",
+                encoding="utf-8",
+            )
+            settings = LosslessSettingsXml(str(settings_path))
+
+            self.assertTrue(settings.gpu_route_changes_required("Second", 2, 3))
+            self.assertTrue(settings.update_gpu_route("Second", 2, 3))
+            self.assertFalse(settings.gpu_route_changes_required("Second", 2, 3))
+            root = ET.parse(settings_path).getroot()
+            profiles = root.findall("./GameProfiles/Profile")
+            self.assertEqual(profiles[0].findtext("PreferredGpuId"), "0")
+            self.assertEqual(profiles[1].findtext("PreferredGpuId"), "2")
+            self.assertEqual(profiles[1].findtext("OutputDisplayId"), "3")
+            self.assertEqual(root.findtext("GpuPreferenceChangeCount"), "3")
     def test_initialization_backup_is_an_untouched_byte_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "Settings.xml"

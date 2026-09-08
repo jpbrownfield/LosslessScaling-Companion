@@ -48,6 +48,28 @@ class ProfileManagerTests(unittest.TestCase):
             self.manager.delete_profile(profile.id)
         self.assertIsNone(self.manager.match_profile(process_name="chrome.exe"))
 
+    def test_native_default_profile_is_added_once_and_cannot_be_deleted(self):
+        native = {
+            "Title": "Lossless Default",
+            "Path": "",
+            "ScalingType": "LS1",
+            "PreferredGpuId": "0",
+        }
+
+        first = self.manager.ensure_lossless_default_profile(native)
+        second = self.manager.ensure_lossless_default_profile(native)
+
+        self.assertEqual(first.id, second.id)
+        self.assertTrue(first.is_default)
+        self.assertEqual(first.lossless_profile_title, "Lossless Default")
+        self.assertEqual(first.native_scaling_settings["ScalingType"], "LS1")
+        self.assertEqual(
+            len([profile for profile in self.manager.config.profiles if profile.is_default]),
+            1,
+        )
+        self.assertFalse(self.manager.delete_profile(first.id))
+        self.assertIsNotNone(self.manager.get_profile_by_id(first.id))
+
     def test_native_import_preview_prefers_executable_filename_before_title(self):
         profile = Profile(
             id="game-profile",
@@ -110,6 +132,33 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertFalse(created.auto_scale)
         self.assertFalse(imported.auto_scale)
         self.assertTrue(self.manager.get_profile_by_id("existing").auto_scale)
+
+    def test_new_profile_clones_default_settings_without_identity_or_runtime_state(self):
+        default = self.manager.ensure_lossless_default_profile({
+            "Title": "Default",
+            "ScalingType": "LS1",
+        })
+        default.graphics.special_k.enabled = True
+        default.rtss.enabled = True
+        default.rtss.framerate_limit = 72
+        default.rtss.learned_framerate_limit = 68
+        default.rtss.managed_target_process = "old.exe"
+        default.custom_notes = "Template note"
+        self.manager.save_config()
+
+        created = self.manager.create_profile_from_process("new-game.exe")
+
+        self.assertNotEqual(created.id, default.id)
+        self.assertFalse(created.is_default)
+        self.assertEqual(created.target_process, "new-game.exe")
+        self.assertIsNone(created.lossless_profile_title)
+        self.assertEqual(created.native_scaling_settings["ScalingType"], "LS1")
+        self.assertTrue(created.graphics.special_k.enabled)
+        self.assertTrue(created.rtss.enabled)
+        self.assertEqual(created.rtss.framerate_limit, 72)
+        self.assertIsNone(created.rtss.learned_framerate_limit)
+        self.assertIsNone(created.rtss.managed_target_process)
+        self.assertEqual(created.custom_notes, "Template note")
 
     def test_profile_schema_contains_only_the_single_autoscale_field(self):
         dumped = Profile(name="Game").model_dump()

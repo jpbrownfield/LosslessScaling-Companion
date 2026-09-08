@@ -1,14 +1,19 @@
 # PyInstaller build definition. Run: pyinstaller LosslessCompanion.spec
 
 from PyInstaller.utils.hooks import collect_submodules
+from pathlib import Path
 
 
 hiddenimports = collect_submodules("pystray")
+benchmark = Path("build/native/LSBenchmark.exe")
+if not benchmark.is_file():
+    raise SystemExit("Build build/native/LSBenchmark.exe before packaging LS Companion")
+benchmark_binaries = [(str(benchmark), "tools")]
 
 a = Analysis(
     ["run_companion.py"],
     pathex=[],
-    binaries=[],
+    binaries=benchmark_binaries,
     datas=[("companion/ui/dashboard.html", "companion/ui")],
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -27,7 +32,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Packed executables attract heuristic detections and obscure reproducibility.
+    upx=False,
     console=False,
     uac_admin=True,
 )
@@ -36,6 +42,6 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     name="LosslessCompanion",
 )

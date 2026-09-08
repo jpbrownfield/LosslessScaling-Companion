@@ -18,7 +18,7 @@ from .gpu_telemetry import WindowsGpuTelemetry
 from .rtss_manager import RtssProfileManager
 
 
-logger = logging.getLogger("LosslessCompanion.DynamicLimiter")
+logger = logging.getLogger("LSCompanion.DynamicLimiter")
 
 
 @dataclass
