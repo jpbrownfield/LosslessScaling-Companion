@@ -101,7 +101,7 @@ class GraphicsSourceDetector:
         return {
             "detected": True,
             "kind": "download",
-            "path": str(newest),
+            "path": str(newest.resolve()),
             "version": name_match.group("version") if name_match else None,
             "message": f"ReShade Full Add-On installer downloaded: {newest.name}",
         }
