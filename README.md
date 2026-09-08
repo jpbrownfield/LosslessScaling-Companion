@@ -107,7 +107,7 @@ python run_companion.py
 
 ### 3. Load the Chrome Extension
 
-Download the [current source archive](https://github.com/jpbrownfield/Lossless-Scaling-Helper/archive/refs/heads/main.zip), extract it, and use its `extension/` directory, or use that directory directly from a repository checkout.
+Download the [current source archive](https://github.com/jpbrownfield/LosslessScaling-Companion/archive/refs/heads/main.zip), extract it, and use its `extension/` directory, or use that directory directly from a repository checkout.
 
 1. Open Google Chrome and navigate to `chrome://extensions/`.
 2. Enable **Developer mode** (toggle in the top-right corner).
