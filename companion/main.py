@@ -29,6 +29,7 @@ from .services.release_providers import ReleaseManager
 from .services.process_lasso_monitor import ProcessLassoScalingMonitor
 from .services.rtss_manager import RtssProfileManager
 from .services.dynamic_limiter import DynamicLimiterController
+from .services.hotkey_listener import GlobalHotkeyListener
 from .ui.tray import CompanionTrayIcon
 
 
@@ -73,6 +74,9 @@ class CompanionApplication:
         )
         self.dynamic_limiter = DynamicLimiterController(
             self.profile_manager, self.state, self.rtss_manager
+        )
+        self.hotkey_listener = GlobalHotkeyListener(
+            self.profile_manager, self.state, self.automation.handle_override_hotkey
         )
         self.server = CompanionWebSocketServer(
             self.profile_manager,
@@ -196,6 +200,7 @@ class CompanionApplication:
             and self.process_watcher.enforce_helper_scaling_control()
         )
         self.process_watcher.launch_lossless_scaling_if_needed()
+        self.hotkey_listener.start()
 
         # Start Server Thread
         self.server_thread = threading.Thread(target=self._run_async_server, daemon=True, name="WSServerThread")
@@ -223,6 +228,7 @@ class CompanionApplication:
             return
         logger.info("Shutting down LS Companion...")
         self.running = False
+        self.hotkey_listener.stop()
         if self.monitor_thread and self.monitor_thread is not threading.current_thread():
             self.monitor_thread.join(timeout=2)
         self.automation.shutdown()

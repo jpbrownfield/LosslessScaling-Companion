@@ -137,7 +137,10 @@ dashboard's Settings view.
 
 Lossless Scaling's configuration is normally read from
 `%LOCALAPPDATA%\Lossless Scaling\Settings.xml`. LS Companion reads its activation
-hotkey and can disable native Auto Scale when Smart Auto Scale is enabled.
+hotkey and can disable native Auto Scale when automatic profile scaling is enabled.
+The optional hotkey override preserves an editable user-facing trigger, assigns
+Lossless Scaling an unmodified F24 internally, and routes the trigger through the
+matching foreground-window profile (or the Default profile when none matches).
 
 On initialization, the companion creates an untouched, one-time
 `Settings.xml.bak` beside `Settings.xml`. If the source XML is invalid or the
@@ -150,11 +153,12 @@ The tray opens one dedicated app-style Edge or Chrome window, re-focusing the
 existing dashboard instead of opening duplicates (and falling back to the default
 browser if neither is available). The window and tray share the LS Companion
 lightning icon. Its collapsible settings panels remember their expanded state.
-The dashboard always follows the
-activation hotkey configured in Lossless Scaling. The General Settings section
-controls Smart Auto Scale and an elevated `ONLOGON` Task Scheduler entry named
-`LosslessScalingHelper`. The companion remains a tray process, and closing or
-minimizing the dashboard window does not stop it.
+By default, the dashboard follows the activation hotkey configured in Lossless
+Scaling. The General Settings section's Scaling Behavior group controls automatic
+profile scaling and the optional hotkey override. It also controls an elevated
+`ONLOGON` Task Scheduler entry named `LosslessScalingHelper`. The companion
+remains a tray process, and closing or minimizing the dashboard window does not
+stop it.
 The red **Revert All Lossless Scaling Settings and Remove Addon Files (Uninstall Companion)** action asks for confirmation, stops Lossless Scaling,
 restores that untouched XML backup, rolls back only manifest-owned files in the
 Lossless Scaling directory, and removes or restores every RTSS profile managed by

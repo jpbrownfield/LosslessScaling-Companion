@@ -7,6 +7,7 @@ from companion.core.models import DllOverrideConfig, Profile, ReshadeConfig
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
 from companion.services.automation import AutomationController
+from companion.services.process_watcher import ProcessInfo
 from companion.services.dll_manager import DllManager
 from companion.services.reshade_manager import ReshadeManager
 
@@ -29,6 +30,40 @@ class ProfileEffectsTests(unittest.TestCase):
             self.events.append(("launch", force))
             self.running = True
             return True
+
+    def test_override_hotkey_uses_default_profile_for_unmatched_foreground_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            default = Profile(id="native-default", name="Default", is_default=True)
+            manager.config.profiles = [default]
+            manager.config.override_lossless_hotkey = True
+            target = ProcessInfo(42, "Unmatched.exe", r"C:\Games\Unmatched.exe", "Game", 99)
+            watcher = Mock()
+            watcher.get_foreground_window_info.return_value = target
+            automation = AutomationController(manager, AppState(), process_watcher=watcher)
+
+            with (
+                patch.object(automation, "activate_profile") as activate,
+                patch.object(automation, "set_scaling", return_value=True) as set_scaling,
+            ):
+                self.assertTrue(automation.handle_override_hotkey())
+
+            activate.assert_called_once_with(
+                default,
+                target.exe_path,
+                force=True,
+                target_pid=42,
+                target_hwnd=99,
+                suppress_auto_scale=True,
+            )
+            set_scaling.assert_called_once_with(
+                True,
+                default,
+                reason="override_hotkey",
+                force=True,
+                target_pid=42,
+                target_hwnd=99,
+            )
 
     def test_reshade_swap_uses_normal_windows_path_and_backup(self):
         with tempfile.TemporaryDirectory() as directory:

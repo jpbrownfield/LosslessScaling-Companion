@@ -248,6 +248,8 @@ class AppConfig(BaseModel):
     auto_route_gpu_to_display: bool = False
     nvidia_rtx_hdr_enabled: bool = False
     minimize_other_windows_on_scale: bool = False
+    override_lossless_hotkey: bool = False
+    override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     process_lasso_performance_mode_scaling: bool = False
     process_lasso_log_path: Optional[str] = None
     rtss_frame_limiting_enabled: bool = False

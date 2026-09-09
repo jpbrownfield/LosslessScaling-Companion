@@ -58,6 +58,28 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
         stop.assert_not_called()
         launch.assert_not_called()
 
+    def test_override_replaces_native_hotkey_with_hidden_f24(self):
+        watcher, settings = self.make_watcher()
+        watcher.profile_manager.config.override_lossless_hotkey = True
+        watcher.profile_manager.config.override_hotkey = HotkeyConfig(
+            modifiers=["ctrl", "shift"], key="g"
+        )
+        settings.control_changes_required.return_value = {"hotkey": True, "auto_scale": False}
+        settings.update_control_settings.return_value = {"hotkey": True, "auto_scale": False}
+
+        with (
+            patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
+            patch.object(watcher, "stop_lossless_scaling") as stop,
+        ):
+            self.assertTrue(watcher.enforce_helper_scaling_control())
+
+        hidden = watcher.profile_manager.config.global_hotkey
+        self.assertEqual((hidden.modifiers, hidden.key), ([], "f24"))
+        settings.read_hotkey.assert_not_called()
+        settings.update_control_settings.assert_called_once()
+        self.assertEqual(settings.update_control_settings.call_args.kwargs["hotkey"].key, "f24")
+        stop.assert_not_called()
+
     def test_unconfigured_install_does_not_touch_native_settings(self):
         watcher, settings = self.make_watcher()
         watcher.profile_manager.config.lossless_control_configured = False

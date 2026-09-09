@@ -260,6 +260,52 @@ class AutomationController:
             not self.state.is_scaling_active, profile, reason=reason, force=True
         )
 
+    def handle_override_hotkey(self) -> bool:
+        """Route the user's proxy hotkey through the profile for the foreground window."""
+        if not self.profile_manager.config.override_lossless_hotkey:
+            return False
+        if self.state.is_scaling_active:
+            return self.set_scaling(
+                False,
+                self.state.current_active_profile,
+                reason="override_hotkey",
+                force=True,
+            )
+        if not self.process_watcher:
+            return False
+        target = self.process_watcher.get_foreground_window_info()
+        if not target:
+            self._set_control_status("error", "No foreground window was available for scaling")
+            return False
+        profile = self.profile_manager.match_target_profile(
+            process_name=target.name,
+            executable_path=target.exe_path,
+        )
+        if profile is None:
+            profile = next(
+                (item for item in self.profile_manager.config.profiles if item.is_default),
+                None,
+            )
+        if profile is None:
+            self._set_control_status("error", "No default Lossless Scaling profile is available")
+            return False
+        self.activate_profile(
+            profile,
+            target.exe_path,
+            force=True,
+            target_pid=target.pid,
+            target_hwnd=target.hwnd,
+            suppress_auto_scale=True,
+        )
+        return self.set_scaling(
+            True,
+            profile,
+            reason="override_hotkey",
+            force=True,
+            target_pid=target.pid,
+            target_hwnd=target.hwnd,
+        )
+
     def reconcile_observed_scaling_state(self, active: bool) -> None:
         """Apply window side effects when LS changes state outside our hotkey path."""
         with self._lock:

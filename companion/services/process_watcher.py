@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 from ..core.profile_manager import ProfileManager
+from ..core.models import HotkeyConfig
 from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
 
@@ -411,45 +412,66 @@ class ProcessWatcher:
             logger.error("Native controls were not changed because the initial Settings.xml backup failed")
             return False
 
-        # Lossless Scaling owns its one global activation hotkey. The helper
-        # reads it and uses the same combination for input injection.
-        native_hotkey = self.lossless_settings.read_hotkey()
-        if native_hotkey is None:
-            logger.warning("Native Lossless Scaling hotkey is unavailable")
-            return False
-        desired_hotkey = native_hotkey.model_copy(
-            update={
-                "hold_delay_ms": config.global_hotkey.hold_delay_ms,
-                "activation_delay_ms": config.global_hotkey.activation_delay_ms,
-            }
-        )
-        if desired_hotkey != config.global_hotkey or config.hotkey_sync_mode != "follow_lossless":
-            config.global_hotkey = desired_hotkey
-            config.hotkey_sync_mode = "follow_lossless"
-            self.profile_manager.save_config()
+        supports_override = hasattr(config, "override_lossless_hotkey")
+        override_enabled = bool(getattr(config, "override_lossless_hotkey", False))
+        if override_enabled:
+            desired_hotkey = HotkeyConfig(
+                modifiers=[],
+                key="f24",
+                hold_delay_ms=config.global_hotkey.hold_delay_ms,
+                activation_delay_ms=config.global_hotkey.activation_delay_ms,
+            )
+            if config.global_hotkey != desired_hotkey:
+                config.global_hotkey = desired_hotkey
+                self.profile_manager.save_config()
+        elif supports_override and config.hotkey_sync_mode == "helper_controls_lossless":
+            desired_hotkey = config.global_hotkey
+        else:
+            native_hotkey = self.lossless_settings.read_hotkey()
+            if native_hotkey is None:
+                logger.warning("Native Lossless Scaling hotkey is unavailable")
+                return False
+            desired_hotkey = native_hotkey.model_copy(
+                update={
+                    "hold_delay_ms": config.global_hotkey.hold_delay_ms,
+                    "activation_delay_ms": config.global_hotkey.activation_delay_ms,
+                }
+            )
+            if desired_hotkey != config.global_hotkey or config.hotkey_sync_mode != "follow_lossless":
+                config.global_hotkey = desired_hotkey
+                config.hotkey_sync_mode = "follow_lossless"
+                self.profile_manager.save_config()
 
-        inspected = self.lossless_settings.control_changes_required(
-            disable_auto_scale=config.disable_native_auto_scale,
-        )
+        control_args = {"disable_auto_scale": config.disable_native_auto_scale}
+        if supports_override and (
+            override_enabled or config.hotkey_sync_mode == "helper_controls_lossless"
+        ):
+            control_args["hotkey"] = desired_hotkey
+        inspected = self.lossless_settings.control_changes_required(**control_args)
         if inspected is None:
             logger.warning("Lossless Scaling control settings are unavailable")
             return False
 
-        needs_write = inspected["auto_scale"]
+        needs_write = inspected["hotkey"] or inspected["auto_scale"]
         if not needs_write:
+            if supports_override and not override_enabled and config.hotkey_sync_mode == "helper_controls_lossless":
+                config.hotkey_sync_mode = "follow_lossless"
+                self.profile_manager.save_config()
             return True
 
         was_running = self.check_is_lossless_scaling_running()
         if was_running and not self.stop_lossless_scaling():
             return False
 
-        updated = self.lossless_settings.update_control_settings(
-            disable_auto_scale=config.disable_native_auto_scale,
-        )
+        updated = self.lossless_settings.update_control_settings(**control_args)
         restarted = True
         if was_running:
             restarted = self.launch_lossless_scaling(force=True)
-        return updated is not None and restarted
+        succeeded = updated is not None and restarted
+        if succeeded and supports_override and not override_enabled and config.hotkey_sync_mode == "helper_controls_lossless":
+            config.hotkey_sync_mode = "follow_lossless"
+            self.profile_manager.save_config()
+        return succeeded
 
     def launch_lossless_scaling_if_needed(self) -> bool:
         """Launches Lossless Scaling if auto-launch is configured and it's not running."""

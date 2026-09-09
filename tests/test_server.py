@@ -78,6 +78,28 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
+    async def test_general_settings_save_configures_editable_hotkey_override(self):
+        self.server.startup_manager = FakeStartupManager()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS",
+            "runAtStartup": False,
+            "smartAutoScaleEnabled": True,
+            "defaultProfileAutoScale": True,
+            "overrideLosslessHotkey": True,
+            "overrideHotkey": {"modifiers": ["ctrl", "shift"], "key": "g"},
+        }))
+
+        self.assertTrue(self.manager.config.override_lossless_hotkey)
+        self.assertEqual(self.manager.config.override_hotkey.modifiers, ["ctrl", "shift"])
+        self.assertEqual(self.manager.config.override_hotkey.key, "g")
+        self.assertEqual(self.manager.config.global_hotkey.modifiers, [])
+        self.assertEqual(self.manager.config.global_hotkey.key, "f24")
+        response = json.loads(websocket.messages[-1])
+        self.assertTrue(response["controlSettings"]["overrideLosslessHotkey"])
+
     def test_benchmark_requires_embedded_workload_and_verified_presentmon(self):
         payload = Path(self.temp_dir.name) / "benchmark-tools"
         payload.mkdir()

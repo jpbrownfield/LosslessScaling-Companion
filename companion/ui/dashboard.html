@@ -208,13 +208,19 @@
         </details>
 
         <details class="settings-group" open>
-          <summary>Smart Auto Scale <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+          <summary>Scaling Behavior <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-group checkbox-group smart-master-setting"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Smart Auto Scale Enabled</label></div>
+            <div class="form-group checkbox-group smart-master-setting"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic profile scaling enabled</label></div>
             <div class="form-row">
               <div class="form-group checkbox-group"><input id="defaultProfileAutoScale" type="checkbox" checked><label for="defaultProfileAutoScale">Autoscale new profiles by default</label></div>
               <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor (for dual GPU PCIE Bandwidth savings)</label></div>
             </div>
+            <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling hotkey</label></div>
+            <div id="overrideHotkeySettings" class="form-row">
+              <div class="form-group"><label for="overrideHotkeyKey">Activation key</label><input id="overrideHotkeyKey" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label>Modifiers</label><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div>
+            </div>
+            <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When enabled, the companion disables Lossless Scaling's native Auto Scale to prevent conflicts, verifies and restores focus to the exact target window, loads that application's ReShade preset and managed custom DLLs into Lossless Scaling, then sends Lossless Scaling's own configured activation hotkey.</p>
             <p class="item-sub" style="white-space:normal">Only profiles with “Automatically scale this application” enabled are started automatically. The monitor option restores only windows minimized by the helper when scaling stops.</p>
           </div>
@@ -595,7 +601,7 @@
             controlSettings = msg.controlSettings;
             renderControlSettings();
             document.getElementById('controlSettingsStatus').textContent = msg.synchronized
-              ? 'Saved. Lossless Scaling hotkey loaded.'
+              ? (controlSettings.overrideLosslessHotkey ? 'Saved. Hotkey override active.' : 'Saved. Lossless Scaling hotkey loaded.')
               : 'Saved, but the Lossless Scaling hotkey could not be read.';
           } else if (msg.type === 'GENERAL_SETTINGS' || msg.type === 'GENERAL_SETTINGS_SAVED') {
             controlSettings = msg.controlSettings;
@@ -605,7 +611,9 @@
             if (msg.type === 'GENERAL_SETTINGS_SAVED') {
               document.getElementById('controlSettingsStatus').textContent =
                 `Saved automatically. Startup task: ${msg.runAtStartup ? 'enabled' : 'disabled'}. ` +
-                (msg.synchronized ? 'Lossless Scaling hotkey loaded.' : 'Lossless Scaling hotkey unavailable.');
+                (msg.synchronized
+                  ? (controlSettings.overrideLosslessHotkey ? 'Hotkey override active.' : 'Lossless Scaling hotkey loaded.')
+                  : 'Lossless Scaling hotkey unavailable.');
             }
           } else if (msg.type === 'RTSS_STATUS') {
             controlSettings = controlSettings || {};
@@ -667,6 +675,15 @@
     function renderControlSettings() {
       if (!controlSettings) return;
       document.getElementById('smartAutoScaleEnabled').checked = controlSettings.smartAutoScaleEnabled !== false;
+      document.getElementById('overrideLosslessHotkey').checked = !!controlSettings.overrideLosslessHotkey;
+      const overrideHotkey = controlSettings.overrideHotkey || controlSettings.hotkey || { modifiers: ['ctrl', 'alt'], key: 's' };
+      const overrideModifiers = overrideHotkey.modifiers || [];
+      document.getElementById('overrideHotkeyKey').value = overrideHotkey.key || 's';
+      document.getElementById('overrideHotkeyCtrl').checked = overrideModifiers.includes('ctrl');
+      document.getElementById('overrideHotkeyAlt').checked = overrideModifiers.includes('alt');
+      document.getElementById('overrideHotkeyShift').checked = overrideModifiers.includes('shift');
+      document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
+      renderOverrideHotkeySettings();
       document.getElementById('defaultProfileAutoScale').checked = controlSettings.defaultProfileAutoScale !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
       renderGpuRoutingSettings();
@@ -685,6 +702,22 @@
       renderRtssStatus(controlSettings.rtssStatus || {});
       renderRtssProfileAvailability();
       renderRtssModeSettings();
+    }
+
+    function renderOverrideHotkeySettings() {
+      const enabled = document.getElementById('overrideLosslessHotkey').checked;
+      document.querySelectorAll('#overrideHotkeySettings input').forEach(input => input.disabled = !enabled);
+      document.getElementById('overrideHotkeySettings').style.opacity = enabled ? '1' : '0.48';
+    }
+
+    function overrideHotkeyPayload() {
+      return {
+        key: document.getElementById('overrideHotkeyKey').value.trim().toLowerCase(),
+        modifiers: [
+          ['overrideHotkeyCtrl', 'ctrl'], ['overrideHotkeyAlt', 'alt'],
+          ['overrideHotkeyShift', 'shift'], ['overrideHotkeyWin', 'win']
+        ].filter(([id]) => document.getElementById(id).checked).map(([, value]) => value)
+      };
     }
 
     function renderGpuRoutingSettings() {
@@ -1341,6 +1374,8 @@
         type: 'SAVE_GENERAL_SETTINGS',
         runAtStartup: document.getElementById('runAtStartup').checked,
         smartAutoScaleEnabled: document.getElementById('smartAutoScaleEnabled').checked,
+        overrideLosslessHotkey: document.getElementById('overrideLosslessHotkey').checked,
+        overrideHotkey: overrideHotkeyPayload(),
         defaultProfileAutoScale: document.getElementById('defaultProfileAutoScale').checked,
         preferredScalingGpuDeviceId: document.getElementById('preferredScalingGpu').value,
         autoRouteGpuToDisplay: document.getElementById('autoRouteGpuToDisplay').checked,
@@ -1367,10 +1402,14 @@
 
     [
       'runAtStartup', 'smartAutoScaleEnabled', 'defaultProfileAutoScale',
+      'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
+      'overrideHotkeyShift', 'overrideHotkeyWin',
       'preferredScalingGpu', 'autoRouteGpuToDisplay', 'nvidiaRtxHdrEnabled',
       'minimizeOtherWindowsOnScale', 'processLassoPerformanceModeScaling',
       'rtssFrameLimitingEnabled', 'rtssDefaultLimitMode'
     ].forEach(id => document.getElementById(id).addEventListener('change', () => scheduleGeneralSettingsSave()));
+    document.getElementById('overrideLosslessHotkey').addEventListener('change', renderOverrideHotkeySettings);
+    document.getElementById('overrideHotkeyKey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssDefaultGpuTargetPercent').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('processLassoLogPath').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssInstallPath').addEventListener('change', () => scheduleGeneralSettingsSave());

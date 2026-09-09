@@ -22,6 +22,7 @@ from ..core.models import (
     AppConfig,
     BrowserFullscreenEvent,
     GraphicsStackConfig,
+    HotkeyConfig,
     ManagedReshadeProfile,
     Profile,
     RtssLimiterConfig,
@@ -377,7 +378,7 @@ class CompanionWebSocketServer:
                 smart_auto_scale_enabled = bool(
                     msg.get("smartAutoScaleEnabled", msg.get("disableNativeAutoScale", True))
                 )
-                self.config.hotkey_sync_mode = "follow_lossless"
+                self._apply_hotkey_override_settings(msg)
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
                 self.state.auto_scale_enabled = smart_auto_scale_enabled
@@ -534,12 +535,12 @@ class CompanionWebSocketServer:
                     for profile, updated in updated_profiles:
                         profile.rtss = updated.rtss
 
+                self._apply_hotkey_override_settings(msg)
                 self.config.run_at_startup = run_at_startup
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.default_profile_auto_scale = requested_default_auto_scale
-                self.config.hotkey_sync_mode = "follow_lossless"
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
                 self.state.auto_scale_enabled = smart_auto_scale_enabled
@@ -1498,6 +1499,11 @@ class CompanionWebSocketServer:
             selected_process_lasso_log and selected_process_lasso_log.is_file()
         )
         gpu_inventory = self.automation.gpu_router.detect()
+        displayed_override_hotkey = self.config.override_hotkey
+        if not self.config.override_lossless_hotkey:
+            displayed_override_hotkey = (
+                self.ls_settings.read_hotkey() or self.config.global_hotkey
+            )
         return {
             "smartAutoScaleEnabled": self.config.disable_native_auto_scale,
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
@@ -1520,7 +1526,39 @@ class CompanionWebSocketServer:
             "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
+            "overrideLosslessHotkey": self.config.override_lossless_hotkey,
+            "overrideHotkey": (
+                displayed_override_hotkey.model_dump()
+            ),
         }
+
+    def _apply_hotkey_override_settings(self, message: Dict) -> None:
+        """Apply proxy-hotkey state while preserving enough state to restore LS."""
+        was_enabled = self.config.override_lossless_hotkey
+        enabled = bool(message.get("overrideLosslessHotkey", was_enabled))
+        current = self.config.override_hotkey
+        payload = message.get("overrideHotkey") or {}
+        requested = HotkeyConfig(
+            modifiers=payload.get("modifiers", current.modifiers),
+            key=payload.get("key", current.key),
+            hold_delay_ms=current.hold_delay_ms,
+            activation_delay_ms=current.activation_delay_ms,
+        )
+        if not requested.modifiers and requested.key == "f24":
+            raise ValueError("F24 without modifiers is reserved as the hidden Lossless Scaling hotkey")
+        self.config.override_hotkey = requested
+        self.config.override_lossless_hotkey = enabled
+        if enabled:
+            self.config.global_hotkey = HotkeyConfig(
+                modifiers=[],
+                key="f24",
+                hold_delay_ms=self.config.global_hotkey.hold_delay_ms,
+                activation_delay_ms=self.config.global_hotkey.activation_delay_ms,
+            )
+            self.config.hotkey_sync_mode = "helper_controls_lossless"
+        elif was_enabled:
+            self.config.global_hotkey = requested.model_copy()
+            self.config.hotkey_sync_mode = "helper_controls_lossless"
 
     def _rtss_limit_for_profile(
         self, profile: Profile, default_mode: Optional[str] = None
