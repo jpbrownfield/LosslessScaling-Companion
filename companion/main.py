@@ -88,6 +88,7 @@ class CompanionApplication:
             self.release_manager,
             rtss_manager=self.rtss_manager,
             dynamic_limiter=self.dynamic_limiter,
+            hotkey_listener=self.hotkey_listener,
         )
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None

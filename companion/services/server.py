@@ -13,7 +13,7 @@ import sys
 import time
 from http import HTTPStatus
 from pathlib import Path
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 from websockets.legacy.server import WebSocketServerProtocol, serve
 from websockets.exceptions import ConnectionClosed
@@ -46,6 +46,9 @@ from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
 
 logger = logging.getLogger("LSCompanion.Server")
 
+if TYPE_CHECKING:
+    from .hotkey_listener import GlobalHotkeyListener
+
 
 class CompanionWebSocketServer:
     PRESENTMON_STARTUP_DELAY_SECONDS = 1.0
@@ -62,6 +65,7 @@ class CompanionWebSocketServer:
         startup_manager: Optional[StartupTaskManager] = None,
         rtss_manager: Optional[RtssProfileManager] = None,
         dynamic_limiter: Optional[DynamicLimiterController] = None,
+        hotkey_listener: Optional["GlobalHotkeyListener"] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -77,6 +81,7 @@ class CompanionWebSocketServer:
             profile_manager.config.rtss_install_path
         )
         self.dynamic_limiter = dynamic_limiter
+        self.hotkey_listener = hotkey_listener
         self.config: AppConfig = profile_manager.config
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
@@ -430,6 +435,8 @@ class CompanionWebSocketServer:
                 synchronized = await asyncio.to_thread(
                     self.process_watcher.enforce_helper_scaling_control
                 ) if self.process_watcher else False
+                if self.hotkey_listener:
+                    self.hotkey_listener.refresh()
                 await websocket.send(json.dumps({
                     "type": "CONTROL_SETTINGS_SAVED",
                     "synchronized": synchronized,
@@ -581,6 +588,8 @@ class CompanionWebSocketServer:
                 synchronized = await asyncio.to_thread(
                     self.process_watcher.enforce_helper_scaling_control
                 ) if self.process_watcher else False
+                if self.hotkey_listener:
+                    self.hotkey_listener.refresh()
                 await websocket.send(json.dumps({
                     "type": "GENERAL_SETTINGS_SAVED",
                     "runAtStartup": startup["enabled"],

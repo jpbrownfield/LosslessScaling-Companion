@@ -81,6 +81,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_general_settings_save_configures_editable_hotkey_override(self):
         self.server.startup_manager = FakeStartupManager()
+        self.server.hotkey_listener = Mock()
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
 
@@ -100,6 +101,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.config.global_hotkey.key, "f24")
         response = json.loads(websocket.messages[-1])
         self.assertTrue(response["controlSettings"]["overrideLosslessHotkey"])
+        self.server.hotkey_listener.refresh.assert_called_once_with()
 
     def test_benchmark_requires_embedded_workload_and_verified_presentmon(self):
         payload = Path(self.temp_dir.name) / "benchmark-tools"

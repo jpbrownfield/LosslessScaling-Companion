@@ -5,7 +5,6 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
-import time
 from ctypes import wintypes
 from typing import Callable, Optional, Tuple
 
@@ -16,7 +15,9 @@ from .input_simulator import InputSimulator
 logger = logging.getLogger("LSCompanion.HotkeyListener")
 
 WM_HOTKEY = 0x0312
-PM_REMOVE = 0x0001
+WM_QUIT = 0x0012
+WM_REFRESH_HOTKEY = 0x8001
+PM_NOREMOVE = 0x0000
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -45,7 +46,9 @@ class GlobalHotkeyListener:
         self.state = state
         self.callback = callback
         self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._thread_id: Optional[int] = None
         self._registered = False
         self._signature: Optional[Tuple] = None
         self._callback_lock = threading.Lock()
@@ -54,13 +57,26 @@ class GlobalHotkeyListener:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
+        self._ready_event.clear()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="GlobalHotkeyListener"
         )
         self._thread.start()
+        self._ready_event.wait(timeout=1)
+
+    def refresh(self) -> None:
+        """Wake the message loop to apply an updated hotkey configuration."""
+        thread_id = self._thread_id
+        if thread_id is not None:
+            ctypes.windll.user32.PostThreadMessageW(
+                thread_id, WM_REFRESH_HOTKEY, 0, 0
+            )
 
     def stop(self) -> None:
         self._stop_event.set()
+        thread_id = self._thread_id
+        if thread_id is not None:
+            ctypes.windll.user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=2)
 
@@ -119,16 +135,28 @@ class GlobalHotkeyListener:
 
     def _run(self) -> None:
         message = wintypes.MSG()
+        self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
+        # Force Windows to create this thread's message queue before start()
+        # returns and another thread can request refresh or shutdown.
+        ctypes.windll.user32.PeekMessageW(
+            ctypes.byref(message), None, 0, 0, PM_NOREMOVE
+        )
         try:
+            self._sync_registration()
+            self._ready_event.set()
             while not self._stop_event.is_set():
-                self._sync_registration()
-                while ctypes.windll.user32.PeekMessageW(
-                    ctypes.byref(message), None, 0, 0, PM_REMOVE
-                ):
-                    if message.message == WM_HOTKEY and message.wParam == HOTKEY_ID:
-                        self._dispatch()
-                time.sleep(0.05)
+                result = ctypes.windll.user32.GetMessageW(
+                    ctypes.byref(message), None, 0, 0
+                )
+                if result <= 0:
+                    break
+                if message.message == WM_HOTKEY and message.wParam == HOTKEY_ID:
+                    self._dispatch()
+                elif message.message == WM_REFRESH_HOTKEY:
+                    self._sync_registration()
         finally:
+            self._ready_event.set()
             if self._registered:
                 ctypes.windll.user32.UnregisterHotKey(None, HOTKEY_ID)
                 self._registered = False
+            self._thread_id = None
