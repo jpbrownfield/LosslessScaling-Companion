@@ -48,6 +48,8 @@ logger = logging.getLogger("LSCompanion.Server")
 
 
 class CompanionWebSocketServer:
+    PRESENTMON_STARTUP_DELAY_SECONDS = 1.0
+
     def __init__(
         self,
         profile_manager: ProfileManager,
@@ -83,6 +85,7 @@ class CompanionWebSocketServer:
         self.client_authority: Dict[WebSocketServerProtocol, str] = {}
         self.addon_update_task: Optional[asyncio.Task] = None
         self.presentmon_detection_task: Optional[asyncio.Task] = None
+        self._background_thread_tasks: Set[asyncio.Task] = set()
         self.addon_update_lock = asyncio.Lock()
         self.addon_update_status: Optional[Dict] = None
         self.benchmark_task: Optional[asyncio.Task] = None
@@ -123,6 +126,19 @@ class CompanionWebSocketServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.presentmon_detection_task
             self.presentmon_detection_task = None
+        # Cancelling a coroutine that awaits asyncio.to_thread() does not stop
+        # its executor worker. Drain server-owned workers before callers tear
+        # down the asset store they may still be reading or writing.
+        while self._background_thread_tasks:
+            pending = tuple(self._background_thread_tasks)
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _run_background_thread(self, function, /, *args, **kwargs):
+        """Run lifecycle-owned blocking work and keep it drainable on shutdown."""
+        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        self._background_thread_tasks.add(task)
+        task.add_done_callback(self._background_thread_tasks.discard)
+        return await asyncio.shield(task)
 
     async def handle_client(self, websocket: WebSocketServerProtocol, path: str = "") -> None:
         parsed_path = urlsplit(path)
@@ -1188,7 +1204,7 @@ class CompanionWebSocketServer:
 
             async def check(provider: str):
                 try:
-                    releases = await asyncio.to_thread(
+                    releases = await self._run_background_thread(
                         self.release_manager.check,
                         provider,
                         channel="stable",
@@ -1201,7 +1217,7 @@ class CompanionWebSocketServer:
 
             checked, sources = await asyncio.gather(
                 asyncio.gather(*(check(provider) for provider in providers)),
-                asyncio.to_thread(GraphicsSourceDetector.status),
+                self._run_background_thread(GraphicsSourceDetector.status),
             )
             latest = {provider: release for provider, release in checked if release}
             packages = self.asset_store.list_packages()
@@ -1374,7 +1390,10 @@ class CompanionWebSocketServer:
 
     async def _detect_presentmon_on_startup(self) -> None:
         try:
-            detected = await asyncio.to_thread(self._discover_official_presentmon)
+            # Let short-lived server instances shut down without starting a
+            # network/cache worker that they will immediately need to drain.
+            await asyncio.sleep(self.PRESENTMON_STARTUP_DELAY_SECONDS)
+            detected = await self._run_background_thread(self._discover_official_presentmon)
             if detected:
                 self._detected_presentmon_path, self._detected_presentmon_sha256 = detected
                 logger.info("Detected verified PresentMon at %s", self._detected_presentmon_path)

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import urllib.request
 import json
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -284,6 +285,36 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="settingsArea"', body)
         finally:
             await self.server.stop()
+
+    async def test_server_stop_drains_startup_detection_worker(self):
+        worker_started = threading.Event()
+        allow_worker_to_finish = threading.Event()
+        cache_path = self.server.release_manager.cache_path
+
+        def delayed_detection():
+            worker_started.set()
+            allow_worker_to_finish.wait(timeout=2)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text("{}", encoding="utf-8")
+            return None
+
+        with patch.object(
+            self.server, "_discover_official_presentmon", side_effect=delayed_detection
+        ):
+            self.server.PRESENTMON_STARTUP_DELAY_SECONDS = 0
+            self.server.presentmon_detection_task = asyncio.create_task(
+                self.server._detect_presentmon_on_startup()
+            )
+            self.assertTrue(await asyncio.to_thread(worker_started.wait, 1))
+            stop_task = asyncio.create_task(self.server.stop())
+            try:
+                await asyncio.sleep(0.05)
+                self.assertFalse(stop_task.done())
+            finally:
+                allow_worker_to_finish.set()
+            await stop_task
+
+        self.assertTrue(cache_path.is_file())
 
     async def test_dashboard_icon_is_served_as_png(self):
         self.manager.config.port = 0
