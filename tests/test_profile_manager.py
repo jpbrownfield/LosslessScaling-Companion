@@ -168,6 +168,18 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertNotIn("auto_scale_on_focus", dumped)
         self.assertNotIn("auto_scale_on_blur", dumped)
 
+    def test_profile_hotkey_is_excluded_from_serialized_payloads(self):
+        dumped = Profile(name="Game").model_dump()
+        self.assertNotIn("hotkey", dumped)
+        # Legacy settings files that still carry a per-profile hotkey must
+        # keep parsing; the value is ignored (only the global hotkey fires).
+        legacy = Profile.model_validate({
+            "name": "Legacy",
+            "hotkey": {"modifiers": ["ctrl"], "key": "x", "activation_delay_ms": 999},
+        })
+        self.assertEqual(legacy.hotkey.activation_delay_ms, 999)
+        self.assertNotIn("hotkey", legacy.model_dump())
+
 
 if __name__ == "__main__":
     unittest.main()

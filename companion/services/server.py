@@ -106,7 +106,12 @@ class CompanionWebSocketServer:
             self.config.host,
             self.config.port,
             process_request=self.process_http_request,
+            # Mute the per-connection open/close lines; with dashboard +
+            # extension reconnects they drown the log and look like a flicker
+            # loop. Real rejects/errors are still logged explicitly.
+            logger=logging.getLogger("LSCompanion.Server.WS"),
         )
+        logging.getLogger("LSCompanion.Server.WS").setLevel(logging.WARNING)
         self.addon_update_task = asyncio.create_task(self._addon_update_loop())
         self.presentmon_detection_task = asyncio.create_task(self._detect_presentmon_on_startup())
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
@@ -145,8 +150,14 @@ class CompanionWebSocketServer:
         task.add_done_callback(self._background_thread_tasks.discard)
         return await asyncio.shield(task)
 
-    async def handle_client(self, websocket: WebSocketServerProtocol, path: str = "") -> None:
-        parsed_path = urlsplit(path)
+    async def handle_client(self, websocket: WebSocketServerProtocol) -> None:
+        # websockets>=11 calls the handler with only the protocol; the HTTP
+        # request path (including ?token=...) lives on websocket.path and
+        # websocket.request_headers. The old (websocket, path) signature
+        # received "" here, so every dashboard/extension socket was closed
+        # with 1008 "Unknown endpoint" and the UI sat on Disconnected /
+        # LS Not Running forever.
+        parsed_path = urlsplit(getattr(websocket, "path", "") or "")
         if parsed_path.path != "/ws":
             await websocket.close(code=1008, reason="Unknown endpoint")
             return
@@ -173,6 +184,7 @@ class CompanionWebSocketServer:
         await websocket.send(json.dumps({
             "type": "INITIAL_STATE",
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
@@ -925,7 +937,9 @@ class CompanionWebSocketServer:
                 prof_id = msg.get("profileId")
                 if prof_id:
                     selected_profile = self.profile_manager.get_profile_by_id(prof_id)
-                    if selected_profile and selected_profile.is_default:
+                    if selected_profile is None:
+                        raise ValueError("Unknown profile")
+                    if selected_profile.is_default:
                         raise ValueError("The Lossless Scaling default profile cannot be deleted")
                     profile = self.profile_manager.get_profile_by_id(prof_id)
                     if profile and profile.rtss.enabled:
@@ -1149,9 +1163,10 @@ class CompanionWebSocketServer:
             return
 
         if event_type == "FULLSCREEN_ENTER":
-            logger.info(f"Triggering Lossless Scaling for fullscreen enter in {profile.hotkey.activation_delay_ms}ms...")
+            delay_ms = self.config.global_hotkey.activation_delay_ms
+            logger.info(f"Triggering Lossless Scaling for fullscreen enter in {delay_ms}ms...")
             # Run delay asynchronously without blocking the event loop
-            await asyncio.sleep(profile.hotkey.activation_delay_ms / 1000.0)
+            await asyncio.sleep(delay_ms / 1000.0)
             
             # Fire hardware hotkey
             await asyncio.to_thread(
@@ -1220,8 +1235,11 @@ class CompanionWebSocketServer:
                         force=force,
                     )
                     return provider, (releases[0] if releases else None)
-                except Exception:
-                    logger.warning("Daily add-on update check failed for %s", provider, exc_info=True)
+                except Exception as error:
+                    # A single provider's site being unreachable or changing
+                    # markup must not spam a full traceback into the log on
+                    # every daily check; one line is enough.
+                    logger.warning("Daily add-on update check failed for %s: %s", provider, error)
                     return provider, None
 
             checked, sources = await asyncio.gather(
@@ -1494,6 +1512,7 @@ class CompanionWebSocketServer:
             "activeProfileId": self.profile_manager.config.active_profile_id,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingRunning": self.state.lossless_scaling_running,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
             "dynamicLimiter": self.state.dynamic_limiter_status,
@@ -1512,6 +1531,7 @@ class CompanionWebSocketServer:
             "activeProfileId": self.profile_manager.config.active_profile_id,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingRunning": self.state.lossless_scaling_running,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
             "dynamicLimiter": self.state.dynamic_limiter_status,
@@ -1606,6 +1626,7 @@ class CompanionWebSocketServer:
         payload = json.dumps({
             "type": "STATE_UPDATE",
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,

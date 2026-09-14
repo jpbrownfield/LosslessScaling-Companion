@@ -490,14 +490,29 @@ class ProcessWatcher:
             self.state.current_foreground_window_title = info.title
             self.state.current_foreground_exe_path = info.exe_path
             self.state.current_foreground_hwnd = info.hwnd
-            
+
             # Match profile if process changed
             matched = self.profile_manager.match_target_profile(
                 process_name=info.name, executable_path=info.exe_path
             )
-            if matched and matched != self.state.current_active_profile:
-                logger.info(f"Switched active profile to: '{matched.name}' for {info.name}")
+            matched_id = matched.id if matched else None
+            current_id = (
+                self.state.current_active_profile.id
+                if self.state.current_active_profile
+                else None
+            )
+            if matched_id != current_id:
+                if matched:
+                    logger.info(f"Switched active profile to: '{matched.name}' for {info.name}")
+                else:
+                    logger.info(f"Cleared active profile for {info.name}")
             if self.on_profile_changed:
+                # Same profile + same window: deployment already matches, so
+                # skip re-activation. Re-running apply() on every HWND change
+                # rewrote the manifests each second and, on a permission
+                # error, left scaling state flapping (the UI flicker).
+                if matched_id == current_id:
+                    return info
                 self.on_profile_changed(
                     matched,
                     info.exe_path,

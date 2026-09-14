@@ -266,6 +266,73 @@ class ProfileEffectsTests(unittest.TestCase):
         self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_browser_profile_never_auto_scales_on_focus(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            for target_process in ("chrome.exe", "msedge.exe"):
+                profile = Profile(
+                    name="Browser", target_process=target_process, auto_scale=True
+                )
+                AutomationController(manager, state).activate_profile(
+                    profile, suppress_auto_scale=False
+                )
+            youtube = Profile(
+                name="YouTube",
+                target_process="chrome.exe",
+                target_domain="youtube.com",
+                auto_scale=True,
+            )
+            AutomationController(manager, state).activate_profile(
+                youtube, suppress_auto_scale=False
+            )
+
+        trigger_hotkey.assert_not_called()
+        self.assertFalse(state.is_scaling_active)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_game_profile_still_auto_scales_on_focus(self, trigger_hotkey):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            profile = Profile(name="Game", target_process="Game.exe", auto_scale=True)
+
+            AutomationController(manager, state).activate_profile(profile)
+
+        trigger_hotkey.assert_called_once()
+        self.assertTrue(state.is_scaling_active)
+
+    def test_observed_scaling_matches_detected_window_to_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            game = Profile(name="Game", target_process="Game.exe")
+            manager.add_or_update_profile(game)
+            state = AppState()
+            automation = AutomationController(manager, state)
+
+            automation.reconcile_observed_scaling_state(
+                True,
+                {"processName": "Game.exe", "exePath": r"C:\Games\Game.exe"},
+            )
+
+            self.assertTrue(state.is_scaling_active)
+            self.assertEqual(state.current_active_profile.id, game.id)
+
+    def test_observed_scaling_ignores_unmatched_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            automation = AutomationController(manager, state)
+
+            automation.reconcile_observed_scaling_state(
+                True,
+                {"processName": "Unknown.exe", "exePath": r"C:\Games\Unknown.exe"},
+            )
+
+            self.assertTrue(state.is_scaling_active)
+            self.assertIsNone(state.current_active_profile)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_unverified_window_refuses_auto_scaling(self, trigger_hotkey):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory) / "config")

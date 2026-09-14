@@ -494,6 +494,29 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.manager.get_profile_by_id(profile.id))
         self.assertEqual(fake_rtss.removed, [profile.id])
 
+    async def test_default_profile_cannot_be_deleted(self):
+        native = self.manager.ensure_lossless_default_profile({"Title": "Default", "Path": ""})
+        self.assertTrue(native.is_default)
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+
+        await self.server.process_message(
+            websocket,
+            json.dumps({"type": "DELETE_PROFILE", "profileId": native.id}),
+        )
+        self.assertIsNotNone(self.manager.get_profile_by_id(native.id))
+        self.assertIn("default profile cannot be deleted", websocket.messages[-1].casefold())
+
+    async def test_delete_unknown_profile_is_rejected(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+
+        await self.server.process_message(
+            websocket,
+            json.dumps({"type": "DELETE_PROFILE", "profileId": "does-not-exist"}),
+        )
+        self.assertIn("unknown profile", websocket.messages[-1].casefold())
+
     async def test_global_rtss_switch_suspends_and_reapplies_profile_settings(self):
         fake_rtss = FakeRtssManager()
         self.server.rtss_manager = fake_rtss
@@ -609,8 +632,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     async def test_fullscreen_enter_and_exit_are_idempotent(self, trigger_hotkey):
-        profile = self.manager.get_profile_by_id("youtube-profile")
-        profile.hotkey.activation_delay_ms = 0
+        self.manager.config.global_hotkey.activation_delay_ms = 0
         watcher = Mock()
         watcher.get_foreground_window_info.return_value = ProcessInfo(
             123,
@@ -640,8 +662,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     async def test_quick_fullscreen_exit_cancels_pending_activation(self, trigger_hotkey):
-        profile = self.manager.get_profile_by_id("youtube-profile")
-        profile.hotkey.activation_delay_ms = 200
+        self.manager.config.global_hotkey.activation_delay_ms = 200
         event = {
             "event": "FULLSCREEN_ENTER",
             "domain": "youtube.com",

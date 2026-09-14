@@ -55,6 +55,50 @@ def changed_paths(previous: Dict[str, FileState], current: Dict[str, FileState])
     )
 
 
+def is_elevated() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def ensure_admin() -> None:
+    """Relaunch this reloader elevated so the companion inherits admin rights.
+
+    Required for ProgramData writes and stopping/restarting Lossless Scaling
+    without WinError 5. Exits the non-elevated copy after relaunching.
+    """
+    if os.name != "nt" or is_elevated():
+        return
+    if os.environ.get("LOSSLESS_COMPANION_ELEVATE_ATTEMPTED") == "1":
+        print(
+            "[reload] warning: still not elevated; ProgramData writes may fail with WinError 5",
+            flush=True,
+        )
+        return
+    os.environ["LOSSLESS_COMPANION_ELEVATE_ATTEMPTED"] = "1"
+    executable = str(Path(sys.executable).resolve())
+    script = str(Path(__file__).resolve())
+    params = subprocess.list2cmdline([script] + sys.argv[1:])
+    print("[reload] requesting elevation (UAC)...", flush=True)
+    try:
+        import ctypes
+
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", executable, params, str(WORKSPACE), 1
+        )
+        if rc <= 32:
+            raise OSError(f"ShellExecuteW failed with code {rc}")
+    except Exception as error:
+        print(f"[reload] elevation request failed: {error}", flush=True)
+        return
+    raise SystemExit(0)
+
+
 def launch_companion() -> subprocess.Popen:
     if not COMPANION_LAUNCHER.is_file():
         raise FileNotFoundError(f"Companion launcher not found: {COMPANION_LAUNCHER}")
@@ -152,6 +196,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also restart the companion when Chrome extension JS/CSS/HTML changes.",
     )
+    parser.add_argument(
+        "--no-elevate",
+        action="store_true",
+        help="Skip the automatic UAC elevation prompt.",
+    )
     args = parser.parse_args()
     if args.poll_interval <= 0 or args.debounce < 0:
         parser.error("--poll-interval must be positive and --debounce cannot be negative")
@@ -160,6 +209,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if not args.no_elevate:
+        ensure_admin()
     return run(args.poll_interval, args.debounce, args.include_extension)
 
 

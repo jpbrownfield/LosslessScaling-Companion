@@ -28,11 +28,29 @@ class UnsafeAssetError(ValueError):
 class AssetStore:
     """Owns packages, imports, staging, deployment manifests, and backups."""
 
-    def __init__(self, root: Optional[str] = None):
-        configured = root or str(
-            Path(os.environ.get("PROGRAMDATA", os.environ.get("LOCALAPPDATA", ".")))
+    @staticmethod
+    def default_root() -> Path:
+        """Return a per-user writable store unless explicitly overridden.
+
+        ``C:\\ProgramData`` requires elevation, so a non-elevated companion
+        can read manifests created by an elevated run but can never write
+        them (WinError 5). Defaulting to LOCALAPPDATA keeps dev runs and the
+        elevated scheduled task on the same user-writable path, and an
+        explicit ``asset_store_path`` still wins.
+        """
+        configured = os.environ.get("LOSSLESS_COMPANION_ASSET_STORE")
+        if configured:
+            return Path(os.path.expandvars(configured))
+        local_root = os.environ.get("LOCALAPPDATA")
+        if local_root:
+            return Path(local_root) / "LosslessScalingHelper"
+        return (
+            Path(os.environ.get("PROGRAMDATA", "."))
             / "LosslessScalingHelper"
         )
+
+    def __init__(self, root: Optional[str] = None):
+        configured = root or str(self.default_root())
         self.root = Path(os.path.expandvars(configured)).resolve()
         self.packages = self.root / "assets" / "packages"
         self.imports = self.root / "assets" / "imports"
@@ -122,7 +140,18 @@ class AssetStore:
                 json.dump(data, stream, indent=2, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temp_name, path)
+            try:
+                os.replace(temp_name, path)
+            except PermissionError as error:
+                # A previous elevated run may own the destination file while
+                # the directory stays writable (WinError 5 on replace only).
+                # Removing first lets the rename succeed without changing
+                # ownership semantics for fresh files.
+                try:
+                    os.remove(path)
+                except OSError:
+                    raise error
+                os.replace(temp_name, path)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)

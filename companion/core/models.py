@@ -207,7 +207,9 @@ class Profile(BaseModel):
     target_executable_path: Optional[str] = None
     target_domain: Optional[str] = None   # e.g., "youtube.com", "twitch.tv"
     auto_scale: bool = False
-    hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
+    # Only AppConfig.global_hotkey triggers scaling. This field is retained so
+    # old settings files still parse, but it is never read and never sent.
+    hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig, exclude=True)
     lossless_profile_title: Optional[str] = None
     lossless_profile_path: Optional[str] = None
     last_imported_hash: Optional[str] = None

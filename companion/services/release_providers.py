@@ -172,16 +172,29 @@ class ReShadeReleaseProvider(ReleaseProvider):
 
     provider_id = "reshade"
     allowed_hosts = frozenset({"reshade.me"})
-    _version_pattern = re.compile(r"Version\s+([0-9]+(?:\.[0-9]+){1,3})\s+was", re.IGNORECASE)
+    # The live homepage wraps the version in markup, e.g.
+    # "<strong>Version 6.8.0</strong> was <a ...>released</a> on ...".
+    # Strip tags first, then try each pattern in order.
+    _version_patterns = (
+        re.compile(r"Version\s+([0-9]+(?:\.[0-9]+){1,3})\s+was\s+released", re.IGNORECASE),
+        re.compile(r"Download\s+ReShade\s+([0-9]+(?:\.[0-9]+){1,3})", re.IGNORECASE),
+        re.compile(r"ReShade\s+([0-9]+(?:\.[0-9]+){1,3})\s+was\s+released", re.IGNORECASE),
+    )
 
     def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
         request = urllib.request.Request("https://reshade.me/", headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=20) as response:
             body = response.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
-        match = self._version_pattern.search(body)
-        if not match:
+        text = re.sub(r"<[^>]+>", " ", body)
+        text = re.sub(r"\s+", " ", text)
+        version = None
+        for pattern in self._version_patterns:
+            match = pattern.search(text)
+            if match:
+                version = match.group(1)
+                break
+        if not version:
             raise RuntimeError("Could not identify the current ReShade version from the official site")
-        version = match.group(1)
         return [
             ReleaseInfo(
                 provider=self.provider_id,

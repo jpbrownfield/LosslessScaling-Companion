@@ -189,7 +189,7 @@
         <details class="settings-group" open>
           <summary>Startup <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content"><div class="form-row">
-            <div class="form-group checkbox-group"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows sign-in (elevated scheduled task)</label></div>
+            <div class="form-group checkbox-group"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows Sign-In (Elevated Scheduled Task)</label></div>
           </div></div>
         </details>
 
@@ -197,10 +197,10 @@
           <summary>GPU Selection <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
             <div class="form-row">
-              <div class="form-group"><label for="preferredScalingGpu">Default scaling GPU</label><select id="preferredScalingGpu"><option value="">Automatic (Lossless Scaling default)</option></select></div>
-              <div class="form-group checkbox-group"><input id="autoRouteGpuToDisplay" type="checkbox"><label for="autoRouteGpuToDisplay">Auto-route GPU to the target display</label></div>
+              <div class="form-group"><label for="preferredScalingGpu">Default Scaling GPU</label><select id="preferredScalingGpu"><option value="">Automatic (Lossless Scaling Default)</option></select></div>
+              <div class="form-group checkbox-group"><input id="autoRouteGpuToDisplay" type="checkbox"><label for="autoRouteGpuToDisplay">Auto-Route GPU to Target Display</label></div>
             </div>
-            <div class="form-group checkbox-group"><input id="nvidiaRtxHdrEnabled" type="checkbox"><label for="nvidiaRtxHdrEnabled">NVIDIA RTX HDR for Lossless Scaling (experimental)</label></div>
+            <div class="form-group checkbox-group"><input id="nvidiaRtxHdrEnabled" type="checkbox"><label for="nvidiaRtxHdrEnabled">NVIDIA RTX HDR for Lossless Scaling (Experimental)</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto-route follows the display containing the scaled window. If it moves to a display driven by another GPU, Companion unscales, updates that Lossless Scaling profile's preferred GPU and output display, restarts Lossless Scaling, restores target focus, and rescales.</p>
             <p class="item-sub" style="white-space:normal">RTX HDR is applied only to the LosslessScaling.exe NVIDIA application profile and takes effect the next time Lossless Scaling starts. Use it with SDR content and do not stack it with Special K or ReShade tone mapping.</p>
@@ -210,14 +210,14 @@
         <details class="settings-group" open>
           <summary>Scaling Behavior <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-group checkbox-group smart-master-setting"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic profile scaling enabled</label></div>
+            <div class="form-group checkbox-group smart-master-setting"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic Profile Scaling Enabled</label></div>
             <div class="form-row">
-              <div class="form-group checkbox-group"><input id="defaultProfileAutoScale" type="checkbox" checked><label for="defaultProfileAutoScale">Autoscale new profiles by default</label></div>
-              <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor (for dual GPU PCIE Bandwidth savings)</label></div>
+              <div class="form-group checkbox-group"><input id="defaultProfileAutoScale" type="checkbox" checked><label for="defaultProfileAutoScale">Autoscale New Profiles by Default</label></div>
+              <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize Other Windows on the Scaled Monitor (for Dual GPU PCIe Bandwidth Savings)</label></div>
             </div>
-            <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling hotkey</label></div>
+            <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey</label></div>
             <div id="overrideHotkeySettings" class="form-row">
-              <div class="form-group"><label for="overrideHotkeyKey">Activation key</label><input id="overrideHotkeyKey" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="overrideHotkeyKey">Activation Key</label><input id="overrideHotkeyKey" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
               <div class="form-group"><label>Modifiers</label><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div>
             </div>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
@@ -367,11 +367,6 @@
           <input type="text" id="losslessProfileTitle" placeholder="Default">
         </div>
 
-        <div class="form-group">
-          <label>Activation Delay (ms)</label>
-          <input type="number" id="activationDelay" value="300">
-        </div>
-
         <div class="form-group checkbox-group">
           <input type="checkbox" id="autoScale" checked>
           <label for="autoScale" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Automatically scale this application</label>
@@ -503,6 +498,19 @@
     </div>
   </div>
 
+  <!-- Shared confirm / notice dialog. Replaces native confirm()/alert() so
+       prompts render inside the dashboard instead of a browser popup. -->
+  <div id="confirmModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+    <div class="modal-content" style="width:440px">
+      <div class="modal-header"><h3 id="confirmModalTitle" style="color: var(--accent);">Confirm</h3><button id="confirmModalCloseBtn" type="button" aria-label="Close" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button></div>
+      <p id="confirmModalMessage" class="item-sub" style="white-space:normal;line-height:1.5"></p>
+      <div class="modal-actions">
+        <button id="confirmModalCancelBtn" class="btn btn-secondary" type="button">Cancel</button>
+        <button id="confirmModalOkBtn" class="btn btn-primary" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let ws = null;
     let runningProcesses = [];
@@ -522,8 +530,94 @@
     const addonDetectionChecks = {};
     let visibleAddonUpdateKeys = [];
 
+    let wsReconnectTimer = null;
+    let wsIntentionalClose = false;
+
+    // In-dashboard confirm/notice dialog. confirmDialog(message) resolves to
+    // true/false; noticeDialog(message) shows OK only. Both render inside the
+    // page so no native browser popup ever appears.
+    let confirmDialogResolve = null;
+    function closeConfirmDialog(result) {
+      document.getElementById('confirmModal').classList.remove('active');
+      if (confirmDialogResolve) {
+        const resolve = confirmDialogResolve;
+        confirmDialogResolve = null;
+        resolve(result);
+      }
+    }
+    function showConfirmDialog({ title, message, okLabel, cancelLabel, danger }) {
+      document.getElementById('confirmModalTitle').textContent = title || 'Confirm';
+      document.getElementById('confirmModalMessage').textContent = message || '';
+      const okBtn = document.getElementById('confirmModalOkBtn');
+      okBtn.textContent = okLabel || 'OK';
+      okBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+      const cancelBtn = document.getElementById('confirmModalCancelBtn');
+      if (cancelLabel === null) {
+        cancelBtn.style.display = 'none';
+      } else {
+        cancelBtn.style.display = '';
+        cancelBtn.textContent = cancelLabel || 'Cancel';
+      }
+      document.getElementById('confirmModal').classList.add('active');
+      if (cancelLabel === null) {
+        okBtn.focus();
+      } else {
+        cancelBtn.focus();
+      }
+      return new Promise(resolve => { confirmDialogResolve = resolve; });
+    }
+    function confirmDialog(message, options) {
+      return showConfirmDialog({ message, ...options });
+    }
+    function noticeDialog(message, title) {
+      return showConfirmDialog({ title: title || 'Notice', message, okLabel: 'OK', cancelLabel: null });
+    }
+    document.getElementById('confirmModalOkBtn').onclick = () => closeConfirmDialog(true);
+    document.getElementById('confirmModalCancelBtn').onclick = () => closeConfirmDialog(false);
+    document.getElementById('confirmModalCloseBtn').onclick = () => closeConfirmDialog(false);
+    document.getElementById('confirmModal').onclick = event => {
+      if (event.target === document.getElementById('confirmModal')) closeConfirmDialog(false);
+    };
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && document.getElementById('confirmModal').classList.contains('active')) {
+        closeConfirmDialog(false);
+      }
+    });
+
     function connectWS() {
-      ws = new WebSocket(`ws://${location.host}/ws?token=__COMPANION_TOKEN__`);
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+      wsIntentionalClose = false;
+      let wsUrl;
+      try {
+        wsUrl = `ws://${location.host}/ws?token=__COMPANION_TOKEN__`;
+      } catch (urlError) {
+        document.getElementById('statusPill').textContent = 'Page not served by companion (bad URL)';
+        document.getElementById('statusPill').style.color = '#ef4444';
+        return;
+      }
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (socketError) {
+        document.getElementById('statusPill').textContent = 'Socket blocked: ' + (socketError && socketError.message ? socketError.message : socketError);
+        document.getElementById('statusPill').style.color = '#ef4444';
+        return;
+      }
+
+      ws.onerror = (event) => {
+        // onerror carries no detail; surface where it failed so a blank
+        // "Disconnected" can't hide a bad URL, CSP block, or refused port.
+        try {
+          console.error('[dashboard] WebSocket error', event);
+        } catch (ignored) { /* console may be unavailable */ }
+        document.getElementById('statusPill').textContent = 'Socket error — check console (F12)';
+        document.getElementById('statusPill').style.color = '#ef4444';
+      };
 
       ws.onopen = () => {
         document.getElementById('statusPill').textContent = 'Connected';
@@ -553,7 +647,21 @@
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'ERROR') {
-            document.getElementById('statusPill').textContent = msg.message || 'Error';
+            const errorText = msg.message || 'Error';
+            // The companion regenerates its capability token on every
+            // launch. A dashboard opened before a restart holds a stale
+            // token and lands as readonly; the first rejected action tells
+            // us. Reload the page body (fresh token) instead of making the
+            // user close and reopen the window by hand.
+            if (/capability token/i.test(errorText) && !window.__tokenRefreshDone) {
+              window.__tokenRefreshDone = true;
+              document.getElementById('statusPill').textContent = 'Refreshing session...';
+              noticeDialog(
+                'The companion restarted and issued a new session token. Reloading the dashboard to pick it up.'
+              ).then(() => window.location.reload());
+              return;
+            }
+            document.getElementById('statusPill').textContent = errorText;
             document.getElementById('statusPill').style.color = '#ef4444';
             document.getElementById('revertAllChangesBtn').disabled = false;
             document.getElementById('performanceBenchmarkStatus').textContent = msg.message || 'Benchmark operation failed.';
@@ -653,23 +761,55 @@
         }
       };
 
-      ws.onclose = () => {
-        document.getElementById('statusPill').textContent = 'Disconnected';
+      ws.onclose = (event) => {
+        // Surface the close code/reason instead of a bare "Disconnected" so
+        // a refused handshake (1008), a gone server, or a stale cached page
+        // can be told apart at a glance.
+        const code = event && event.code ? ` (${event.code})` : '';
+        const reason = event && event.reason ? `: ${event.reason}` : '';
+        document.getElementById('statusPill').textContent = `Disconnected${code}${reason}`;
         document.getElementById('statusPill').style.color = '#ef4444';
-        setTimeout(connectWS, 3000);
+        // Polling loops elsewhere re-request data on their own timers; only
+        // schedule one reconnect. Without the guard, overlapping timers
+        // opened a socket every ~3s, which is the open/close storm in the
+        // companion log and makes runtimeInfo flap on every handshake.
+        if (!wsIntentionalClose && !wsReconnectTimer) {
+          wsReconnectTimer = setTimeout(() => {
+            wsReconnectTimer = null;
+            connectWS();
+          }, 3000);
+        }
       };
     }
+
+    let lastRuntimeLabel = null;
+    let lastRuntimeColor = null;
 
     function renderRuntime(msg) {
       const profile = msg.activeProfile && msg.activeProfile.name;
       const target = msg.scalingTarget && msg.scalingTarget.processName;
       const control = msg.scalingControl || {};
-      document.getElementById('runtimeInfo').textContent =
-        `${msg.isScalingActive ? 'Scaling active' : 'Idle'}` +
+      const running = msg.losslessScalingRunning === undefined ? null : !!msg.losslessScalingRunning;
+      // "Running" = LS process alive but idle; "Scaling active" = overlay/log
+      // confirmed. Never show a bare Idle when we simply have no data yet.
+      const stateLabel = msg.isScalingActive
+        ? 'Scaling active'
+        : (running === true ? 'LS Running (Idle)' : (running === false ? 'LS Not Running' : 'Idle'));
+      const text =
+        `${stateLabel}` +
         `${profile ? ` · ${profile}` : ''}` + `${target ? ` · ${target}` : ''}` +
         `${control.state === 'error' ? ` · ${control.message}` : ''}`;
-      document.getElementById('runtimeInfo').style.color =
-        control.state === 'error' ? '#ef4444' : 'var(--text-muted)';
+      const color =
+        control.state === 'error' ? '#ef4444' : (msg.isScalingActive ? '#10b981' : 'var(--text-muted)');
+      // STATE_UPDATE arrives every second; skip DOM writes when nothing
+      // changed so the label can't visibly flicker on re-render.
+      if (text === lastRuntimeLabel && color === lastRuntimeColor) {
+        return;
+      }
+      lastRuntimeLabel = text;
+      lastRuntimeColor = color;
+      document.getElementById('runtimeInfo').textContent = text;
+      document.getElementById('runtimeInfo').style.color = color;
     }
 
     function renderControlSettings() {
@@ -1037,13 +1177,12 @@
       listEl.innerHTML = filtered.map(p => `
         <div class="profile-item">
           <div class="item-info">
-            <span class="item-title">${p.id === activeProfileId ? '✓ ' : ''}${escapeHtml(p.name)}${p.is_default ? ' <span class="integration-status detected">Default</span>' : ''}</span>
-            <span class="item-sub">Target: ${escapeHtml(p.is_default ? 'Lossless Scaling default' : (p.target_process || p.target_domain || 'Global Fallback'))} | Hotkey: ${p.hotkey.modifiers.join('+')}+${p.hotkey.key.toUpperCase()}${p.rtss && p.rtss.enabled ? ` | RTSS: ${p.rtss.learned_framerate_limit ? `learned ${p.rtss.learned_framerate_limit}` : p.rtss.framerate_limit} FPS` : ''}</span>
+            <span class="item-title">${escapeHtml(p.name)}${p.is_default ? ' <span class="integration-status detected">Default</span>' : ''}</span>
+            <span class="item-sub">Target: ${escapeHtml(p.is_default ? 'Lossless Scaling default' : (p.target_process || p.target_domain || 'Global Fallback'))}${p.rtss && p.rtss.enabled ? ` | RTSS: ${p.rtss.learned_framerate_limit ? `learned ${p.rtss.learned_framerate_limit}` : p.rtss.framerate_limit} FPS` : ''}</span>
           </div>
           <div style="display:flex; gap:6px;">
-            <button class="btn btn-primary" onclick="activateProfile('${p.id}')" ${p.id === activeProfileId ? 'disabled' : ''}>Activate</button>
-            <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>
-            <button class="btn btn-danger" onclick="deleteProfile('${p.id}')" ${p.is_default ? 'disabled title="The Lossless Scaling default profile cannot be deleted"' : ''}>&times;</button>
+            <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>${p.is_default ? '' : `
+            <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">&times;</button>`}
           </div>
         </div>
       `).join('');
@@ -1105,7 +1244,9 @@
       if (profile) openReshadeProfileModal(profile);
     };
     window.deleteReshadeProfile = id => {
-      if (confirm('Delete this named ReShade profile and its generated INI files?')) ws.send(JSON.stringify({ type: 'DELETE_RESHADE_PROFILE', profileId: id }));
+      confirmDialog('Delete this named ReShade profile and its generated INI files?', { title: 'Delete ReShade Profile', danger: true }).then(accepted => {
+        if (accepted) ws.send(JSON.stringify({ type: 'DELETE_RESHADE_PROFILE', profileId: id }));
+      });
     };
 
     function escapeHtml(text) {
@@ -1154,7 +1295,6 @@
         document.getElementById('targetExecutablePath').value = profile.target_executable_path || '';
         document.getElementById('targetDomain').value = profile.target_domain || '';
         document.getElementById('losslessProfileTitle').value = profile.lossless_profile_title || '';
-        document.getElementById('activationDelay').value = profile.hotkey.activation_delay_ms;
         document.getElementById('autoScale').checked = profile.auto_scale !== false;
         const rtss = profile.rtss || {};
         document.getElementById('rtssEnabled').checked = !!rtss.enabled;
@@ -1231,8 +1371,7 @@
         target_process: procName,
         target_executable_path: exePath,
         target_domain: '',
-        auto_scale: !controlSettings || controlSettings.defaultProfileAutoScale !== false,
-        hotkey: { key: 's', modifiers: ['ctrl', 'alt'], activation_delay_ms: 300 }
+        auto_scale: !controlSettings || controlSettings.defaultProfileAutoScale !== false
       });
     };
 
@@ -1247,13 +1386,11 @@
       const warning = managesRtss
         ? 'Delete this helper profile and its associated RTSS limiter profile? This will remove helper-created RTSS data or restore the limiter values that existed before the helper managed it.'
         : 'Delete this profile?';
-      if (confirm(warning)) {
-        ws.send(JSON.stringify({ type: 'DELETE_PROFILE', profileId, confirmRtssRemoval: managesRtss }));
-      }
-    };
-
-    window.activateProfile = function(profileId) {
-      ws.send(JSON.stringify({ type: 'SET_ACTIVE_PROFILE', profileId }));
+      confirmDialog(warning, { title: 'Delete Profile', danger: true }).then(accepted => {
+        if (accepted) {
+          ws.send(JSON.stringify({ type: 'DELETE_PROFILE', profileId, confirmRtssRemoval: managesRtss }));
+        }
+      });
     };
 
     const processModal = document.getElementById('processModal');
@@ -1345,15 +1482,17 @@
     document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
     document.getElementById('resetRtssCalibrationBtn').onclick = () => {
       const profileId = document.getElementById('profileId').value;
-      if (!profileId) return alert('Save this profile before resetting calibration.');
-      if (!confirm('Erase all learned GPU-utilization metrics, gameplay baselines, and identified frame limits for this profile?')) return;
-      ws.send(JSON.stringify({ type: 'RESET_RTSS_CALIBRATION', profileId }));
+      if (!profileId) { noticeDialog('Save this profile before resetting calibration.'); return; }
+      confirmDialog('Erase all learned GPU-utilization metrics, gameplay baselines, and identified frame limits for this profile?', { title: 'Reset Calibration', danger: true }).then(accepted => {
+        if (accepted) ws.send(JSON.stringify({ type: 'RESET_RTSS_CALIBRATION', profileId }));
+      });
     };
     document.getElementById('manualRtssCalibrationBtn').onclick = () => {
       const profileId = document.getElementById('profileId').value;
-      if (!profileId) return alert('Save and activate this profile before starting manual calibration.');
-      if (!confirm('Start a five-minute manual calibration window? Begin playing a representative gameplay section now.')) return;
-      ws.send(JSON.stringify({ type: 'START_RTSS_MANUAL_CALIBRATION', profileId }));
+      if (!profileId) { noticeDialog('Save and activate this profile before starting manual calibration.'); return; }
+      confirmDialog('Start a five-minute manual calibration window? Begin playing a representative gameplay section now.', { title: 'Manual Calibration' }).then(accepted => {
+        if (accepted) ws.send(JSON.stringify({ type: 'START_RTSS_MANUAL_CALIBRATION', profileId }));
+      });
     };
     function saveGeneralSettings() {
       if (!generalSettingsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -1362,33 +1501,43 @@
       const managedCount = profiles.filter(profile => profile.rtss && profile.rtss.enabled).length;
       const deactivatesRtss = !!(controlSettings && controlSettings.rtssFrameLimitingEnabled) &&
         (!rtssEnabled || (controlSettings.rtssInstallPath || '').toLowerCase() !== rtssPath.toLowerCase());
-      if (managedCount && deactivatesRtss && !confirm(
-        `This will deactivate ${managedCount} managed RTSS limiter profile(s). Their FPS limits, methods, and enabled selections will remain saved and will be reapplied when RTSS integration is enabled again. Continue?`
-      )) {
-        renderControlSettings();
-        document.getElementById('controlSettingsStatus').textContent = 'Automatic save cancelled; previous RTSS settings restored.';
+      const proceedWithSave = () => {
+        document.getElementById('controlSettingsStatus').textContent = 'Saving automatically...';
+        ws.send(JSON.stringify({
+          type: 'SAVE_GENERAL_SETTINGS',
+          runAtStartup: document.getElementById('runAtStartup').checked,
+          smartAutoScaleEnabled: document.getElementById('smartAutoScaleEnabled').checked,
+          overrideLosslessHotkey: document.getElementById('overrideLosslessHotkey').checked,
+          overrideHotkey: overrideHotkeyPayload(),
+          defaultProfileAutoScale: document.getElementById('defaultProfileAutoScale').checked,
+          preferredScalingGpuDeviceId: document.getElementById('preferredScalingGpu').value,
+          autoRouteGpuToDisplay: document.getElementById('autoRouteGpuToDisplay').checked,
+          nvidiaRtxHdrEnabled: document.getElementById('nvidiaRtxHdrEnabled').checked,
+          minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
+          processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
+          processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
+          rtssFrameLimitingEnabled: rtssEnabled,
+          rtssInstallPath: rtssPath,
+          rtssDefaultLimitMode: document.getElementById('rtssDefaultLimitMode').value,
+          rtssDefaultGpuTargetPercent: Number(document.getElementById('rtssDefaultGpuTargetPercent').value),
+          confirmRtssGlobalChange: managedCount > 0 && deactivatesRtss
+        }));
+      };
+      if (managedCount && deactivatesRtss) {
+        confirmDialog(
+          `This will deactivate ${managedCount} managed RTSS limiter profile(s). Their FPS limits, methods, and enabled selections will remain saved and will be reapplied when RTSS integration is enabled again. Continue?`,
+          { title: 'Deactivate RTSS Profiles' }
+        ).then(accepted => {
+          if (accepted) {
+            proceedWithSave();
+          } else {
+            renderControlSettings();
+            document.getElementById('controlSettingsStatus').textContent = 'Automatic save cancelled; previous RTSS settings restored.';
+          }
+        });
         return;
       }
-      document.getElementById('controlSettingsStatus').textContent = 'Saving automatically...';
-      ws.send(JSON.stringify({
-        type: 'SAVE_GENERAL_SETTINGS',
-        runAtStartup: document.getElementById('runAtStartup').checked,
-        smartAutoScaleEnabled: document.getElementById('smartAutoScaleEnabled').checked,
-        overrideLosslessHotkey: document.getElementById('overrideLosslessHotkey').checked,
-        overrideHotkey: overrideHotkeyPayload(),
-        defaultProfileAutoScale: document.getElementById('defaultProfileAutoScale').checked,
-        preferredScalingGpuDeviceId: document.getElementById('preferredScalingGpu').value,
-        autoRouteGpuToDisplay: document.getElementById('autoRouteGpuToDisplay').checked,
-        nvidiaRtxHdrEnabled: document.getElementById('nvidiaRtxHdrEnabled').checked,
-        minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
-        processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
-        processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
-        rtssFrameLimitingEnabled: rtssEnabled,
-        rtssInstallPath: rtssPath,
-        rtssDefaultLimitMode: document.getElementById('rtssDefaultLimitMode').value,
-        rtssDefaultGpuTargetPercent: Number(document.getElementById('rtssDefaultGpuTargetPercent').value),
-        confirmRtssGlobalChange: managedCount > 0 && deactivatesRtss
-      }));
+      proceedWithSave();
     }
 
     function scheduleGeneralSettingsSave(delay = 650) {
@@ -1421,11 +1570,13 @@
     };
     document.getElementById('revertAllChangesBtn').onclick = () => {
       const warning = 'Revert All Lossless Scaling Settings and Remove Addon Files (Uninstall Companion)?\n\nThis restores the original Lossless Scaling Settings.xml, removes or restores all helper-managed RTSS profiles, and removes deployed add-on files from the Lossless Scaling directory. Downloaded assets and ordinary helper profiles are kept, but their add-on and RTSS selections are cleared. This cannot be undone from LS Companion.';
-      if (!confirm(warning)) return;
-      const button = document.getElementById('revertAllChangesBtn');
-      button.disabled = true;
-      document.getElementById('controlSettingsStatus').textContent = 'Stopping Lossless Scaling and reverting helper-managed changes...';
-      ws.send(JSON.stringify({ type: 'REVERT_ALL_CHANGES', confirmRevertAll: true }));
+      confirmDialog(warning, { title: 'Revert All Changes', okLabel: 'Revert', danger: true }).then(accepted => {
+        if (!accepted) return;
+        const button = document.getElementById('revertAllChangesBtn');
+        button.disabled = true;
+        document.getElementById('controlSettingsStatus').textContent = 'Stopping Lossless Scaling and reverting helper-managed changes...';
+        ws.send(JSON.stringify({ type: 'REVERT_ALL_CHANGES', confirmRevertAll: true }));
+      });
     };
     document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
     function downloadBenchmarkTool(provider, button) {
@@ -1441,10 +1592,12 @@
       downloadBenchmarkTool('presentmon', this);
     };
     document.getElementById('startPerformanceBenchmarkBtn').onclick = function () {
-      if (!confirm("Run the GPU-intensive scaling test using the Default profile's current settings? It will open the workload for about two minutes.")) return;
-      this.disabled = true;
-      document.getElementById('performanceBenchmarkStatus').textContent = 'Starting performance test...';
-      ws.send(JSON.stringify({ type: 'START_PERFORMANCE_BENCHMARK' }));
+      confirmDialog("Run the GPU-intensive scaling test using the Default profile's current settings? It will open the workload for about two minutes.", { title: 'Run Benchmark' }).then(accepted => {
+        if (!accepted) return;
+        this.disabled = true;
+        document.getElementById('performanceBenchmarkStatus').textContent = 'Starting performance test...';
+        ws.send(JSON.stringify({ type: 'START_PERFORMANCE_BENCHMARK' }));
+      });
     };
     document.getElementById('openConfigFolderBtn').onclick = () => {
       document.getElementById('configFolderStatus').textContent = 'Opening configuration folder...';
@@ -1463,12 +1616,14 @@
     document.querySelectorAll('[data-addon-install]').forEach(button => {
       button.onclick = () => {
         const provider = button.dataset.addonInstall;
-        if (!confirm(`Install the latest verified ${provider} release?`)) return;
+        confirmDialog(`Install the latest verified ${provider} release?`, { title: 'Install Add-on' }).then(accepted => {
+          if (!accepted) return;
         setGraphicsStatus(`Downloading and verifying ${provider}...`);
         ws.send(JSON.stringify({
           type: 'INSTALL_LATEST_GRAPHICS_ADDON', provider,
           operationId: crypto.randomUUID().replaceAll('-', '')
-        }));
+          }));
+        });
       };
     });
     document.getElementById('selectDlssnrRuntimeBtn').onclick = () => {
@@ -1494,12 +1649,6 @@
           native_scaling_settings: editingOriginalProfile && editingOriginalProfile.native_scaling_settings || {},
           custom_notes: editingOriginalProfile && editingOriginalProfile.custom_notes || null,
           auto_scale: document.getElementById('autoScale').checked,
-          hotkey: {
-            modifiers: (controlSettings && controlSettings.hotkey && controlSettings.hotkey.modifiers) || ['ctrl', 'alt'],
-            key: (controlSettings && controlSettings.hotkey && controlSettings.hotkey.key) || 's',
-            activation_delay_ms: Number(document.getElementById('activationDelay').value),
-            hold_delay_ms: (controlSettings && controlSettings.hotkey && controlSettings.hotkey.hold_delay_ms) || 50
-          },
           rtss: {
             enabled: document.getElementById('rtssEnabled').checked,
             limit_mode: document.getElementById('rtssLimitMode').value,
@@ -1577,14 +1726,20 @@
       const oldTarget = rtssTarget(editingOriginalProfile);
       const newTarget = rtssTarget(payload.profile);
       const removesRtss = oldRtssEnabled && (!newRtssEnabled || oldTarget !== newTarget);
+      const submitProfile = () => {
+        ws.send(JSON.stringify(payload));
+        document.getElementById('profileModal').classList.remove('active');
+      };
       if (removesRtss) {
-        const accepted = confirm('This change will remove the existing RTSS limiter profile for the old executable. Helper-created RTSS data will be deleted; pre-existing limiter values will be restored. Continue?');
-        if (!accepted) return;
-        payload.confirmRtssRemoval = true;
+        confirmDialog('This change will remove the existing RTSS limiter profile for the old executable. Helper-created RTSS data will be deleted; pre-existing limiter values will be restored. Continue?', { title: 'Remove RTSS Profile', danger: true }).then(accepted => {
+          if (!accepted) return;
+          payload.confirmRtssRemoval = true;
+          submitProfile();
+        });
+        return;
       }
 
-      ws.send(JSON.stringify(payload));
-      document.getElementById('profileModal').classList.remove('active');
+      submitProfile();
     };
 
     document.querySelectorAll('[data-collapsible-id]').forEach(panel => {

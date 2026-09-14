@@ -17,6 +17,7 @@ let socket = null;
 let isConnected = false;
 let reconnectTimer = null;
 let heartbeatTimer = null;
+let reconnectAttempts = 0;
 let cachedSettings = { ...DEFAULT_SETTINGS };
 
 // Load settings
@@ -24,6 +25,15 @@ chrome.storage.local.get(DEFAULT_SETTINGS, (items) => {
   cachedSettings = items;
   connectWebSocket();
 });
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+  // Back off so a refused connection doesn't hammer the companion with a
+  // new handshake every 3s (the open/close storm in the server log).
+  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30000);
+  reconnectAttempts += 1;
+  reconnectTimer = setTimeout(connectWebSocket, delay);
+}
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
@@ -54,6 +64,7 @@ function connectWebSocket() {
     socket.onopen = () => {
       console.log('[LS Bridge] Connected to Python companion.');
       isConnected = true;
+      reconnectAttempts = 0;
       updateConnectionStatus(true);
 
       // Start heartbeat
@@ -74,11 +85,11 @@ function connectWebSocket() {
     };
 
     socket.onclose = () => {
-      console.log('[LS Bridge] Disconnected. Retrying in 3s...');
+      console.log('[LS Bridge] Disconnected. Retrying with backoff...');
       isConnected = false;
       updateConnectionStatus(false);
       clearInterval(heartbeatTimer);
-      reconnectTimer = setTimeout(connectWebSocket, 3000);
+      scheduleReconnect();
     };
 
     socket.onerror = (err) => {
@@ -89,7 +100,7 @@ function connectWebSocket() {
     console.error('[LS Bridge] Connection init failed:', err);
     isConnected = false;
     updateConnectionStatus(false);
-    reconnectTimer = setTimeout(connectWebSocket, 3000);
+    scheduleReconnect();
   }
 }
 
@@ -113,6 +124,7 @@ function handleServerMessage(msg) {
     chrome.storage.local.set({
       serverState: {
         isScalingActive: !!msg.isScalingActive,
+        losslessScalingRunning: msg.losslessScalingRunning === undefined ? null : !!msg.losslessScalingRunning,
         activeProfile: msg.activeProfile || null,
         scalingTarget: msg.scalingTarget || null
       }

@@ -30,7 +30,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const serverState = settings.serverState;
         if (serverState) {
           const profile = serverState.activeProfile && serverState.activeProfile.name;
-          scalingInfo.textContent = `Scaling: ${serverState.isScalingActive ? 'active' : 'idle'}${profile ? ` · ${profile}` : ''}`;
+          const stateLabel = serverState.isScalingActive
+            ? 'active'
+            : (serverState.losslessScalingRunning === true ? 'running (idle)'
+              : (serverState.losslessScalingRunning === false ? 'LS not running' : 'idle'));
+          scalingInfo.textContent = `Scaling: ${stateLabel}${profile ? ` · ${profile}` : ''}`;
         }
       }
     });

@@ -306,11 +306,26 @@ class AutomationController:
             target_hwnd=target.hwnd,
         )
 
-    def reconcile_observed_scaling_state(self, active: bool) -> None:
+    def reconcile_observed_scaling_state(self, active: bool, target: Optional[Dict] = None) -> None:
         """Apply window side effects when LS changes state outside our hotkey path."""
         with self._lock:
             previous = self.state.is_scaling_active
             self.state.is_scaling_active = active
+            if active and target:
+                matched = self.profile_manager.match_target_profile(
+                    process_name=target.get("processName"),
+                    executable_path=target.get("exePath"),
+                )
+                if matched is not None and (
+                    self.state.current_active_profile is None
+                    or self.state.current_active_profile.id != matched.id
+                ):
+                    logger.info(
+                        "Detected scaled window '%s'; matched profile '%s'",
+                        target.get("processName"),
+                        matched.name,
+                    )
+                    self.state.current_active_profile = matched
             self._set_control_status(
                 "confirmed",
                 f"Observed Lossless Scaling {'active' if active else 'idle'}",
@@ -676,8 +691,19 @@ class AutomationController:
             and self.state.auto_scale_enabled
             and not suppress_auto_scale
         ):
-            if target_pid is not None and profile.hotkey.activation_delay_ms:
-                time.sleep(profile.hotkey.activation_delay_ms / 1000.0)
+            # Browser profiles scale only on an explicit extension event
+            # (reason="browser_video"). Focusing chrome.exe — including our
+            # own dashboard --app window — must never auto-scale it, or the
+            # Chrome profile latches on with nothing actually scaling.
+            if self._is_browser_profile(profile):
+                logger.debug(
+                    "Skipped focus auto-scale for browser profile '%s'; waiting for extension event",
+                    profile.name,
+                )
+                return
+            delay_ms = self.profile_manager.config.global_hotkey.activation_delay_ms
+            if target_pid is not None and delay_ms:
+                time.sleep(delay_ms / 1000.0)
             self.set_scaling(
                 True,
                 profile,

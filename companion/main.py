@@ -30,6 +30,7 @@ from .services.process_lasso_monitor import ProcessLassoScalingMonitor
 from .services.rtss_manager import RtssProfileManager
 from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
+from .services.single_instance import SingleInstanceGuard
 from .ui.tray import CompanionTrayIcon
 
 
@@ -43,7 +44,8 @@ class CompanionApplication:
         self.profile_manager.ensure_lossless_default_profile(self.ls_settings.get_profile())
         self._next_settings_backup_check = 0.0
         self.ls_inspector = LosslessScalingInspector(
-            settings_xml_path=self.profile_manager.config.lossless_settings_xml_path
+            settings_xml_path=self.profile_manager.config.lossless_settings_xml_path,
+            lossless_exe_path=self.profile_manager.config.lossless_scaling_exe_path,
         )
         self.process_watcher = ProcessWatcher(
             self.profile_manager,
@@ -95,6 +97,7 @@ class CompanionApplication:
         self.server_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self.running = False
+        self._instance_guard: Optional[SingleInstanceGuard] = None
         self._last_runtime_snapshot = None
         self._native_auto_scale_enforced = False
         self._next_native_auto_scale_check = 0.0
@@ -157,7 +160,7 @@ class CompanionApplication:
                 if not self.state.benchmark_mode_active:
                     self.process_watcher.check_foreground_and_update()
                     self.process_lasso_monitor.poll()
-                self.process_watcher.check_is_lossless_scaling_running()
+                lossless_running = self.process_watcher.check_is_lossless_scaling_running()
                 
                 # Check live scaling target via log / overlay
                 if not self.state.benchmark_mode_active:
@@ -170,11 +173,15 @@ class CompanionApplication:
                     )
                     self.state.current_scaled_target = target_info.to_dict()
                     if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
-                        self.automation.reconcile_observed_scaling_state(target_info.is_active)
+                        self.automation.reconcile_observed_scaling_state(
+                            target_info.is_active,
+                            self.state.current_scaled_target,
+                        )
                     self.automation.reconcile_gpu_route()
                     self.dynamic_limiter.poll()
                 snapshot = (
                     self.state.is_scaling_active,
+                    lossless_running,
                     self.state.current_active_profile.id if self.state.current_active_profile else None,
                     self.state.current_foreground_process,
                     self.state.current_scaled_target.get("processName"),
@@ -193,6 +200,19 @@ class CompanionApplication:
 
     def start(self):
         logger.info("Initializing LS Companion...")
+        self._instance_guard = SingleInstanceGuard()
+        if not self._instance_guard.acquire():
+            holder = self._instance_guard.holder_pid
+            detail = f" (PID {holder})" if holder else ""
+            logger.error(
+                "Another LS Companion instance is already running%s; exiting",
+                detail,
+            )
+            print(
+                f"Another LS Companion instance is already running{detail}; exiting.",
+                flush=True,
+            )
+            return
         self.running = True
 
         # Check / Launch Lossless Scaling
@@ -226,6 +246,10 @@ class CompanionApplication:
 
     def stop(self):
         if not self.running:
+            guard = getattr(self, "_instance_guard", None)
+            if guard is not None:
+                guard.release()
+                self._instance_guard = None
             return
         logger.info("Shutting down LS Companion...")
         self.running = False
@@ -237,6 +261,10 @@ class CompanionApplication:
 
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(lambda: None)
+        guard = getattr(self, "_instance_guard", None)
+        if guard is not None:
+            guard.release()
+            self._instance_guard = None
 
 
 
