@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -15,8 +16,61 @@ class GraphicsResolutionError(RuntimeError):
 
 
 class GraphicsResolver:
-    def __init__(self, store: AssetStore):
+    def __init__(self, store: AssetStore, bundled_reshade_bridge_dir: Optional[str] = None):
         self.store = store
+        self._reshade_bridge_dir = (
+            Path(bundled_reshade_bridge_dir).resolve()
+            if bundled_reshade_bridge_dir else None
+        )
+
+    def _bundled_reshade_bridge_files(self) -> List[Dict]:
+        if self._reshade_bridge_dir is not None:
+            candidates = [self._reshade_bridge_dir]
+        else:
+            candidates = []
+            frozen_root = getattr(sys, "_MEIPASS", None)
+            if frozen_root:
+                candidates.append(Path(frozen_root) / "addons" / "LSP-ReShade")
+            candidates.append(
+                Path(__file__).resolve().parents[2] / "build" / "native" / "LSP-ReShade"
+            )
+
+        directory = next(
+            (
+                item for item in candidates
+                if (item / "LSC_ReShadeBridge.dll").is_file()
+                and (item / "addon.json").is_file()
+            ),
+            None,
+        )
+        if directory is None:
+            raise GraphicsResolutionError(
+                "ReShade with LosslessProxy requires the bundled LS Companion ReShade bridge; "
+                "reinstall LS Companion or build its native bridge"
+            )
+
+        binary = self._require_x64(
+            (directory / "LSC_ReShadeBridge.dll").resolve(strict=True),
+            "The bundled LS Companion ReShade bridge",
+        )
+        manifest = (directory / "addon.json").resolve(strict=True)
+        try:
+            metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise GraphicsResolutionError(f"The bundled ReShade bridge manifest is invalid: {error}") from error
+        if not isinstance(metadata, dict) or metadata.get("dll") != binary.name:
+            raise GraphicsResolutionError("The bundled ReShade bridge manifest does not match its DLL")
+
+        package = "reshade/bundled-ls-companion-bridge/1.0.0"
+        return [
+            {
+                "relative_path": f"addons/LSP-ReShade/{source.name}",
+                "source_path": str(source),
+                "role": "lossless_addon",
+                "source_package": package,
+            }
+            for source in (binary, manifest)
+        ]
 
     def _package(self, provider: str, config: ManagedPackageConfig) -> Optional[Dict]:
         if not config.enabled:
@@ -294,6 +348,8 @@ class GraphicsResolver:
         reshade_package = self._package("reshade", graphics.reshade)
         if reshade_package:
             files.extend(self._recipe_files(reshade_package))
+            if proxy_package:
+                files.extend(self._bundled_reshade_bridge_files())
 
         special_k_package = self._package("special-k", graphics.special_k)
         if special_k_package:

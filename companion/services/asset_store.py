@@ -168,6 +168,7 @@ class AssetStore:
         *,
         expected_sha256: Optional[str] = None,
         allowed_suffixes: Optional[Iterable[str]] = None,
+        source_metadata: Optional[Dict] = None,
     ) -> Dict:
         source_path = Path(source).resolve(strict=True)
         if not source_path.is_file():
@@ -195,6 +196,7 @@ class AssetStore:
             "architecture": self.pe_architecture(destination)
             if destination.suffix.casefold() in {".dll", ".exe"}
             else None,
+            "source": source_metadata or {"kind": "manual-import"},
         }
         self._atomic_json(destination_dir / "asset.json", metadata)
         self.audit(

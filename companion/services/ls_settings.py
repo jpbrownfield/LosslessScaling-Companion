@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import copy
 import logging
 import shutil
 import tempfile
@@ -283,6 +284,58 @@ class LosslessSettingsXml:
             return False
 
         for key, value in values.items():
+            if not key or not key.replace("_", "").isalnum():
+                raise ValueError(f"Invalid XML setting name: {key!r}")
+            node = target.find(key)
+            if node is None:
+                node = ET.SubElement(target, key)
+            if isinstance(value, bool):
+                node.text = str(value).lower()
+            elif value is None:
+                node.text = ""
+            elif not isinstance(value, (str, int, float)):
+                raise ValueError(f"XML setting {key!r} must be a scalar value")
+            else:
+                node.text = str(value)
+
+        self._write_tree(tree, backup=backup)
+        return True
+
+    def upsert_profile(
+        self,
+        title: str,
+        values: Dict[str, object],
+        *,
+        template_title: Optional[str] = None,
+        backup: bool = True,
+    ) -> bool:
+        """Update a named profile or create it from a native profile template."""
+        if not self.path.is_file():
+            return False
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("Lossless Scaling profile title is required")
+
+        tree = ET.parse(self.path)
+        root = tree.getroot()
+        profiles_node = root.find("GameProfiles")
+        if profiles_node is None:
+            profiles_node = ET.SubElement(root, "GameProfiles")
+        target = self._find_profile(root, normalized_title)
+        if target is None:
+            template = self._find_profile(root, template_title) if template_title else None
+            if template is None:
+                template = self._find_profile(root, None)
+            target = copy.deepcopy(template) if template is not None else ET.Element("Profile")
+            profiles_node.append(target)
+
+        title_node = target.find("Title")
+        if title_node is None:
+            title_node = ET.SubElement(target, "Title")
+        title_node.text = normalized_title
+        for key, value in values.items():
+            if key == "Title":
+                continue
             if not key or not key.replace("_", "").isalnum():
                 raise ValueError(f"Invalid XML setting name: {key!r}")
             node = target.find(key)

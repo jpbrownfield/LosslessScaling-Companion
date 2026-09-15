@@ -10,6 +10,7 @@ from .models import Profile
 
 class AppState:
     def __init__(self):
+        self.simulation_mode: bool = False
         self.is_scaling_active: bool = False
         self.current_scaled_target: Dict[str, Any] = {}
         self.current_active_profile: Optional[Profile] = None

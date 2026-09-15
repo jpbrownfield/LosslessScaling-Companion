@@ -1,0 +1,10 @@
+{
+  "name": "LS Companion ReShade Bridge",
+  "version": "1.0.0",
+  "author": "LS Companion contributors; derived from LSP-ReShade",
+  "description": "Safely focuses the Lossless Scaling presentation window so its ReShade overlay can receive keyboard and mouse input.",
+  "min_host_version": "0.3.0",
+  "dependencies": [],
+  "tags": ["reshade", "input", "overlay", "ls-companion"],
+  "dll": "LSC_ReShadeBridge.dll"
+}

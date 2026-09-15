@@ -183,6 +183,7 @@ class CompanionWebSocketServer:
         # Send initial handshake / status
         await websocket.send(json.dumps({
             "type": "INITIAL_STATE",
+            "simulationMode": self.state.simulation_mode,
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
@@ -228,6 +229,7 @@ class CompanionWebSocketServer:
                 "BROWSE_GENERAL_PATH",
                 "GET_RESHADE_PROFILES",
                 "SAVE_RESHADE_PROFILE",
+                "IMPORT_RESHADE_PRESET",
                 "DELETE_RESHADE_PROFILE",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
@@ -265,6 +267,10 @@ class CompanionWebSocketServer:
                 elif kind == "rtss_directory":
                     status = self.rtss_manager.status(self.config.rtss_install_path)
                     current_path = self.config.rtss_install_path or status.get("path")
+                elif kind == "program_executable":
+                    current_path = str(msg.get("currentPath") or "") or None
+                elif kind == "reshade_preset":
+                    current_path = str(msg.get("currentPath") or "") or None
                 else:
                     raise ValueError("Unsupported settings path picker")
                 selected = await asyncio.to_thread(
@@ -342,6 +348,17 @@ class CompanionWebSocketServer:
                 profile = ManagedReshadeProfile.model_validate(msg.get("profile") or {})
                 result = await asyncio.to_thread(self.reshade_profiles.save, profile)
                 await websocket.send(json.dumps({"type": "RESHADE_PROFILE_SAVED", "profile": result}))
+                return
+
+            if msg_type == "IMPORT_RESHADE_PRESET":
+                selected = await asyncio.to_thread(
+                    choose_general_setting_path, "reshade_preset", None
+                )
+                if not selected:
+                    await websocket.send(json.dumps({"type": "RESHADE_PROFILE_IMPORT_CANCELLED"}))
+                    return
+                result = await asyncio.to_thread(self.reshade_profiles.import_preset, selected)
+                await websocket.send(json.dumps({"type": "RESHADE_PROFILE_IMPORTED", "profile": result}))
                 return
 
             if msg_type == "DELETE_RESHADE_PROFILE":
@@ -460,6 +477,7 @@ class CompanionWebSocketServer:
                 run_at_startup = bool(msg.get("runAtStartup", False))
                 smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
                 gpu_inventory = self.automation.gpu_router.detect()
+                requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
                 detected_gpu_ids = {
                     str(item.get("deviceId") or "").casefold()
                     for item in gpu_inventory.get("gpus", [])
@@ -467,12 +485,29 @@ class CompanionWebSocketServer:
                 requested_gpu_id = str(
                     msg.get("preferredScalingGpuDeviceId") or ""
                 ).strip() or None
-                if requested_gpu_id and requested_gpu_id.casefold() not in detected_gpu_ids:
+                if requested_auto_route:
+                    requested_gpu_id = None
+                elif requested_gpu_id and requested_gpu_id.casefold() not in detected_gpu_ids:
                     raise ValueError("Select a currently detected GPU")
-                requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
                 requested_rtx_hdr = bool(msg.get("nvidiaRtxHdrEnabled", False))
                 if requested_rtx_hdr and not gpu_inventory.get("hasNvidia"):
                     raise ValueError("NVIDIA RTX HDR requires a detected NVIDIA GPU")
+                requested_reshade_peak = self.config.reshade_hdr_peak_nits
+                requested_reshade_peak_raw = msg.get(
+                    "reshadeHdrPeakNits", requested_reshade_peak
+                )
+                if requested_reshade_peak_raw is None or requested_reshade_peak_raw == "":
+                    requested_reshade_peak = None
+                else:
+                    requested_reshade_peak_value = float(requested_reshade_peak_raw)
+                    if not requested_reshade_peak_value.is_integer():
+                        raise ValueError("ReShade HDR peak brightness must be a whole number")
+                    requested_reshade_peak = int(requested_reshade_peak_value)
+                    if not 80 <= requested_reshade_peak <= 10000:
+                        raise ValueError("ReShade HDR peak brightness must be between 80 and 10000 nits")
+                reshade_peak_changed = (
+                    requested_reshade_peak != self.config.reshade_hdr_peak_nits
+                )
                 enable_rtss = bool(msg.get("rtssFrameLimitingEnabled", False))
                 requested_default_mode = str(msg.get("rtssDefaultLimitMode") or "static")
                 if requested_default_mode not in {"static", "dynamic"}:
@@ -481,9 +516,7 @@ class CompanionWebSocketServer:
                 if not 1.0 <= requested_gpu_target <= 100.0:
                     raise ValueError("Default Lossless Scaling GPU target must be between 1 and 100")
                 requested_rtss_path = str(msg.get("rtssInstallPath") or "").strip() or None
-                requested_default_auto_scale = bool(
-                    msg.get("defaultProfileAutoScale", True)
-                )
+                requested_default_auto_scale = smart_auto_scale_enabled
                 managed_rtss_profiles = [
                     profile for profile in self.config.profiles if profile.rtss.enabled
                 ]
@@ -575,6 +608,7 @@ class CompanionWebSocketServer:
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
+                self.config.reshade_hdr_peak_nits = requested_reshade_peak
                 self.config.default_profile_auto_scale = requested_default_auto_scale
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
@@ -594,6 +628,8 @@ class CompanionWebSocketServer:
                 self.config.rtss_default_gpu_target_percent = requested_gpu_target
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                if reshade_peak_changed:
+                    await asyncio.to_thread(self.reshade_profiles.refresh_hdr_peak_settings)
                 await asyncio.to_thread(
                     self.automation.reconcile_window_management_setting
                 )
@@ -639,6 +675,10 @@ class CompanionWebSocketServer:
                 provider = str(msg.get("provider") or "")
                 if provider not in {"lossless-proxy", "lsp-neural-render"}:
                     raise ValueError("This add-on cannot be installed automatically")
+                if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
+                    raise ValueError(
+                        "Confirm the warning for the community-modified DLSS 5 runtime"
+                    )
                 releases = await asyncio.to_thread(
                     self.release_manager.check, provider, channel="stable", force=True
                 )
@@ -667,6 +707,73 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
+                if provider == "lsp-neural-render":
+                    runtime_provider = "dlssnr-community-runtime"
+                    runtime_releases = await asyncio.to_thread(
+                        self.release_manager.check,
+                        runtime_provider,
+                        channel="stable",
+                        force=True,
+                    )
+                    runtime_release = next(
+                        (item for item in runtime_releases if item.get("assets")), None
+                    )
+                    if runtime_release is None:
+                        raise ValueError("No community DLSS 5 runtime is currently available")
+                    runtime_asset = runtime_release["assets"][0]
+                    if not str(runtime_asset.get("digest") or "").startswith("sha256:"):
+                        raise UnsafeAssetError(
+                            "The community runtime release has no publisher SHA-256 digest"
+                        )
+                    runtime_package = await asyncio.to_thread(
+                        self.release_manager.stage_release,
+                        runtime_provider,
+                        str(runtime_release.get("version") or ""),
+                        str(runtime_asset.get("name") or ""),
+                        f"{str(msg.get('operationId') or '')}nr",
+                        channel="stable",
+                    )
+                    payload = Path(runtime_package["payload_path"]).resolve(strict=True)
+                    runtime_matches = [
+                        (payload / Path(str(item.get("relative_path") or ""))).resolve(strict=True)
+                        for item in runtime_package.get("files", [])
+                        if Path(str(item.get("relative_path") or "")).name.casefold()
+                        == "nvngx_dlssnr.dll"
+                    ]
+                    if len(runtime_matches) != 1 or payload not in runtime_matches[0].parents:
+                        raise UnsafeAssetError(
+                            "The verified runtime archive must contain exactly one nvngx_dlssnr.dll"
+                        )
+                    runtime_source = runtime_matches[0]
+                    if self.asset_store.pe_architecture(runtime_source) != "x64":
+                        raise UnsafeAssetError(
+                            "The downloaded DLSS neural-rendering runtime is not a valid x64 DLL"
+                        )
+                    runtime_file = next(
+                        item for item in runtime_package["files"]
+                        if Path(str(item.get("relative_path") or "")).name.casefold()
+                        == "nvngx_dlssnr.dll"
+                    )
+                    runtime = await asyncio.to_thread(
+                        self.asset_store.import_file,
+                        str(runtime_source),
+                        expected_sha256=str(runtime_file.get("sha256") or ""),
+                        allowed_suffixes=(".dll",),
+                        source_metadata={
+                            "kind": "community-release",
+                            "provider": runtime_provider,
+                            "version": runtime_package.get("version"),
+                            "archive_sha256": runtime_package.get("archive_sha256"),
+                            "publisher_digest_verified": True,
+                            "warning": "Community-modified, unsigned NVIDIA-derived runtime",
+                        },
+                    )
+                    await websocket.send(json.dumps({
+                        "type": "NEURAL_RENDER_BUNDLE_STAGED",
+                        "package": result,
+                        "runtime": runtime,
+                    }))
+                    return
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
                 return
 
@@ -852,6 +959,15 @@ class CompanionWebSocketServer:
                         prof_data = merge_template(draft, prof_data)
                         prof_data["is_default"] = False
                     prof = Profile.model_validate(prof_data)
+                    has_target = bool(
+                        prof.is_default
+                        or prof.target_domain
+                        or prof.target_process
+                        or prof.target_executable_path
+                        or prof.target_processes
+                        or prof.target_executable_paths
+                    )
+                    prof.lossless_profile_title = prof.name if has_target else None
                     if (
                         prof.graphics.special_k.experimental_smooth_motion
                         and not self.automation.gpu_router.detect().get("hasNvidia")
@@ -872,6 +988,8 @@ class CompanionWebSocketServer:
                         calibration_changed = (
                             previous.target_process != prof.target_process
                             or previous.target_executable_path != prof.target_executable_path
+                            or previous.target_processes != prof.target_processes
+                            or previous.target_executable_paths != prof.target_executable_paths
                             or previous.rtss.limit_mode != prof.rtss.limit_mode
                             or previous.rtss.gpu_target_percent != prof.rtss.gpu_target_percent
                             or previous.rtss.minimum_framerate_limit != prof.rtss.minimum_framerate_limit
@@ -901,7 +1019,7 @@ class CompanionWebSocketServer:
                         )
                         self.rtss_manager.clear_metadata(prof)
                         previous = None
-                    if prof.rtss.enabled:
+                    if prof.rtss.enabled and has_target:
                         if not self.config.rtss_frame_limiting_enabled:
                             raise ValueError("Turn on RTSS Frame Limiting in General Settings first")
                         target_name = self.rtss_manager._target_process(prof).casefold()
@@ -921,6 +1039,61 @@ class CompanionWebSocketServer:
                         )
                     else:
                         self.rtss_manager.clear_metadata(prof)
+                    native_settings_changed = bool(
+                        prof.lossless_profile_title
+                        and (
+                            previous is None
+                            or previous.lossless_profile_title != prof.lossless_profile_title
+                            or previous.native_scaling_settings != prof.native_scaling_settings
+                        )
+                    )
+                    if native_settings_changed:
+                        native_values = dict(prof.native_scaling_settings)
+                        if (
+                            self.config.lossless_control_configured
+                            and self.config.disable_native_auto_scale
+                        ):
+                            native_values["AutoScale"] = False
+                            prof.native_scaling_settings["AutoScale"] = "false"
+                        native_settings_available = self.ls_settings.path.is_file()
+                        if native_settings_available:
+                            was_running = bool(
+                                self.process_watcher
+                                and await asyncio.to_thread(
+                                    self.process_watcher.check_is_lossless_scaling_running
+                                )
+                            )
+                            if was_running and not await asyncio.to_thread(
+                                self.process_watcher.stop_lossless_scaling
+                            ):
+                                raise RuntimeError(
+                                    "Lossless Scaling could not be stopped for the profile settings update"
+                                )
+                            try:
+                                await asyncio.to_thread(
+                                    self.ls_settings.upsert_profile,
+                                    prof.lossless_profile_title,
+                                    native_values,
+                                    template_title=(
+                                        previous.lossless_profile_title
+                                        if previous and previous.lossless_profile_title
+                                        else next(
+                                            (
+                                                item.lossless_profile_title
+                                                for item in self.config.profiles
+                                                if item.is_default and item.lossless_profile_title
+                                            ),
+                                            None,
+                                        )
+                                    ),
+                                )
+                            finally:
+                                if was_running:
+                                    await asyncio.to_thread(
+                                        self.process_watcher.launch_lossless_scaling,
+                                        force=True,
+                                    )
+                        prof.last_imported_hash = None
                     self.profile_manager.add_or_update_profile(prof)
                     logger.info(f"Saved profile: {prof.name}")
                     if self.state.current_active_profile and self.state.current_active_profile.id == prof.id:
@@ -930,6 +1103,11 @@ class CompanionWebSocketServer:
                             prof.target_executable_path,
                             force=True,
                         )
+                    await websocket.send(json.dumps({
+                        "type": "PROFILE_SAVED",
+                        "profile": prof.model_dump(mode="json"),
+                        "requestId": msg.get("requestId"),
+                    }))
                     await self.broadcast_full_data_update()
                 return
 
@@ -1507,6 +1685,7 @@ class CompanionWebSocketServer:
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
+            "simulationMode": self.state.simulation_mode,
             "processes": procs,
             "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
             "activeProfileId": self.profile_manager.config.active_profile_id,
@@ -1526,6 +1705,7 @@ class CompanionWebSocketServer:
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
+            "simulationMode": self.state.simulation_mode,
             "processes": procs,
             "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
             "activeProfileId": self.profile_manager.config.active_profile_id,
@@ -1572,6 +1752,7 @@ class CompanionWebSocketServer:
             "preferredScalingGpuDeviceId": self.config.preferred_scaling_gpu_device_id or "",
             "autoRouteGpuToDisplay": self.config.auto_route_gpu_to_display,
             "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
+            "reshadeHdr": self.reshade_profiles.hdr_settings_payload(),
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
             "overrideLosslessHotkey": self.config.override_lossless_hotkey,
@@ -1625,6 +1806,7 @@ class CompanionWebSocketServer:
             return
         payload = json.dumps({
             "type": "STATE_UPDATE",
+            "simulationMode": self.state.simulation_mode,
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,

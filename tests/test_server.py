@@ -195,16 +195,31 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "runAtStartup": False,
             "smartAutoScaleEnabled": True,
             "preferredScalingGpuDeviceId": device_id,
+            "autoRouteGpuToDisplay": False,
+            "nvidiaRtxHdrEnabled": True,
+            "reshadeHdrPeakNits": 1400,
+        }))
+
+        self.assertEqual(self.manager.config.preferred_scaling_gpu_device_id, device_id)
+        self.assertFalse(self.manager.config.auto_route_gpu_to_display)
+        self.assertTrue(self.manager.config.nvidia_rtx_hdr_enabled)
+        self.assertEqual(self.manager.config.reshade_hdr_peak_nits, 1400)
+        self.automation.nvidia_profile_manager.set_lossless_scaling_rtx_hdr.assert_called_once()
+        response = json.loads(websocket.messages[-1])
+        self.assertTrue(response["controlSettings"]["hasNvidiaGpu"])
+        self.assertEqual(response["controlSettings"]["reshadeHdr"]["resolvedNits"], 1400)
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS",
+            "runAtStartup": False,
+            "smartAutoScaleEnabled": True,
+            "preferredScalingGpuDeviceId": device_id,
             "autoRouteGpuToDisplay": True,
             "nvidiaRtxHdrEnabled": True,
         }))
 
-        self.assertEqual(self.manager.config.preferred_scaling_gpu_device_id, device_id)
+        self.assertIsNone(self.manager.config.preferred_scaling_gpu_device_id)
         self.assertTrue(self.manager.config.auto_route_gpu_to_display)
-        self.assertTrue(self.manager.config.nvidia_rtx_hdr_enabled)
-        self.automation.nvidia_profile_manager.set_lossless_scaling_rtx_hdr.assert_called_once()
-        response = json.loads(websocket.messages[-1])
-        self.assertTrue(response["controlSettings"]["hasNvidiaGpu"])
 
     async def test_new_profile_payload_inherits_omitted_default_settings(self):
         default = self.manager.ensure_lossless_default_profile({
@@ -232,6 +247,61 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.graphics.special_k.hdr_peak_brightness_nits, 1400)
         self.assertEqual(created.native_scaling_settings["ScalingType"], "LS1")
 
+    async def test_targetless_autosaved_draft_is_returned_without_rtss_application(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.rtss_manager = FakeRtssManager()
+        self.manager.config.rtss_frame_limiting_enabled = True
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE",
+            "requestId": "autosave-1",
+            "profile": {
+                "name": "",
+                "rtss": {"enabled": True},
+            },
+        }))
+
+        saved = next(
+            json.loads(message) for message in websocket.messages
+            if json.loads(message).get("type") == "PROFILE_SAVED"
+        )
+        self.assertEqual(saved["requestId"], "autosave-1")
+        self.assertEqual(saved["profile"]["name"], "Untitled Profile")
+        self.assertIsNone(saved["profile"]["lossless_profile_title"])
+        self.assertEqual(self.server.rtss_manager.applied, [])
+
+    async def test_profile_save_updates_matching_native_lossless_settings(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.ls_settings = Mock()
+        self.server.ls_settings.path.is_file.return_value = True
+        self.server.ls_settings.upsert_profile.return_value = True
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE",
+            "profile": {
+                "name": "Native Settings Game",
+                "target_process": "native-settings.exe",
+                "lossless_profile_title": "Default",
+                "native_scaling_settings": {
+                    "CaptureApi": "DXGI",
+                    "MaxFrameLatency": "1",
+                    "QueueTarget": "0",
+                },
+            },
+        }))
+
+        self.server.ls_settings.upsert_profile.assert_called_once_with(
+            "Native Settings Game",
+            {
+                "CaptureApi": "DXGI",
+                "MaxFrameLatency": "1",
+                "QueueTarget": "0",
+            },
+            template_title=None,
+        )
+
     async def test_dashboard_is_served_over_local_http(self):
         self.manager.config.port = 0
         await self.server.start()
@@ -244,14 +314,62 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             body = response.read().decode("utf-8")
             self.assertIn("LS Companion", body)
             self.assertIn('id="addProfileBtn"', body)
-            self.assertIn('id="settingsToggleBtn"', body)
+            self.assertNotIn('id="settingsToggleBtn"', body)
+            self.assertNotIn('id="runtimeInfo"', body)
+            self.assertIn('id="statusPill" class="status-pill disconnected"', body)
+            self.assertIn('data-dashboard-panel="profiles"', body)
+            self.assertIn('data-dashboard-panel="general"', body)
+            self.assertIn('data-dashboard-panel="lossless-addons"', body)
+            self.assertIn('data-dashboard-panel="performance-benchmark"', body)
+            self.assertIn('header { position: sticky;', body)
+            self.assertIn("window.scrollTo({ top: Math.max(0, panelTop), behavior: 'smooth' })", body)
             self.assertIn('id="profilesPanel"', body)
             self.assertIn('id="generalSettingsPanel"', body)
             self.assertIn('id="losslessAddonsPanel"', body)
+            self.assertIn('id="performanceBenchmarkPanel"', body)
+            self.assertIn('const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel]', body)
+            self.assertIn("setRuntimeStatus(`Scaling: ${target} | Profile: ${profile}`, 'scaling')", body)
+            self.assertIn('if (candidate !== panel) candidate.open = false', body)
             self.assertNotIn('id="settingsArea" class="settings-area hidden"', body)
             self.assertNotIn('id="saveControlSettingsBtn"', body)
             self.assertIn('id="browseProcessLassoLogBtn"', body)
             self.assertIn('id="browseRtssInstallBtn"', body)
+            self.assertIn('id="preferredScalingGpu"', body)
+            self.assertIn("Auto-Route to App Display GPU", body)
+            self.assertNotIn('id="autoRouteAppDisplayGpu"', body)
+            self.assertNotIn('id="defaultProfileAutoScale"', body)
+            self.assertIn('id="rtssDefaultGpuTargetGroup"', body)
+            self.assertIn("Default Limiting Mode", body)
+            self.assertIn('class="modifier-options"', body)
+            self.assertNotIn("issued a new session token", body)
+            self.assertIn('id="targetType"', body)
+            self.assertIn('id="targetValue"', body)
+            self.assertIn('id="browseTargetProgramBtn"', body)
+            self.assertIn('onclick="cloneProfile(', body)
+            self.assertIn('id="profileAutosaveStatus"', body)
+            self.assertIn('profile-item${invalid ? \' invalid-profile\' : \'\'}', body)
+            self.assertNotIn('>Save Profile</button>', body)
+            self.assertNotIn('>Save ReShade Profile</button>', body)
+            self.assertNotIn('id="losslessProfileTitle"', body)
+            self.assertIn('class="modal-content profile-editor-content"', body)
+            self.assertIn('#profileModal { background: #020617; backdrop-filter: none; }', body)
+            self.assertIn('body.profile-editor-open > header', body)
+            self.assertIn('data-native-key="CaptureApi"', body)
+            self.assertIn('data-native-key="MaxFrameLatency"', body)
+            self.assertIn('data-native-key="QueueTarget"', body)
+            self.assertIn('id="nativeFrameGenerationType"', body)
+            self.assertIn('data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="0.1"', body)
+            self.assertIn('id="nativeLsfgTargetRow"', body)
+            self.assertIn('id="nativeAdditionalSettingsGroup"', body)
+            self.assertIn('id="reshadeShaderSearch"', body)
+            self.assertIn('id="browseReshadePresetBtn"', body)
+            self.assertNotIn('id="reshadePresetPath"', body)
+            self.assertIn("pendingProfileReshadeImport = true", body)
+            self.assertIn('id="importReshadePresetBtn"', body)
+            self.assertNotIn('class="addon-badge ready">HDR Installer</span>', body)
+            self.assertIn('id="dlss5Enabled"', body)
+            self.assertNotIn('id="neuralUpdatePolicy"', body)
+            self.assertNotIn('id="neuralRuntimeHash"', body)
             self.assertIn("smart-master-setting", body)
             self.assertIn("integration-status detected", body)
             self.assertIn("integration-status missing", body)
@@ -259,7 +377,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Lossless Scaling Add-ons", body)
             self.assertIn('data-addon-install="lossless-proxy"', body)
             self.assertIn('data-addon-install="lsp-neural-render"', body)
-            self.assertIn('id="selectDlssnrRuntimeBtn"', body)
+            self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
+            self.assertIn("Install NeuralRender + runtime", body)
+            self.assertIn("Community Runtime Warning", body)
             self.assertIn("Download Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)
             self.assertIn('data-addon-download="special-k"', body)
@@ -365,6 +485,31 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["kind"], "process_lasso_log")
         self.assertEqual(response["path"], r"C:\Logs\prolasso.log")
 
+    async def test_dashboard_can_browse_for_profile_program(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+
+        with patch(
+            "companion.services.server.choose_general_setting_path",
+            return_value=r"C:\Games\Example\game.exe",
+        ) as picker:
+            await self.server.process_message(
+                websocket,
+                json.dumps({
+                    "type": "BROWSE_GENERAL_PATH",
+                    "kind": "program_executable",
+                    "currentPath": r"C:\Games\Example\old.exe",
+                }),
+            )
+
+        picker.assert_called_once_with(
+            "program_executable", r"C:\Games\Example\old.exe"
+        )
+        response = json.loads(websocket.messages[-1])
+        self.assertEqual(response["type"], "GENERAL_PATH_SELECTED")
+        self.assertEqual(response["kind"], "program_executable")
+        self.assertEqual(response["path"], r"C:\Games\Example\game.exe")
+
     async def test_dashboard_rejects_unknown_general_setting_picker(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
@@ -424,6 +569,77 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             json.loads(websocket.messages[-1])["type"], "GRAPHICS_RELEASE_STAGED"
         )
 
+    async def test_neural_render_install_also_imports_verified_community_runtime(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        payload = Path(self.temp_dir.name) / "runtime-package"
+        payload.mkdir()
+        runtime = payload / "nvngx_dlssnr.dll"
+        image = bytearray(0x86)
+        image[0:2] = b"MZ"
+        image[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        image[0x80:0x84] = b"PE\0\0"
+        image[0x84:0x86] = (0x8664).to_bytes(2, "little")
+        runtime.write_bytes(image)
+        digest = self.server.asset_store.sha256(runtime)
+        addon_package = {"provider": "lsp-neural-render", "version": "v2.0"}
+        runtime_package = {
+            "provider": "dlssnr-community-runtime",
+            "version": "310.8.SF-v2",
+            "archive_sha256": "a" * 64,
+            "payload_path": str(payload),
+            "files": [{
+                "relative_path": runtime.name,
+                "sha256": digest,
+                "architecture": "x64",
+            }],
+        }
+        self.server.release_manager = Mock()
+
+        def check(provider, **_kwargs):
+            if provider == "lsp-neural-render":
+                return [{"version": "v2.0", "assets": [{"name": "NeuralRender.zip"}]}]
+            return [{
+                "version": "310.8.SF-v2",
+                "assets": [{
+                    "name": "nvngx_dlssnr_310.8.SF-v2.zip",
+                    "digest": "sha256:" + "a" * 64,
+                }],
+            }]
+
+        self.server.release_manager.check.side_effect = check
+        self.server.release_manager.stage_release.side_effect = (
+            lambda provider, *_args, **_kwargs:
+            addon_package if provider == "lsp-neural-render" else runtime_package
+        )
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "INSTALL_LATEST_GRAPHICS_ADDON",
+            "provider": "lsp-neural-render",
+            "acceptCommunityRuntime": True,
+            "operationId": "operation123",
+        }))
+
+        response = json.loads(websocket.messages[-1])
+        self.assertEqual(response["type"], "NEURAL_RENDER_BUNDLE_STAGED")
+        self.assertEqual(response["runtime"]["filename"], "nvngx_dlssnr.dll")
+        self.assertEqual(response["runtime"]["source"]["kind"], "community-release")
+        self.assertEqual(self.server.release_manager.stage_release.call_count, 2)
+
+    async def test_neural_render_install_requires_community_runtime_confirmation(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.release_manager = Mock()
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "INSTALL_LATEST_GRAPHICS_ADDON",
+            "provider": "lsp-neural-render",
+            "operationId": "operation123",
+        }))
+
+        self.assertIn("Confirm the warning", websocket.messages[-1])
+        self.server.release_manager.check.assert_not_called()
+
     async def test_daily_update_status_compares_installed_and_detected_versions(self):
         self.server.release_manager = Mock()
         versions = {
@@ -461,7 +677,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         await self.server.process_message(
             websocket,
-            '{"type":"DELETE_PROFILE","profileId":"youtube-profile"}',
+            '{"type":"DELETE_PROFILE","profileId":"default-browser"}',
         )
 
         self.assertEqual(len(self.manager.config.profiles), initial_count)
@@ -470,7 +686,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_rtss_profile_delete_requires_confirmation(self):
         fake_rtss = FakeRtssManager()
         self.server.rtss_manager = fake_rtss
-        profile = self.manager.get_profile_by_id("youtube-profile")
+        profile = self.manager.get_profile_by_id("default-browser")
         profile.rtss = RtssLimiterConfig(enabled=True, framerate_limit=70)
         self.manager.save_config()
         websocket = self.FakeWebSocket()
@@ -521,7 +737,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         fake_rtss = FakeRtssManager()
         self.server.rtss_manager = fake_rtss
         self.server.startup_manager = FakeStartupManager()
-        profile = self.manager.get_profile_by_id("youtube-profile")
+        profile = self.manager.get_profile_by_id("default-browser")
         profile.rtss = RtssLimiterConfig(
             enabled=True,
             framerate_limit=70,
@@ -552,7 +768,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         )
         stored = self.manager.get_profile_by_id(profile.id)
         self.assertFalse(self.manager.config.rtss_frame_limiting_enabled)
-        self.assertFalse(self.manager.config.default_profile_auto_scale)
+        self.assertTrue(self.manager.config.default_profile_auto_scale)
         self.assertTrue(stored.rtss.enabled)
         self.assertEqual(stored.rtss.framerate_limit, 70)
         self.assertEqual(stored.rtss.limit_method, "front_edge_sync")
@@ -592,7 +808,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         settings_path.write_text("<Settings><Hotkey>F12</Hotkey></Settings>", encoding="utf-8")
         self.server.ls_settings = settings
 
-        profile = self.manager.get_profile_by_id("youtube-profile")
+        profile = self.manager.get_profile_by_id("default-browser")
         profile.graphics.reshade.enabled = True
         profile.rtss = RtssLimiterConfig(
             enabled=True,

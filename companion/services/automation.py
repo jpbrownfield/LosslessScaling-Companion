@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from ..core.models import Profile
-from ..core.profile_manager import ProfileManager
+from ..core.profile_manager import DEFAULT_BROWSER_EXECUTABLES, ProfileManager
 from ..core.state import AppState
 from .asset_store import AssetStore
 from .deployment_manager import DeploymentManager
@@ -42,6 +42,7 @@ class AutomationController:
         nvidia_profile_manager: Optional[NvidiaProfileManager] = None,
         gpu_router: Optional[GpuRouter] = None,
         lossless_settings: Optional[LosslessSettingsXml] = None,
+        hotkey_trigger: Optional[Callable[..., bool]] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -63,6 +64,9 @@ class AutomationController:
         self.lossless_settings = lossless_settings or LosslessSettingsXml(
             profile_manager.config.lossless_settings_xml_path
         )
+        # Keep the production default resolved at call time so tests and host
+        # integrations can patch the Win32 sender after construction.
+        self.hotkey_trigger = hotkey_trigger
         self.reshade_profiles = ReshadeProfileService(profile_manager)
 
     def _lossless_scaling_dir(self) -> Optional[str]:
@@ -157,7 +161,8 @@ class AutomationController:
                 "pending",
                 f"Waiting for Lossless Scaling to confirm {'activation' if active else 'deactivation'}",
             )
-            emitted = InputSimulator.trigger_hotkey(
+            trigger_hotkey = self.hotkey_trigger or InputSimulator.trigger_hotkey
+            emitted = trigger_hotkey(
                 modifiers=hotkey.modifiers,
                 key=hotkey.key,
                 hold_ms=hotkey.hold_delay_ms,
@@ -716,9 +721,11 @@ class AutomationController:
     def _is_browser_profile(profile: Profile) -> bool:
         if profile.target_domain:
             return True
-        return (profile.target_process or "").casefold() in {
-            "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe"
-        }
+        browser_processes = {value.casefold() for value in DEFAULT_BROWSER_EXECUTABLES}
+        configured = {value.casefold() for value in profile.target_processes}
+        if profile.target_process:
+            configured.add(profile.target_process.casefold())
+        return bool(configured & browser_processes)
 
     def _cleanup_profile(self, profile: Profile) -> None:
         reshade_ini = self._reshade_inis.pop(profile.id, None)

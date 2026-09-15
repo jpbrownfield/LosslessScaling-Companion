@@ -12,6 +12,26 @@ from typing import Optional, List
 from .models import AppConfig, Profile, HotkeyConfig, ReshadeConfig, DllOverrideConfig
 
 
+DEFAULT_BROWSER_EXECUTABLES = [
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    "opera.exe",
+    "opera_gx.exe",
+    "arc.exe",
+    "chromium.exe",
+    "duckduckgo.exe",
+    "waterfox.exe",
+    "librewolf.exe",
+    "floorp.exe",
+    "zen.exe",
+    "thorium.exe",
+    "iexplore.exe",
+]
+
+
 class ProfileManager:
     def __init__(self, config_dir: Optional[Path] = None):
         self._lock = threading.RLock()
@@ -36,31 +56,114 @@ class ProfileManager:
         self.config: AppConfig = self.load_config()
 
     def _get_default_config(self) -> AppConfig:
-        default_chrome_profile = Profile(
-            id="default-chrome",
-            name="Chrome Video Auto-Scaler",
+        default_game_profile = Profile(
+            id="default-game",
+            name="Default Game",
+            is_default=True,
+            auto_scale=False,
+            custom_notes="Base profile for games and new application profiles.",
+        )
+
+        default_browser_profile = Profile(
+            id="default-browser",
+            name="Default Browser",
             target_process="chrome.exe",
+            target_processes=DEFAULT_BROWSER_EXECUTABLES,
             auto_scale=False,
             hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s", activation_delay_ms=300),
             custom_notes="Default profile for browser fullscreen video scaling."
         )
 
-        youtube_profile = Profile(
-            id="youtube-profile",
-            name="YouTube 2x Enhancer",
-            target_process="chrome.exe",
-            target_domain="youtube.com",
-            auto_scale=False,
-            hotkey=HotkeyConfig(modifiers=["ctrl", "alt"], key="s", activation_delay_ms=250),
-            custom_notes="Optimized profile for YouTube videos."
-        )
-
         return AppConfig(
             host="127.0.0.1",
             port=24892,
-            active_profile_id=default_chrome_profile.id,
-            profiles=[default_chrome_profile, youtube_profile]
+            active_profile_id=default_game_profile.id,
+            profiles=[default_game_profile, default_browser_profile]
         )
+
+    @staticmethod
+    def _migrate_legacy_seed_profiles(config: AppConfig) -> bool:
+        """Replace only the two untouched profiles seeded by older releases."""
+        legacy = {
+            "default-chrome": Profile(
+                id="default-chrome",
+                name="Chrome Video Auto-Scaler",
+                target_process="chrome.exe",
+                auto_scale=False,
+                custom_notes="Default profile for browser fullscreen video scaling.",
+            ),
+            "youtube-profile": Profile(
+                id="youtube-profile",
+                name="YouTube 2x Enhancer",
+                target_process="chrome.exe",
+                target_domain="youtube.com",
+                auto_scale=False,
+                custom_notes="Optimized profile for YouTube videos.",
+            ),
+        }
+        removable_ids = {
+            profile.id
+            for profile in config.profiles
+            if profile.id in legacy
+            and profile.model_dump(exclude={"id"})
+            == legacy[profile.id].model_dump(exclude={"id"})
+        }
+        changed = False
+        if removable_ids:
+            changed = True
+            config.profiles = [
+                profile for profile in config.profiles if profile.id not in removable_ids
+            ]
+            game = next((profile for profile in config.profiles if profile.is_default), None)
+            if game is None:
+                game = Profile(
+                    id="default-game",
+                    name="Default Game",
+                    is_default=True,
+                    auto_scale=False,
+                    custom_notes="Base profile for games and new application profiles.",
+                )
+                config.profiles.insert(0, game)
+            elif game.id == "lossless-default":
+                game.name = "Default Game"
+
+            if not any(profile.id == "default-browser" for profile in config.profiles):
+                config.profiles.append(Profile(
+                    id="default-browser",
+                    name="Default Browser",
+                    target_process="chrome.exe",
+                    target_processes=DEFAULT_BROWSER_EXECUTABLES,
+                    auto_scale=False,
+                    custom_notes="Default profile for browser fullscreen video scaling.",
+                ))
+            if not config.active_profile_id or config.active_profile_id in removable_ids:
+                config.active_profile_id = game.id
+
+        browser = next(
+            (profile for profile in config.profiles if profile.id == "default-browser"),
+            None,
+        )
+        if browser:
+            extras = [
+                value for value in browser.target_processes
+                if value.casefold() not in {item.casefold() for item in DEFAULT_BROWSER_EXECUTABLES}
+            ]
+            expected_targets = [*DEFAULT_BROWSER_EXECUTABLES, *extras]
+            if browser.target_processes != expected_targets:
+                browser.target_processes = expected_targets
+                changed = True
+        # The GPU dropdown always represents exactly one routing mode. Resolve
+        # legacy ambiguous states while retaining an explicitly selected GPU.
+        if config.auto_route_gpu_to_display and config.preferred_scaling_gpu_device_id:
+            config.preferred_scaling_gpu_device_id = None
+            changed = True
+        elif not config.auto_route_gpu_to_display and not config.preferred_scaling_gpu_device_id:
+            config.auto_route_gpu_to_display = True
+            changed = True
+        if config.default_profile_auto_scale != config.disable_native_auto_scale:
+            config.default_profile_auto_scale = config.disable_native_auto_scale
+            changed = True
+        return changed
 
     def load_config(self) -> AppConfig:
         if not self.config_file.exists():
@@ -71,7 +174,10 @@ class ProfileManager:
         try:
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return AppConfig.model_validate(data)
+            config = AppConfig.model_validate(data)
+            if self._migrate_legacy_seed_profiles(config):
+                self.save_config(config)
+            return config
         except Exception as e:
             print(f"[ProfileManager] Error loading config: {e}. Generating defaults.")
             default_cfg = self._get_default_config()
@@ -111,7 +217,7 @@ class ProfileManager:
         if process_name:
             proc_clean = process_name.lower().strip()
             for p in self.config.profiles:
-                if p.target_process and p.target_process.lower() == proc_clean:
+                if proc_clean in self._profile_process_names(p):
                     return p
 
         # 3. Active profile or first profile fallback
@@ -139,12 +245,12 @@ class ProfileManager:
         normalized_path = self._normalized_executable(executable_path)
         if normalized_path:
             for profile in self.config.profiles:
-                if normalized_path == self._normalized_executable(profile.target_executable_path):
+                if normalized_path in self._profile_executable_paths(profile):
                     return profile
         if process_name:
             process_clean = process_name.casefold().strip()
             for profile in self.config.profiles:
-                if profile.target_process and profile.target_process.casefold() == process_clean:
+                if process_clean in self._profile_process_names(profile):
                     return profile
         return None
 
@@ -223,6 +329,8 @@ class ProfileManager:
         target_process: Optional[str] = None,
         target_executable_path: Optional[str] = None,
         target_domain: Optional[str] = None,
+        target_processes: Optional[List[str]] = None,
+        target_executable_paths: Optional[List[str]] = None,
     ) -> Profile:
         """Clone configurable defaults while clearing identity and runtime bookkeeping."""
         template = next((profile for profile in self.config.profiles if profile.is_default), None)
@@ -237,7 +345,9 @@ class ProfileManager:
         profile.target_process = target_process
         profile.target_executable_path = target_executable_path
         profile.target_domain = target_domain
-        profile.auto_scale = self.config.default_profile_auto_scale
+        profile.target_processes = list(target_processes or [])
+        profile.target_executable_paths = list(target_executable_paths or [])
+        profile.auto_scale = self.config.disable_native_auto_scale
         profile.lossless_profile_title = None
         profile.lossless_profile_path = None
         profile.last_imported_hash = None
@@ -269,6 +379,19 @@ class ProfileManager:
     def _normalized_executable(value: Optional[str]) -> str:
         return os.path.normcase(os.path.normpath(value.strip())) if value and value.strip() else ""
 
+    @classmethod
+    def _profile_executable_paths(cls, profile: Profile) -> set[str]:
+        values = [profile.target_executable_path, *profile.target_executable_paths]
+        return {cls._normalized_executable(value) for value in values if value}
+
+    @staticmethod
+    def _profile_process_names(profile: Profile) -> set[str]:
+        values = [profile.target_process, *profile.target_processes]
+        if profile.target_executable_path:
+            values.append(Path(profile.target_executable_path).name)
+        values.extend(Path(path).name for path in profile.target_executable_paths)
+        return {value.casefold().strip() for value in values if value and value.strip()}
+
     def preview_native_imports(self, native_profiles: List[dict]) -> List[dict]:
         """Return non-mutating match suggestions for native Lossless Scaling profiles."""
         preview = []
@@ -281,11 +404,10 @@ class ProfileManager:
                     profile
                     for profile in self.config.profiles
                     if normalized_path
-                    and normalized_path
-                    in {
-                        self._normalized_executable(profile.lossless_profile_path),
-                        self._normalized_executable(profile.target_executable_path),
-                    }
+                    and normalized_path in (
+                        self._profile_executable_paths(profile)
+                        | {self._normalized_executable(profile.lossless_profile_path)}
+                    )
                 ),
                 None,
             )
@@ -296,16 +418,14 @@ class ProfileManager:
                     (
                         profile
                         for profile in self.config.profiles
-                        if native_filename
-                        in {
-                            (profile.target_process or "").casefold(),
-                            Path(profile.target_executable_path).name.casefold()
-                            if profile.target_executable_path
-                            else "",
-                            Path(profile.lossless_profile_path).name.casefold()
-                            if profile.lossless_profile_path
-                            else "",
-                        }
+                        if native_filename in (
+                            self._profile_process_names(profile)
+                            | {
+                                Path(profile.lossless_profile_path).name.casefold()
+                                if profile.lossless_profile_path
+                                else ""
+                            }
+                        )
                     ),
                     None,
                 )

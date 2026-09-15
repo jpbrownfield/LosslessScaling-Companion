@@ -18,34 +18,41 @@
       --success: #10b981;
       --danger: #ef4444;
     }
+    @property --status-ring-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
 
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
     .container { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    @media (max-width: 900px) {
-      .container { grid-template-columns: 1fr; }
-      header { align-items: flex-start; flex-direction: column; }
-      .header-actions {
-        width: 100%;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto auto;
-        grid-template-areas: "status add gear" "runtime runtime runtime";
-        justify-content: stretch;
-      }
-      .status-pill { grid-area: status; justify-self: start; align-self: center; }
-      #addProfileBtn { grid-area: add; }
-      #settingsToggleBtn { grid-area: gear; }
-      .runtime-info { grid-area: runtime; width: 100%; max-width: none; text-align: left; margin: 2px 0 0; overflow-wrap: anywhere; }
-    }
-
-    header { max-width: 1100px; margin: 0 auto 24px auto; display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+    header { position: sticky; z-index: 50; top: 0; max-width: 1400px; margin: 0 auto 24px auto; padding: 12px 16px; display: grid; grid-template-columns: auto minmax(420px, 1fr) auto; align-items: center; gap: 18px; border: 1px solid rgba(35,45,66,.9); border-radius: 12px; background: rgba(11,15,25,.94); box-shadow: 0 8px 24px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
     .title-group h1 { font-size: 22px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 10px; }
-    .status-pill { padding: 6px 14px; border-radius: 9999px; font-size: 12px; font-weight: 600; text-transform: uppercase; background: rgba(16, 185, 129, 0.15); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .dashboard-nav { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; }
+    .dashboard-nav-btn { min-height: 40px; padding: 0 16px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-muted); font-size: 13px; font-weight: 700; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+    .dashboard-nav-btn:hover { border-color: var(--card-border); background: rgba(51,65,85,.42); color: var(--text); }
+    .dashboard-nav-btn.active { border-color: rgba(56,189,248,.55); background: rgba(56,189,248,.13); color: var(--accent); }
+    .dashboard-nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .status-pill { position: relative; isolation: isolate; max-width: min(440px, 38vw); padding: 7px 14px; border: 1px solid rgba(239,68,68,.42); border-radius: 9999px; background: rgba(239,68,68,.12); color: var(--danger); font-size: 12px; font-weight: 700; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .2s ease, border-color .2s ease, background .2s ease; }
+    .status-pill.connected { border-color: rgba(16,185,129,.4); background: rgba(16,185,129,.13); color: var(--success); }
+    .status-pill.disconnected { border-color: rgba(239,68,68,.42); background: rgba(239,68,68,.12); color: var(--danger); }
+    .status-pill.scaling { border-color: transparent; background: linear-gradient(rgba(67,50,10,.96), rgba(67,50,10,.96)) padding-box, conic-gradient(from var(--status-ring-angle), transparent 0 28%, #fde047 43%, #f59e0b 58%, transparent 74%) border-box; color: #fde047; animation: scaling-status-ring 1.15s linear infinite; }
+    @keyframes scaling-status-ring { to { --status-ring-angle: 360deg; } }
+    @media (prefers-reduced-motion: reduce) { .status-pill.scaling { animation: none; border-color: #facc15; } }
     .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-    .runtime-info { max-width: 260px; margin-right: 4px; color: var(--text-muted); font-size: 12px; text-align: right; }
     .btn.header-btn { min-height: 44px; padding: 0 18px; border-radius: 9px; font-size: 14px; }
-    .btn.gear-btn { width: 44px; height: 44px; justify-content: center; padding: 0; border: 1px solid var(--card-border); font-size: 23px; }
-    .gear-btn.active { border-color: var(--accent); background: rgba(56, 189, 248, 0.14); color: var(--accent); }
+    @media (max-width: 1050px) {
+      .container { grid-template-columns: 1fr; }
+      header { grid-template-columns: 1fr auto; grid-template-areas: "title actions" "nav nav"; }
+      .title-group { grid-area: title; }
+      .dashboard-nav { grid-area: nav; }
+      .header-actions { grid-area: actions; }
+      .status-pill { max-width: min(520px, 58vw); }
+    }
+    @media (max-width: 700px) {
+      header { grid-template-columns: 1fr; grid-template-areas: "title" "nav" "actions"; }
+      .dashboard-nav { width: 100%; }
+      .dashboard-nav-btn { flex: 1; min-width: 0; padding-inline: 7px; }
+      .header-actions { width: 100%; justify-content: space-between; }
+      .status-pill { flex: 1; max-width: none; }
+    }
 
     .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
     .card h2 { font-size: 16px; margin-bottom: 14px; color: var(--accent); display: flex; justify-content: space-between; align-items: center; }
@@ -58,35 +65,51 @@
     .settings-title { display: flex; flex: 1; flex-direction: column; gap: 3px; }
     .settings-title strong { color: var(--accent); font-size: 16px; }
     .settings-title small { color: var(--text-muted); font-size: 12px; font-weight: 400; }
-    .chevron { color: var(--text-muted); font-size: 18px; transition: transform 0.18s ease; }
+    .chevron { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; color: var(--text-muted); font-size: 26px; font-weight: 700; line-height: 1; transition: transform 0.18s ease; }
     details[open] > summary .chevron { transform: rotate(90deg); }
     .settings-content { border-top: 1px solid var(--card-border); padding: 18px 20px 20px; }
     .settings-group { border: 1px solid var(--card-border); border-radius: 9px; margin-bottom: 10px; background: rgba(15, 23, 42, 0.55); }
     .settings-group > summary { display: flex; align-items: center; gap: 10px; padding: 12px 14px; color: var(--text); font-size: 13px; font-weight: 650; }
-    .settings-group > summary .chevron { margin-left: auto; font-size: 15px; }
-    .settings-group-content { border-top: 1px solid var(--card-border); padding: 14px; }
+    .settings-group > summary .chevron { margin-left: auto; font-size: 23px; }
+    .settings-group-content { border-top: 1px solid var(--card-border); padding: 12px 14px; }
+    .settings-group-content > .form-group:last-child,
+    .settings-group-content > .form-row:last-child,
+    .settings-group-content .form-row > .form-group { margin-bottom: 0; }
+    .settings-group-content .form-row { align-items: start; }
+    .settings-columns { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; }
+    .settings-column { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+    .settings-column > .form-group { margin: 0; }
     .settings-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
     .settings-area { grid-column: 1 / -1; display: grid; gap: 24px; }
     .profiles-panel .profile-list { max-height: 620px; }
     .process-picker-content { width: 720px; }
     .process-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .debug-settings-action { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--card-border); padding: 18px 4px 0; }
+    .addon-primary-stack { display: grid; gap: 12px; margin-bottom: 12px; }
     .addon-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .addon-card { display: flex; flex-direction: column; gap: 12px; min-height: 190px; padding: 16px; border: 1px solid var(--card-border); border-radius: 10px; background: rgba(15, 23, 42, 0.7); }
+    .addon-card-wide { min-height: 0; }
+    .addon-card-wide > .addon-status { margin-top: 0; }
     .addon-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
     .addon-card h3 { color: var(--text); font-size: 15px; margin-bottom: 4px; }
     .reshade-library { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--card-border); }
+    .reshade-hdr-settings { display:grid; grid-template-columns:minmax(260px,420px) minmax(0,1fr); align-items:end; gap:10px 16px; margin-top:14px; }
+    .reshade-hdr-settings .form-group { margin-bottom:0; }
     .reshade-library-head, .reshade-profile-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .reshade-profile-list { display:grid; gap:8px; margin-top:12px; }
     .reshade-profile-row { padding:12px 14px; border:1px solid var(--card-border); border-radius:9px; background:rgba(15,23,42,.6); }
-    .shader-catalog { display:grid; gap:8px; margin-top:12px; }
-    .shader-pack { border:1px solid var(--card-border); border-radius:8px; background:rgba(11,15,25,.6); }
-    .shader-pack summary { display:flex; align-items:center; gap:9px; padding:11px 12px; cursor:pointer; }
+    .reshade-profile-content { width: min(900px, calc(100vw - 32px)); max-width: none; overflow-x: hidden; }
+    .reshade-profile-content form { min-width: 0; }
+    .shader-catalog { display:grid; gap:6px; max-height:52vh; margin-top:8px; padding-right:4px; overflow-y:auto; overflow-x:hidden; contain:content; }
+    .shader-pack { min-width:0; border:1px solid var(--card-border); border-radius:8px; background:rgba(11,15,25,.6); }
+    .shader-pack summary { display:flex; min-width:0; align-items:center; gap:9px; padding:9px 10px; cursor:pointer; }
     .shader-pack summary::marker { color:var(--accent); }
-    .shader-pack-body { padding:0 12px 12px; }
+    .shader-pack summary > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .shader-pack-body { padding:0 10px 10px; }
     .shader-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 12px; margin-top:10px; }
-    .shader-choice { display:flex; align-items:flex-start; gap:7px; color:var(--text); font-size:12px; overflow-wrap:anywhere; }
-    .pack-link { margin-left:auto; color:var(--accent); font-size:12px; }
+    .shader-choice { display:flex; min-width:0; align-items:flex-start; gap:7px; color:var(--text); font-size:12px; }
+    .shader-choice span { min-width:0; overflow-wrap:anywhere; }
+    .pack-link { flex:0 0 auto; margin-left:auto; color:var(--accent); font-size:12px; }
     @media (max-width:650px) { .shader-grid { grid-template-columns:1fr; } }
     .addon-description { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
     .addon-status { margin-top: auto; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
@@ -97,8 +120,11 @@
     .integration-status.detected { border-color: rgba(16,185,129,.55); background: rgba(16,185,129,.12); color: var(--success); }
     .integration-status.missing { border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.1); color: var(--danger); }
     .integration-path { margin-top: 5px; color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
-    .smart-master-setting { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--card-border); }
-    .smart-master-setting label { color: var(--text); font-size: 14px; font-weight: 800; }
+    .smart-master-setting { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--card-border); }
+    .section-primary-toggle label,
+    .smart-master-setting label { color: var(--text); font-size: 13px; font-weight: 800; }
+    .section-primary-field > label { color: var(--text); font-size: 13px; font-weight: 800; }
+    #preferredScalingGpu { align-self: flex-start; width: max-content; min-width: 360px; max-width: 100%; }
     .update-notice { max-width: 1100px; margin: -8px auto 20px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--success); border-radius: 10px; background: rgba(16,185,129,.08); }
     .update-notice[hidden] { display: none; }
     .update-notice strong { display: block; color: #6ee7b7; font-size: 13px; margin-bottom: 3px; }
@@ -111,6 +137,8 @@
     .process-list, .profile-list { max-height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
     .process-item, .profile-item { background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; padding: 12px; display: flex; justify-content: space-between; align-items: center; transition: all 0.15s ease; }
     .process-item:hover, .profile-item:hover { border-color: var(--primary); background: #131d33; }
+    .profile-item.invalid-profile { border-color: rgba(239,68,68,.8); background: rgba(127,29,29,.16); }
+    .profile-invalid-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; margin-left: 7px; border-radius: 50%; background: var(--danger); color: #fff; font-size: 12px; font-weight: 900; vertical-align: middle; }
 
     .item-info { display: flex; flex-direction: column; gap: 3px; max-width: 65%; }
     .item-title { font-weight: 600; font-size: 14px; color: #fff; }
@@ -130,7 +158,27 @@
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; }
     .modal.active { display: flex; }
     .modal-content { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; width: 500px; max-width: 90vw; padding: 24px; max-height: 90vh; overflow-y: auto; }
+    #profileModal { background: #020617; backdrop-filter: none; }
+    body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
+    .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
+    .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
+    .profile-basics-grid > .form-group { min-width: 0; margin: 0; }
+    .profile-name-field { grid-area: name; }
+    .profile-target-type-field { grid-area: type; }
+    .profile-target-path-field { grid-area: path; }
+    .profile-target-path-field.invalid > label { color: #f87171; }
+    .profile-target-path-field.invalid > label::after { content: " !"; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 6px; border-radius: 50%; background: var(--danger); color: #fff; font-size: 11px; font-weight: 900; }
+    .profile-target-path-field.invalid input { border-color: var(--danger); box-shadow: 0 0 0 1px rgba(239,68,68,.25); }
+    .profile-auto-scale { grid-area: auto; display: flex; flex-direction: column; align-self: stretch; justify-content: flex-end; min-width: 0; }
+    .profile-auto-scale .checkbox-group { margin: 0; }
+    .profile-auto-scale-help { margin: 2px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.35; white-space: normal; }
+    .profile-reshade-picker { display: flex; align-items: stretch; gap: 8px; margin-top: 8px; }
+    .profile-reshade-help { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+    .profile-reshade-picker select { flex: 1; min-width: 0; min-height: 38px; padding: 9px 12px; border: 1px solid var(--card-border); border-radius: 6px; background: #0f172a; color: #fff; font-size: 13px; }
+    .profile-reshade-picker .btn { min-height: 38px; font-size: 13px; }
     .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .autosave-status { display: block; min-height: 15px; margin-top: 3px; color: var(--text-muted); font-size: 10px; font-weight: 500; }
+    .autosave-status.error { color: #f87171; }
     .form-group { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
     .form-group label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; }
     .form-group input, .form-group select, .form-group textarea { padding: 9px 12px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; font-size: 13px; }
@@ -138,20 +186,63 @@
     .input-with-button { display: flex; gap: 8px; align-items: stretch; }
     .input-with-button input { flex: 1; min-width: 0; }
     .input-with-button .btn { flex: 0 0 auto; }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .checkbox-group { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin-top: 4px; }
-    .checkbox-group input { width: auto; }
-    .checkbox-group label { line-height: 1.4; text-transform: none; }
+    .input-with-button .btn[hidden] { display: none; }
+    .modifier-options { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; min-height: 38px; }
+    .modifier-options .checkbox-group { margin: 0; }
+    .form-row.hotkey-settings { grid-template-columns: max-content minmax(0, 1fr); align-items: start; }
+    .hotkey-settings > .form-group { margin-bottom: 0; }
+    .activation-key-input { width: 46px; height: 38px; align-self: flex-start; padding-inline: 6px !important; text-align: center; }
+    .hotkey-settings .modifier-options { height: 38px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .checkbox-group { display: flex; flex-direction: row; align-items: center; align-self: start; gap: 8px; margin-top: 2px; }
+    .checkbox-group input[type="checkbox"] { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; padding: 0; }
+    .checkbox-group label { display: flex; align-items: center; min-height: 17px; margin: 0; line-height: 1.25; text-transform: none; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
     .integration-section { margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px; }
     .integration-section.disabled { opacity: 0.48; }
     .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     .special-k-settings { margin-top: 14px; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: rgba(15, 23, 42, 0.55); }
     .special-k-settings.disabled { opacity: 0.48; }
+    .native-settings { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); }
+    .native-settings > h4 { margin-bottom: 4px; color: var(--accent); font-size: 13px; }
+    .ls-settings-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid var(--card-border); border-radius: 9px; background: #111827; }
+    .ls-settings-column { display: grid; align-content: start; gap: 8px; }
+    .ls-settings-card { padding: 11px 12px; border: 1px solid rgba(148,163,184,.12); border-radius: 5px; background: rgba(255,255,255,.045); box-shadow: 0 1px 3px rgba(0,0,0,.24); }
+    .ls-settings-card h5 { margin: 0 0 8px; color: #f8fafc; font-size: 13px; font-weight: 750; }
+    .ls-setting-row { display: grid; grid-template-columns: minmax(105px, .8fr) minmax(145px, 1.2fr); align-items: center; gap: 12px; min-height: 33px; }
+    .ls-setting-row > label { color: #e2e8f0; font-size: 11px; font-weight: 650; }
+    .ls-setting-control { min-width: 0; }
+    .ls-setting-control > input:not([type="checkbox"]):not([type="range"]), .ls-setting-control > select { width: 100%; min-width: 0; padding: 6px 9px; border: 1px solid rgba(148,163,184,.14); border-radius: 4px; background: rgba(15,23,42,.64); color: #f8fafc; font-size: 12px; }
+    .ls-range-control { display: grid; grid-template-columns: minmax(80px, 1fr) 34px; align-items: center; gap: 7px; }
+    .ls-range-control input[type="range"] { width: 100%; accent-color: #ff6638; }
+    .ls-range-control output { color: #cbd5e1; font-size: 11px; text-align: right; }
+    .ls-switch-control { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+    .ls-switch { position: relative; display: inline-flex; cursor: pointer; }
+    .ls-switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .ls-switch-track { width: 34px; height: 18px; border: 1px solid rgba(148,163,184,.45); border-radius: 999px; background: #475569; transition: .15s ease; }
+    .ls-switch-track::after { content: ""; display: block; width: 12px; height: 12px; margin: 2px; border-radius: 50%; background: #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,.4); transition: .15s ease; }
+    .ls-switch input:checked + .ls-switch-track { border-color: #ff6638; background: #ff6638; }
+    .ls-switch input:checked + .ls-switch-track::after { transform: translateX(16px); background: #fff; }
+    .ls-switch input:focus-visible + .ls-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .ls-switch-state { min-width: 18px; color: #cbd5e1; font-size: 10px; }
+    .ls-crop-control { display: grid; grid-template-columns: repeat(3, 46px); grid-template-areas: ". top ." "left center right" ". bottom ."; justify-content: center; align-items: center; gap: 4px; padding: 2px 0; }
+    .ls-crop-control::after { content: ""; grid-area: center; width: 31px; height: 24px; justify-self: center; border: 1px solid #64748b; }
+    .ls-crop-control input { width: 46px; padding: 5px 3px; border: 1px solid rgba(148,163,184,.14); border-radius: 3px; background: rgba(15,23,42,.64); color: #f8fafc; font-size: 11px; text-align: center; }
+    .ls-crop-top { grid-area: top; } .ls-crop-left { grid-area: left; } .ls-crop-right { grid-area: right; } .ls-crop-bottom { grid-area: bottom; }
+    .native-settings-group { margin-top: 8px; border: 1px solid var(--card-border); border-radius: 8px; background: rgba(15,23,42,.45); }
+    .native-settings-group > summary { padding: 10px 12px; cursor: pointer; color: var(--text); font-size: 12px; font-weight: 750; }
+    .native-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; padding: 0 12px 12px; }
+    .native-settings-grid > .form-group { margin: 0; }
+    .native-extra-settings { display: grid; gap: 8px; padding: 0 12px 12px; }
+    .native-extra-row { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 10px; }
+    .native-extra-row code { color: var(--text-muted); overflow-wrap: anywhere; }
+    .native-extra-row input { width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; }
     .profile-warning { margin: 4px 0 14px; padding: 10px 12px; border: 1px solid rgba(245, 158, 11, 0.55); border-radius: 7px; background: rgba(245, 158, 11, 0.1); color: #fcd34d; font-size: 12px; line-height: 1.45; }
     .experimental-label::after { content: "EXPERIMENTAL"; margin-left: 7px; padding: 2px 5px; border: 1px solid rgba(56,189,248,.45); border-radius: 4px; color: var(--accent); font-size: 9px; font-weight: 800; }
     a { color: var(--accent); }
-    @media (max-width: 700px) { .addon-grid { grid-template-columns: 1fr; } .update-notice { align-items: stretch; flex-direction: column; } }
+    @media (max-width: 1050px) { .native-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 760px) { .ls-settings-board, .profile-basics-grid { grid-template-columns: 1fr; } .profile-basics-grid { grid-template-areas: "name" "auto" "type" "path"; } }
+    @media (max-width: 700px) { .addon-grid, .settings-columns, .native-settings-grid, .native-extra-row, .reshade-hdr-settings { grid-template-columns: 1fr; } .profile-editor-content { width: calc(100vw - 20px); } .update-notice { align-items: stretch; flex-direction: column; } }
   </style>
 </head>
 <body>
@@ -160,11 +251,16 @@
     <div class="title-group">
       <h1>LS Companion Dashboard</h1>
     </div>
+    <nav class="dashboard-nav" aria-label="Dashboard sections">
+      <button class="dashboard-nav-btn active" type="button" data-dashboard-panel="profiles" aria-controls="profilesPanel" aria-pressed="true">Profiles</button>
+      <button class="dashboard-nav-btn" type="button" data-dashboard-panel="general" aria-controls="generalSettingsPanel" aria-pressed="false">Settings</button>
+      <button class="dashboard-nav-btn" type="button" data-dashboard-panel="lossless-addons" aria-controls="losslessAddonsPanel" aria-pressed="false">Add-ons</button>
+      <button class="dashboard-nav-btn" type="button" data-dashboard-panel="performance-benchmark" aria-controls="performanceBenchmarkPanel" aria-pressed="false">Benchmark</button>
+    </nav>
     <div class="header-actions">
-      <div id="runtimeInfo" class="runtime-info">LS Not Running</div>
-      <div id="statusPill" class="status-pill">Connected</div>
+      <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
+      <div id="statusPill" class="status-pill disconnected" role="status" aria-live="polite">Disconnected</div>
       <button id="addProfileBtn" class="btn btn-primary header-btn" type="button">Add Profile</button>
-      <button id="settingsToggleBtn" class="btn btn-secondary gear-btn" type="button" aria-label="Focus settings and add-ons" aria-controls="profilesPanel generalSettingsPanel losslessAddonsPanel performanceBenchmarkPanel" aria-expanded="false" title="Settings and add-ons">&#9881;</button>
     </div>
   </header>
 
@@ -189,17 +285,14 @@
         <details class="settings-group" open>
           <summary>Startup <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content"><div class="form-row">
-            <div class="form-group checkbox-group"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows Sign-In (Elevated Scheduled Task)</label></div>
+            <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows Sign-In (Elevated Scheduled Task)</label></div>
           </div></div>
         </details>
 
         <details class="settings-group" open>
           <summary>GPU Selection <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-row">
-              <div class="form-group"><label for="preferredScalingGpu">Default Scaling GPU</label><select id="preferredScalingGpu"><option value="">Automatic (Lossless Scaling Default)</option></select></div>
-              <div class="form-group checkbox-group"><input id="autoRouteGpuToDisplay" type="checkbox"><label for="autoRouteGpuToDisplay">Auto-Route GPU to Target Display</label></div>
-            </div>
+            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Auto-Route to App Display GPU</option></select></div>
             <div class="form-group checkbox-group"><input id="nvidiaRtxHdrEnabled" type="checkbox"><label for="nvidiaRtxHdrEnabled">NVIDIA RTX HDR for Lossless Scaling (Experimental)</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto-route follows the display containing the scaled window. If it moves to a display driven by another GPU, Companion unscales, updates that Lossless Scaling profile's preferred GPU and output display, restarts Lossless Scaling, restores target focus, and rescales.</p>
@@ -210,15 +303,12 @@
         <details class="settings-group" open>
           <summary>Scaling Behavior <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-group checkbox-group smart-master-setting"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic Profile Scaling Enabled</label></div>
-            <div class="form-row">
-              <div class="form-group checkbox-group"><input id="defaultProfileAutoScale" type="checkbox" checked><label for="defaultProfileAutoScale">Autoscale New Profiles by Default</label></div>
-              <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize Other Windows on the Scaled Monitor (for Dual GPU PCIe Bandwidth Savings)</label></div>
-            </div>
+            <div class="form-group checkbox-group smart-master-setting section-primary-toggle"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic Profile Scaling Enabled</label></div>
+            <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize Other Windows on the Scaled Monitor (for Dual GPU PCIe Bandwidth Savings)</label></div>
             <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey</label></div>
-            <div id="overrideHotkeySettings" class="form-row">
-              <div class="form-group"><label for="overrideHotkeyKey">Activation Key</label><input id="overrideHotkeyKey" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label>Modifiers</label><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div>
+            <div id="overrideHotkeySettings" class="form-row hotkey-settings">
+              <div class="form-group"><label for="overrideHotkeyKey">Activation Key</label><input id="overrideHotkeyKey" class="activation-key-input" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label>Modifiers</label><div class="modifier-options"><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div></div>
             </div>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When enabled, the companion disables Lossless Scaling's native Auto Scale to prevent conflicts, verifies and restores focus to the exact target window, loads that application's ReShade preset and managed custom DLLs into Lossless Scaling, then sends Lossless Scaling's own configured activation hotkey.</p>
@@ -230,7 +320,7 @@
           <summary>Process Lasso <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
             <div class="form-row">
-              <div class="form-group checkbox-group"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode</label></div>
+              <div class="form-group checkbox-group section-primary-toggle"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode</label></div>
               <div class="form-group"><label>CSV log override (optional)</label><div class="input-with-button"><input id="processLassoLogPath" type="text" placeholder="Blank uses automatic detection"><button id="browseProcessLassoLogBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="processLassoDetectedPath"></div></div>
             </div>
             <p class="item-sub" style="white-space:normal">Tails new CSV entries only and requires an existing helper profile plus a visible target window. It never deploys files to that application.</p>
@@ -240,13 +330,17 @@
         <details class="settings-group">
           <summary>RTSS frame limiting <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-row">
-              <div class="form-group checkbox-group"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
-              <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
-              <div class="form-group"><label>Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
-              <div class="form-group"><label>Default minimum LS GPU target % (For Dynamic Limiting only)</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
+            <div class="settings-columns">
+              <div class="settings-column">
+                <div class="form-group checkbox-group section-primary-toggle"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
+                <div class="form-group"><label>Default Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
+                <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default minimum LS GPU target %</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
+              </div>
+              <div class="settings-column">
+                <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
+              </div>
             </div>
-            <p class="item-sub" style="white-space:normal">The global switch suspends or reapplies all selected profile limits without forgetting their configured FPS or limiter method.</p>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">The global switch suspends or reapplies all selected profile limits without forgetting their configured FPS or limiter method.</p>
           </div>
         </details>
 
@@ -263,16 +357,27 @@
       <summary><span class="settings-title"><strong>Lossless Scaling Add-ons</strong><small>Install and manage each supported add-on directly</small></span><span class="chevron" aria-hidden="true">&#8250;</span></summary>
       <div class="settings-content">
       <div class="settings-toolbar"><p class="item-sub" style="white-space:normal">Installed add-ons become available to every profile and load only when selected in that profile.</p><button id="refreshGraphicsBtn" class="btn btn-secondary" type="button">Refresh status</button></div>
+      <div class="addon-primary-stack">
+        <section class="addon-card addon-card-wide">
+          <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. When LosslessProxy is also selected, Companion automatically adds its bundled ReShade input bridge.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
+          <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
+          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
+          <p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p>
+          <div class="reshade-hdr-settings">
+            <div class="form-group"><label for="reshadeHdrPeakNits">HDR Peak Brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
+            <div id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</div>
+          </div>
+          <div class="reshade-library">
+            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay and first-run prompt are disabled by default because the Home menu cannot be used reliably inside Lossless Scaling.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
+            <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
+          </div>
+        </section>
+        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+      </div>
       <div class="addon-grid">
         <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button></div></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Recommended DLSS 5 neural-rendering add-on. Its package and NVIDIA runtime are managed separately.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not selected.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install latest</button><button id="selectDlssnrRuntimeBtn" class="btn btn-secondary" type="button">Select DLSS 5 runtime</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description">Select an authorized <code>nvngx_dlssnr.dll</code>. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div><div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div><div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div><p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs the add-on and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender + runtime</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
       </div>
-      <section class="reshade-library">
-        <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay and first-run prompt are disabled by default because the Home menu cannot be used reliably inside Lossless Scaling.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div>
-        <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
-      </section>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No add-on operation running.</div>
       </div>
     </details>
@@ -333,53 +438,135 @@
 
   <!-- Profile Edit / Create Modal -->
   <div id="profileModal" class="modal">
-    <div class="modal-content">
+    <div class="modal-content profile-editor-content">
       <div class="modal-header">
-        <h3 id="modalTitle" style="color: var(--accent);">Create Profile</h3>
+        <div><h3 id="modalTitle" style="color: var(--accent);">Create Profile</h3><span id="profileAutosaveStatus" class="autosave-status">Changes save automatically.</span></div>
         <button id="closeModalBtn" style="background:none; border:none; color: var(--text-muted); font-size: 20px; cursor:pointer;">&times;</button>
       </div>
       <form id="profileForm">
         <input type="hidden" id="profileId">
 
-        <div class="form-group">
-          <label>Profile Name</label>
-          <input type="text" id="profileName" required placeholder="e.g., Cyberpunk 2077 UHD">
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label>Target Executable</label>
-            <input type="text" id="targetProcess" placeholder="e.g. Cyberpunk2077.exe">
+        <div class="profile-basics-grid">
+          <div class="form-group profile-name-field">
+            <label>Profile Name</label>
+            <input type="text" id="profileName" placeholder="Uses executable name when blank">
           </div>
-          <div class="form-group">
-            <label>Target Web Domain</label>
-            <input type="text" id="targetDomain" placeholder="e.g. youtube.com">
+
+          <div class="profile-auto-scale">
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="autoScale" checked>
+              <label for="autoScale" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Automatically scale this application</label>
+            </div>
+            <p class="profile-auto-scale-help">Scaling remains active when focus changes. Browser video automation uses the optional <a href="https://github.com/jpbrownfield/LosslessScaling-Companion/archive/refs/heads/main.zip" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Bridge extension</a>.</p>
+          </div>
+
+          <div class="form-group profile-target-type-field">
+            <label for="targetType">Target Type</label>
+            <select id="targetType">
+              <option value="program">Program</option>
+              <option value="web_domain">Web Domain</option>
+            </select>
+          </div>
+
+          <div class="form-group profile-target-path-field">
+            <label id="targetValueLabel" for="targetValue">Program Path (detection only; never modified)</label>
+            <div class="input-with-button">
+              <input type="text" id="targetValue" placeholder="D:\Games\Game\Game.exe">
+              <button id="browseTargetProgramBtn" class="btn btn-secondary" type="button">Browse</button>
+            </div>
           </div>
         </div>
 
-        <div class="form-group">
-          <label>Target Executable Path (detection only; never modified)</label>
-          <input type="text" id="targetExecutablePath" placeholder="D:\Games\Game\Game.exe">
-        </div>
-
-        <div class="form-group">
-          <label>Lossless Scaling Profile Title</label>
-          <input type="text" id="losslessProfileTitle" placeholder="Default">
-        </div>
-
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="autoScale" checked>
-          <label for="autoScale" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Automatically scale this application</label>
-        </div>
-        <p class="item-sub" style="white-space:normal; margin-bottom:14px">Application scaling stays active when focus changes. For automatic browser-video scaling, install the optional <a href="https://github.com/jpbrownfield/LosslessScaling-Companion/archive/refs/heads/main.zip" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Lossless Scaling Bridge extension</a>, extract the archive, and load its <code>extension</code> folder as an unpacked browser extension.</p>
+        <section class="native-settings">
+          <h4>Lossless Scaling Profile Settings</h4>
+          <p class="item-sub" style="white-space:normal">These values map directly to the selected Lossless Scaling profile. Native Auto Scale is kept off while Companion automatic scaling is enabled.</p>
+          <div class="ls-settings-board">
+            <div class="ls-settings-column">
+              <section class="ls-settings-card">
+                <h5>Frame Generation</h5>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeFrameGenerationType" data-native-key="FrameGeneration" data-native-default="Off"><option value="Off">Off</option><option value="LSFG">LSFG</option><option value="LSFG2">LSFG 2</option><option value="LSFG3">LSFG 3</option></select></div></div>
+                <div id="nativeLsfgModeRow" class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select id="nativeLsfgMode" data-native-key="LSFG3Mode1" data-native-default="FIXED"><option value="FIXED">Fixed</option><option value="ADAPTIVE">Adaptive (dynamic)</option></select></div></div>
+                <div id="nativeLsfgMultiplierRow" class="ls-setting-row"><label>Multiplier</label><div class="ls-setting-control"><input data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="0.1" inputmode="decimal"></div></div>
+                <div id="nativeLsfg2MultiplierRow" class="ls-setting-row" hidden><label>Multiplier</label><div class="ls-setting-control"><select data-native-key="LSFG2Mode" data-native-default="X2"><option value="X2">X2</option><option value="X3">X3</option><option value="X4">X4</option></select></div></div>
+                <div id="nativeLsfgTargetRow" class="ls-setting-row" hidden><label>Target FPS</label><div class="ls-setting-control"><input data-native-key="LSFG3TargetFps" data-native-aliases="LSFG3TargetFPS,LSFG3Target,LSFGTargetFps,LSFGTargetFPS" data-native-default="120" type="number" min="1" max="1000" step="1"></div></div>
+                <div class="ls-setting-row"><label>Flow scale</label><div class="ls-setting-control ls-range-control"><input data-native-key="LSFGResolutionScale" data-native-default="100" type="range" min="1" max="100"><output>100</output></div></div>
+                <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LSFGType" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>Capture</h5>
+                <div class="ls-setting-row"><label>Capture API</label><div class="ls-setting-control"><select data-native-key="CaptureApi" data-native-default="DXGI"><option value="DXGI">DXGI</option><option value="WGC">WGC</option></select></div></div>
+                <div class="ls-setting-row"><label>Queue target</label><div class="ls-setting-control"><select data-native-key="QueueTarget" data-native-default="1"><option value="0">0 - Lowest latency</option><option value="1">1 - Balanced</option><option value="2">2 - Smoothest</option></select></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>Cursor</h5>
+                <div class="ls-setting-row"><label>Clip cursor</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="ClipCursor" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>Adjust cursor speed</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="AdjustCursorSpeed" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>Hide cursor</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="HideCursor" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>Scale cursor</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="ScaleCursor" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>Crop Input</h5>
+                <div class="ls-crop-control">
+                  <input class="ls-crop-top" aria-label="Crop top" title="Top" data-native-key="CropInputTop" data-native-default="0" type="number" min="0">
+                  <input class="ls-crop-left" aria-label="Crop left" title="Left" data-native-key="CropInputLeft" data-native-default="0" type="number" min="0">
+                  <input class="ls-crop-right" aria-label="Crop right" title="Right" data-native-key="CropInputRight" data-native-default="0" type="number" min="0">
+                  <input class="ls-crop-bottom" aria-label="Crop bottom" title="Bottom" data-native-key="CropInputBottom" data-native-default="0" type="number" min="0">
+                </div>
+              </section>
+            </div>
+            <div class="ls-settings-column">
+              <section class="ls-settings-card">
+                <h5>Scaling</h5>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR</option><option value="NIS">NIS</option><option value="Integer">Integer</option><option value="NearestNeighbor">Nearest Neighbor</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option></select></div></div>
+                <div class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
+                <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LS1Type" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select data-native-key="ScalingMode" data-native-default="Auto"><option value="Auto">Auto</option><option value="Custom">Custom</option></select></div></div>
+                <div class="ls-setting-row"><label>Fit</label><div class="ls-setting-control"><select data-native-key="ScalingFitMode" data-native-default="Fullscreen"><option value="Fullscreen">Fullscreen</option><option value="AspectRatio">Aspect ratio</option></select></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>Rendering</h5>
+                <div class="ls-setting-row"><label>Sync mode</label><div class="ls-setting-control"><select data-native-key="SyncMode" data-native-default="DEFAULT"><option value="DEFAULT">Default</option><option value="VSYNC">VSync</option><option value="ALLOW_TEARING">Allow tearing</option></select></div></div>
+                <div class="ls-setting-row"><label>Max frame latency</label><div class="ls-setting-control"><input data-native-key="MaxFrameLatency" data-native-default="1" type="number" min="1" max="16"></div></div>
+                <div class="ls-setting-row"><label>HDR support</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="HdrSupport" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>G-Sync support</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="GsyncSupport" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div class="ls-setting-row"><label>Draw FPS</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="DrawFps" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>GPU &amp; Display</h5>
+                <div class="ls-setting-row"><label>Preferred GPU</label><div class="ls-setting-control"><select data-native-key="PreferredGpuId" data-native-default="0"><option value="0">Auto</option></select></div></div>
+                <div class="ls-setting-row"><label>Output display</label><div class="ls-setting-control"><select data-native-key="OutputDisplayId" data-native-default="0"><option value="0">Auto</option></select></div></div>
+              </section>
+              <section class="ls-settings-card">
+                <h5>Behavior</h5>
+                <div class="ls-setting-row"><label>Multi-display mode</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="MultiDisplayMode" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+              </section>
+            </div>
+          </div>
+          <details class="native-settings-group">
+            <summary>Advanced Lossless Scaling Settings</summary>
+            <div class="native-settings-grid">
+              <div class="form-group"><label>Scale Factor</label><input data-native-key="ScaleFactor" data-native-default="1" type="number" min="0.1" step="0.1"></div>
+              <div class="form-group"><label>Auto Scale Delay (seconds)</label><input data-native-key="AutoScaleDelay" data-native-default="0" type="number" min="0" step="0.1"></div>
+              <div class="form-group"><label>Generic Sharpness</label><input data-native-key="Sharpness" data-native-default="0" type="number" step="1"></div>
+              <div class="form-group"><label>FSR Type</label><input data-native-key="FSRType" data-native-default="ORIGINAL" type="text"></div>
+              <div class="form-group"><label>Anime4K Type</label><input data-native-key="Anime4kType" data-native-default="S" type="text"></div>
+              <div class="form-group"><label>Legacy LSFG 3 Mode</label><input data-native-key="LSFG3Mode" data-native-default="X2" type="text"></div>
+              <div class="form-group checkbox-group"><input data-native-key="ResizeBeforeScaling" type="checkbox"><label>Resize before scaling</label></div>
+              <div class="form-group checkbox-group"><input data-native-key="WindowedMode" type="checkbox"><label>Windowed mode</label></div>
+              <div class="form-group checkbox-group"><input data-native-key="DoubleBuffering" type="checkbox"><label>Double buffering</label></div>
+              <div class="form-group checkbox-group"><input data-native-key="VRS" type="checkbox"><label>Variable rate scaling</label></div>
+            </div>
+          </details>
+          <details id="nativeAdditionalSettingsGroup" class="native-settings-group" hidden>
+            <summary>Additional Imported Settings</summary>
+            <div id="nativeAdditionalSettings" class="native-extra-settings"></div>
+          </details>
+        </section>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
-          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">Lossless Scaling ReShade Profile (Optional)</h4>
-          <p class="muted">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
-          <div class="form-group">
-            <label>Managed ReShade Profile</label>
-            <select id="reshadeManagedProfile"><option value="">Disabled</option></select>
-          </div>
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Profile (Optional)</h4>
+          <p class="profile-reshade-help">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
+          <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
         </div>
 
         <div id="rtssProfileSection" class="integration-section">
@@ -428,27 +615,11 @@
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">LS Graphics Stack</h4>
-          <div class="form-group"><label>Neural Rendering</label><select id="neuralImplementation"><option value="disabled">Disabled</option><option value="lsp_neural_render">LSP-NeuralRender (recommended)</option></select></div>
+          <div class="form-group checkbox-group"><input id="dlss5Enabled" type="checkbox"><label for="dlss5Enabled" style="text-transform:none; font-size:13px; color:#fff">Enable DLSS 5 neural rendering</label></div>
           <div class="form-row">
             <div class="form-group checkbox-group"><input id="losslessProxyEnabled" type="checkbox"><label for="losslessProxyEnabled">LosslessProxy</label></div>
             <div class="form-group"><label>LosslessProxy Version</label><select id="losslessProxyVersion"><option value="">Install it in Lossless Scaling Add-ons</option></select></div>
             <div class="form-group"><label>LosslessProxy Updates</label><select id="losslessProxyUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
-            <div class="form-group"><label>Neural Package Version</label><select id="neuralPackageVersion"><option value="">Install it in Lossless Scaling Add-ons</option></select></div>
-            <div class="form-group"><label>Neural Updates</label><select id="neuralUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
-            <div class="form-group"><label>DLSS 5 Runtime</label><select id="neuralRuntimeHash"><option value="">Select the runtime in Lossless Scaling Add-ons</option></select></div>
-            <div class="form-group"><label>Working Scale</label><input id="neuralWorkingScale" type="number" value="0.35" min="0.1" max="1" step="0.01"></div>
-            <div class="form-group"><label>Style</label><select id="neuralStyle"><option value="standard">Standard</option><option value="natural">Natural</option><option value="cinematic">Cinematic</option></select></div>
-            <div class="form-group"><label>Intensity</label><input id="neuralIntensity" type="number" value="1" min="0" max="1" step="0.05"></div>
-            <div class="form-group"><label>Local Structure</label><input id="neuralLocalStructure" type="number" value="1" min="-10" max="10" step="0.05"></div>
-            <div class="form-group"><label>Local Tone</label><input id="neuralLocalTone" type="number" value="1" min="-10" max="10" step="0.05"></div>
-            <div class="form-group"><label>Skin Structure</label><input id="neuralSkinStructure" type="number" value="-1" min="-10" max="10" step="0.05"></div>
-            <div class="form-group"><label>Apply Strength</label><input id="neuralApplyStrength" type="number" value="1" min="0" max="4" step="0.05"></div>
-            <div class="form-group"><label>Max Delta</label><input id="neuralMaxDelta" type="number" value="0.5" min="0" max="1" step="0.05"></div>
-            <div class="form-group"><label>Highlight Protection</label><input id="neuralHighlightProtection" type="number" value="0.85" min="0" max="1" step="0.05"></div>
-            <div class="form-group"><label>Watchdog (ms)</label><input id="neuralWatchdog" type="number" value="80" min="10" max="5000"></div>
-            <div class="form-group checkbox-group"><input id="neuralAutoMask" type="checkbox" checked><label for="neuralAutoMask">Automatic skin mask</label></div>
-            <div class="form-group checkbox-group"><input id="neuralOpticalFlow" type="checkbox" checked><label for="neuralOpticalFlow">Use LSFG optical flow</label></div>
-            <div class="form-group checkbox-group"><input id="neuralLsPriority" type="checkbox" checked><label for="neuralLsPriority">Prioritize LS GPU work</label></div>
           </div>
           <div id="specialKSettings" class="special-k-settings disabled">
             <div class="form-group checkbox-group"><input id="specialKEnabled" type="checkbox"><label for="specialKEnabled" style="color:#fff;font-size:13px">Enable Special K for this profile</label></div>
@@ -476,24 +647,20 @@
           <p class="item-sub" style="white-space:normal">Install packages once in Lossless Scaling Add-ons, then select them here. Managed files are deployed only beneath LosslessScaling.exe.</p>
         </div>
 
-        <div class="modal-actions">
-          <button type="button" id="cancelModalBtn" class="btn btn-secondary">Cancel</button>
-          <button type="submit" class="btn btn-primary">Save Profile</button>
-        </div>
       </form>
     </div>
   </div>
 
   <div id="reshadeProfileModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="reshadeProfileModalTitle">
-    <div class="modal-content" style="width:760px">
-      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Choose provider packs, then individual shader files just like ReShade Setup.</p></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button></div>
+    <div class="modal-content reshade-profile-content">
+      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Choose provider packs, then individual shader files just like ReShade Setup.</p><span id="reshadeAutosaveStatus" class="autosave-status">Enter a name to begin autosaving.</span></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button></div>
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
         <div class="form-group checkbox-group"><input id="reshadeOverlayEnabled" type="checkbox"><label for="reshadeOverlayEnabled" style="text-transform:none;font-size:13px;color:#fff">Enable ReShade overlay (Home)</label></div>
         <p class="item-sub" style="white-space:normal">Leave this off for normal use. Companion writes <code>KeyOverlay=0,0,0,0</code> and completes the tutorial so ReShade never displays the “Home to open configuration menu” prompt.</p>
+        <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
-        <div class="modal-actions"><button id="cancelReshadeProfileBtn" class="btn btn-secondary" type="button">Cancel</button><button class="btn btn-primary" type="submit">Save ReShade Profile</button></div>
       </form>
     </div>
   </div>
@@ -520,6 +687,15 @@
     let dlssnrRuntimes = [];
     let reshadeProfiles = [];
     let reshadeCatalog = [];
+    let reshadeShaderSelection = {};
+    let pendingProfileReshadeImport = false;
+    let profileAutosaveTimer = null;
+    let profileSaveInFlight = false;
+    let profileSaveQueued = false;
+    let activeProfileSaveRequestId = null;
+    let reshadeAutosaveTimer = null;
+    let reshadeSaveInFlight = false;
+    let reshadeSaveQueued = false;
     let controlSettings = null;
     let editingOriginalProfile = null;
     let rtssDetectionTimer = null;
@@ -584,6 +760,20 @@
       }
     });
 
+    let lastRuntimeLabel = null;
+    let lastRuntimeState = null;
+
+    function setRuntimeStatus(label, state) {
+      if (label === lastRuntimeLabel && state === lastRuntimeState) return;
+      lastRuntimeLabel = label;
+      lastRuntimeState = state;
+      const pill = document.getElementById('statusPill');
+      pill.textContent = label;
+      pill.classList.remove('connected', 'disconnected', 'scaling');
+      pill.classList.add(state);
+      pill.title = label;
+    }
+
     function connectWS() {
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
@@ -597,15 +787,13 @@
       try {
         wsUrl = `ws://${location.host}/ws?token=__COMPANION_TOKEN__`;
       } catch (urlError) {
-        document.getElementById('statusPill').textContent = 'Page not served by companion (bad URL)';
-        document.getElementById('statusPill').style.color = '#ef4444';
+        setRuntimeStatus('Disconnected', 'disconnected');
         return;
       }
       try {
         ws = new WebSocket(wsUrl);
       } catch (socketError) {
-        document.getElementById('statusPill').textContent = 'Socket blocked: ' + (socketError && socketError.message ? socketError.message : socketError);
-        document.getElementById('statusPill').style.color = '#ef4444';
+        setRuntimeStatus('Disconnected', 'disconnected');
         return;
       }
 
@@ -615,13 +803,13 @@
         try {
           console.error('[dashboard] WebSocket error', event);
         } catch (ignored) { /* console may be unavailable */ }
-        document.getElementById('statusPill').textContent = 'Socket error — check console (F12)';
-        document.getElementById('statusPill').style.color = '#ef4444';
+        setRuntimeStatus('Disconnected', 'disconnected');
       };
 
       ws.onopen = () => {
-        document.getElementById('statusPill').textContent = 'Connected';
-        document.getElementById('statusPill').style.color = '#10b981';
+        // The WebSocket alone does not mean Lossless Scaling is running.
+        // INITIAL_STATE will promote this to Connected when LS is detected.
+        setRuntimeStatus('Disconnected', 'disconnected');
         requestProcesses();
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
@@ -633,6 +821,7 @@
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.simulationMode) document.getElementById('simulationBadge').hidden = false;
           if (msg.type === 'FULL_DATA_UPDATE' || msg.type === 'PROCESSES_AND_PROFILES') {
             runningProcesses = msg.processes || [];
             profiles = msg.profiles || [];
@@ -643,11 +832,39 @@
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
             renderControlSettings();
+          } else if (msg.type === 'PROFILE_SAVED') {
+            if (!msg.requestId || msg.requestId === activeProfileSaveRequestId) {
+              profileSaveInFlight = false;
+              activeProfileSaveRequestId = null;
+              editingOriginalProfile = JSON.parse(JSON.stringify(msg.profile));
+              document.getElementById('profileId').value = msg.profile.id;
+              if (!document.getElementById('profileName').value.trim()) document.getElementById('profileName').value = msg.profile.name;
+              const status = document.getElementById('profileAutosaveStatus');
+              status.textContent = 'Saved automatically.';
+              status.classList.remove('error');
+              if (profileSaveQueued) {
+                profileSaveQueued = false;
+                scheduleProfileAutosave(0);
+              }
+            }
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
+            pendingProfileReshadeImport = false;
+            profileSaveInFlight = false;
+            reshadeSaveInFlight = false;
+            if (document.getElementById('profileModal').classList.contains('active')) {
+              const status = document.getElementById('profileAutosaveStatus');
+              status.textContent = `Not saved: ${errorText}`;
+              status.classList.add('error');
+            }
+            if (document.getElementById('reshadeProfileModal').classList.contains('active')) {
+              const status = document.getElementById('reshadeAutosaveStatus');
+              status.textContent = `Not saved: ${errorText}`;
+              status.classList.add('error');
+            }
             // The companion regenerates its capability token on every
             // launch. A dashboard opened before a restart holds a stale
             // token and lands as readonly; the first rejected action tells
@@ -655,14 +872,10 @@
             // user close and reopen the window by hand.
             if (/capability token/i.test(errorText) && !window.__tokenRefreshDone) {
               window.__tokenRefreshDone = true;
-              document.getElementById('statusPill').textContent = 'Refreshing session...';
-              noticeDialog(
-                'The companion restarted and issued a new session token. Reloading the dashboard to pick it up.'
-              ).then(() => window.location.reload());
+              window.location.reload();
               return;
             }
-            document.getElementById('statusPill').textContent = errorText;
-            document.getElementById('statusPill').style.color = '#ef4444';
+            document.getElementById('controlSettingsStatus').textContent = errorText;
             document.getElementById('revertAllChangesBtn').disabled = false;
             document.getElementById('performanceBenchmarkStatus').textContent = msg.message || 'Benchmark operation failed.';
             ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
@@ -681,9 +894,30 @@
             renderReshadeProfileList();
             renderReshadeProfileChoices();
           } else if (msg.type === 'RESHADE_PROFILE_SAVED') {
-            document.getElementById('reshadeProfileModal').classList.remove('active');
+            reshadeSaveInFlight = false;
+            document.getElementById('reshadeProfileId').value = msg.profile.id;
+            reshadeProfiles = [...reshadeProfiles.filter(profile => profile.id !== msg.profile.id), msg.profile];
+            const status = document.getElementById('reshadeAutosaveStatus');
+            status.textContent = 'Saved automatically.';
+            status.classList.remove('error');
             setGraphicsStatus(`Saved ReShade profile “${msg.profile.name}”.`);
+            if (reshadeSaveQueued) {
+              reshadeSaveQueued = false;
+              scheduleReshadeAutosave(0);
+            }
             ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
+          } else if (msg.type === 'RESHADE_PROFILE_IMPORTED') {
+            setGraphicsStatus(`Imported ReShade preset “${msg.profile.name}”.`);
+            if (pendingProfileReshadeImport) {
+              reshadeProfiles = [...reshadeProfiles.filter(profile => profile.id !== msg.profile.id), msg.profile];
+              renderReshadeProfileChoices(msg.profile.id);
+              pendingProfileReshadeImport = false;
+              scheduleProfileAutosave();
+            }
+            ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
+          } else if (msg.type === 'RESHADE_PROFILE_IMPORT_CANCELLED') {
+            pendingProfileReshadeImport = false;
+            setGraphicsStatus('ReShade preset import cancelled.');
           } else if (msg.type === 'RESHADE_PROFILE_DELETED') {
             setGraphicsStatus(msg.deleted ? 'ReShade profile deleted.' : 'ReShade profile was already absent.');
             ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
@@ -700,6 +934,12 @@
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTED') {
             setGraphicsStatus(`Selected ${msg.asset.filename}. It is now available to profiles.`);
+            ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+          } else if (msg.type === 'NEURAL_RENDER_BUNDLE_STAGED') {
+            if (msg.runtime) {
+              dlssnrRuntimes = [...dlssnrRuntimes.filter(item => item.sha256 !== msg.runtime.sha256), msg.runtime];
+            }
+            setGraphicsStatus(`Installed LSP-NeuralRender ${msg.package.version} and verified DLSS 5 runtime ${msg.runtime.filename}.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
@@ -736,6 +976,16 @@
             document.getElementById('configFolderStatus').textContent = `Opened ${msg.path}`;
           } else if (msg.type === 'GENERAL_PATH_SELECTED') {
             if (!msg.path) return;
+            if (msg.kind === 'program_executable') {
+              const input = document.getElementById('targetValue');
+              const targets = input.value.split(',').map(value => value.trim()).filter(Boolean);
+              if (!targets.some(value => value.toLowerCase() === msg.path.toLowerCase())) {
+                targets.push(msg.path);
+              }
+              input.value = targets.join(', ');
+              scheduleProfileAutosave();
+              return;
+            }
             const targetId = msg.kind === 'process_lasso_log' ? 'processLassoLogPath' : 'rtssInstallPath';
             document.getElementById(targetId).value = msg.path;
             scheduleGeneralSettingsSave(0);
@@ -752,8 +1002,6 @@
             ];
             if (msg.failures && msg.failures.length) details.push(`Failures: ${msg.failures.join('; ')}`);
             document.getElementById('controlSettingsStatus').textContent = details.join('. ') + '.';
-            document.getElementById('statusPill').textContent = msg.ok ? 'Cleanup complete' : 'Cleanup incomplete';
-            document.getElementById('statusPill').style.color = msg.ok ? '#10b981' : '#ef4444';
             ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
           }
         } catch (err) {
@@ -762,17 +1010,11 @@
       };
 
       ws.onclose = (event) => {
-        // Surface the close code/reason instead of a bare "Disconnected" so
-        // a refused handshake (1008), a gone server, or a stale cached page
-        // can be told apart at a glance.
-        const code = event && event.code ? ` (${event.code})` : '';
-        const reason = event && event.reason ? `: ${event.reason}` : '';
-        document.getElementById('statusPill').textContent = `Disconnected${code}${reason}`;
-        document.getElementById('statusPill').style.color = '#ef4444';
+        setRuntimeStatus('Disconnected', 'disconnected');
         // Polling loops elsewhere re-request data on their own timers; only
         // schedule one reconnect. Without the guard, overlapping timers
         // opened a socket every ~3s, which is the open/close storm in the
-        // companion log and makes runtimeInfo flap on every handshake.
+        // companion log and makes the status pill flap on every handshake.
         if (!wsIntentionalClose && !wsReconnectTimer) {
           wsReconnectTimer = setTimeout(() => {
             wsReconnectTimer = null;
@@ -782,34 +1024,19 @@
       };
     }
 
-    let lastRuntimeLabel = null;
-    let lastRuntimeColor = null;
-
     function renderRuntime(msg) {
-      const profile = msg.activeProfile && msg.activeProfile.name;
-      const target = msg.scalingTarget && msg.scalingTarget.processName;
-      const control = msg.scalingControl || {};
-      const running = msg.losslessScalingRunning === undefined ? null : !!msg.losslessScalingRunning;
-      // "Running" = LS process alive but idle; "Scaling active" = overlay/log
-      // confirmed. Never show a bare Idle when we simply have no data yet.
-      const stateLabel = msg.isScalingActive
-        ? 'Scaling active'
-        : (running === true ? 'LS Running (Idle)' : (running === false ? 'LS Not Running' : 'Idle'));
-      const text =
-        `${stateLabel}` +
-        `${profile ? ` · ${profile}` : ''}` + `${target ? ` · ${target}` : ''}` +
-        `${control.state === 'error' ? ` · ${control.message}` : ''}`;
-      const color =
-        control.state === 'error' ? '#ef4444' : (msg.isScalingActive ? '#10b981' : 'var(--text-muted)');
-      // STATE_UPDATE arrives every second; skip DOM writes when nothing
-      // changed so the label can't visibly flicker on re-render.
-      if (text === lastRuntimeLabel && color === lastRuntimeColor) {
+      if (!msg.losslessScalingRunning) {
+        setRuntimeStatus('Disconnected', 'disconnected');
         return;
       }
-      lastRuntimeLabel = text;
-      lastRuntimeColor = color;
-      document.getElementById('runtimeInfo').textContent = text;
-      document.getElementById('runtimeInfo').style.color = color;
+      if (!msg.isScalingActive) {
+        setRuntimeStatus('Connected', 'connected');
+        return;
+      }
+      const targetInfo = msg.scalingTarget || {};
+      const target = targetInfo.processName || targetInfo.windowTitle || 'Unknown';
+      const profile = (msg.activeProfile && msg.activeProfile.name) || 'Unknown';
+      setRuntimeStatus(`Scaling: ${target} | Profile: ${profile}`, 'scaling');
     }
 
     function renderControlSettings() {
@@ -824,9 +1051,23 @@
       document.getElementById('overrideHotkeyShift').checked = overrideModifiers.includes('shift');
       document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
       renderOverrideHotkeySettings();
-      document.getElementById('defaultProfileAutoScale').checked = controlSettings.defaultProfileAutoScale !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
       renderGpuRoutingSettings();
+      const reshadeHdr = controlSettings.reshadeHdr || {};
+      const reshadeHdrInput = document.getElementById('reshadeHdrPeakNits');
+      reshadeHdrInput.value = reshadeHdr.configuredNits == null ? '' : reshadeHdr.configuredNits;
+      reshadeHdrInput.placeholder = reshadeHdr.detectedNits
+        ? `Auto: ${reshadeHdr.detectedNits}`
+        : `Auto fallback: ${reshadeHdr.resolvedNits || 600}`;
+      const reshadeHdrStatus = document.getElementById('reshadeHdrPeakStatus');
+      if (reshadeHdr.configuredNits != null) {
+        reshadeHdrStatus.textContent = `Manual override: ${reshadeHdr.resolvedNits} nits. Applied to managed HDR shader settings.`;
+      } else if (reshadeHdr.detectedNits) {
+        const display = reshadeHdr.displayName ? ` on ${reshadeHdr.displayName}` : '';
+        reshadeHdrStatus.textContent = `Auto-detected ${reshadeHdr.detectedNits} nits${display}. Applied to managed HDR shader settings.`;
+      } else {
+        reshadeHdrStatus.textContent = `No active HDR display reported a reliable peak. Using ${reshadeHdr.resolvedNits || 600} nits; enter the monitor's rated peak for accuracy.`;
+      }
       document.getElementById('processLassoPerformanceModeScaling').checked = !!controlSettings.processLassoPerformanceModeScaling;
       document.getElementById('processLassoLogPath').value = controlSettings.processLassoLogPath || '';
       const processLassoDetected = controlSettings.processLassoDetected === undefined
@@ -834,7 +1075,7 @@
         : !!controlSettings.processLassoDetected;
       document.getElementById('processLassoDetectedPath').innerHTML = processLassoDetected
         ? `<span class="integration-status detected">Detected</span><div class="integration-path">${escapeHtml(controlSettings.processLassoDetectedLogPath || '')}</div>`
-        : '<span class="integration-status missing">Not detected</span><div class="integration-path">No usable Process Lasso log was found.</div>';
+        : '<span class="integration-status missing">Not detected</span>';
       document.getElementById('rtssFrameLimitingEnabled').checked = !!controlSettings.rtssFrameLimitingEnabled;
       document.getElementById('rtssInstallPath').value = controlSettings.rtssInstallPath || '';
       document.getElementById('rtssDefaultLimitMode').value = controlSettings.rtssDefaultLimitMode || 'static';
@@ -842,6 +1083,7 @@
       renderRtssStatus(controlSettings.rtssStatus || {});
       renderRtssProfileAvailability();
       renderRtssModeSettings();
+      renderDefaultRtssModeSettings();
     }
 
     function renderOverrideHotkeySettings() {
@@ -863,8 +1105,10 @@
     function renderGpuRoutingSettings() {
       const inventory = controlSettings.gpuInventory || { gpus: [], displays: [], hasNvidia: false };
       const select = document.getElementById('preferredScalingGpu');
-      const selected = controlSettings.preferredScalingGpuDeviceId || '';
-      select.innerHTML = '<option value="">Automatic (Lossless Scaling default)</option>';
+      const selected = controlSettings.autoRouteGpuToDisplay
+        ? '__auto__'
+        : (controlSettings.preferredScalingGpuDeviceId || '__auto__');
+      select.innerHTML = '<option value="__auto__">Auto-Route to App Display GPU</option>';
       (inventory.gpus || []).forEach(gpu => {
         const option = document.createElement('option');
         option.value = gpu.deviceId || '';
@@ -872,8 +1116,9 @@
         option.textContent = `${gpu.name || 'Unknown GPU'}${displays ? ` - ${displays}` : ''}`;
         select.appendChild(option);
       });
-      select.value = [...select.options].some(option => option.value === selected) ? selected : '';
-      document.getElementById('autoRouteGpuToDisplay').checked = !!controlSettings.autoRouteGpuToDisplay;
+      select.value = [...select.options].some(option => option.value === selected)
+        ? selected
+        : '__auto__';
       const hasNvidia = !!(controlSettings.hasNvidiaGpu || inventory.hasNvidia);
       const rtxHdr = document.getElementById('nvidiaRtxHdrEnabled');
       rtxHdr.disabled = !hasNvidia;
@@ -1015,10 +1260,8 @@
       const runtimeStatus = document.getElementById('dlssnrRuntimeStatus');
       runtimeStatus.textContent = dlssnrRuntimes.length
         ? `${dlssnrRuntimes.length} validated x64 DLSS 5 runtime${dlssnrRuntimes.length === 1 ? '' : 's'} available.`
-        : 'DLSS 5 runtime not selected.';
-      renderRuntimeChoices();
+        : 'DLSS 5 runtime not installed.';
       renderPackageChoice('losslessProxyVersion', 'lossless-proxy');
-      renderPackageChoice('neuralPackageVersion', 'lsp-neural-render');
       renderPackageChoice('specialKVersion', 'special-k');
       renderExternalSourceStatus('reshade', msg.externalSources && msg.externalSources.reshade);
       renderExternalSourceStatus('special-k', msg.externalSources && msg.externalSources['special-k']);
@@ -1097,25 +1340,6 @@
       select.value = selected || '';
     }
 
-    function renderRuntimeChoices(preferredValue) {
-      const select = document.getElementById('neuralRuntimeHash');
-      const selected = preferredValue === undefined ? select.value : preferredValue;
-      select.innerHTML = '<option value="">Select the runtime in Lossless Scaling Add-ons</option>';
-      dlssnrRuntimes.forEach(asset => {
-        const option = document.createElement('option');
-        option.value = asset.sha256;
-        option.textContent = `${asset.filename} (${asset.sha256.slice(0, 10)}…)`;
-        select.appendChild(option);
-      });
-      if (selected && ![...select.options].some(option => option.value === selected)) {
-        const option = document.createElement('option');
-        option.value = selected;
-        option.textContent = `Previously selected runtime (${selected.slice(0, 10)}…)`;
-        select.appendChild(option);
-      }
-      select.value = selected || '';
-    }
-
     function renderSpecialKSettings() {
       const enabled = document.getElementById('specialKEnabled').checked;
       document.getElementById('specialKSettings').classList.toggle('disabled', !enabled);
@@ -1166,7 +1390,7 @@
       const query = document.getElementById('profileSearch').value.toLowerCase();
       const listEl = document.getElementById('profileList');
       const filtered = profiles
-        .filter(p => p.name.toLowerCase().includes(query) || (p.target_process && p.target_process.toLowerCase().includes(query)) || (p.is_default && 'default'.includes(query)))
+        .filter(p => p.name.toLowerCase().includes(query) || profileTargets(p).toLowerCase().includes(query) || (p.is_default && 'default'.includes(query)))
         .sort((left, right) => Number(!!right.is_default) - Number(!!left.is_default));
 
       if (filtered.length === 0) {
@@ -1174,18 +1398,21 @@
         return;
       }
 
-      listEl.innerHTML = filtered.map(p => `
-        <div class="profile-item">
+      listEl.innerHTML = filtered.map(p => {
+        const invalid = !profileHasTarget(p);
+        return `
+        <div class="profile-item${invalid ? ' invalid-profile' : ''}">
           <div class="item-info">
-            <span class="item-title">${escapeHtml(p.name)}${p.is_default ? ' <span class="integration-status detected">Default</span>' : ''}</span>
-            <span class="item-sub">Target: ${escapeHtml(p.is_default ? 'Lossless Scaling default' : (p.target_process || p.target_domain || 'Global Fallback'))}${p.rtss && p.rtss.enabled ? ` | RTSS: ${p.rtss.learned_framerate_limit ? `learned ${p.rtss.learned_framerate_limit}` : p.rtss.framerate_limit} FPS` : ''}</span>
+            <span class="item-title">${escapeHtml(p.name)}${p.is_default ? ' <span class="integration-status detected">Default</span>' : ''}${invalid ? '<span class="profile-invalid-badge" title="This profile has no target path or domain">!</span>' : ''}</span>
+            <span class="item-sub">Target: ${escapeHtml(p.is_default ? 'Lossless Scaling default' : (profileTargets(p) || 'Missing target'))}${p.rtss && p.rtss.enabled ? ` | RTSS: ${p.rtss.learned_framerate_limit ? `learned ${p.rtss.learned_framerate_limit}` : p.rtss.framerate_limit} FPS` : ''}</span>
           </div>
           <div style="display:flex; gap:6px;">
-            <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>${p.is_default ? '' : `
+            <button class="btn btn-secondary" onclick="editProfile('${p.id}')">Edit</button>
+            <button class="btn btn-secondary" onclick="cloneProfile('${p.id}')">Clone</button>${p.is_default ? '' : `
             <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">&times;</button>`}
           </div>
         </div>
-      `).join('');
+      `; }).join('');
     }
 
     function renderReshadeProfileChoices(preferredValue) {
@@ -1220,6 +1447,66 @@
       }).join('');
     }
 
+    function updateShaderPackSelectionState(details, pack) {
+      const selected = reshadeShaderSelection[pack.id] || new Set();
+      const shaderCount = (pack.shaders || []).length;
+      const toggle = details.querySelector('.reshade-pack-toggle');
+      toggle.checked = !!shaderCount && selected.size === shaderCount;
+      toggle.indeterminate = selected.size > 0 && selected.size < shaderCount;
+      details.querySelector('.shader-pack-count').textContent = `${selected.size} selected · ${shaderCount} shaders`;
+    }
+
+    function renderShaderPackBody(details, pack, query) {
+      const packText = `${pack.name || ''} ${pack.description || ''}`.toLowerCase();
+      const shaders = query && !packText.includes(query)
+        ? (pack.shaders || []).filter(shader => shader.toLowerCase().includes(query))
+        : (pack.shaders || []);
+      const selected = reshadeShaderSelection[pack.id] || new Set();
+      const grid = details.querySelector('.shader-grid');
+      grid.innerHTML = shaders.map(shader => `<label class="shader-choice"><input type="checkbox" value="${escapeHtml(shader)}" ${selected.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label>`).join('') || '<span class="item-sub">No matching shaders in this pack.</span>';
+      grid.querySelectorAll('input[type="checkbox"]').forEach(box => {
+        box.onchange = () => {
+          const choice = reshadeShaderSelection[pack.id] || new Set();
+          if (box.checked) choice.add(box.value); else choice.delete(box.value);
+          if (choice.size) reshadeShaderSelection[pack.id] = choice;
+          else delete reshadeShaderSelection[pack.id];
+          updateShaderPackSelectionState(details, pack);
+          scheduleReshadeAutosave();
+        };
+      });
+    }
+
+    function renderReshadeShaderCatalog() {
+      const query = document.getElementById('reshadeShaderSearch').value.trim().toLowerCase();
+      const matching = reshadeCatalog.filter(pack => {
+        if (!query) return true;
+        return `${pack.name || ''} ${pack.description || ''}`.toLowerCase().includes(query)
+          || (pack.shaders || []).some(shader => shader.toLowerCase().includes(query));
+      });
+      const catalog = document.getElementById('reshadeShaderCatalog');
+      catalog.innerHTML = matching.map(pack => {
+        const selected = reshadeShaderSelection[pack.id] || new Set();
+        return `<details class="shader-pack" data-provider="${escapeHtml(pack.id)}"><summary><input type="checkbox" class="reshade-pack-toggle"><span><strong>${escapeHtml(pack.name)}</strong><br><span class="item-sub shader-pack-count">${selected.size} selected · ${(pack.shaders || []).length} shaders</span></span>${pack.repositoryUrl ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Provider ↗</a>` : ''}</summary><div class="shader-pack-body"><div class="shader-grid"></div></div></details>`;
+      }).join('') || '<div class="item-sub" style="padding:10px">No matching shader packs or shaders.</div>';
+      catalog.querySelectorAll('.shader-pack').forEach(details => {
+        const pack = reshadeCatalog.find(item => item.id === details.dataset.provider);
+        if (!pack) return;
+        const toggle = details.querySelector('.reshade-pack-toggle');
+        toggle.onclick = event => event.stopPropagation();
+        toggle.onchange = () => {
+          if (toggle.checked) reshadeShaderSelection[pack.id] = new Set(pack.shaders || []);
+          else delete reshadeShaderSelection[pack.id];
+          updateShaderPackSelectionState(details, pack);
+          if (details.open) renderShaderPackBody(details, pack, query);
+          scheduleReshadeAutosave();
+        };
+        details.ontoggle = () => {
+          if (details.open) renderShaderPackBody(details, pack, query);
+        };
+        updateShaderPackSelectionState(details, pack);
+      });
+    }
+
     function openReshadeProfileModal(profile = null) {
       document.getElementById('reshadeProfileForm').reset();
       document.getElementById('reshadeProfileId').value = profile ? profile.id : '';
@@ -1227,15 +1514,17 @@
       document.getElementById('reshadeOverlayEnabled').checked = !!(profile && profile.overlay_enabled);
       document.getElementById('reshadeProfileModalTitle').textContent = profile ? 'Edit ReShade Profile' : 'New ReShade Profile';
       const selected = profile && profile.shaders || {};
-      document.getElementById('reshadeShaderCatalog').innerHTML = reshadeCatalog.map(pack => {
-        const chosen = new Set(selected[pack.id] || []);
-        const shaders = (pack.shaders || []).map(shader => `<label class="shader-choice"><input type="checkbox" data-reshade-provider="${escapeHtml(pack.id)}" value="${escapeHtml(shader)}" ${chosen.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label>`).join('');
-        return `<details class="shader-pack" ${chosen.size ? 'open' : ''}><summary><input type="checkbox" class="reshade-pack-toggle" data-provider="${escapeHtml(pack.id)}" ${chosen.size && chosen.size === (pack.shaders || []).length ? 'checked' : ''}><span><strong>${escapeHtml(pack.name)}</strong>${pack.hdrInstallerRecommended ? ' <span class="addon-badge ready">HDR Installer</span>' : ''}<br><span class="item-sub">${escapeHtml(pack.description || '')}</span></span>${pack.repositoryUrl ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Provider ↗</a>` : ''}</summary><div class="shader-pack-body"><div class="shader-grid">${shaders}</div></div></details>`;
-      }).join('') || '<div class="item-sub">The shader catalog is unavailable. Reconnect to load the offline fallback.</div>';
-      document.querySelectorAll('.reshade-pack-toggle').forEach(toggle => {
-        toggle.onclick = event => event.stopPropagation();
-        toggle.onchange = () => document.querySelectorAll(`[data-reshade-provider="${CSS.escape(toggle.dataset.provider)}"]`).forEach(box => { box.checked = toggle.checked; });
-      });
+      reshadeShaderSelection = Object.fromEntries(
+        Object.entries(selected).map(([provider, shaders]) => [provider, new Set(shaders)])
+      );
+      document.getElementById('reshadeShaderSearch').value = '';
+      renderReshadeShaderCatalog();
+      if (reshadeAutosaveTimer) clearTimeout(reshadeAutosaveTimer);
+      reshadeAutosaveTimer = null;
+      reshadeSaveQueued = false;
+      const status = document.getElementById('reshadeAutosaveStatus');
+      status.textContent = profile ? 'Changes save automatically.' : 'Enter a name to begin autosaving.';
+      status.classList.remove('error');
       document.getElementById('reshadeProfileModal').classList.add('active');
     }
 
@@ -1253,8 +1542,155 @@
       return (text || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     }
 
+    function renderDefaultRtssModeSettings() {
+      const dynamicMode = document.getElementById('rtssDefaultLimitMode').value === 'dynamic';
+      document.getElementById('rtssDefaultGpuTargetGroup').style.display = dynamicMode ? 'flex' : 'none';
+    }
+
+    function profileTargets(profile) {
+      if (profile.target_domain) return profile.target_domain;
+      const paths = profile.target_executable_paths || [];
+      const pathNames = new Set(paths.map(path => path.split(/[\\/]/).pop().toLowerCase()));
+      const processNames = (profile.target_processes || []).filter(
+        name => !pathNames.has(name.toLowerCase())
+      );
+      const targets = paths.length || processNames.length
+        ? [...paths, ...processNames]
+        : [profile.target_executable_path || profile.target_process || ''];
+      return targets.filter(Boolean).join(', ');
+    }
+
+    function profileHasTarget(profile) {
+      return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
+    }
+
+    function syncNativeControlDisplay(control) {
+      const settingControl = control.closest('.ls-setting-control');
+      if (!settingControl) return;
+      const output = settingControl.querySelector('output');
+      if (output) output.textContent = control.value;
+      const state = settingControl.querySelector('.ls-switch-state');
+      if (state && control.type === 'checkbox') state.textContent = control.checked ? 'On' : 'Off';
+    }
+
+    function renderFrameGenerationModeSettings() {
+      const type = document.getElementById('nativeFrameGenerationType');
+      const mode = document.getElementById('nativeLsfgMode');
+      const typeValue = String(type && type.value || '').toUpperCase();
+      const supportsAdaptive = typeValue.startsWith('LSFG3');
+      const usesLsfg2Multiplier = typeValue.startsWith('LSFG2');
+      const adaptive = supportsAdaptive && mode && ['ADAPTIVE', 'DYNAMIC'].includes(mode.value.toUpperCase());
+      document.getElementById('nativeLsfgModeRow').hidden = !supportsAdaptive;
+      document.getElementById('nativeLsfgMultiplierRow').hidden = !supportsAdaptive || adaptive;
+      document.getElementById('nativeLsfg2MultiplierRow').hidden = !usesLsfg2Multiplier;
+      document.getElementById('nativeLsfgTargetRow').hidden = !adaptive;
+    }
+
+    function renderNativeSettings(profile) {
+      const values = profile && profile.native_scaling_settings || {};
+      const controls = [...document.querySelectorAll('[data-native-key]')];
+      controls.forEach((control, index) => {
+        if (!control.dataset.nativeCanonicalKey) control.dataset.nativeCanonicalKey = control.dataset.nativeKey;
+        const candidates = [
+          control.dataset.nativeCanonicalKey,
+          ...(control.dataset.nativeAliases || '').split(',').map(key => key.trim()).filter(Boolean)
+        ];
+        const key = candidates.find(candidate => Object.prototype.hasOwnProperty.call(values, candidate)) || candidates[0];
+        control.dataset.nativeKey = key;
+        let value = Object.prototype.hasOwnProperty.call(values, key)
+          ? values[key]
+          : (control.dataset.nativeDefault || '');
+        if (key === 'LSFG3Mode1' && !Object.prototype.hasOwnProperty.call(values, key)) {
+          const legacyMode = String(values.LSFG3Mode || '').toUpperCase();
+          if (['ADAPTIVE', 'DYNAMIC'].includes(legacyMode)) value = 'ADAPTIVE';
+        }
+        if (!control.id) control.id = `nativeSetting${index}`;
+        const settingRow = control.closest('.ls-setting-row');
+        const formGroup = control.closest('.form-group');
+        const label = settingRow ? settingRow.querySelector(':scope > label') : (formGroup && formGroup.querySelector('label'));
+        if (label) label.htmlFor = control.id;
+        if (control.type === 'checkbox') {
+          control.checked = control.dataset.nativeCheckedValue
+            ? String(value).toUpperCase() === control.dataset.nativeCheckedValue.toUpperCase()
+            : String(value).toLowerCase() === 'true';
+          syncNativeControlDisplay(control);
+          control.oninput = () => syncNativeControlDisplay(control);
+          return;
+        }
+        const serialized = value == null ? '' : String(value);
+        if (control.tagName === 'SELECT' && serialized && ![...control.options].some(option => option.value === serialized)) {
+          const option = document.createElement('option');
+          option.value = serialized;
+          option.textContent = serialized;
+          control.appendChild(option);
+        }
+        control.value = serialized;
+        syncNativeControlDisplay(control);
+        control.oninput = () => syncNativeControlDisplay(control);
+      });
+
+      const frameGenerationMode = document.getElementById('nativeLsfgMode');
+      const frameGenerationType = document.getElementById('nativeFrameGenerationType');
+      frameGenerationMode.oninput = () => {
+        syncNativeControlDisplay(frameGenerationMode);
+        renderFrameGenerationModeSettings();
+      };
+      frameGenerationType.oninput = () => {
+        syncNativeControlDisplay(frameGenerationType);
+        renderFrameGenerationModeSettings();
+      };
+      renderFrameGenerationModeSettings();
+
+      const known = new Set(controls.flatMap(control => [
+        control.dataset.nativeKey,
+        control.dataset.nativeCanonicalKey,
+        ...(control.dataset.nativeAliases || '').split(',').map(key => key.trim()).filter(Boolean)
+      ]));
+      const additional = Object.entries(values).filter(([key]) => key !== 'AutoScale' && !known.has(key));
+      const group = document.getElementById('nativeAdditionalSettingsGroup');
+      const container = document.getElementById('nativeAdditionalSettings');
+      container.replaceChildren();
+      additional.forEach(([key, value]) => {
+        const row = document.createElement('div');
+        row.className = 'native-extra-row';
+        const name = document.createElement('code');
+        name.textContent = key;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.dataset.nativeExtraKey = key;
+        input.value = value == null ? '' : String(value);
+        row.append(name, input);
+        container.appendChild(row);
+      });
+      group.hidden = additional.length === 0;
+    }
+
+    function nativeSettingsPayload() {
+      const values = {
+        ...(editingOriginalProfile && editingOriginalProfile.native_scaling_settings || {})
+      };
+      document.querySelectorAll('[data-native-key]').forEach(control => {
+        values[control.dataset.nativeKey] = control.type === 'checkbox'
+          ? (control.dataset.nativeCheckedValue
+              ? (control.checked ? control.dataset.nativeCheckedValue : control.dataset.nativeUncheckedValue)
+              : String(control.checked))
+          : control.value;
+      });
+      document.querySelectorAll('[data-native-extra-key]').forEach(control => {
+        values[control.dataset.nativeExtraKey] = control.value;
+      });
+      if (controlSettings && controlSettings.smartAutoScaleEnabled !== false) {
+        values.AutoScale = 'false';
+      }
+      return values;
+    }
+
+    function setProfileEditorOpen(open) {
+      document.getElementById('profileModal').classList.toggle('active', open);
+      document.body.classList.toggle('profile-editor-open', open);
+    }
+
     function openModal(profile = null) {
-      const modal = document.getElementById('profileModal');
       document.getElementById('profileForm').reset();
       const creating = !profile || !profile.id;
       const defaultTemplate = profiles.find(item => item.is_default);
@@ -1268,11 +1704,13 @@
           is_default: false,
           target_process: identity.target_process || null,
           target_executable_path: identity.target_executable_path || null,
+          target_processes: identity.target_processes || [],
+          target_executable_paths: identity.target_executable_paths || [],
           target_domain: identity.target_domain || null,
           lossless_profile_title: null,
           lossless_profile_path: null,
           last_imported_hash: null,
-          auto_scale: !controlSettings || controlSettings.defaultProfileAutoScale !== false
+          auto_scale: !controlSettings || controlSettings.smartAutoScaleEnabled !== false
         };
         if (profile.rtss) {
           profile.rtss.learned_framerate_limit = null;
@@ -1286,15 +1724,18 @@
         }
       }
       editingOriginalProfile = profile ? JSON.parse(JSON.stringify(profile)) : null;
+      renderNativeSettings(profile);
 
       if (profile) {
         document.getElementById('modalTitle').textContent = creating ? 'Create Profile' : 'Edit Profile';
         document.getElementById('profileId').value = profile.id;
         document.getElementById('profileName').value = profile.name;
-        document.getElementById('targetProcess').value = profile.target_process || '';
-        document.getElementById('targetExecutablePath').value = profile.target_executable_path || '';
-        document.getElementById('targetDomain').value = profile.target_domain || '';
-        document.getElementById('losslessProfileTitle').value = profile.lossless_profile_title || '';
+        const targetType = profile.target_domain ? 'web_domain' : 'program';
+        document.getElementById('targetType').value = targetType;
+        document.getElementById('targetValue').value = targetType === 'web_domain'
+          ? (profile.target_domain || '')
+          : profileTargets(profile);
+        renderTargetType();
         document.getElementById('autoScale').checked = profile.auto_scale !== false;
         const rtss = profile.rtss || {};
         document.getElementById('rtssEnabled').checked = !!rtss.enabled;
@@ -1310,26 +1751,10 @@
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
         const graphics = profile.graphics || {};
         const neural = graphics.neural_render || {};
-        document.getElementById('neuralImplementation').value = neural.implementation || 'disabled';
+        document.getElementById('dlss5Enabled').checked = neural.implementation !== 'disabled';
         document.getElementById('losslessProxyEnabled').checked = !!(graphics.lossless_proxy && graphics.lossless_proxy.enabled);
         renderPackageChoice('losslessProxyVersion', 'lossless-proxy', graphics.lossless_proxy && graphics.lossless_proxy.version || '');
         document.getElementById('losslessProxyUpdatePolicy').value = graphics.lossless_proxy && graphics.lossless_proxy.update_policy || 'notify';
-        renderPackageChoice('neuralPackageVersion', 'lsp-neural-render', neural.package && neural.package.version || '');
-        document.getElementById('neuralUpdatePolicy').value = neural.package && neural.package.update_policy || 'notify';
-        renderRuntimeChoices(neural.runtime_asset_sha256 || '');
-        document.getElementById('neuralWorkingScale').value = neural.working_scale == null ? 0.35 : neural.working_scale;
-        document.getElementById('neuralStyle').value = neural.style || 'standard';
-        document.getElementById('neuralIntensity').value = neural.intensity == null ? 1 : neural.intensity;
-        document.getElementById('neuralLocalStructure').value = neural.local_structure == null ? 1 : neural.local_structure;
-        document.getElementById('neuralLocalTone').value = neural.local_tone == null ? 1 : neural.local_tone;
-        document.getElementById('neuralSkinStructure').value = neural.skin_structure == null ? -1 : neural.skin_structure;
-        document.getElementById('neuralApplyStrength').value = neural.apply_strength == null ? 1 : neural.apply_strength;
-        document.getElementById('neuralMaxDelta').value = neural.max_delta == null ? 0.5 : neural.max_delta;
-        document.getElementById('neuralHighlightProtection').value = neural.protect_highlights_above == null ? 0.85 : neural.protect_highlights_above;
-        document.getElementById('neuralWatchdog').value = neural.watchdog_ms == null ? 80 : neural.watchdog_ms;
-        document.getElementById('neuralAutoMask').checked = neural.auto_skin_mask !== false;
-        document.getElementById('neuralOpticalFlow').checked = neural.use_lsfg_optical_flow !== false;
-        document.getElementById('neuralLsPriority').checked = neural.prioritize_ls_gpu_work !== false;
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         renderPackageChoice('specialKVersion', 'special-k', specialK.version || '');
@@ -1344,14 +1769,42 @@
         document.getElementById('modalTitle').textContent = 'Create Profile';
         document.getElementById('profileId').value = '';
         renderReshadeProfileChoices('');
-        document.getElementById('autoScale').checked = !controlSettings || controlSettings.defaultProfileAutoScale !== false;
+        document.getElementById('autoScale').checked = !controlSettings || controlSettings.smartAutoScaleEnabled !== false;
+        document.getElementById('targetType').value = 'program';
+        renderTargetType();
       }
 
       updateRtssTargetHelper();
       renderRtssModeSettings();
       renderRtssProfileAvailability();
       renderSpecialKSettings();
-      modal.classList.add('active');
+      renderProfileTargetValidation();
+      const autosaveStatus = document.getElementById('profileAutosaveStatus');
+      autosaveStatus.textContent = creating
+        ? 'Changes save automatically after you enter profile details.'
+        : 'Changes save automatically.';
+      autosaveStatus.classList.remove('error');
+      setProfileEditorOpen(true);
+    }
+
+    function renderTargetType() {
+      const isProgram = document.getElementById('targetType').value === 'program';
+      document.getElementById('targetValueLabel').textContent = isProgram
+        ? 'Program Paths or Executable Names (comma separated; detection only)'
+        : 'Web Domain';
+      document.getElementById('targetValue').placeholder = isProgram
+        ? 'game.exe, D:\\Games\\Another Game\\game2.exe'
+        : 'e.g. youtube.com';
+      document.getElementById('browseTargetProgramBtn').hidden = !isProgram;
+      document.getElementById('browseTargetProgramBtn').style.display = isProgram ? '' : 'none';
+      renderProfileTargetValidation();
+    }
+
+    function renderProfileTargetValidation() {
+      const invalid = !(editingOriginalProfile && editingOriginalProfile.is_default)
+        && !document.getElementById('targetValue').value.trim();
+      document.querySelector('.profile-target-path-field').classList.toggle('invalid', invalid);
+      document.getElementById('targetValue').setAttribute('aria-invalid', String(invalid));
     }
 
     window.createProfileFromProc = function(pid) {
@@ -1371,13 +1824,28 @@
         target_process: procName,
         target_executable_path: exePath,
         target_domain: '',
-        auto_scale: !controlSettings || controlSettings.defaultProfileAutoScale !== false
+        auto_scale: !controlSettings || controlSettings.smartAutoScaleEnabled !== false
       });
+      scheduleProfileAutosave(0);
     };
 
     window.editProfile = function(profileId) {
       const p = profiles.find(item => item.id === profileId);
       if (p) openModal(p);
+    };
+
+    window.cloneProfile = function(profileId) {
+      const source = profiles.find(item => item.id === profileId);
+      if (!source) return;
+      const clone = JSON.parse(JSON.stringify(source));
+      Object.assign(clone, {
+        id: '', name: '', is_default: false,
+        target_process: null, target_executable_path: null,
+        target_processes: [], target_executable_paths: [], target_domain: null,
+        lossless_profile_title: null, lossless_profile_path: null, last_imported_hash: null
+      });
+      openModal(clone);
+      scheduleProfileAutosave(0);
     };
 
     window.deleteProfile = function(profileId) {
@@ -1394,16 +1862,79 @@
     };
 
     const processModal = document.getElementById('processModal');
-    const settingsArea = document.getElementById('settingsArea');
-    const settingsToggleBtn = document.getElementById('settingsToggleBtn');
     const profilesPanel = document.getElementById('profilesPanel');
     const generalSettingsPanel = document.getElementById('generalSettingsPanel');
     const losslessAddonsPanel = document.getElementById('losslessAddonsPanel');
     const performanceBenchmarkPanel = document.getElementById('performanceBenchmarkPanel');
-    let settingsMode = false;
+    const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel];
+    const settingsDashboardPanels = [generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel];
+    const dashboardNavButtons = [...document.querySelectorAll('[data-dashboard-panel]')];
 
     function closeProcessPicker() {
       processModal.classList.remove('active');
+    }
+
+    function scheduleProfileAutosave(delay = 750) {
+      renderProfileTargetValidation();
+      const status = document.getElementById('profileAutosaveStatus');
+      status.textContent = 'Unsaved changes…';
+      status.classList.remove('error');
+      if (profileAutosaveTimer) clearTimeout(profileAutosaveTimer);
+      profileAutosaveTimer = setTimeout(() => {
+        profileAutosaveTimer = null;
+        if (profileSaveInFlight) {
+          profileSaveQueued = true;
+          return;
+        }
+        const form = document.getElementById('profileForm');
+        if (!form.checkValidity()) {
+          status.textContent = 'Waiting for valid values…';
+          return;
+        }
+        form.requestSubmit();
+      }, delay);
+    }
+
+    function closeProfileEditor() {
+      if (profileAutosaveTimer) {
+        clearTimeout(profileAutosaveTimer);
+        profileAutosaveTimer = null;
+        if (profileSaveInFlight) profileSaveQueued = true;
+        else document.getElementById('profileForm').requestSubmit();
+      }
+      setProfileEditorOpen(false);
+    }
+
+    function scheduleReshadeAutosave(delay = 750) {
+      const status = document.getElementById('reshadeAutosaveStatus');
+      const name = document.getElementById('reshadeProfileName').value.trim();
+      if (!name) {
+        status.textContent = 'Enter a name to begin autosaving.';
+        return;
+      }
+      status.textContent = 'Unsaved changes…';
+      status.classList.remove('error');
+      if (reshadeAutosaveTimer) clearTimeout(reshadeAutosaveTimer);
+      reshadeAutosaveTimer = setTimeout(() => {
+        reshadeAutosaveTimer = null;
+        if (reshadeSaveInFlight) {
+          reshadeSaveQueued = true;
+          return;
+        }
+        document.getElementById('reshadeProfileForm').requestSubmit();
+      }, delay);
+    }
+
+    function closeReshadeProfileEditor() {
+      if (reshadeAutosaveTimer) {
+        clearTimeout(reshadeAutosaveTimer);
+        reshadeAutosaveTimer = null;
+        if (reshadeSaveInFlight) reshadeSaveQueued = true;
+        else if (document.getElementById('reshadeProfileName').value.trim()) {
+          document.getElementById('reshadeProfileForm').requestSubmit();
+        }
+      }
+      document.getElementById('reshadeProfileModal').classList.remove('active');
     }
 
     document.getElementById('addProfileBtn').onclick = () => {
@@ -1415,20 +1946,36 @@
     processModal.onclick = event => {
       if (event.target === processModal) closeProcessPicker();
     };
-    function setSettingsMode(enabled, scroll = true) {
-      settingsMode = enabled;
-      profilesPanel.open = !enabled;
-      generalSettingsPanel.open = enabled;
-      losslessAddonsPanel.open = enabled;
-      performanceBenchmarkPanel.open = enabled;
-      settingsToggleBtn.classList.toggle('active', enabled);
-      settingsToggleBtn.setAttribute('aria-expanded', String(enabled));
-      settingsToggleBtn.setAttribute('aria-label', enabled ? 'Show profiles' : 'Focus settings and add-ons');
-      settingsToggleBtn.title = enabled ? 'Show profiles' : 'Settings and add-ons';
-      if (enabled && scroll) settingsArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    function syncDashboardNavigation(panel) {
+      dashboardNavButtons.forEach(button => {
+        const active = !!panel && button.dataset.dashboardPanel === panel.dataset.collapsibleId;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
     }
 
-    settingsToggleBtn.onclick = () => setSettingsMode(!settingsMode);
+    function openMajorDashboardPanel(panel, scroll = false) {
+      majorDashboardPanels.forEach(candidate => { candidate.open = candidate === panel; });
+      const isSettingsPanel = settingsDashboardPanels.includes(panel);
+      syncDashboardNavigation(panel);
+      localStorage.setItem('dashboard-active-panel', panel.dataset.collapsibleId);
+      if (isSettingsPanel) localStorage.setItem('dashboard-last-settings-panel', panel.dataset.collapsibleId);
+      if (scroll) {
+        requestAnimationFrame(() => {
+          const header = document.querySelector('header');
+          const headerOffset = (header && header.offsetHeight || 0) + 24;
+          const panelTop = panel.getBoundingClientRect().top + window.scrollY - headerOffset;
+          window.scrollTo({ top: Math.max(0, panelTop), behavior: 'smooth' });
+        });
+      }
+    }
+
+    dashboardNavButtons.forEach(button => {
+      button.onclick = () => {
+        const panel = majorDashboardPanels.find(candidate => candidate.dataset.collapsibleId === button.dataset.dashboardPanel);
+        if (panel) openMajorDashboardPanel(panel, true);
+      };
+    });
     document.getElementById('ignoreAddonUpdatesBtn').onclick = () => {
       let ignored = [];
       try { ignored = JSON.parse(localStorage.getItem('ignored-addon-update-versions') || '[]'); } catch (_) {}
@@ -1436,50 +1983,89 @@
       document.getElementById('addonUpdateNotice').hidden = true;
     };
     document.getElementById('showAddonDownloadsBtn').onclick = () => {
-      setSettingsMode(true, false);
-      losslessAddonsPanel.open = true;
-      losslessAddonsPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      openMajorDashboardPanel(losslessAddonsPanel, true);
     };
 
-    document.getElementById('closeModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
-    document.getElementById('cancelModalBtn').onclick = () => document.getElementById('profileModal').classList.remove('active');
+    document.getElementById('closeModalBtn').onclick = closeProfileEditor;
     document.getElementById('newCustomProfileBtn').onclick = () => {
       closeProcessPicker();
       openModal();
     };
     document.getElementById('addReshadeProfileBtn').onclick = () => openReshadeProfileModal();
-    document.getElementById('closeReshadeProfileModalBtn').onclick = () => document.getElementById('reshadeProfileModal').classList.remove('active');
-    document.getElementById('cancelReshadeProfileBtn').onclick = () => document.getElementById('reshadeProfileModal').classList.remove('active');
+    document.getElementById('importReshadePresetBtn').onclick = () => {
+      setGraphicsStatus('Choose a ReShade preset INI to import...');
+      ws.send(JSON.stringify({ type: 'IMPORT_RESHADE_PRESET' }));
+    };
+    document.getElementById('closeReshadeProfileModalBtn').onclick = closeReshadeProfileEditor;
     document.getElementById('reshadeProfileModal').onclick = event => {
-      if (event.target.id === 'reshadeProfileModal') event.currentTarget.classList.remove('active');
+      if (event.target.id === 'reshadeProfileModal') closeReshadeProfileEditor();
     };
     document.getElementById('reshadeProfileForm').onsubmit = event => {
       event.preventDefault();
-      const shaders = {};
-      document.querySelectorAll('[data-reshade-provider]:checked').forEach(box => {
-        (shaders[box.dataset.reshadeProvider] ||= []).push(box.value);
-      });
+      if (reshadeSaveInFlight) {
+        reshadeSaveQueued = true;
+        return;
+      }
+      if (!document.getElementById('reshadeProfileName').value.trim()) return;
+      const shaders = Object.fromEntries(
+        Object.entries(reshadeShaderSelection)
+          .filter(([, selected]) => selected.size)
+          .map(([provider, selected]) => [provider, [...selected]])
+      );
       ws.send(JSON.stringify({
         type: 'SAVE_RESHADE_PROFILE',
         profile: {
           id: document.getElementById('reshadeProfileId').value || undefined,
           name: document.getElementById('reshadeProfileName').value.trim(),
           overlay_enabled: document.getElementById('reshadeOverlayEnabled').checked,
+          imported_preset: !!(
+            document.getElementById('reshadeProfileId').value
+            && reshadeProfiles.find(item => item.id === document.getElementById('reshadeProfileId').value)?.imported_preset
+          ),
           shaders
         }
       }));
-      setGraphicsStatus('Generating the named ReShade configuration...');
+      reshadeSaveInFlight = true;
+      const status = document.getElementById('reshadeAutosaveStatus');
+      status.textContent = 'Saving…';
+      status.classList.remove('error');
+      setGraphicsStatus('Generating the named ReShade configuration automatically...');
     };
+    document.getElementById('reshadeProfileName').addEventListener('input', () => scheduleReshadeAutosave());
+    document.getElementById('reshadeOverlayEnabled').addEventListener('change', () => scheduleReshadeAutosave());
     document.getElementById('refreshProcsBtn').onclick = requestProcesses;
     document.getElementById('visibleWindowsOnlyToggle').onchange = requestProcesses;
 
     document.getElementById('procSearch').oninput = renderProcesses;
     document.getElementById('profileSearch').oninput = renderProfiles;
+    document.getElementById('reshadeShaderSearch').oninput = renderReshadeShaderCatalog;
     document.getElementById('rtssFramerateLimit').oninput = updateRtssTargetHelper;
     document.getElementById('rtssLimitMode').onchange = renderRtssModeSettings;
-    document.getElementById('rtssDefaultLimitMode').onchange = renderRtssModeSettings;
+    document.getElementById('rtssDefaultLimitMode').onchange = () => {
+      renderRtssModeSettings();
+      renderDefaultRtssModeSettings();
+    };
     document.getElementById('specialKEnabled').onchange = renderSpecialKSettings;
     document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
+    document.getElementById('targetType').onchange = () => {
+      document.getElementById('targetValue').value = '';
+      renderTargetType();
+    };
+    ['input', 'change'].forEach(eventName => {
+      document.getElementById('profileForm').addEventListener(eventName, () => scheduleProfileAutosave());
+    });
+    document.getElementById('browseTargetProgramBtn').onclick = () => {
+      ws.send(JSON.stringify({
+        type: 'BROWSE_GENERAL_PATH',
+        kind: 'program_executable',
+        currentPath: document.getElementById('targetValue').value.trim()
+      }));
+    };
+    document.getElementById('browseReshadePresetBtn').onclick = () => {
+      pendingProfileReshadeImport = true;
+      setGraphicsStatus('Choose a ReShade preset INI to import...');
+      ws.send(JSON.stringify({ type: 'IMPORT_RESHADE_PRESET' }));
+    };
     document.getElementById('resetRtssCalibrationBtn').onclick = () => {
       const profileId = document.getElementById('profileId').value;
       if (!profileId) { noticeDialog('Save this profile before resetting calibration.'); return; }
@@ -1502,6 +2088,7 @@
       const deactivatesRtss = !!(controlSettings && controlSettings.rtssFrameLimitingEnabled) &&
         (!rtssEnabled || (controlSettings.rtssInstallPath || '').toLowerCase() !== rtssPath.toLowerCase());
       const proceedWithSave = () => {
+        const gpuSelection = document.getElementById('preferredScalingGpu').value;
         document.getElementById('controlSettingsStatus').textContent = 'Saving automatically...';
         ws.send(JSON.stringify({
           type: 'SAVE_GENERAL_SETTINGS',
@@ -1509,10 +2096,13 @@
           smartAutoScaleEnabled: document.getElementById('smartAutoScaleEnabled').checked,
           overrideLosslessHotkey: document.getElementById('overrideLosslessHotkey').checked,
           overrideHotkey: overrideHotkeyPayload(),
-          defaultProfileAutoScale: document.getElementById('defaultProfileAutoScale').checked,
-          preferredScalingGpuDeviceId: document.getElementById('preferredScalingGpu').value,
-          autoRouteGpuToDisplay: document.getElementById('autoRouteGpuToDisplay').checked,
+          defaultProfileAutoScale: document.getElementById('smartAutoScaleEnabled').checked,
+          preferredScalingGpuDeviceId: gpuSelection === '__auto__' ? '' : gpuSelection,
+          autoRouteGpuToDisplay: gpuSelection === '__auto__',
           nvidiaRtxHdrEnabled: document.getElementById('nvidiaRtxHdrEnabled').checked,
+          reshadeHdrPeakNits: document.getElementById('reshadeHdrPeakNits').value === ''
+            ? null
+            : Number(document.getElementById('reshadeHdrPeakNits').value),
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
           processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
@@ -1550,16 +2140,21 @@
     }
 
     [
-      'runAtStartup', 'smartAutoScaleEnabled', 'defaultProfileAutoScale',
+      'runAtStartup', 'smartAutoScaleEnabled',
       'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
       'overrideHotkeyShift', 'overrideHotkeyWin',
-      'preferredScalingGpu', 'autoRouteGpuToDisplay', 'nvidiaRtxHdrEnabled',
+      'preferredScalingGpu', 'nvidiaRtxHdrEnabled',
       'minimizeOtherWindowsOnScale', 'processLassoPerformanceModeScaling',
       'rtssFrameLimitingEnabled', 'rtssDefaultLimitMode'
     ].forEach(id => document.getElementById(id).addEventListener('change', () => scheduleGeneralSettingsSave()));
     document.getElementById('overrideLosslessHotkey').addEventListener('change', renderOverrideHotkeySettings);
     document.getElementById('overrideHotkeyKey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssDefaultGpuTargetPercent').addEventListener('change', () => scheduleGeneralSettingsSave());
+    document.getElementById('reshadeHdrPeakNits').addEventListener('change', () => scheduleGeneralSettingsSave());
+    document.getElementById('autoReshadeHdrPeakBtn').onclick = () => {
+      document.getElementById('reshadeHdrPeakNits').value = '';
+      scheduleGeneralSettingsSave(0);
+    };
     document.getElementById('processLassoLogPath').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssInstallPath').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('browseProcessLassoLogBtn').onclick = () => {
@@ -1616,37 +2211,80 @@
     document.querySelectorAll('[data-addon-install]').forEach(button => {
       button.onclick = () => {
         const provider = button.dataset.addonInstall;
-        confirmDialog(`Install the latest verified ${provider} release?`, { title: 'Install Add-on' }).then(accepted => {
+        const isNeuralRender = provider === 'lsp-neural-render';
+        const warning = isNeuralRender
+          ? 'This installs LSP-NeuralRender and downloads the 310.8 SF-v2 DLSS neural-rendering runtime from RankFTW/rhi-repo. The runtime is a community-modified, unsigned NVIDIA-derived DLL, is not an official NVIDIA release, and may carry compatibility, security, copyright, or licensing risk. Continue only if you accept those risks.'
+          : `Install the latest verified ${provider} release?`;
+        confirmDialog(warning, {
+          title: isNeuralRender ? 'Community Runtime Warning' : 'Install Add-on',
+          okLabel: isNeuralRender ? 'Accept and Install' : 'Install',
+          danger: isNeuralRender
+        }).then(accepted => {
           if (!accepted) return;
-        setGraphicsStatus(`Downloading and verifying ${provider}...`);
-        ws.send(JSON.stringify({
-          type: 'INSTALL_LATEST_GRAPHICS_ADDON', provider,
-          operationId: crypto.randomUUID().replaceAll('-', '')
+          setGraphicsStatus(isNeuralRender
+            ? 'Downloading and verifying LSP-NeuralRender and the community DLSS 5 runtime...'
+            : `Downloading and verifying ${provider}...`);
+          ws.send(JSON.stringify({
+            type: 'INSTALL_LATEST_GRAPHICS_ADDON', provider,
+            acceptCommunityRuntime: isNeuralRender,
+            operationId: crypto.randomUUID().replaceAll('-', '')
           }));
         });
       };
     });
-    document.getElementById('selectDlssnrRuntimeBtn').onclick = () => {
-      setGraphicsStatus('Choose nvngx_dlssnr.dll in the file picker...');
-      ws.send(JSON.stringify({ type: 'SELECT_DLSSNR_RUNTIME' }));
-    };
     document.getElementById('profileForm').onsubmit = (e) => {
       e.preventDefault();
+      if (profileSaveInFlight) {
+        profileSaveQueued = true;
+        return;
+      }
       const id = document.getElementById('profileId').value;
       const dllOverrides = editingOriginalProfile && editingOriginalProfile.dll_overrides || [];
+      const targetType = document.getElementById('targetType').value;
+      const targetValue = document.getElementById('targetValue').value.trim();
+      const targetValues = targetType === 'program'
+        ? targetValue.split(',').map(value => value.trim()).filter(Boolean)
+        : [];
+      const targetProcesses = [...new Set(targetValues.map(value => value.split(/[\\/]/).pop()))];
+      const targetExecutablePaths = targetValues.filter(value => /[\\/]/.test(value));
+      const targetProcess = targetProcesses[0] || null;
+      const targetExecutablePath = targetExecutablePaths[0] || null;
+      let profileName = document.getElementById('profileName').value.trim();
+      if (!profileName) {
+        profileName = editingOriginalProfile && editingOriginalProfile.is_default
+          ? editingOriginalProfile.name
+          : (targetType === 'program'
+              ? (targetProcess || 'Untitled Profile')
+              : (targetValue || 'Untitled Profile'));
+        document.getElementById('profileName').value = profileName;
+      }
+      const dlss5Enabled = document.getElementById('dlss5Enabled').checked;
+      const existingNeural = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.neural_render || {};
+      const existingNeuralPackage = existingNeural.package || {};
+      const installedNeuralPackages = graphicsPackages.filter(item => item.provider === 'lsp-neural-render');
+      const installedNeuralPackage = installedNeuralPackages[installedNeuralPackages.length - 1];
+      const availableRuntime = dlssnrRuntimes[dlssnrRuntimes.length - 1];
+      const managedReshadeProfile = document.getElementById('reshadeManagedProfile').value;
+      const legacyReshadePresetPath = managedReshadeProfile
+        ? ''
+        : (editingOriginalProfile && editingOriginalProfile.reshade && editingOriginalProfile.reshade.preset_path || '');
+      const requestId = crypto.randomUUID().replaceAll('-', '');
       const payload = {
         type: 'SAVE_PROFILE',
+        requestId,
         profile: {
           id: id || undefined,
-          name: document.getElementById('profileName').value,
+          name: profileName,
           is_default: !!(editingOriginalProfile && editingOriginalProfile.is_default),
-          target_process: document.getElementById('targetProcess').value || null,
-          target_executable_path: document.getElementById('targetExecutablePath').value || null,
-          target_domain: document.getElementById('targetDomain').value || null,
-          lossless_profile_title: document.getElementById('losslessProfileTitle').value || null,
+          target_process: targetProcess,
+          target_executable_path: targetExecutablePath,
+          target_processes: targetProcesses,
+          target_executable_paths: targetExecutablePaths,
+          target_domain: targetType === 'web_domain' ? (targetValue || null) : null,
+          lossless_profile_title: profileName,
           lossless_profile_path: editingOriginalProfile && editingOriginalProfile.lossless_profile_path || null,
           last_imported_hash: editingOriginalProfile && editingOriginalProfile.last_imported_hash || null,
-          native_scaling_settings: editingOriginalProfile && editingOriginalProfile.native_scaling_settings || {},
+          native_scaling_settings: nativeSettingsPayload(),
           custom_notes: editingOriginalProfile && editingOriginalProfile.custom_notes || null,
           auto_scale: document.getElementById('autoScale').checked,
           rtss: {
@@ -1658,11 +2296,11 @@
             maximum_framerate_limit: Number(document.getElementById('rtssMaximumFramerate').value),
             limit_method: document.getElementById('rtssLimitMethod').value
           },
-          reshade: document.getElementById('reshadeManagedProfile').value ? {
+          reshade: managedReshadeProfile || legacyReshadePresetPath ? {
             enabled: true,
-            managed_profile_id: document.getElementById('reshadeManagedProfile').value,
+            managed_profile_id: managedReshadeProfile || null,
             reshade_ini_path: null,
-            preset_path: null,
+            preset_path: legacyReshadePresetPath || null,
             reload_hotkey: null
           } : null,
           graphics: {
@@ -1673,27 +2311,15 @@
               update_policy: document.getElementById('losslessProxyUpdatePolicy').value
             },
             neural_render: {
-              implementation: document.getElementById('neuralImplementation').value,
+              ...existingNeural,
+              implementation: dlss5Enabled ? 'lsp_neural_render' : 'disabled',
               package: {
-                enabled: document.getElementById('neuralImplementation').value !== 'disabled',
-                version: document.getElementById('neuralPackageVersion').value.trim() || null,
-                channel: 'stable',
-                update_policy: document.getElementById('neuralUpdatePolicy').value
+                ...existingNeuralPackage,
+                enabled: dlss5Enabled,
+                version: existingNeuralPackage.version || (installedNeuralPackage && installedNeuralPackage.version) || null,
+                channel: existingNeuralPackage.channel || 'stable'
               },
-              runtime_asset_sha256: document.getElementById('neuralRuntimeHash').value.trim().replace(/^sha256:/, '') || null,
-              style: document.getElementById('neuralStyle').value,
-              intensity: Number(document.getElementById('neuralIntensity').value),
-              working_scale: Number(document.getElementById('neuralWorkingScale').value),
-              local_structure: Number(document.getElementById('neuralLocalStructure').value),
-              local_tone: Number(document.getElementById('neuralLocalTone').value),
-              skin_structure: Number(document.getElementById('neuralSkinStructure').value),
-              auto_skin_mask: document.getElementById('neuralAutoMask').checked,
-              use_lsfg_optical_flow: document.getElementById('neuralOpticalFlow').checked,
-              prioritize_ls_gpu_work: document.getElementById('neuralLsPriority').checked,
-              apply_strength: Number(document.getElementById('neuralApplyStrength').value),
-              max_delta: Number(document.getElementById('neuralMaxDelta').value),
-              protect_highlights_above: Number(document.getElementById('neuralHighlightProtection').value),
-              watchdog_ms: Number(document.getElementById('neuralWatchdog').value)
+              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null
             },
             reshade: {
               ...(editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade || {}),
@@ -1727,8 +2353,12 @@
       const newTarget = rtssTarget(payload.profile);
       const removesRtss = oldRtssEnabled && (!newRtssEnabled || oldTarget !== newTarget);
       const submitProfile = () => {
+        profileSaveInFlight = true;
+        activeProfileSaveRequestId = requestId;
+        const status = document.getElementById('profileAutosaveStatus');
+        status.textContent = 'Saving…';
+        status.classList.remove('error');
         ws.send(JSON.stringify(payload));
-        document.getElementById('profileModal').classList.remove('active');
       };
       if (removesRtss) {
         confirmDialog('This change will remove the existing RTSS limiter profile for the old executable. Helper-created RTSS data will be deleted; pre-existing limiter values will be restored. Continue?', { title: 'Remove RTSS Profile', danger: true }).then(accepted => {
@@ -1742,17 +2372,34 @@
       submitProfile();
     };
 
-    document.querySelectorAll('[data-collapsible-id]').forEach(panel => {
+    const savedActivePanelId = localStorage.getItem('dashboard-active-panel');
+    const savedActivePanel = majorDashboardPanels.find(panel => panel.dataset.collapsibleId === savedActivePanelId);
+    const initialMajorPanel = savedActivePanel
+      ? (localStorage.getItem(`dashboard-panel-${savedActivePanel.dataset.collapsibleId}`) === 'closed' ? null : savedActivePanel)
+      : (majorDashboardPanels.find(panel => localStorage.getItem(`dashboard-panel-${panel.dataset.collapsibleId}`) === 'open')
+        || majorDashboardPanels.find(panel => panel.open));
+    majorDashboardPanels.forEach(panel => { panel.open = panel === initialMajorPanel; });
+    syncDashboardNavigation(initialMajorPanel);
+
+    majorDashboardPanels.forEach(panel => {
       const storageKey = `dashboard-panel-${panel.dataset.collapsibleId}`;
-      const savedState = localStorage.getItem(storageKey);
-      if (savedState !== null) panel.open = savedState === 'open';
       panel.addEventListener('toggle', () => {
         localStorage.setItem(storageKey, panel.open ? 'open' : 'closed');
+        if (!panel.open) return;
+        majorDashboardPanels.forEach(candidate => {
+          if (candidate !== panel) candidate.open = false;
+        });
+        localStorage.setItem('dashboard-active-panel', panel.dataset.collapsibleId);
+        const isSettingsPanel = settingsDashboardPanels.includes(panel);
+        if (isSettingsPanel) localStorage.setItem('dashboard-last-settings-panel', panel.dataset.collapsibleId);
+        syncDashboardNavigation(panel);
       });
     });
 
     if (new URLSearchParams(window.location.search).get('view') === 'settings') {
-      setSettingsMode(true);
+      const savedSettingsPanelId = localStorage.getItem('dashboard-last-settings-panel');
+      const target = settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === savedSettingsPanelId) || generalSettingsPanel;
+      openMajorDashboardPanel(target, true);
     }
 
     connectWS();

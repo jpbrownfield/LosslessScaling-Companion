@@ -89,6 +89,25 @@ class LosslessSettingsXmlTests(unittest.TestCase):
             self.assertEqual(profile["LSFG3Multiplier"], "2")
             self.assertTrue(target.with_suffix(".xml.bak").exists())
 
+    def test_upsert_profile_clones_template_under_profile_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Settings.xml"
+            shutil.copy2(FIXTURE, target)
+            manager = LosslessSettingsXml(str(target))
+
+            self.assertTrue(manager.upsert_profile(
+                "My Game",
+                {"CaptureApi": "DXGI", "MaxFrameLatency": 1},
+                template_title="Fixture Default",
+            ))
+
+            created = manager.get_profile("My Game")
+            self.assertEqual(created["Title"], "My Game")
+            self.assertEqual(created["CaptureApi"], "DXGI")
+            self.assertEqual(created["MaxFrameLatency"], "1")
+            self.assertEqual(created["LSFG3Multiplier"], "2")
+            self.assertIsNotNone(manager.get_profile("Fixture Default"))
+
     def test_disables_native_auto_scale_for_every_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "Settings.xml"

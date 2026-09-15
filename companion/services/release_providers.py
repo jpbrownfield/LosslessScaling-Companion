@@ -1,4 +1,4 @@
-"""Verified metadata and staged downloads from official graphics-component sources."""
+"""Verified metadata and staged downloads from allowlisted component publishers."""
 
 from __future__ import annotations
 
@@ -209,6 +209,81 @@ class ReShadeReleaseProvider(ReleaseProvider):
         ]
 
 
+class RhiDlssNrReleaseProvider(ReleaseProvider):
+    """Resolve RHI's DLSSNR catalog to digest-bearing GitHub release assets."""
+
+    provider_id = "dlssnr-community-runtime"
+    allowed_hosts = GitHubReleaseProvider.allowed_hosts
+    manifest_url = "https://raw.githubusercontent.com/RankFTW/RHI/main/dlss_manifest.json"
+    repository = "RankFTW/rhi-repo"
+    _release_path = re.compile(
+        r"^/RankFTW/rhi-repo/releases/download/([^/]+)/([^/]+)$", re.IGNORECASE
+    )
+
+    def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
+        raw = _request_json(self.manifest_url)
+        entries = raw.get("dlssnr") if isinstance(raw, dict) else None
+        if not isinstance(entries, list):
+            raise RuntimeError("RHI's DLSSNR manifest has an unexpected format")
+
+        releases = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            version = str(entry.get("version") or "")
+            url = str(entry.get("url") or "")
+            parsed = urlparse(url)
+            match = self._release_path.fullmatch(parsed.path)
+            if parsed.scheme != "https" or parsed.hostname != "github.com" or not match:
+                raise RuntimeError("RHI's DLSSNR manifest referenced an unapproved download")
+            tag = urllib.parse.unquote(match.group(1))
+            asset_name = urllib.parse.unquote(match.group(2))
+            if not version or "sf" not in version.casefold() or not asset_name.casefold().endswith(".zip"):
+                continue
+
+            metadata = _request_json(
+                "https://api.github.com/repos/RankFTW/rhi-repo/releases/tags/"
+                + urllib.parse.quote(tag, safe="")
+            )
+            if not isinstance(metadata, dict):
+                raise RuntimeError("Unexpected RHI runtime release response")
+            asset = next(
+                (
+                    item for item in metadata.get("assets", [])
+                    if str(item.get("name") or "") == asset_name
+                    and str(item.get("browser_download_url") or "") == url
+                ),
+                None,
+            )
+            if asset is None:
+                raise RuntimeError("RHI's DLSSNR manifest does not match its GitHub release")
+            releases.append(
+                ReleaseInfo(
+                    provider=self.provider_id,
+                    version=version,
+                    name=f"Community DLSSNR {version}",
+                    published_at=metadata.get("published_at"),
+                    prerelease=False,
+                    html_url=str(metadata.get("html_url") or ""),
+                    notes=(
+                        "Community-modified, unsigned NVIDIA-derived runtime published by "
+                        "RankFTW/rhi-repo; it is not an official NVIDIA release."
+                    ),
+                    assets=[ReleaseAsset(
+                        name=asset_name,
+                        url=url,
+                        size=int(asset.get("size") or 0),
+                        content_type=asset.get("content_type"),
+                        digest=asset.get("digest"),
+                        asset_id=str(asset.get("id")) if asset.get("id") is not None else None,
+                    )],
+                )
+            )
+        if not releases:
+            raise RuntimeError("RHI's manifest contains no community-modified DLSSNR runtime")
+        return releases
+
+
 class ProviderRegistry:
     def __init__(self):
         self.providers: Dict[str, ReleaseProvider] = {
@@ -221,9 +296,7 @@ class ProviderRegistry:
             "dlss5-feeder": GitHubReleaseProvider(
                 "dlss5-feeder", "jlrouzies-fr/DLSS5-Feeder", r"\.zip$"
             ),
-            "lsp-reshade": GitHubReleaseProvider(
-                "lsp-reshade", "FrankBarretta/LSP-ReShade", r"(?:\.zip$|\.dll$)"
-            ),
+            "dlssnr-community-runtime": RhiDlssNrReleaseProvider(),
             "special-k": GitHubReleaseProvider(
                 "special-k", "SpecialKO/SpecialK", r"\.(?:zip|7z)$"
             ),

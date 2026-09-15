@@ -372,6 +372,86 @@ class GraphicsResolverTests(unittest.TestCase):
                 hdr_paper_white_nits=500,
             )
 
+    def test_reshade_with_proxy_deploys_bundled_companion_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            ls_root = root / "Lossless Scaling"
+            ls_root.mkdir()
+            executable = ls_root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            (ls_root / "Lossless.dll").write_bytes(b"original-engine")
+            self._package(
+                store, root, "lossless-proxy", "v1",
+                {"Lossless.dll": self._x64_pe(b"proxy")},
+            )
+            self._package(
+                store, root, "reshade", "v2",
+                {
+                    "ReShade64.dll": self._x64_pe(b"reshade"),
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [{
+                            "source": "ReShade64.dll",
+                            "destination": "ReShade64.dll",
+                            "role": "injector",
+                        }],
+                    }),
+                },
+            )
+            bridge_dir = root / "bundle" / "LSP-ReShade"
+            bridge_dir.mkdir(parents=True)
+            (bridge_dir / "LSC_ReShadeBridge.dll").write_bytes(self._x64_pe(b"bridge"))
+            (bridge_dir / "addon.json").write_text(
+                json.dumps({"dll": "LSC_ReShadeBridge.dll"}), encoding="utf-8"
+            )
+            profile = Profile.model_validate({
+                "id": "proxy-reshade",
+                "name": "Proxy + ReShade",
+                "graphics": {
+                    "lossless_proxy": {"enabled": True, "version": "v1"},
+                    "reshade": {"enabled": True, "version": "v2"},
+                },
+            })
+
+            plan = GraphicsResolver(
+                store, bundled_reshade_bridge_dir=str(bridge_dir)
+            ).resolve(profile, lossless_scaling_exe=str(executable))
+            by_destination = {item["relative_path"]: item for item in plan}
+            self.assertIn("ReShade64.dll", by_destination)
+            self.assertIn("addons/LSP-ReShade/LSC_ReShadeBridge.dll", by_destination)
+            self.assertIn("addons/LSP-ReShade/addon.json", by_destination)
+            self.assertTrue(
+                by_destination["addons/LSP-ReShade/LSC_ReShadeBridge.dll"]
+                ["source_package"].startswith("reshade/bundled-")
+            )
+
+    def test_reshade_without_proxy_does_not_deploy_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            self._package(
+                store, root, "reshade", "v2",
+                {
+                    "ReShade64.dll": self._x64_pe(b"reshade"),
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [{
+                            "source": "ReShade64.dll",
+                            "destination": "ReShade64.dll",
+                        }],
+                    }),
+                },
+            )
+            profile = Profile.model_validate({
+                "id": "reshade-only",
+                "name": "ReShade",
+                "graphics": {"reshade": {"enabled": True, "version": "v2"}},
+            })
+
+            plan = GraphicsResolver(store).resolve(profile)
+            self.assertEqual([item["relative_path"] for item in plan], ["ReShade64.dll"])
+
 
 if __name__ == "__main__":
     unittest.main()

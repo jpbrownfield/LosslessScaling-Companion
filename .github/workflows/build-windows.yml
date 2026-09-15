@@ -46,6 +46,18 @@ jobs:
             throw "Bundled GPU benchmark was not produced"
           }
 
+      - name: Build bundled ReShade bridge
+        shell: pwsh
+        run: |
+          cmake -S native/reshade_bridge -B build/reshade_bridge -A x64
+          cmake --build build/reshade_bridge --config Release
+          if (-not (Test-Path -LiteralPath build/native/LSP-ReShade/LSC_ReShadeBridge.dll)) {
+            throw "Bundled ReShade bridge was not produced"
+          }
+          if (-not (Test-Path -LiteralPath build/native/LSP-ReShade/addon.json)) {
+            throw "Bundled ReShade bridge manifest was not produced"
+          }
+
       - name: Compile executable
         shell: pwsh
         run: python -m PyInstaller --clean --noconfirm LosslessCompanion.spec
@@ -62,6 +74,11 @@ jobs:
           if ((Get-Item -LiteralPath $benchmark).Length -le 0) {
             throw "Embedded benchmark executable is empty"
           }
+          $bridge = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/LSP-ReShade/LSC_ReShadeBridge.dll" -ErrorAction Stop
+          if ((Get-Item -LiteralPath $bridge).Length -le 0) {
+            throw "Embedded ReShade bridge is empty"
+          }
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/LSP-ReShade/addon.json" -ErrorAction Stop | Out-Null
           Write-Host "Built $executable ($size bytes)"
 
       - name: Publish SHA-256 manifest

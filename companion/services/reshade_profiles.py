@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import logging
 import os
 import re
 import shutil
@@ -14,18 +15,12 @@ from typing import Dict, List, Optional
 
 from ..core.models import ManagedReshadeProfile
 from ..core.profile_manager import ProfileManager
+from .hdr_display import HdrDisplayDetector
 
+
+logger = logging.getLogger(__name__)
 
 CATALOG_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini"
-RHI_HDR_REPOSITORIES = (
-    "crosire/reshade-shaders",
-    "filoppi/pumboautohdr",
-    "smolbbsoop/smolbbsoopshaders",
-    "maxg2d/reshadesimplehdrshaders",
-    "gimlelarpes/potatofx",
-    "endlesslyflowering/reshade_hdr_shaders",
-)
-
 # Enough to keep profile creation useful offline. The live catalog is the same feed
 # consumed by ReShade Setup and normally replaces this list.
 FALLBACK_CATALOG = [
@@ -36,13 +31,44 @@ FALLBACK_CATALOG = [
     {"id": "29", "name": "AdvancedAutoHDR by Pumbo", "description": "HDR tone-mapping helpers", "repositoryUrl": "https://github.com/Filoppi/PumboAutoHDR", "downloadUrl": "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip", "shaders": ["AdvancedAutoHDR.fx", "ConvertColorSpace.fx"]},
 ]
 
+# Lightweight starter presets backed by Lilium's package in the official
+# ReShade catalog. Keeping the selections ordered also defines execution order:
+# the combined preset expands SDR into HDR before applying HDR-aware CAS.
+BUILTIN_PROFILES = (
+    ManagedReshadeProfile(
+        id="lsc-basic-sharpening",
+        name="Basic Sharpening (Low Cost)",
+        shaders={"22": ["lilium__cas_hdr.fx"]},
+    ),
+    ManagedReshadeProfile(
+        id="lsc-sdr-to-hdr",
+        name="SDR to HDR (Low Cost)",
+        shaders={"22": ["lilium__inverse_tone_mapping.fx"]},
+    ),
+    ManagedReshadeProfile(
+        id="lsc-sharpening-sdr-to-hdr",
+        name="Sharpening + SDR to HDR (Low Cost)",
+        shaders={"22": ["lilium__inverse_tone_mapping.fx", "lilium__cas_hdr.fx"]},
+    ),
+)
+
 
 class ReshadeProfileService:
-    def __init__(self, profile_manager: ProfileManager):
+    HDR_FALLBACK_NITS = 600
+
+    def __init__(
+        self,
+        profile_manager: ProfileManager,
+        hdr_display_detector: Optional[HdrDisplayDetector] = None,
+    ):
         self.profile_manager = profile_manager
         self.root = Path(profile_manager.config_dir) / "reshade-profiles"
         self.root.mkdir(parents=True, exist_ok=True)
         self._catalog: Optional[List[Dict]] = None
+        self._archive_cache: Dict[str, bytes] = {}
+        self._builtins_checked = False
+        self._hdr_settings_checked = False
+        self.hdr_display_detector = hdr_display_detector or HdrDisplayDetector()
 
     def _folder(self, profile_id: str) -> Path:
         folder = (self.root / profile_id).resolve()
@@ -92,19 +118,61 @@ class ReshadeProfileService:
         return self._catalog
 
     def payload(self) -> Dict:
-        catalog = []
-        for source in self.catalog():
-            item = dict(source)
-            repository = str(item.get("repositoryUrl") or "").casefold()
-            item["hdrInstallerRecommended"] = any(
-                marker in repository for marker in RHI_HDR_REPOSITORIES
-            )
-            catalog.append(item)
+        self._ensure_builtin_profiles()
+        if not self._hdr_settings_checked:
+            self.refresh_hdr_peak_settings()
+            self._hdr_settings_checked = True
         return {
             "profiles": [self._profile_payload(item) for item in self.profile_manager.config.reshade_profiles],
-            "catalog": catalog,
+            "catalog": [dict(source) for source in self.catalog()],
             "catalogUrl": CATALOG_URL,
+            "hdrSettings": self.hdr_settings_payload(),
         }
+
+    def hdr_settings_payload(self) -> Dict:
+        detected = self.hdr_display_detector.detect()
+        configured = self.profile_manager.config.reshade_hdr_peak_nits
+        resolved = configured or detected.get("detectedNits") or self.HDR_FALLBACK_NITS
+        return {
+            **detected,
+            "configuredNits": configured,
+            "resolvedNits": int(resolved),
+            "usingFallback": configured is None and detected.get("detectedNits") is None,
+        }
+
+    def _resolved_hdr_peak_nits(self) -> int:
+        return int(self.hdr_settings_payload()["resolvedNits"])
+
+    def _ensure_builtin_profiles(self, *, retry: bool = False) -> None:
+        """Seed and provision the curated presets without replacing user edits."""
+        if self._builtins_checked and not retry:
+            return
+        self._builtins_checked = True
+        profiles = self.profile_manager.config.reshade_profiles
+        known = {profile.id for profile in profiles}
+        added = False
+        for template in BUILTIN_PROFILES:
+            if template.id not in known:
+                profiles.append(template.model_copy(deep=True))
+                known.add(template.id)
+                added = True
+        if added:
+            self.profile_manager.save_config()
+
+        catalog = self.catalog()
+        builtin_ids = {profile.id for profile in BUILTIN_PROFILES}
+        for profile in profiles:
+            if profile.id not in builtin_ids or profile.imported_preset:
+                continue
+            folder = self._folder(profile.id)
+            preset = folder / self._preset_filename(profile.name)
+            if preset.is_file() and (folder / "ReShade.ini").is_file():
+                continue
+            try:
+                self._install_selected_shaders(profile, catalog)
+                self._write_files(profile)
+            except (OSError, ValueError, zipfile.BadZipFile) as exc:
+                logger.warning("Could not provision built-in ReShade profile %s: %s", profile.id, exc)
 
     def _profile_payload(self, profile: ManagedReshadeProfile) -> Dict:
         folder = self._folder(profile.id)
@@ -116,7 +184,8 @@ class ReshadeProfileService:
 
     @staticmethod
     def _preset_filename(name: str) -> str:
-        safe = re.sub(r"[^A-Za-z0-9._ -]+", "", name).strip(" .") or "ReShade Profile"
+        safe = re.sub(r"[^A-Za-z0-9._ -]+", " ", name)
+        safe = re.sub(r"\s+", " ", safe).strip(" .") or "ReShade Profile"
         return f"{safe}.ini"
 
     def save(self, profile: ManagedReshadeProfile) -> Dict:
@@ -126,18 +195,54 @@ class ReshadeProfileService:
         if unknown:
             raise ValueError(f"Unknown ReShade shader provider: {sorted(unknown)[0]}")
         existing = next((item for item in self.profile_manager.config.reshade_profiles if item.id == profile.id), None)
-        self._install_selected_shaders(profile, catalog)
-        self._write_files(profile)
+        if not profile.imported_preset:
+            self._install_selected_shaders(profile, catalog)
+            self._write_files(profile)
         if existing:
             old_path = self._folder(profile.id) / self._preset_filename(existing.name)
             new_path = self._folder(profile.id) / self._preset_filename(profile.name)
             if old_path != new_path and old_path.is_file():
-                old_path.unlink()
+                if profile.imported_preset:
+                    new_path.parent.mkdir(parents=True, exist_ok=True)
+                    old_path.replace(new_path)
+                else:
+                    old_path.unlink()
+        if profile.imported_preset:
+            preset = self._folder(profile.id) / self._preset_filename(profile.name)
+            if not preset.is_file():
+                raise ValueError("The imported ReShade preset is missing")
+            self._write_config(profile, preset)
         index = next((i for i, item in enumerate(self.profile_manager.config.reshade_profiles) if item.id == profile.id), None)
         if index is None:
             self.profile_manager.config.reshade_profiles.append(profile)
         else:
             self.profile_manager.config.reshade_profiles[index] = profile
+        self.profile_manager.save_config()
+        return self._profile_payload(profile)
+
+    def import_preset(self, source_path: str) -> Dict:
+        source = Path(source_path).resolve()
+        if not source.is_file() or source.suffix.casefold() != ".ini":
+            raise ValueError("Select an existing ReShade .ini preset")
+        if source.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("ReShade preset exceeds the 4 MB import limit")
+        profile = ManagedReshadeProfile(
+            name=source.stem,
+            imported_preset=True,
+        )
+        folder = self._folder(profile.id)
+        folder.mkdir(parents=True, exist_ok=True)
+        preset = folder / self._preset_filename(profile.name)
+        handle, temp_name = tempfile.mkstemp(prefix=f".{preset.name}.", suffix=".tmp", dir=folder)
+        os.close(handle)
+        try:
+            shutil.copyfile(source, temp_name)
+            os.replace(temp_name, preset)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+        self._write_config(profile, preset)
+        self.profile_manager.config.reshade_profiles.append(profile)
         self.profile_manager.save_config()
         return self._profile_payload(profile)
 
@@ -156,9 +261,12 @@ class ReshadeProfileService:
                 url = str(package.get("downloadUrl") or "")
                 if not url.startswith("https://github.com/") or not url.casefold().endswith(".zip"):
                     raise ValueError(f"{package['name']} does not publish a supported GitHub ZIP")
-                request = urllib.request.Request(url, headers={"User-Agent": "LS-Companion/1"})
-                with urllib.request.urlopen(request, timeout=60) as response:
-                    archive_data = response.read(128 * 1024 * 1024 + 1)
+                archive_data = self._archive_cache.get(url)
+                if archive_data is None:
+                    request = urllib.request.Request(url, headers={"User-Agent": "LS-Companion/1"})
+                    with urllib.request.urlopen(request, timeout=60) as response:
+                        archive_data = response.read(128 * 1024 * 1024 + 1)
+                    self._archive_cache[url] = archive_data
                 if len(archive_data) > 128 * 1024 * 1024:
                     raise ValueError(f"{package['name']} archive exceeds the 128 MB safety limit")
                 archive_path = staging / f"{provider_id}.zip"
@@ -225,25 +333,87 @@ class ReshadeProfileService:
         folder = self._folder(profile.id)
         folder.mkdir(parents=True, exist_ok=True)
         preset = folder / self._preset_filename(profile.name)
-        selected_names = {
-            filename.casefold() for files in profile.shaders.values() for filename in files
-        }
-        techniques = []
+        selected_names = [
+            filename for files in profile.shaders.values() for filename in files
+        ]
+        selected_keys = {name.casefold() for name in selected_names}
+        effects = {}
         for effect in (folder / "packages").rglob("*.fx"):
-            if effect.name.casefold() not in selected_names:
+            if effect.name.casefold() not in selected_keys:
                 continue
             source = effect.read_text(encoding="utf-8", errors="ignore")
-            for name in re.findall(
+            effects[effect.name.casefold()] = (effect.name, re.findall(
                 r"(?im)^\s*technique(?:10|11)?\s+([A-Za-z_][A-Za-z0-9_]*)", source
-            ):
-                entry = f"{name}@{effect.name}"
+            ))
+        techniques = []
+        for selected_name in selected_names:
+            effect_name, effect_techniques = effects.get(selected_name.casefold(), (selected_name, []))
+            for name in effect_techniques:
+                entry = f"{name}@{effect_name}"
                 if entry not in techniques:
                     techniques.append(entry)
         technique_list = ",".join(techniques)
+        sections = []
+        if "lilium__inverse_tone_mapping.fx" in selected_keys:
+            sections.append(
+                "[lilium__inverse_tone_mapping.fx]\n"
+                f"TargetBrightness={self._resolved_hdr_peak_nits():.6f}\n"
+            )
+        settings = "\n".join(sections)
+        settings_suffix = f"\n{settings}" if settings else ""
         self._atomic_write(
             preset,
-            f"Techniques={technique_list}\nTechniqueSorting={technique_list}\n\n[LS Companion]\nManaged=1\n",
+            f"Techniques={technique_list}\nTechniqueSorting={technique_list}\n\n"
+            f"[LS Companion]\nManaged=1\n{settings_suffix}",
         )
+        self._write_config(profile, preset)
+
+    def refresh_hdr_peak_settings(self) -> None:
+        """Rewrite generated presets and update known HDR keys in imported INIs."""
+        for profile in self.profile_manager.config.reshade_profiles:
+            folder = self._folder(profile.id)
+            preset = folder / self._preset_filename(profile.name)
+            if not preset.is_file():
+                continue
+            if profile.imported_preset:
+                self._update_imported_hdr_peak(preset)
+            elif (folder / "packages").is_dir():
+                self._write_files(profile)
+
+    def _sync_profile_hdr_peak(self, profile: ManagedReshadeProfile) -> None:
+        folder = self._folder(profile.id)
+        preset = folder / self._preset_filename(profile.name)
+        if not preset.is_file():
+            return
+        content = preset.read_text(encoding="utf-8-sig", errors="ignore")
+        if "[lilium__inverse_tone_mapping.fx]" not in content.casefold():
+            return
+        expected = f"TargetBrightness={self._resolved_hdr_peak_nits():.6f}"
+        if expected in content:
+            return
+        if profile.imported_preset:
+            self._update_imported_hdr_peak(preset)
+        elif (folder / "packages").is_dir():
+            self._write_files(profile)
+
+    def _update_imported_hdr_peak(self, preset: Path) -> None:
+        content = preset.read_text(encoding="utf-8-sig", errors="ignore")
+        section = re.compile(
+            r"(?ims)(^\[lilium__inverse_tone_mapping\.fx\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)"
+        )
+        match = section.search(content)
+        if not match:
+            return
+        value = f"TargetBrightness={self._resolved_hdr_peak_nits():.6f}"
+        body = match.group(2)
+        key = re.compile(r"(?im)^TargetBrightness\s*=.*$")
+        body = key.sub(value, body, count=1) if key.search(body) else f"{value}\n{body}"
+        updated = content[:match.start()] + match.group(1) + body + content[match.end():]
+        if updated != content:
+            self._atomic_write(preset, updated)
+
+    def _write_config(self, profile: ManagedReshadeProfile, preset: Path) -> None:
+        folder = self._folder(profile.id)
         overlay_key = "36,0,0,0" if profile.overlay_enabled else "0,0,0,0"
         config = (
             "[GENERAL]\n"
@@ -275,7 +445,14 @@ class ReshadeProfileService:
                 os.unlink(temp_name)
 
     def config_path(self, profile_id: str) -> Optional[Path]:
-        if any(item.id == profile_id for item in self.profile_manager.config.reshade_profiles):
+        if profile_id in {profile.id for profile in BUILTIN_PROFILES}:
+            self._ensure_builtin_profiles(retry=True)
+        profile = next(
+            (item for item in self.profile_manager.config.reshade_profiles if item.id == profile_id),
+            None,
+        )
+        if profile:
+            self._sync_profile_hdr_peak(profile)
             path = self._folder(profile_id) / "ReShade.ini"
             return path if path.is_file() else None
         return None

@@ -22,6 +22,16 @@ class SingleInstanceGuardTests(unittest.TestCase):
         self.assertTrue(again.acquire())
         again.release()
 
+    def test_simulation_and_production_use_separate_guards(self):
+        production = SingleInstanceGuard("companion")
+        simulation = SingleInstanceGuard("simulation-test")
+        self.assertTrue(production.acquire())
+        try:
+            self.assertTrue(simulation.acquire())
+            simulation.release()
+        finally:
+            production.release()
+
 
 if __name__ == "__main__":
     unittest.main()

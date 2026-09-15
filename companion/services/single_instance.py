@@ -19,15 +19,23 @@ logger = logging.getLogger("LSCompanion.SingleInstance")
 MUTEX_NAME = "Global\\LosslessScalingCompanionSingleInstance"
 
 
-def _lock_file_path() -> Path:
+def _lock_file_path(instance_name: str = "companion") -> Path:
     local_root = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(local_root) / "LosslessScalingHelper" / "companion.lock"
+    return Path(local_root) / "LosslessScalingHelper" / f"{instance_name}.lock"
 
 
 class SingleInstanceGuard:
     """Hold a named mutex for the process lifetime; release on close."""
 
-    def __init__(self) -> None:
+    def __init__(self, instance_name: str = "companion") -> None:
+        if not instance_name or not instance_name.replace("-", "").isalnum():
+            raise ValueError("instance name may contain only letters, numbers, and hyphens")
+        self.instance_name = instance_name
+        self.mutex_name = (
+            MUTEX_NAME
+            if instance_name == "companion"
+            else f"{MUTEX_NAME}-{instance_name}"
+        )
         self._mutex_handle = None
         self._lock_file: Optional[Path] = None
         self.holder_pid: Optional[int] = None
@@ -59,7 +67,7 @@ class SingleInstanceGuard:
             ctypes.c_wchar_p,
         ]
         # ERROR_ALREADY_EXISTS == 183
-        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        handle = kernel32.CreateMutexW(None, False, self.mutex_name)
         if not handle:
             error = kernel32.GetLastError()
             logger.error("Could not create single-instance mutex (WinError %s)", error)
@@ -72,7 +80,7 @@ class SingleInstanceGuard:
 
     def _write_lock_file(self) -> None:
         try:
-            path = _lock_file_path()
+            path = _lock_file_path(self.instance_name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps({"pid": os.getpid(), "started": time.time()}),
@@ -83,7 +91,7 @@ class SingleInstanceGuard:
 
     def _read_lock_file_pid(self) -> Optional[int]:
         try:
-            data = json.loads(_lock_file_path().read_text(encoding="utf-8"))
+            data = json.loads(_lock_file_path(self.instance_name).read_text(encoding="utf-8"))
             pid = int(data.get("pid") or 0)
             return pid or None
         except (OSError, ValueError, TypeError, AttributeError):
@@ -92,7 +100,7 @@ class SingleInstanceGuard:
     def _acquire_lock_file(self) -> bool:
         import psutil
 
-        path = _lock_file_path()
+        path = _lock_file_path(self.instance_name)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             pid = int(data.get("pid") or 0)
@@ -132,7 +140,7 @@ class SingleInstanceGuard:
         elif os.name == "nt":
             # Best effort: only remove our own stale marker.
             try:
-                path = _lock_file_path()
+                path = _lock_file_path(self.instance_name)
                 if path.is_file() and self._read_lock_file_pid() == os.getpid():
                     path.unlink()
             except OSError:

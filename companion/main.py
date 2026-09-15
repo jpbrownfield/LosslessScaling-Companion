@@ -4,9 +4,11 @@ Runs the WebSocket server, process monitor, and system tray simultaneously.
 """
 
 import asyncio
+import os
 import threading
 import time
 import logging
+from pathlib import Path
 from typing import Optional
 
 # Setup logging
@@ -32,12 +34,20 @@ from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
 from .services.single_instance import SingleInstanceGuard
 from .ui.tray import CompanionTrayIcon
+from .services.simulation_adapters import (
+    SimulationNvidiaProfileManager,
+    SimulationHotkeyTrigger,
+    SimulationRtssProfileManager,
+    SimulationStartupTaskManager,
+)
 
 
 class CompanionApplication:
-    def __init__(self):
-        self.profile_manager = ProfileManager()
+    def __init__(self, config_dir: Optional[Path] = None):
+        self.simulation_mode = os.environ.get("LOSSLESS_COMPANION_SIMULATION") == "1"
+        self.profile_manager = ProfileManager(config_dir)
         self.state = AppState()
+        self.state.simulation_mode = self.simulation_mode
         self.state.auto_scale_enabled = self.profile_manager.config.disable_native_auto_scale
         self.ls_settings = LosslessSettingsXml(self.profile_manager.config.lossless_settings_xml_path)
         self._settings_backup_ready = bool(self.ls_settings.ensure_initial_backup())
@@ -63,6 +73,18 @@ class CompanionApplication:
             self.process_watcher,
             asset_store=self.asset_store,
             lossless_settings=self.ls_settings,
+            nvidia_profile_manager=(
+                SimulationNvidiaProfileManager() if self.simulation_mode else None
+            ),
+            hotkey_trigger=(
+                SimulationHotkeyTrigger(
+                    Path(self.profile_manager.config.lossless_scaling_exe_path).parent
+                    / "simulation.command"
+                )
+                if self.simulation_mode
+                and self.profile_manager.config.lossless_scaling_exe_path
+                else None
+            ),
         )
         self.automation.scaling_state_probe = (
             lambda: self.ls_inspector.detect_lossless_scaling_overlay_window()[0]
@@ -71,8 +93,10 @@ class CompanionApplication:
         self.process_lasso_monitor = ProcessLassoScalingMonitor(
             self.profile_manager, self.state, self.process_watcher, self.automation
         )
-        self.rtss_manager = RtssProfileManager(
-            self.profile_manager.config.rtss_install_path
+        self.rtss_manager = (
+            SimulationRtssProfileManager()
+            if self.simulation_mode
+            else RtssProfileManager(self.profile_manager.config.rtss_install_path)
         )
         self.dynamic_limiter = DynamicLimiterController(
             self.profile_manager, self.state, self.rtss_manager
@@ -91,6 +115,9 @@ class CompanionApplication:
             rtss_manager=self.rtss_manager,
             dynamic_limiter=self.dynamic_limiter,
             hotkey_listener=self.hotkey_listener,
+            startup_manager=(
+                SimulationStartupTaskManager() if self.simulation_mode else None
+            ),
         )
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -200,7 +227,9 @@ class CompanionApplication:
 
     def start(self):
         logger.info("Initializing LS Companion...")
-        self._instance_guard = SingleInstanceGuard()
+        self._instance_guard = SingleInstanceGuard(
+            "simulation" if self.simulation_mode else "companion"
+        )
         if not self._instance_guard.acquire():
             holder = self._instance_guard.holder_pid
             detail = f" (PID {holder})" if holder else ""

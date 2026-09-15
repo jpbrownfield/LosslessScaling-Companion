@@ -102,6 +102,7 @@ class ManagedReshadeProfile(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     overlay_enabled: bool = False
     shaders: Dict[str, List[str]] = Field(default_factory=dict)
+    imported_preset: bool = False
 
     @field_validator("id")
     @classmethod
@@ -205,6 +206,8 @@ class Profile(BaseModel):
     is_default: bool = False
     target_process: Optional[str] = None  # e.g., "chrome.exe", "Cyberpunk2077.exe"
     target_executable_path: Optional[str] = None
+    target_processes: List[str] = Field(default_factory=list)
+    target_executable_paths: List[str] = Field(default_factory=list)
     target_domain: Optional[str] = None   # e.g., "youtube.com", "twitch.tv"
     auto_scale: bool = False
     # Only AppConfig.global_hotkey triggers scaling. This field is retained so
@@ -230,6 +233,40 @@ class Profile(BaseModel):
             raise ValueError("profile id may contain only letters, numbers, dot, underscore, and dash")
         return value
 
+    @field_validator("target_processes", "target_executable_paths", mode="before")
+    @classmethod
+    def parse_target_lists(cls, value):
+        if value is None:
+            return []
+        values = value.split(",") if isinstance(value, str) else value
+        normalized = []
+        for item in values:
+            item = str(item).strip()
+            if item and item.casefold() not in {entry.casefold() for entry in normalized}:
+                normalized.append(item)
+        return normalized
+
+    @model_validator(mode="after")
+    def fill_blank_name_from_target(self):
+        self.name = self.name.strip()
+        if self.name:
+            return self
+        target = next(
+            (
+                value for value in (
+                    self.target_executable_path,
+                    *self.target_executable_paths,
+                    self.target_process,
+                    *self.target_processes,
+                    self.target_domain,
+                )
+                if value and str(value).strip()
+            ),
+            None,
+        )
+        self.name = Path(str(target).replace("\\", "/")).name if target else "Untitled Profile"
+        return self
+
 
 class AppConfig(BaseModel):
     host: Literal["127.0.0.1", "localhost", "::1"] = "127.0.0.1"
@@ -247,8 +284,9 @@ class AppConfig(BaseModel):
     default_profile_auto_scale: bool = True
     run_at_startup: bool = False
     preferred_scaling_gpu_device_id: Optional[str] = None
-    auto_route_gpu_to_display: bool = False
+    auto_route_gpu_to_display: bool = True
     nvidia_rtx_hdr_enabled: bool = False
+    reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)
     minimize_other_windows_on_scale: bool = False
     override_lossless_hotkey: bool = False
     override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)

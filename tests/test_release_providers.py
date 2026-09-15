@@ -1,10 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from companion.services.asset_store import AssetStore
 from companion.services.release_providers import (
     ProviderRegistry,
+    RhiDlssNrReleaseProvider,
     ReShadeReleaseProvider,
     ReleaseInfo,
     ReleaseManager,
@@ -56,6 +58,44 @@ class ReleaseManagerTests(unittest.TestCase):
             self.assertEqual(second_manager.check("counting")[0]["version"], "v1")
             self.assertEqual(provider.calls, 1)
 
+
+class RhiDlssNrReleaseProviderTests(unittest.TestCase):
+    def test_resolves_modified_runtime_through_digest_bearing_github_release(self):
+        download = (
+            "https://github.com/RankFTW/rhi-repo/releases/download/"
+            "dlssnr-310.8.SF-v2/nvngx_dlssnr_310.8.SF-v2.zip"
+        )
+
+        def metadata(url):
+            if url == RhiDlssNrReleaseProvider.manifest_url:
+                return {"dlssnr": [
+                    {"version": "310.8.SF-v2", "url": download},
+                    {
+                        "version": "310.8.0",
+                        "url": "https://github.com/RankFTW/rhi-repo/releases/download/"
+                        "dlssnr-310.8.0/nvngx_dlssnr_310.8.0.zip",
+                    },
+                ]}
+            return {
+                "published_at": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/RankFTW/rhi-repo/releases/tag/dlssnr-310.8.SF-v2",
+                "assets": [{
+                    "id": 123,
+                    "name": "nvngx_dlssnr_310.8.SF-v2.zip",
+                    "browser_download_url": download,
+                    "size": 100,
+                    "content_type": "application/zip",
+                    "digest": "sha256:" + "a" * 64,
+                }],
+            }
+
+        with patch("companion.services.release_providers._request_json", side_effect=metadata):
+            releases = RhiDlssNrReleaseProvider().list_releases()
+
+        self.assertEqual(len(releases), 1)
+        self.assertEqual(releases[0].version, "310.8.SF-v2")
+        self.assertEqual(releases[0].assets[0].digest, "sha256:" + "a" * 64)
+        self.assertIn("unsigned", releases[0].notes)
 
 class ReShadeReleaseProviderTests(unittest.TestCase):
     def _run_with_body(self, body: str):

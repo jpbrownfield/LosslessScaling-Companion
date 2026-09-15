@@ -31,6 +31,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Keeps transaction-owned backups and restores original files when assets are unmanaged.
    - Game executable paths are used only for foreground profile detection.
+   - Automatically deploys the bundled LS Companion ReShade bridge when a profile selects both ReShade and LosslessProxy; no separate LSP-ReShade download is used.
 
 6. **Windows System Tray UI:**
    - Opens the Profiles dashboard or jumps directly to its Settings view.
@@ -105,6 +106,25 @@ python run_companion.py
 * You will see the **LS Companion** icon appear in your Windows System Tray (near the clock).
 * The companion automatically hosts a local WebSocket server at `ws://127.0.0.1:24892/ws`.
 
+### Run without Lossless Scaling or administrator rights
+
+Use the development simulation on a normal Windows desktop or Remote Desktop session:
+
+```powershell
+python run_simulation.py
+```
+
+The runner builds and starts an unprivileged `LosslessScaling.exe` simulator, a
+visible `SimulationGame.exe` target, and the real companion UI on port `24893`.
+It accepts companion toggle commands without desktop input injection, creates a
+real topmost simulation overlay, and writes compatible scaling events for the normal inspector. Configuration, managed
+assets, logs, and the fake installation stay under `.tmp/simulation`; real
+Lossless Scaling, Task Scheduler, NVIDIA profiles, and RTSS profiles are not
+modified. Source changes automatically reload the companion. Use
+`python run_simulation.py --reset` to recreate the isolated settings.
+Run `python run_simulation.py --self-test` for a short process, command, overlay,
+and log-inspection check that exits automatically.
+
 ### 3. Load the Chrome Extension
 
 Download the [current source archive](https://github.com/jpbrownfield/LosslessScaling-Companion/archive/refs/heads/main.zip), extract it, and use its `extension/` directory, or use that directory directly from a repository checkout.
@@ -172,10 +192,13 @@ Lossless Scaling, the target application's other windows, the companion, shell
 windows, tool windows, and windows already minimized by the user are excluded.
 
 There is currently no standalone official NVIDIA download for
-`nvngx_dlssnr.dll`. The dashboard links to NVIDIA's official DLSS resources, the
-third-party graphics-modding communities and the LSP-NeuralRender guide, but the runtime
-itself must be imported from a source the user is authorized to use. LS Companion
-does not host, download, or verify community-redistributed NVIDIA binaries.
+`nvngx_dlssnr.dll`. The dashboard's single **Install NeuralRender + runtime**
+action first requires an explicit warning acknowledgement, then obtains
+LSP-NeuralRender from its publisher and the community-modified, unsigned SF-v2
+runtime through RHI's public manifest and `RankFTW/rhi-repo`. Companion requires
+the manifest URL to match that GitHub release, requires GitHub's SHA-256 release
+digest, validates the archive and x64 DLL, and stores both immutably. The runtime
+is downloaded on demand and is never bundled in an LS Companion release.
 
 ### Graphics stack compatibility evaluation
 
@@ -247,8 +270,11 @@ Use `--benchmark-exe` to substitute another windowed workload; the visual marker
 measurement is unavailable for generic executables.
 
 The **Lossless Scaling Add-ons** settings panel stages verified packages for
-LosslessProxy, LSP-NeuralRender, DLSS5 Feeder, LSP-ReShade, ReShade, and Special K.
+LosslessProxy, LSP-NeuralRender, DLSS5 Feeder, ReShade, and Special K.
 Staged packages are loaded only when selected in a profile's LS Graphics Stack.
+The source and MIT notices for Companion's maintained ReShade bridge are under
+`native/`; release builds compile and embed it rather than downloading the
+upstream LSP-ReShade binary at runtime.
 
 ### Example Profile Configuration:
 

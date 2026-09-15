@@ -21,7 +21,7 @@ def _initial_directory(current_path: Optional[str]) -> Optional[str]:
 
 def choose_general_setting_path(kind: str, current_path: Optional[str] = None) -> Optional[str]:
     """Open one allowlisted picker and return the selected absolute path."""
-    if kind not in {"process_lasso_log", "rtss_directory"}:
+    if kind not in {"process_lasso_log", "rtss_directory", "program_executable", "reshade_preset"}:
         raise ValueError("Unsupported settings path picker")
 
     import tkinter as tk
@@ -44,6 +44,20 @@ def choose_general_setting_path(kind: str, current_path: Optional[str] = None) -
                     ("CSV files", "*.csv"),
                     ("All files", "*.*"),
                 ),
+            )
+        elif kind == "program_executable":
+            selected = filedialog.askopenfilename(
+                parent=root,
+                title="Select program executable",
+                initialdir=initial,
+                filetypes=(("Programs", "*.exe"), ("All files", "*.*")),
+            )
+        elif kind == "reshade_preset":
+            selected = filedialog.askopenfilename(
+                parent=root,
+                title="Select ReShade preset",
+                initialdir=initial,
+                filetypes=(("ReShade presets", "*.ini"),),
             )
         else:
             selected = filedialog.askdirectory(
