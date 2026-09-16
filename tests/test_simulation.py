@@ -1,4 +1,7 @@
 import unittest
+from unittest.mock import patch
+
+from companion.main import simulation_mode_enabled
 
 from companion.core.models import Profile
 from companion.services.simulation_adapters import (
@@ -9,6 +12,20 @@ from companion.services.simulation_adapters import (
 
 
 class SimulationAdapterTests(unittest.TestCase):
+    def test_source_mode_honors_explicit_simulation_environment(self):
+        with (
+            patch("companion.main.sys.frozen", False, create=True),
+            patch.dict("companion.main.os.environ", {"LOSSLESS_COMPANION_SIMULATION": "1"}),
+        ):
+            self.assertTrue(simulation_mode_enabled())
+
+    def test_frozen_release_ignores_simulation_environment(self):
+        with (
+            patch("companion.main.sys.frozen", True, create=True),
+            patch.dict("companion.main.os.environ", {"LOSSLESS_COMPANION_SIMULATION": "1"}),
+        ):
+            self.assertFalse(simulation_mode_enabled())
+
     def test_startup_adapter_never_creates_a_real_task(self):
         manager = SimulationStartupTaskManager()
         self.assertFalse(manager.is_enabled())

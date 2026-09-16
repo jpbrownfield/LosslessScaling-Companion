@@ -341,6 +341,14 @@ location. Its shortcut page enables a Start Menu shortcut by default and offers
 an unchecked desktop-shortcut option. The installed application retains its own
 `requireAdministrator` manifest.
 
+Packaged builds check this repository's stable GitHub Releases at dashboard
+startup and once per day. When a newer semantic version is available, Companion
+offers to download `LosslessCompanion-Setup-x64.exe`, requires the matching
+`LosslessCompanion-Setup-x64.exe.sha256` release asset, verifies the installer,
+and then waits for explicit confirmation before launching it. Source and
+simulation runs never download or launch production updates. The checksum guards
+against corruption and mismatched assets; releases are not currently code-signed.
+
 The build intentionally uses PyInstaller's one-folder mode. PyInstaller advises
 against granting administrator privileges to one-file bundles because they unpack
 executable dependencies into a temporary directory before starting.
@@ -352,7 +360,8 @@ The workflow can also be started manually from the Actions tab. To publish a
 versioned GitHub Release without manually creating a tag, include a semantic
 version marker such as `@1.2.3` anywhere in a commit message pushed to `main`.
 The workflow creates release tag `v1.2.3` and attaches the elevated
-`LosslessCompanion-Setup-x64.exe` installer.
+`LosslessCompanion-Setup-x64.exe` installer plus its SHA-256 checksum. The same
+version is embedded in the packaged executable for update comparison.
 Release versions are immutable through this shortcut, so reusing an existing
 `@x.x.x` value fails instead of replacing its asset.
 

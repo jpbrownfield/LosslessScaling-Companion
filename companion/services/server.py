@@ -41,8 +41,10 @@ from .process_lasso_monitor import ProcessLassoLogTailer
 from .rtss_manager import RtssProfileManager
 from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
+from .self_update import CompanionUpdateService
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
+from ..version import current_version
 from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
 
 logger = logging.getLogger("LSCompanion.Server")
@@ -103,6 +105,11 @@ class CompanionWebSocketServer:
         self.diagnostics_task: Optional[asyncio.Task] = None
         self.last_diagnostics_result: Optional[Dict] = None
         self._last_diagnostics_archive: Optional[Path] = None
+        self.companion_updater = CompanionUpdateService(
+            self.release_manager, self.profile_manager.config_dir
+        )
+        self.companion_update_status: Optional[Dict] = None
+        self.companion_update_lock = asyncio.Lock()
 
     async def start(self) -> None:
         logger.info(f"Starting WebSocket server on {self.config.host}:{self.config.port}...")
@@ -241,6 +248,9 @@ class CompanionWebSocketServer:
                 "DELETE_RESHADE_PROFILE",
                 "RUN_DIAGNOSTICS",
                 "OPEN_DIAGNOSTICS_FOLDER",
+                "CHECK_COMPANION_UPDATE",
+                "DOWNLOAD_COMPANION_UPDATE",
+                "INSTALL_COMPANION_UPDATE",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
             authority = self.client_authority.get(websocket, "readonly")
@@ -808,6 +818,34 @@ class CompanionWebSocketServer:
                     }))
                     return
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
+                return
+
+            if msg_type in {"GET_COMPANION_UPDATE", "CHECK_COMPANION_UPDATE"}:
+                force = msg_type == "CHECK_COMPANION_UPDATE"
+                if self.companion_update_status is None or force:
+                    await self._refresh_companion_update(force=force)
+                else:
+                    await websocket.send(json.dumps(self.companion_update_status))
+                return
+
+            if msg_type == "DOWNLOAD_COMPANION_UPDATE":
+                version = str(msg.get("version") or "")
+                await websocket.send(json.dumps({
+                    "type": "COMPANION_UPDATE_DOWNLOAD_STARTED", "version": version,
+                }))
+                result = await self._run_background_thread(
+                    self.companion_updater.download, version
+                )
+                await websocket.send(json.dumps(result))
+                await self._refresh_companion_update(force=False)
+                return
+
+            if msg_type == "INSTALL_COMPANION_UPDATE":
+                result = await asyncio.to_thread(
+                    self.companion_updater.launch_installer,
+                    str(msg.get("version") or ""),
+                )
+                await websocket.send(json.dumps(result))
                 return
 
             if msg_type == "DOWNLOAD_BENCHMARK_TOOL":
@@ -1562,8 +1600,37 @@ class CompanionWebSocketServer:
                 await self._refresh_addon_updates(force=force)
             except Exception:
                 logger.warning("Daily add-on update check failed", exc_info=True)
+            try:
+                await self._refresh_companion_update(force=force)
+            except Exception as error:
+                logger.warning("Daily companion update check failed: %s", error)
             force = True
             await asyncio.sleep(24 * 60 * 60)
+
+    async def _refresh_companion_update(self, *, force: bool) -> Dict:
+        async with self.companion_update_lock:
+            try:
+                status = await self._run_background_thread(
+                    self.companion_updater.check, force=force
+                )
+            except Exception as error:
+                logger.warning("Companion update check failed: %s", error)
+                status = {
+                    "type": "COMPANION_UPDATE_STATUS",
+                    "currentVersion": current_version(),
+                    "latestVersion": None,
+                    "updateAvailable": False,
+                    "downloaded": False,
+                    "error": str(error),
+                }
+            self.companion_update_status = status
+            if self.clients:
+                encoded = json.dumps(status)
+                await asyncio.gather(
+                    *(client.send(encoded) for client in list(self.clients)),
+                    return_exceptions=True,
+                )
+            return status
 
     def _verified_benchmark_executable(self, provider: str) -> Optional[Path]:
         """Return a staged x64 tool only while its immutable package still verifies."""

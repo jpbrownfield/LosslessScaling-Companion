@@ -36,6 +36,12 @@ class CountingProvider(ReleaseProvider):
 
 
 class ReleaseManagerTests(unittest.TestCase):
+    def test_companion_provider_accepts_only_installer_and_checksum(self):
+        provider = ProviderRegistry().get("companion")
+        self.assertIsNotNone(provider.asset_pattern.search("LosslessCompanion-Setup-x64.exe"))
+        self.assertIsNotNone(provider.asset_pattern.search("LosslessCompanion-Setup-x64.exe.sha256"))
+        self.assertIsNone(provider.asset_pattern.search("LosslessCompanion-portable.zip"))
+
     def test_presentmon_provider_accepts_only_x64_console_binary(self):
         provider = ProviderRegistry().get("presentmon")
         self.assertIsNotNone(provider.asset_pattern.search("PresentMon-2.4.1-x64.exe"))

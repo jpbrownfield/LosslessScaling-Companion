@@ -5,6 +5,7 @@ Runs the WebSocket server, process monitor, and system tray simultaneously.
 
 import asyncio
 import os
+import sys
 import threading
 import time
 import logging
@@ -42,9 +43,17 @@ from .services.simulation_adapters import (
 )
 
 
+def simulation_mode_enabled() -> bool:
+    """Allow simulation only from source; production executables must stay live."""
+    return (
+        not bool(getattr(sys, "frozen", False))
+        and os.environ.get("LOSSLESS_COMPANION_SIMULATION") == "1"
+    )
+
+
 class CompanionApplication:
     def __init__(self, config_dir: Optional[Path] = None):
-        self.simulation_mode = os.environ.get("LOSSLESS_COMPANION_SIMULATION") == "1"
+        self.simulation_mode = simulation_mode_enabled()
         self.profile_manager = ProfileManager(config_dir)
         self.state = AppState()
         self.state.simulation_mode = self.simulation_mode

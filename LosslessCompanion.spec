@@ -2,6 +2,8 @@
 
 from PyInstaller.utils.hooks import collect_submodules
 from pathlib import Path
+import json
+import os
 
 
 hiddenimports = collect_submodules("pystray")
@@ -20,12 +22,18 @@ native_data = [
     ("native/vendor/losslessproxy-sdk/LICENSE", "licenses/LosslessProxy-SDK"),
     ("native/README.md", "licenses/native-components"),
 ]
+version_metadata = Path("build/package/version.json")
+version_metadata.parent.mkdir(parents=True, exist_ok=True)
+version_metadata.write_text(
+    json.dumps({"version": os.environ.get("LS_COMPANION_VERSION", "0.0.0-dev")}),
+    encoding="utf-8",
+)
 
 a = Analysis(
     ["run_companion.py"],
     pathex=[],
     binaries=native_binaries,
-    datas=[("companion/ui/dashboard.html", "companion/ui"), *native_data],
+    datas=[("companion/ui/dashboard.html", "companion/ui"), (str(version_metadata), "."), *native_data],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

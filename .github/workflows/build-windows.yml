@@ -17,6 +17,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Resolve embedded application version
+        shell: pwsh
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          $version = "0.0.0-dev"
+          if ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -match '^v(?<version>\d+\.\d+\.\d+)$') {
+            $version = $Matches.version
+          } elseif (
+            $env:REF_TYPE -eq "branch" -and
+            $env:REF_NAME -eq "main" -and
+            $env:COMMIT_MESSAGE -match '@(?<version>\d+\.\d+\.\d+)(?![\d.])'
+          ) {
+            $version = $Matches.version
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "LS_COMPANION_VERSION=$version"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -30,6 +49,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r companion/requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Run application tests
+        shell: pwsh
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
+          node tests/check_javascript.js companion/ui/dashboard.html
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard JavaScript validation failed" }
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -142,13 +169,16 @@ jobs:
             throw "Inno Setup compilation failed"
           }
           $installer = "dist/installer/LosslessCompanion-Setup-x64.exe"
+          $checksum = "$installer.sha256"
+          $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  LosslessCompanion-Setup-x64.exe" | Set-Content -LiteralPath $checksum -Encoding ascii -NoNewline
           $tag = $env:RELEASE_TAG
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             if ($env:RELEASE_FROM_COMMIT -eq "true") {
               throw "Release $tag already exists; use a new @x.x.x version"
             }
-            gh release upload $tag $installer --clobber
+            gh release upload $tag $installer $checksum --clobber
           } else {
-            gh release create $tag $installer --target $env:GITHUB_SHA --generate-notes --title $tag
+            gh release create $tag $installer $checksum --target $env:GITHUB_SHA --generate-notes --title $tag
           }

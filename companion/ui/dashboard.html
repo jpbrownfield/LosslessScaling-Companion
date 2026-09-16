@@ -277,6 +277,15 @@
     <div><strong>Add-on updates available</strong><p id="addonUpdateText"></p></div>
     <div class="update-notice-actions"><button id="ignoreAddonUpdatesBtn" class="btn btn-secondary" type="button">Ignore these versions</button><button id="showAddonDownloadsBtn" class="btn btn-primary" type="button">Download</button></div>
   </aside>
+  <aside id="companionUpdateNotice" class="update-notice" role="status" hidden>
+    <div><strong>LS Companion update available</strong><p id="companionUpdateText"></p></div>
+    <div class="update-notice-actions">
+      <a id="companionReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
+      <button id="laterCompanionUpdateBtn" class="btn btn-secondary" type="button">Later</button>
+      <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download verified installer</button>
+      <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Run installer</button>
+    </div>
+  </aside>
 
   <div class="container">
     <details id="profilesPanel" class="card settings-panel profiles-panel" data-collapsible-id="profiles" open>
@@ -728,6 +737,8 @@
     const addonDetectionTimers = {};
     const addonDetectionChecks = {};
     let visibleAddonUpdateKeys = [];
+    let companionUpdateState = null;
+    let companionUpdateBusy = false;
 
     let wsReconnectTimer = null;
     let wsIntentionalClose = false;
@@ -838,6 +849,7 @@
         ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
         ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_UPDATES' }));
+        ws.send(JSON.stringify({ type: 'GET_COMPANION_UPDATE' }));
         ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_DIAGNOSTICS_STATUS' }));
       };
@@ -845,7 +857,9 @@
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.simulationMode) document.getElementById('simulationBadge').hidden = false;
+          if (Object.prototype.hasOwnProperty.call(msg, 'simulationMode')) {
+            document.getElementById('simulationBadge').hidden = !msg.simulationMode;
+          }
           if (msg.type === 'FULL_DATA_UPDATE' || msg.type === 'PROCESSES_AND_PROFILES') {
             runningProcesses = msg.processes || [];
             profiles = msg.profiles || [];
@@ -902,6 +916,12 @@
             document.getElementById('controlSettingsStatus').textContent = errorText;
             document.getElementById('revertAllChangesBtn').disabled = false;
             document.getElementById('performanceBenchmarkStatus').textContent = msg.message || 'Benchmark operation failed.';
+            if (companionUpdateBusy) {
+              companionUpdateBusy = false;
+              document.getElementById('companionUpdateText').textContent = `Update failed: ${errorText}`;
+              document.getElementById('downloadCompanionUpdateBtn').disabled = false;
+              document.getElementById('installCompanionUpdateBtn').disabled = false;
+            }
             ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
           } else if (msg.type === 'BENCHMARK_STATUS') {
             renderBenchmarkStatus(msg);
@@ -971,6 +991,20 @@
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
           } else if (msg.type === 'ADDON_UPDATES') {
             renderAddonUpdateNotice(msg.updates || [], msg.latestVersions || {});
+          } else if (msg.type === 'COMPANION_UPDATE_STATUS') {
+            companionUpdateBusy = false;
+            renderCompanionUpdate(msg);
+          } else if (msg.type === 'COMPANION_UPDATE_DOWNLOAD_STARTED') {
+            companionUpdateBusy = true;
+            document.getElementById('companionUpdateText').textContent = `Downloading and verifying LS Companion ${msg.version}...`;
+            document.getElementById('downloadCompanionUpdateBtn').disabled = true;
+          } else if (msg.type === 'COMPANION_UPDATE_DOWNLOADED') {
+            companionUpdateBusy = false;
+            companionUpdateState = { ...(companionUpdateState || {}), latestVersion: msg.version, downloaded: true, updateAvailable: true };
+            renderCompanionUpdate(companionUpdateState);
+          } else if (msg.type === 'COMPANION_INSTALLER_LAUNCHED') {
+            companionUpdateBusy = false;
+            document.getElementById('companionUpdateText').textContent = `Installer for ${msg.version} launched. Follow its prompts; Companion may close during installation.`;
           } else if (msg.type === 'CONTROL_SETTINGS_SAVED') {
             controlSettings = msg.controlSettings;
             renderControlSettings();
@@ -1326,6 +1360,27 @@
         .map(item => `${item.name} ${item.currentVersion} → ${item.latestVersion}`)
         .join(' · ');
       notice.hidden = false;
+    }
+
+    function renderCompanionUpdate(status) {
+      companionUpdateState = status;
+      const notice = document.getElementById('companionUpdateNotice');
+      const download = document.getElementById('downloadCompanionUpdateBtn');
+      const install = document.getElementById('installCompanionUpdateBtn');
+      const releaseLink = document.getElementById('companionReleaseLink');
+      const ignored = localStorage.getItem('ignored-companion-update-version');
+      const visible = !!status.updateAvailable && ignored !== status.latestVersion;
+      notice.hidden = !visible;
+      if (!visible) return;
+      document.getElementById('companionUpdateText').textContent = status.downloaded
+        ? `LS Companion ${status.latestVersion} is verified and ready. Installed: ${status.currentVersion}.`
+        : `LS Companion ${status.latestVersion} is available. Installed: ${status.currentVersion}.`;
+      releaseLink.href = status.releaseUrl || '#';
+      releaseLink.hidden = !status.releaseUrl;
+      download.hidden = !!status.downloaded;
+      download.disabled = companionUpdateBusy;
+      install.hidden = !status.downloaded;
+      install.disabled = companionUpdateBusy;
     }
 
     function startAddonDetection(provider) {
@@ -2037,6 +2092,34 @@
     };
     document.getElementById('showAddonDownloadsBtn').onclick = () => {
       openMajorDashboardPanel(losslessAddonsPanel, true);
+    };
+    document.getElementById('laterCompanionUpdateBtn').onclick = () => {
+      if (companionUpdateState && companionUpdateState.latestVersion) {
+        localStorage.setItem('ignored-companion-update-version', companionUpdateState.latestVersion);
+      }
+      document.getElementById('companionUpdateNotice').hidden = true;
+    };
+    document.getElementById('downloadCompanionUpdateBtn').onclick = function () {
+      if (!companionUpdateState || !companionUpdateState.latestVersion) return;
+      companionUpdateBusy = true;
+      this.disabled = true;
+      ws.send(JSON.stringify({
+        type: 'DOWNLOAD_COMPANION_UPDATE', version: companionUpdateState.latestVersion
+      }));
+    };
+    document.getElementById('installCompanionUpdateBtn').onclick = function () {
+      if (!companionUpdateState || !companionUpdateState.latestVersion) return;
+      confirmDialog(
+        `Run the verified LS Companion ${companionUpdateState.latestVersion} installer now? The installer may close the running companion while replacing its files.`,
+        { title: 'Install Companion Update', okLabel: 'Run Installer' }
+      ).then(accepted => {
+        if (!accepted) return;
+        companionUpdateBusy = true;
+        this.disabled = true;
+        ws.send(JSON.stringify({
+          type: 'INSTALL_COMPANION_UPDATE', version: companionUpdateState.latestVersion
+        }));
+      });
     };
 
     document.getElementById('closeModalBtn').onclick = closeProfileEditor;

@@ -187,6 +187,40 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(allowed[0], 200)
         self.assertEqual(allowed[2], b"diagnostics")
 
+    async def test_dashboard_checks_downloads_and_launches_companion_update(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.clients.add(websocket)
+        status = {
+            "type": "COMPANION_UPDATE_STATUS",
+            "currentVersion": "1.0.0",
+            "latestVersion": "1.1.0",
+            "updateAvailable": True,
+            "downloaded": False,
+        }
+        self.server.companion_updater = Mock()
+        self.server.companion_updater.check.return_value = status
+        self.server.companion_updater.download.return_value = {
+            "type": "COMPANION_UPDATE_DOWNLOADED", "version": "1.1.0",
+        }
+        self.server.companion_updater.launch_installer.return_value = {
+            "type": "COMPANION_INSTALLER_LAUNCHED", "version": "1.1.0",
+        }
+
+        await self.server.process_message(websocket, json.dumps({"type": "GET_COMPANION_UPDATE"}))
+        await self.server.process_message(websocket, json.dumps({
+            "type": "DOWNLOAD_COMPANION_UPDATE", "version": "1.1.0",
+        }))
+        await self.server.process_message(websocket, json.dumps({
+            "type": "INSTALL_COMPANION_UPDATE", "version": "1.1.0",
+        }))
+
+        payloads = [json.loads(message) for message in websocket.messages]
+        self.assertIn(status, payloads)
+        self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOAD_STARTED" for item in payloads))
+        self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOADED" for item in payloads))
+        self.assertTrue(any(item["type"] == "COMPANION_INSTALLER_LAUNCHED" for item in payloads))
+
     def test_startup_detection_accepts_only_release_digest_matched_presentmon(self):
         home = Path(self.temp_dir.name) / "user"
         downloads = home / "Downloads"
@@ -369,6 +403,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="testingPanel"', body)
             self.assertIn('id="runDiagnosticsBtn"', body)
             self.assertIn('id="downloadDiagnosticsBtn"', body)
+            self.assertIn('id="companionUpdateNotice"', body)
+            self.assertIn('id="downloadCompanionUpdateBtn"', body)
+            self.assertIn('id="installCompanionUpdateBtn"', body)
+            self.assertIn('id="companionReleaseLink"', body)
             self.assertIn('const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel, testingPanel]', body)
             self.assertIn("setRuntimeStatus(`Scaling: ${target} | Profile: ${profile}`, 'scaling')", body)
             self.assertIn('if (candidate !== panel) candidate.open = false', body)

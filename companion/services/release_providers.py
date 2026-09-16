@@ -287,6 +287,11 @@ class RhiDlssNrReleaseProvider(ReleaseProvider):
 class ProviderRegistry:
     def __init__(self):
         self.providers: Dict[str, ReleaseProvider] = {
+            "companion": GitHubReleaseProvider(
+                "companion",
+                "jpbrownfield/LosslessScaling-Companion",
+                r"^LosslessCompanion-Setup-x64\.exe(?:\.sha256)?$",
+            ),
             "lossless-proxy": GitHubReleaseProvider(
                 "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
             ),
