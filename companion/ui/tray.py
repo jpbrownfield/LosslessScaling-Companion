@@ -58,14 +58,22 @@ class CompanionTrayIcon:
 
     def _on_exit(self, icon, item):
         logger.info("Tray Exit clicked.")
-        if self.icon:
-            self.icon.stop()
+        # pystray's Windows backend implements stop() by posting WM_STOP to
+        # this same UI thread.  Keep this callback bounded so it can return to
+        # the message pump and actually consume that message.
+        try:
+            (icon or self.icon).stop()
+        except Exception:
+            logger.exception("Could not stop the tray message loop")
+        if self.on_exit_callback:
+            try:
+                self.on_exit_callback()
+            except Exception:
+                logger.exception("Could not signal application shutdown")
         try:
             close_dashboard_window()
         except Exception:
             logger.exception("Could not close the dashboard window")
-        if self.on_exit_callback:
-            self.on_exit_callback()
 
     def _build_menu(self) -> Menu:
         running_procs = self.process_watcher.list_running_executables(visible_windows_only=True)[:15]

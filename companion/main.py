@@ -53,6 +53,8 @@ def simulation_mode_enabled() -> bool:
 
 
 class CompanionApplication:
+    SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
     def __init__(self, config_dir: Optional[Path] = None):
         self.simulation_mode = simulation_mode_enabled()
         self.profile_manager = ProfileManager(config_dir)
@@ -142,6 +144,9 @@ class CompanionApplication:
         self.server_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self.running = False
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = threading.Event()
+        self._shutdown_watchdog_started = False
         self._instance_guard: Optional[SingleInstanceGuard] = None
         self._last_runtime_snapshot = None
         self._native_auto_scale_enforced = False
@@ -152,8 +157,38 @@ class CompanionApplication:
             self.process_watcher,
             self.ls_inspector,
             self.automation,
-            on_exit_callback=self.stop
+            on_exit_callback=self.request_stop
         )
+
+    def _start_shutdown_watchdog(self) -> None:
+        if self._shutdown_watchdog_started:
+            return
+        self._shutdown_watchdog_started = True
+
+        def enforce_exit() -> None:
+            if self._shutdown_complete.wait(self.SHUTDOWN_TIMEOUT_SECONDS):
+                return
+            logger.critical(
+                "Graceful shutdown exceeded %.1f seconds; forcing process exit",
+                self.SHUTDOWN_TIMEOUT_SECONDS,
+            )
+            os._exit(0)
+
+        threading.Thread(
+            target=enforce_exit,
+            daemon=True,
+            name="ShutdownWatchdog",
+        ).start()
+
+    def request_stop(self) -> None:
+        """Signal shutdown without blocking the Windows tray message loop."""
+        if self._shutdown_complete.is_set():
+            return
+        logger.info("Tray requested LS Companion shutdown.")
+        self.running = False
+        self._start_shutdown_watchdog()
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(lambda: None)
 
     def _run_async_server(self):
         """Runs the asyncio WebSocket server in a dedicated thread."""
@@ -284,34 +319,46 @@ class CompanionApplication:
         try:
             self.tray.run()
         except KeyboardInterrupt:
-            self.stop()
+            self.request_stop()
         finally:
-            if self.running:
-                self.stop()
-            if self.server_thread:
-                self.server_thread.join(timeout=2)
+            self.stop()
 
     def stop(self):
-        if not self.running:
+        if self._shutdown_complete.is_set():
+            return
+        with self._shutdown_lock:
+            if self._shutdown_complete.is_set():
+                return
+            self._start_shutdown_watchdog()
+            logger.info("Shutting down LS Companion...")
+            self.running = False
+            try:
+                self.hotkey_listener.stop()
+            except Exception:
+                logger.exception("Could not stop the global hotkey listener")
+            if self.monitor_thread and self.monitor_thread is not threading.current_thread():
+                self.monitor_thread.join(timeout=2)
+            try:
+                self.automation.shutdown()
+            except Exception:
+                logger.exception("Could not finish automation shutdown")
+            try:
+                self.dynamic_limiter.close()
+            except Exception:
+                logger.exception("Could not close the dynamic limiter")
+
+            if self.loop and self.loop.is_running():
+                self.loop.call_soon_threadsafe(lambda: None)
+            if self.server_thread and self.server_thread is not threading.current_thread():
+                self.server_thread.join(timeout=3)
             guard = getattr(self, "_instance_guard", None)
             if guard is not None:
                 guard.release()
                 self._instance_guard = None
-            return
-        logger.info("Shutting down LS Companion...")
-        self.running = False
-        self.hotkey_listener.stop()
-        if self.monitor_thread and self.monitor_thread is not threading.current_thread():
-            self.monitor_thread.join(timeout=2)
-        self.automation.shutdown()
-        self.dynamic_limiter.close()
-
-        if self.loop and self.loop.is_running():
-            self.loop.call_soon_threadsafe(lambda: None)
-        guard = getattr(self, "_instance_guard", None)
-        if guard is not None:
-            guard.release()
-            self._instance_guard = None
+            if self.server_thread and self.server_thread.is_alive():
+                logger.error("Server thread did not stop during the graceful shutdown window")
+            else:
+                self._shutdown_complete.set()
 
 
 
