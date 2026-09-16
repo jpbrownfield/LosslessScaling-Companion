@@ -111,6 +111,33 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
             hide.assert_called_once_with(4242)
 
+    def test_running_check_ignores_a_different_simulation_executable(self):
+        watcher, _settings = self.make_watcher()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configured = root / "real" / "LosslessScaling.exe"
+            configured.parent.mkdir()
+            configured.write_bytes(b"real")
+            simulation = root / "simulation" / "LosslessScaling.exe"
+            simulation.parent.mkdir()
+            simulation.write_bytes(b"simulation")
+            watcher.profile_manager.config.lossless_scaling_exe_path = str(configured)
+            process = SimpleNamespace(info={"name": "LosslessScaling.exe", "exe": str(simulation)})
+
+            with patch("companion.services.process_watcher.psutil.process_iter", return_value=[process]):
+                self.assertFalse(watcher.check_is_lossless_scaling_running())
+
+    def test_running_check_matches_the_configured_executable(self):
+        watcher, _settings = self.make_watcher()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "LosslessScaling.exe"
+            executable.write_bytes(b"real")
+            watcher.profile_manager.config.lossless_scaling_exe_path = str(executable)
+            process = SimpleNamespace(info={"name": "LosslessScaling.exe", "exe": str(executable)})
+
+            with patch("companion.services.process_watcher.psutil.process_iter", return_value=[process]):
+                self.assertTrue(watcher.check_is_lossless_scaling_running())
+
 
 if __name__ == "__main__":
     unittest.main()

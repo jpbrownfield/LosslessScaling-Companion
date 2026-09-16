@@ -79,12 +79,43 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         ):
             service = CompanionUpdateService(manager, Path(directory), enabled=True)
             downloaded = service.download("2.0.0")
-            with patch("companion.services.self_update.subprocess.Popen") as launch:
+            with patch(
+                "companion.services.self_update.ctypes.windll.shell32.ShellExecuteW",
+                return_value=42,
+            ) as launch:
                 launched = service.launch_installer("2.0.0")
 
         self.assertEqual(downloaded["sha256"], digest)
         self.assertEqual(launched["version"], "2.0.0")
         launch.assert_called_once()
+        arguments = launch.call_args.args
+        self.assertEqual(arguments[1], "runas")
+        self.assertEqual(Path(arguments[2]).name, INSTALLER_NAME)
+        self.assertIn("/CLOSEAPPLICATIONS", arguments[3])
+
+    def test_installer_launch_reports_a_rejected_uac_handoff(self):
+        installer = b"verified installer payload"
+        digest = hashlib.sha256(installer).hexdigest()
+        manager = SimpleNamespace(check=lambda *args, **kwargs: [self.release()])
+
+        def open_url(request, timeout=60):
+            content = (
+                f"{digest}  {INSTALLER_NAME}".encode("ascii")
+                if request.full_url.endswith(".sha256") else installer
+            )
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "companion.services.self_update.urllib.request.urlopen", side_effect=open_url
+        ):
+            service = CompanionUpdateService(manager, Path(directory), enabled=True)
+            service.download("2.0.0")
+            with patch(
+                "companion.services.self_update.ctypes.windll.shell32.ShellExecuteW",
+                return_value=5,
+            ):
+                with self.assertRaisesRegex(OSError, "could not elevate"):
+                    service.launch_installer("2.0.0")
 
     def test_download_rejects_checksum_mismatch(self):
         release = self.release()

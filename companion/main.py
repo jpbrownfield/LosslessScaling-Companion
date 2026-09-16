@@ -34,6 +34,7 @@ from .services.rtss_manager import RtssProfileManager
 from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
 from .services.single_instance import SingleInstanceGuard
+from .services.lossless_locator import find_lossless_scaling_executable
 from .ui.tray import CompanionTrayIcon
 from .services.simulation_adapters import (
     SimulationNvidiaProfileManager,
@@ -55,6 +56,14 @@ class CompanionApplication:
     def __init__(self, config_dir: Optional[Path] = None):
         self.simulation_mode = simulation_mode_enabled()
         self.profile_manager = ProfileManager(config_dir)
+        if not self.simulation_mode:
+            detected_lossless = find_lossless_scaling_executable(
+                self.profile_manager.config.lossless_scaling_exe_path
+            )
+            if detected_lossless and str(detected_lossless) != self.profile_manager.config.lossless_scaling_exe_path:
+                logger.info("Detected Lossless Scaling at %s", detected_lossless)
+                self.profile_manager.config.lossless_scaling_exe_path = str(detected_lossless)
+                self.profile_manager.save_config()
         self.state = AppState()
         self.state.simulation_mode = self.simulation_mode
         self.state.auto_scale_enabled = self.profile_manager.config.disable_native_auto_scale

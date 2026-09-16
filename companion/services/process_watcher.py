@@ -276,10 +276,25 @@ class ProcessWatcher:
         return results
 
     def check_is_lossless_scaling_running(self) -> bool:
-        """Checks if LosslessScaling.exe is currently active."""
-        for p in psutil.process_iter(['name']):
+        """Check whether the configured real Lossless Scaling executable is active."""
+        configured = self.profile_manager.config.lossless_scaling_exe_path
+        try:
+            configured_path = Path(configured).resolve() if configured else None
+        except OSError:
+            configured_path = None
+        if not configured_path or not configured_path.is_file():
+            self.state.lossless_scaling_running = False
+            return False
+        configured_key = str(configured_path).casefold()
+        for p in psutil.process_iter(['name', 'exe']):
             try:
-                if p.info['name'] and p.info['name'].lower() == 'losslessscaling.exe':
+                process_path = p.info.get('exe')
+                if (
+                    p.info['name']
+                    and p.info['name'].casefold() == 'losslessscaling.exe'
+                    and process_path
+                    and str(Path(process_path).resolve()).casefold() == configured_key
+                ):
                     self.state.lossless_scaling_running = True
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -288,11 +303,23 @@ class ProcessWatcher:
         return False
 
     def stop_lossless_scaling(self, timeout: float = 5.0) -> bool:
-        """Stop every running Lossless Scaling process before changing its DLL set."""
+        """Stop the configured Lossless Scaling process before changing its DLL set."""
+        configured = self.profile_manager.config.lossless_scaling_exe_path
+        try:
+            configured_key = str(Path(configured).resolve()).casefold() if configured else ""
+        except OSError:
+            configured_key = ""
         processes = []
-        for process in psutil.process_iter(["name"]):
+        for process in psutil.process_iter(["name", "exe"]):
             try:
-                if process.info["name"] and process.info["name"].casefold() == "losslessscaling.exe":
+                process_path = process.info.get("exe")
+                if (
+                    configured_key
+                    and process.info["name"]
+                    and process.info["name"].casefold() == "losslessscaling.exe"
+                    and process_path
+                    and str(Path(process_path).resolve()).casefold() == configured_key
+                ):
                     processes.append(process)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue

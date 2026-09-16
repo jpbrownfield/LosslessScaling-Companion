@@ -33,4 +33,4 @@ Name: "{autoprograms}\LS Companion"; Filename: "{app}\LosslessCompanion.exe"; Ta
 Name: "{autodesktop}\LS Companion"; Filename: "{app}\LosslessCompanion.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\LosslessCompanion.exe"; Description: "Launch LS Companion"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\LosslessCompanion.exe"; Description: "Launch LS Companion as administrator"; Flags: nowait postinstall skipifsilent runascurrentuser

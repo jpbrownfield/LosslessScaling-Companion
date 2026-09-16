@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -181,11 +182,17 @@ class CompanionUpdateService:
             digest = AssetStore.sha256(installer)
             if digest.casefold() != str(receipt.get("sha256") or "").casefold():
                 raise UnsafeAssetError("Companion installer changed after verification")
-            subprocess.Popen(
-                [str(installer), "/SP-", "/CLOSEAPPLICATIONS"],
-                cwd=str(directory),
-                close_fds=True,
+            parameters = subprocess.list2cmdline(["/SP-", "/CLOSEAPPLICATIONS"])
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                str(installer),
+                parameters,
+                str(directory),
+                1,
             )
+            if int(result) <= 32:
+                raise OSError(f"Windows could not elevate the companion installer (ShellExecute code {result})")
             return {
                 "type": "COMPANION_INSTALLER_LAUNCHED",
                 "version": normalized,

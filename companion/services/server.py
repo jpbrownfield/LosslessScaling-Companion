@@ -56,6 +56,11 @@ if TYPE_CHECKING:
 class CompanionWebSocketServer:
     PRESENTMON_STARTUP_DELAY_SECONDS = 1.0
 
+    def _lossless_scaling_found(self) -> bool:
+        value = self.config.lossless_scaling_exe_path
+        path = Path(value) if value else None
+        return bool(path and path.is_file() and path.name.casefold() == "losslessscaling.exe")
+
     def __init__(
         self,
         profile_manager: ProfileManager,
@@ -201,6 +206,7 @@ class CompanionWebSocketServer:
             "type": "INITIAL_STATE",
             "simulationMode": self.state.simulation_mode,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,
@@ -1854,6 +1860,7 @@ class CompanionWebSocketServer:
             "activeProfileId": self.profile_manager.config.active_profile_id,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
@@ -1874,6 +1881,7 @@ class CompanionWebSocketServer:
             "activeProfileId": self.profile_manager.config.active_profile_id,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "scalingTarget": self.state.current_scaled_target,
             "controlSettings": self._control_settings_payload(),
@@ -1971,6 +1979,7 @@ class CompanionWebSocketServer:
             "type": "STATE_UPDATE",
             "simulationMode": self.state.simulation_mode,
             "isScalingActive": self.state.is_scaling_active,
+            "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
             "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
             "scalingTarget": self.state.current_scaled_target,

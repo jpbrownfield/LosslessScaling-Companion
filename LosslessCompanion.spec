@@ -54,6 +54,7 @@ exe = EXE(
     # Packed executables attract heuristic detections and obscure reproducibility.
     upx=False,
     console=False,
+    manifest="installer/LosslessCompanion.exe.manifest",
     uac_admin=True,
 )
 coll = COLLECT(
