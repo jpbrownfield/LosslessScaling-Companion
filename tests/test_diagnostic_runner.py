@@ -46,24 +46,44 @@ class DiagnosticRunnerTests(unittest.TestCase):
             server = SimpleNamespace(
                 profile_manager=SimpleNamespace(config_dir=config_dir),
                 state=SimpleNamespace(simulation_mode=True),
+                process_watcher=None,
             )
             runner = DiagnosticRunner(server)
             runner._tests = lambda: (
                 ("first", "First", lambda: runner._result("pass", "worked")),
                 ("second", "Second", lambda: runner._result("warn", "inspect")),
             )
+            runner._reset_lossless_folder = lambda _running: runner._result("pass", "reset")
 
             result = runner.run()
 
             archive = Path(result["archivePath"])
             self.assertTrue(archive.is_file())
-            self.assertEqual(result["counts"], {"pass": 1, "warn": 1, "fail": 0})
+            self.assertEqual(result["counts"], {"pass": 2, "warn": 1, "fail": 0})
             with zipfile.ZipFile(archive) as bundle:
                 names = set(bundle.namelist())
                 self.assertIn("ls-companion-diagnostics/first.log", names)
                 self.assertIn("ls-companion-diagnostics/second.log", names)
+                self.assertIn("ls-companion-diagnostics/environment_reset.log", names)
                 summary = json.loads(bundle.read("ls-companion-diagnostics/summary.json"))
-            self.assertEqual([item["id"] for item in summary["results"]], ["first", "second"])
+            self.assertEqual(
+                [item["id"] for item in summary["results"]],
+                ["first", "second", "environment_reset"],
+            )
+
+    def test_individual_execution_plan_includes_dependencies_first(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner._tests = lambda: (
+            ("configuration", "Configuration", lambda: {}),
+            ("profile_integrity", "Profiles", lambda: {}),
+            ("profile_matching", "Matching", lambda: {}),
+        )
+
+        plan = runner._execution_plan("profile_matching")
+
+        self.assertEqual([item[0] for item in plan], [
+            "configuration", "profile_integrity", "profile_matching",
+        ])
 
 
 if __name__ == "__main__":

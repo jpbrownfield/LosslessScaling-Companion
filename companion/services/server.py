@@ -103,6 +103,7 @@ class CompanionWebSocketServer:
         self.reshade_profiles = ReshadeProfileService(profile_manager)
         self.diagnostic_runner = DiagnosticRunner(self)
         self.diagnostics_task: Optional[asyncio.Task] = None
+        self._diagnostics_selected_test: Optional[str] = None
         self.last_diagnostics_result: Optional[Dict] = None
         self._last_diagnostics_archive: Optional[Path] = None
         self.companion_updater = CompanionUpdateService(
@@ -360,20 +361,33 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "GET_DIAGNOSTICS_STATUS":
-                payload = self.last_diagnostics_result or {
+                payload = dict(self.last_diagnostics_result or {
                     "type": "DIAGNOSTICS_STATUS",
-                    "running": bool(self.diagnostics_task and not self.diagnostics_task.done()),
+                    "running": False,
                     "results": [],
-                }
+                })
+                payload["running"] = bool(
+                    self.diagnostics_task and not self.diagnostics_task.done()
+                )
+                if payload["running"]:
+                    payload["selectedTest"] = self._diagnostics_selected_test
+                payload["availableTests"] = self.diagnostic_runner.catalog()
                 await websocket.send(json.dumps(payload))
                 return
 
             if msg_type == "RUN_DIAGNOSTICS":
                 if self.diagnostics_task and not self.diagnostics_task.done():
                     raise RuntimeError("Application diagnostics are already running")
-                self.diagnostics_task = asyncio.create_task(self._run_diagnostics())
+                selected_test = str(msg.get("testId") or "").strip() or None
+                available = {item["id"] for item in self.diagnostic_runner.catalog()}
+                if selected_test is not None and selected_test not in available:
+                    raise ValueError("Unknown application test")
+                self._diagnostics_selected_test = selected_test
+                self.diagnostics_task = asyncio.create_task(self._run_diagnostics(selected_test))
                 await websocket.send(json.dumps({
                     "type": "DIAGNOSTICS_STATUS", "running": True, "results": [],
+                    "selectedTest": selected_test,
+                    "availableTests": self.diagnostic_runner.catalog(),
                 }))
                 return
 
@@ -1390,9 +1404,11 @@ class CompanionWebSocketServer:
             ),
         ], body
 
-    async def _run_diagnostics(self) -> None:
+    async def _run_diagnostics(self, selected_test: Optional[str] = None) -> None:
         try:
-            result = await self._run_background_thread(self.diagnostic_runner.run)
+            result = await self._run_background_thread(
+                self.diagnostic_runner.run, selected_test
+            )
             archive = result.pop("archivePath", None)
             self._last_diagnostics_archive = Path(archive).resolve() if archive else None
             self.last_diagnostics_result = result
@@ -1403,9 +1419,12 @@ class CompanionWebSocketServer:
                 "running": False,
                 "error": str(error),
                 "results": [],
+                "selectedTest": selected_test,
+                "availableTests": self.diagnostic_runner.catalog(),
             }
         finally:
             self.diagnostics_task = None
+            self._diagnostics_selected_test = None
         if self.clients:
             encoded = json.dumps(self.last_diagnostics_result)
             await asyncio.gather(

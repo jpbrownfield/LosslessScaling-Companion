@@ -120,6 +120,9 @@
     .diagnostic-result.warn .diagnostic-result-status { background:rgba(245,158,11,.15); color:#fbbf24; }
     .diagnostic-result.fail .diagnostic-result-status { background:rgba(239,68,68,.15); color:var(--danger); }
     .diagnostic-result strong { display:block; margin-bottom:3px; font-size:13px; }
+    .diagnostic-test-actions { display:grid; gap:8px; margin-top:14px; }
+    .diagnostic-test-action { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid var(--card-border); border-radius:8px; background:rgba(15,23,42,.48); }
+    .diagnostic-test-action .btn { flex:0 0 auto; }
     .addon-status { margin-top: auto; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
     .addon-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .addon-badge { flex: 0 0 auto; border: 1px solid var(--card-border); border-radius: 999px; padding: 4px 8px; color: var(--text-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
@@ -433,6 +436,7 @@
           <a id="downloadDiagnosticsBtn" class="btn btn-secondary" href="#" hidden>Download ZIP</a>
           <span id="diagnosticsStatus" class="item-sub">No diagnostic run in this session.</span>
         </div>
+        <div id="diagnosticTestActions" class="diagnostic-test-actions" aria-label="Individual application tests"></div>
         <div id="diagnosticResults" class="diagnostic-results" aria-live="polite"></div>
       </div>
     </details>
@@ -718,6 +722,7 @@
     let graphicsPackages = [];
     let dlssnrRuntimes = [];
     let reshadeProfiles = [];
+    let diagnosticCatalog = [];
     let reshadeCatalog = [];
     let reshadeShaderSelection = {};
     let pendingProfileReshadeImport = false;
@@ -1646,10 +1651,14 @@
       const status = document.getElementById('diagnosticsStatus');
       const download = document.getElementById('downloadDiagnosticsBtn');
       const results = msg.results || [];
+      if (Array.isArray(msg.availableTests)) diagnosticCatalog = msg.availableTests;
       button.disabled = !!msg.running;
       button.textContent = msg.running ? 'Running tests...' : 'Run all application tests';
       if (msg.running) {
-        status.textContent = 'Inspecting application functions and writing individual logs...';
+        const selected = diagnosticCatalog.find(test => test.id === msg.selectedTest);
+        status.textContent = selected
+          ? `Running prerequisites and ${selected.name}, then resetting Lossless Scaling...`
+          : 'Running application tests, writing individual logs, then resetting Lossless Scaling...';
       } else if (msg.error) {
         status.textContent = `Diagnostic runner failed: ${msg.error}`;
       } else if (msg.counts) {
@@ -1660,6 +1669,14 @@
         download.href = `/diagnostics/download?token=__COMPANION_TOKEN__`;
         download.download = msg.archiveName;
       }
+      const names = new Map(diagnosticCatalog.map(test => [test.id, test.name]));
+      document.getElementById('diagnosticTestActions').innerHTML = diagnosticCatalog.map(test => {
+        const dependencies = (test.dependencies || []).map(id => names.get(id) || id);
+        return `<div class="diagnostic-test-action">
+          <div><strong>${escapeHtml(test.name)}</strong><div class="item-sub" style="white-space:normal">${dependencies.length ? `Runs prerequisites: ${escapeHtml(dependencies.join(', '))}` : 'No prerequisites.'}</div></div>
+          <button class="btn btn-secondary" type="button" data-run-diagnostic="${escapeHtml(test.id)}" ${msg.running ? 'disabled' : ''}>Run</button>
+        </div>`;
+      }).join('');
       document.getElementById('diagnosticResults').innerHTML = results.map(result => `
         <div class="diagnostic-result ${escapeHtml(result.status || 'warn')}">
           <span class="diagnostic-result-status">${escapeHtml(result.status || 'unknown')}</span>
@@ -2335,6 +2352,15 @@
       document.getElementById('diagnosticsStatus').textContent = 'Starting application diagnostics...';
       document.getElementById('downloadDiagnosticsBtn').hidden = true;
       ws.send(JSON.stringify({ type: 'RUN_DIAGNOSTICS' }));
+    };
+    document.getElementById('diagnosticTestActions').onclick = event => {
+      const button = event.target.closest('[data-run-diagnostic]');
+      if (!button || button.disabled) return;
+      const testId = button.dataset.runDiagnostic;
+      button.disabled = true;
+      document.getElementById('diagnosticsStatus').textContent = 'Starting selected test and its prerequisites...';
+      document.getElementById('downloadDiagnosticsBtn').hidden = true;
+      ws.send(JSON.stringify({ type: 'RUN_DIAGNOSTICS', testId }));
     };
     document.getElementById('openDiagnosticsFolderBtn').onclick = () => {
       ws.send(JSON.stringify({ type: 'OPEN_DIAGNOSTICS_FOLDER' }));

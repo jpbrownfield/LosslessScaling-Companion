@@ -32,6 +32,29 @@ from .reshade_manager import ReshadeManager
 class DiagnosticRunner:
     """Exercise fundamental paths against the installed application and LS host."""
 
+    DEPENDENCIES = {
+        "profile_integrity": ("configuration",),
+        "profile_matching": ("profile_integrity",),
+        "profile_persistence_behavior": ("configuration",),
+        "lossless_installation": ("configuration",),
+        "lossless_settings": ("lossless_installation",),
+        "autoscale": ("profile_integrity", "lossless_settings", "hotkeys"),
+        "autoscale_behavior": (
+            "autoscale", "profile_persistence_behavior", "process_windows", "assets", "benchmark",
+        ),
+        "hotkey_override_behavior": ("autoscale_behavior", "hotkeys"),
+        "lossless_scaling_log": ("autoscale_behavior",),
+        "reshade": ("assets", "lossless_installation"),
+        "reshade_runtime": ("reshade", "autoscale_behavior"),
+        "deployment": ("assets", "lossless_installation"),
+        "deployment_behavior": ("deployment", "benchmark", "process_windows"),
+        "benchmark": ("assets", "lossless_installation"),
+        "rtss": ("process_windows",),
+        "startup": ("configuration",),
+        "runtime": ("configuration",),
+    }
+    LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
+
     def __init__(self, server):
         self.server = server
         self.root = server.profile_manager.config_dir / "diagnostics" / "application-tests"
@@ -80,13 +103,51 @@ class DiagnosticRunner:
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
         )
 
+    def catalog(self) -> list[Dict]:
+        return [
+            {
+                "id": test_id,
+                "name": name,
+                "dependencies": list(self.DEPENDENCIES.get(test_id, ())),
+            }
+            for test_id, name, _function in self._tests()
+        ]
+
+    def _execution_plan(self, selected_test: Optional[str]) -> list[tuple[str, str, Callable[[], Dict]]]:
+        tests = list(self._tests())
+        by_id = {item[0]: item for item in tests}
+        if selected_test is not None and selected_test not in by_id:
+            raise ValueError(f"Unknown application test: {selected_test}")
+        roots = [selected_test] if selected_test else [item[0] for item in tests]
+        ordered: list[tuple[str, str, Callable[[], Dict]]] = []
+        visited: set[str] = set()
+        visiting: set[str] = set()
+
+        def add(test_id: str) -> None:
+            if test_id in visited:
+                return
+            if test_id in visiting:
+                raise RuntimeError(f"Circular application-test dependency at {test_id}")
+            if test_id not in by_id:
+                raise RuntimeError(f"Application test dependency does not exist: {test_id}")
+            visiting.add(test_id)
+            for dependency in self.DEPENDENCIES.get(test_id, ()):
+                add(dependency)
+            visiting.remove(test_id)
+            visited.add(test_id)
+            ordered.append(by_id[test_id])
+
+        for root in roots:
+            add(root)
+        return ordered
+
     @contextmanager
     def _sandbox(self, name: str):
         path = self._behavior_root / name
         path.mkdir(parents=True)
         yield str(path)
 
-    def run(self) -> Dict:
+    def run(self, selected_test: Optional[str] = None) -> Dict:
         # Each button press must execute a fresh live workflow and collect new log deltas.
         self._live_scaling_results = None
         started = datetime.now(timezone.utc)
@@ -100,19 +161,50 @@ class DiagnosticRunner:
         self._behavior_root = session / ".behavior-sandbox"
         self._behavior_root.mkdir()
         results = []
-        for test_id, name, function in self._tests():
-            try:
-                result = function()
-            except Exception as error:  # A broken diagnostic must remain visible.
+        result_by_id: Dict[str, Dict] = {}
+        initial_ls_running = bool(
+            self.server.process_watcher
+            and self.server.process_watcher.check_is_lossless_scaling_running()
+        )
+        for test_id, name, function in self._execution_plan(selected_test):
+            failed_dependencies = [
+                dependency for dependency in self.DEPENDENCIES.get(test_id, ())
+                if result_by_id.get(dependency, {}).get("status") == "fail"
+            ]
+            if failed_dependencies:
                 result = self._result(
-                    "fail", f"Diagnostic raised {type(error).__name__}: {error}",
-                    traceback=traceback.format_exc(),
+                    "fail",
+                    "Not run because required setup tests failed: " + ", ".join(failed_dependencies),
+                    skipped=True,
+                    failedDependencies=failed_dependencies,
                 )
+            else:
+                try:
+                    result = function()
+                except Exception as error:  # A broken diagnostic must remain visible.
+                    result = self._result(
+                        "fail", f"Diagnostic raised {type(error).__name__}: {error}",
+                        traceback=traceback.format_exc(),
+                    )
+            if test_id in self.LS_MUTATING_TESTS and not result.get("details", {}).get("skipped"):
+                isolation_reset = self._reset_lossless_folder(initial_ls_running)
+                result.setdefault("details", {})["postTestFolderReset"] = isolation_reset
+                if isolation_reset["status"] == "fail":
+                    result["status"] = "fail"
+                    result["summary"] += " The post-test Lossless Scaling folder reset failed."
             result.update({"id": test_id, "name": name})
             results.append(result)
+            result_by_id[test_id] = result
             (session / f"{test_id}.log").write_text(
                 json.dumps(result, indent=2, default=str), encoding="utf-8"
             )
+
+        reset_result = self._reset_lossless_folder(initial_ls_running)
+        reset_result.update({"id": "environment_reset", "name": "Lossless Scaling folder reset"})
+        results.append(reset_result)
+        (session / "environment_reset.log").write_text(
+            json.dumps(reset_result, indent=2, default=str), encoding="utf-8"
+        )
 
         shutil.rmtree(self._behavior_root, ignore_errors=True)
 
@@ -128,6 +220,8 @@ class DiagnosticRunner:
                 "simulationMode": bool(self.server.state.simulation_mode),
             },
             "counts": counts,
+            "selectedTest": selected_test,
+            "executedTests": [item["id"] for item in results],
             "results": results,
         }
         (session / "summary.json").write_text(
@@ -155,10 +249,60 @@ class DiagnosticRunner:
             "generatedAt": manifest["generatedAt"],
             "counts": counts,
             "results": results,
+            "selectedTest": selected_test,
+            "availableTests": self.catalog(),
             "directory": self._path(session),
             "archiveName": archive.name,
             "archivePath": str(archive.resolve()),
         }
+
+    def _reset_lossless_folder(self, should_be_running: bool) -> Dict:
+        """Restore all companion-owned deployment destinations to their originals."""
+        exe_value = self.server.config.lossless_scaling_exe_path
+        executable = Path(exe_value) if exe_value else None
+        if not executable or not executable.is_file():
+            return self._result(
+                "warn", "LosslessScaling.exe is unavailable; no managed folder reset was possible."
+            )
+        stopped = True
+        restarted = not should_be_running
+        try:
+            if self.server.state.is_scaling_active:
+                self.server.automation.set_scaling(
+                    False, reason="experimental_environment_reset", force=True,
+                    park_runtime_on_stop=False,
+                )
+            if self.server.process_watcher.check_is_lossless_scaling_running():
+                stopped = self.server.process_watcher.stop_lossless_scaling()
+            if not stopped:
+                raise RuntimeError("Lossless Scaling could not be stopped for folder reset")
+            manifest = self.server.automation.deployment_manager.apply(
+                profile_id=None,
+                lossless_scaling_exe=str(executable),
+                files=[],
+            )
+            self.server.state.current_active_profile = None
+            self.server.process_watcher.invalidate_foreground_cache()
+            if should_be_running:
+                restarted = self.server.process_watcher.launch_lossless_scaling(force=True)
+            passed = stopped and restarted and not manifest.get("files")
+            return self._result(
+                "pass" if passed else "fail",
+                "Managed add-on files were removed, original files restored, and the prior LS running state restored."
+                if passed else "The Lossless Scaling folder reset did not fully complete.",
+                directory=self._path(executable.parent),
+                managedFilesRemaining=len(manifest.get("files", [])),
+                priorRunningState=should_be_running,
+                stopped=stopped,
+                restarted=restarted,
+            )
+        except Exception as error:
+            return self._result(
+                "fail", f"Lossless Scaling folder reset failed: {error}",
+                directory=self._path(executable.parent),
+                priorRunningState=should_be_running,
+                traceback=traceback.format_exc(),
+            )
 
     def _configuration(self) -> Dict:
         config = self.server.config
