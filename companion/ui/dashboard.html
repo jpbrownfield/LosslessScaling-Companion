@@ -264,7 +264,7 @@
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="general" aria-controls="generalSettingsPanel" aria-pressed="false">Settings</button>
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="lossless-addons" aria-controls="losslessAddonsPanel" aria-pressed="false">Add-ons</button>
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="performance-benchmark" aria-controls="performanceBenchmarkPanel" aria-pressed="false">Benchmark</button>
-      <button class="dashboard-nav-btn" type="button" data-dashboard-panel="testing" aria-controls="testingPanel" aria-pressed="false">Testing</button>
+      <button class="dashboard-nav-btn experimental-label" type="button" data-dashboard-panel="testing" aria-controls="testingPanel" aria-pressed="false">Testing</button>
     </nav>
     <div class="header-actions">
       <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
@@ -423,10 +423,10 @@
       </div>
     </details>
     <details id="testingPanel" class="card settings-panel" data-collapsible-id="testing">
-      <summary><span class="settings-title"><strong>Application testing</strong><small>Run isolated checks and generate one uploadable log per fundamental function</small></span><span class="chevron" aria-hidden="true">&#8250;</span></summary>
+      <summary><span class="settings-title"><strong class="experimental-label">Application testing</strong><small>Run live system tests and generate one uploadable log per fundamental function</small></span><span class="chevron" aria-hidden="true">&#8250;</span></summary>
       <div class="settings-content">
-        <p class="profile-warning">Diagnostics are read-only: they inspect configuration, installed files, runtime services, and launch plans without activating scaling, injecting input, changing profiles, or running the GPU benchmark.</p>
-        <p class="item-sub" style="white-space:normal">The suite covers configuration persistence, duplicate/default profiles, profile matching, Lossless Scaling installation and XML, autoscale, process/window detection, hotkeys, assets, ReShade injection planning, deployed files, benchmark prerequisites and arguments, RTSS, startup, and runtime connectivity.</p>
+        <p class="profile-warning">Experimental live tests modify the real Lossless Scaling installation and settings, deploy installed add-ons, inject hotkeys, launch and scale the bundled benchmark, inspect runtime logs, and then attempt to restore the prior state.</p>
+        <p class="item-sub" style="white-space:normal">The suite covers real profile create/edit/delete persistence, add-on and proxy deployment with destination hashes, foreground autoscaling, override-hotkey activation, Lossless Scaling log confirmation, ReShade runtime logs, configuration integrity, RTSS, startup, and runtime connectivity.</p>
         <div class="diagnostic-summary">
           <button id="runDiagnosticsBtn" class="btn btn-primary" type="button">Run all application tests</button>
           <button id="openDiagnosticsFolderBtn" class="btn btn-secondary" type="button">Open log folder</button>

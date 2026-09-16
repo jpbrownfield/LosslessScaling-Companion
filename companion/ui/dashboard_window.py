@@ -18,6 +18,7 @@ import psutil
 logger = logging.getLogger("LSCompanion.DashboardWindow")
 
 _BROWSER_NAMES = {"msedge.exe", "chrome.exe"}
+_WM_CLOSE = 0x0010
 
 
 def _browser_profile_directory() -> Path:
@@ -48,30 +49,52 @@ def _dashboard_browser_processes() -> Set[int]:
     return pids
 
 
-def _focus_existing_dashboard() -> bool:
+def _dashboard_window_handles() -> list[int]:
+    """Return visible windows owned by the dedicated dashboard browser profile."""
     if os.name != "nt":
-        return False
+        return []
     pids = _dashboard_browser_processes()
     if not pids:
-        return False
+        return []
     user32 = ctypes.windll.user32
-    found = []
+    found: list[int] = []
 
     def callback(hwnd, _extra):
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value in pids and user32.IsWindowVisible(hwnd):
             found.append(hwnd)
-            return False
         return True
 
     callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
     user32.EnumWindows(callback_type(callback), 0)
+    return found
+
+
+def _focus_existing_dashboard() -> bool:
+    if os.name != "nt":
+        return False
+    found = _dashboard_window_handles()
     if not found:
         return False
+    user32 = ctypes.windll.user32
     hwnd = found[0]
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     user32.SetForegroundWindow(hwnd)
+    return True
+
+
+def close_dashboard_window() -> bool:
+    """Request that every dedicated dashboard app window close normally."""
+    if os.name != "nt":
+        return False
+    handles = _dashboard_window_handles()
+    if not handles:
+        return False
+    user32 = ctypes.windll.user32
+    for hwnd in handles:
+        user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
+    logger.info("Requested close for %s dashboard window(s)", len(handles))
     return True
 
 

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from companion.ui.dashboard_window import open_dashboard_window
+from companion.ui.dashboard_window import close_dashboard_window, open_dashboard_window
 
 
 class DashboardWindowTests(unittest.TestCase):
@@ -33,6 +33,22 @@ class DashboardWindowTests(unittest.TestCase):
         self.assertTrue(open_dashboard_window(url))
 
         browser_open.assert_called_once_with(url, new=1)
+
+    @patch("companion.ui.dashboard_window.ctypes.windll.user32")
+    @patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[101, 202])
+    @patch("companion.ui.dashboard_window.os.name", "nt")
+    def test_closes_all_dedicated_dashboard_windows(self, _handles, user32):
+        self.assertTrue(close_dashboard_window())
+
+        self.assertEqual(
+            user32.PostMessageW.call_args_list,
+            [unittest.mock.call(101, 0x0010, 0, 0), unittest.mock.call(202, 0x0010, 0, 0)],
+        )
+
+    @patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[])
+    @patch("companion.ui.dashboard_window.os.name", "nt")
+    def test_close_returns_false_when_dashboard_is_not_open(self, _handles):
+        self.assertFalse(close_dashboard_window())
 
 
 if __name__ == "__main__":

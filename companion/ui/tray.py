@@ -13,7 +13,7 @@ from ..core.state import AppState
 from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
 from ..services.automation import AutomationController
-from .dashboard_window import open_dashboard_window
+from .dashboard_window import close_dashboard_window, open_dashboard_window
 from .icons import create_lightning_icon
 
 logger = logging.getLogger("LSCompanion.Tray")
@@ -60,6 +60,10 @@ class CompanionTrayIcon:
         logger.info("Tray Exit clicked.")
         if self.icon:
             self.icon.stop()
+        try:
+            close_dashboard_window()
+        except Exception:
+            logger.exception("Could not close the dashboard window")
         if self.on_exit_callback:
             self.on_exit_callback()
 

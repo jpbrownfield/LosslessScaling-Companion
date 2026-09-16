@@ -1,4 +1,4 @@
-"""Read-only, per-capability diagnostics with repository-friendly logs."""
+"""Experimental live-system tests with repository-friendly per-capability logs."""
 
 from __future__ import annotations
 
@@ -6,8 +6,11 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
+import time
 import traceback
+import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -16,21 +19,23 @@ from typing import Callable, Dict, Iterable, Optional
 
 import psutil
 
-from ..core.models import Profile
+from ..core.models import HotkeyConfig, Profile
 from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
 from .asset_store import AssetStore
 from .automation import AutomationController
 from .deployment_manager import DeploymentManager
+from .input_simulator import InputSimulator
 from .reshade_manager import ReshadeManager
 
 
 class DiagnosticRunner:
-    """Exercise fundamental application paths without changing user settings."""
+    """Exercise fundamental paths against the installed application and LS host."""
 
     def __init__(self, server):
         self.server = server
         self.root = server.profile_manager.config_dir / "diagnostics" / "application-tests"
+        self._live_scaling_results: Optional[Dict[str, Dict]] = None
 
     @staticmethod
     def _result(status: str, summary: str, **details) -> Dict:
@@ -59,16 +64,17 @@ class DiagnosticRunner:
             ("lossless_installation", "Lossless Scaling executable", self._lossless_installation),
             ("lossless_settings", "Lossless Scaling Settings.xml", self._lossless_settings),
             ("autoscale", "Automatic profile scaling readiness", self._autoscale),
-            ("autoscale_behavior", "Automatic scaling decision behavior", self._autoscale_behavior),
+            ("autoscale_behavior", "Live automatic scaling behavior", self._autoscale_behavior),
+            ("hotkey_override_behavior", "Live override-hotkey behavior", self._hotkey_override_behavior),
+            ("lossless_scaling_log", "Live Lossless Scaling log confirmation", self._lossless_scaling_log_behavior),
             ("process_windows", "Process and foreground-window discovery", self._process_windows),
             ("hotkeys", "Hotkey configuration and listener", self._hotkeys),
             ("assets", "Managed asset store and package manifests", self._assets),
             ("reshade", "ReShade selection and injection plan", self._reshade),
-            ("reshade_move_behavior", "ReShade config move, backup, and restore behavior", self._reshade_move_behavior),
+            ("reshade_runtime", "Live ReShade deployment and load confirmation", self._reshade_runtime_behavior),
             ("deployment", "Active add-on deployment integrity", self._deployment),
-            ("deployment_behavior", "Transactional add-on deployment behavior", self._deployment_behavior),
+            ("deployment_behavior", "Live add-on and proxy deployment behavior", self._live_addon_deployment_behavior),
             ("benchmark", "Benchmark workload and PresentMon command", self._benchmark),
-            ("benchmark_cli_behavior", "Benchmark command-line contract", self._benchmark_cli_behavior),
             ("rtss", "RTSS integration readiness", self._rtss),
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
@@ -81,6 +87,8 @@ class DiagnosticRunner:
         yield str(path)
 
     def run(self) -> Dict:
+        # Each button press must execute a fresh live workflow and collect new log deltas.
+        self._live_scaling_results = None
         started = datetime.now(timezone.utc)
         stamp = started.strftime("%Y%m%dT%H%M%SZ")
         session = self.root / stamp
@@ -192,18 +200,52 @@ class DiagnosticRunner:
         return self._result("fail" if failures else "pass", "Every configured target resolves to its intended profile." if not failures else "One or more profile targets resolve incorrectly.", checked=checked, failures=failures)
 
     def _profile_persistence_behavior(self) -> Dict:
-        with self._sandbox("profile-persistence") as directory:
-            manager = ProfileManager(Path(directory) / "config")
+        manager = self.server.profile_manager
+        profile_id = f"experimental-profile-test-{uuid.uuid4().hex}"
+        original_active_id = manager.config.active_profile_id
+        created = edited = deleted = False
+        try:
             profile = Profile(
-                id="diagnostic-game", name="Diagnostic Game",
-                target_process="DiagnosticGame.exe", auto_scale=True,
+                id=profile_id,
+                name="Experimental Profile Save Test",
+                target_process="LSBenchmark.exe",
+                auto_scale=True,
+                custom_notes="create-pass",
             )
             manager.add_or_update_profile(profile)
-            reloaded = ProfileManager(Path(directory) / "config")
-            stored = reloaded.get_profile_by_id(profile.id)
-            matched = reloaded.match_target_profile(process_name="diagnosticgame.exe")
-            passed = bool(stored and stored.auto_scale and matched and matched.id == profile.id)
-            return self._result("pass" if passed else "fail", "Production profile persistence and case-insensitive matching executed successfully." if passed else "Profile create/reload/match behavior failed.", stored=bool(stored), autoScale=stored.auto_scale if stored else None, matchedProfileId=matched.id if matched else None)
+            reloaded = ProfileManager(manager.config_dir)
+            stored = reloaded.get_profile_by_id(profile_id)
+            created = bool(stored and stored.custom_notes == "create-pass" and stored.auto_scale)
+
+            profile.name = "Experimental Profile Edit Test"
+            profile.custom_notes = "edit-pass"
+            manager.add_or_update_profile(profile)
+            reloaded = ProfileManager(manager.config_dir)
+            stored = reloaded.get_profile_by_id(profile_id)
+            matched = reloaded.match_target_profile(process_name="lsbenchmark.exe")
+            edited = bool(
+                stored
+                and stored.name == "Experimental Profile Edit Test"
+                and stored.custom_notes == "edit-pass"
+                and matched
+                and matched.id == profile_id
+            )
+        finally:
+            deleted = manager.delete_profile(profile_id) or manager.get_profile_by_id(profile_id) is None
+            manager.config.active_profile_id = original_active_id
+            manager.save_config()
+        absent_after_reload = ProfileManager(manager.config_dir).get_profile_by_id(profile_id) is None
+        passed = created and edited and deleted and absent_after_reload
+        return self._result(
+            "pass" if passed else "fail",
+            "A profile was created, edited, matched, deleted, and verified through real settings reloads."
+            if passed else "The real profile create/edit/delete persistence cycle failed.",
+            createdAndReloaded=created,
+            editedAndReloaded=edited,
+            caseInsensitiveMatch=edited,
+            deletedAndReloaded=deleted and absent_after_reload,
+            configFile=self._path(manager.config_file),
+        )
 
     def _lossless_installation(self) -> Dict:
         value = self.server.config.lossless_scaling_exe_path
@@ -238,56 +280,489 @@ class DiagnosticRunner:
         return self._result(status, "Autoscale prerequisites are configured." if not problems else "; ".join(problems), globallyEnabled=config.disable_native_auto_scale, controlConfigured=config.lossless_control_configured, enabledProfiles=enabled_profiles, losslessHotkey=hotkey, watcherAvailable=self.server.process_watcher is not None)
 
     def _autoscale_behavior(self) -> Dict:
-        with self._sandbox("autoscale") as directory:
-            manager = ProfileManager(Path(directory) / "config")
-            manager.config.asset_store_path = str(Path(directory) / "assets")
-            manager.config.lossless_scaling_exe_path = None
-            store = AssetStore(manager.config.asset_store_path)
-            triggers = []
+        return self._live_scaling_result("autoscale")
 
-            def trigger(**kwargs):
-                triggers.append(kwargs)
-                return True
+    def _hotkey_override_behavior(self) -> Dict:
+        return self._live_scaling_result("hotkey_override")
 
-            state = AppState()
-            controller = AutomationController(
-                manager, state, asset_store=store, hotkey_trigger=trigger,
-                scaling_state_probe=lambda: True,
+    def _lossless_scaling_log_behavior(self) -> Dict:
+        return self._live_scaling_result("lossless_log")
+
+    def _reshade_runtime_behavior(self) -> Dict:
+        return self._live_scaling_result("reshade_runtime")
+
+    @staticmethod
+    def _wait_until(predicate: Callable[[], bool], timeout: float, interval: float = 0.2) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if predicate():
+                    return True
+            except Exception:
+                pass
+            time.sleep(interval)
+        return False
+
+    def _installed_addon_profiles(self) -> list[Profile]:
+        """Build executable profiles for every installed production add-on recipe."""
+        packages: Dict[str, Dict] = {}
+        for package in self.server.asset_store.list_packages():
+            provider = str(package.get("provider") or "")
+            current = packages.get(provider)
+            if current is None or str(package.get("version") or "") > str(current.get("version") or ""):
+                packages[provider] = package
+
+        default = next((item for item in self.server.config.profiles if item.is_default), None)
+        native_title = default.lossless_profile_title if default else None
+
+        def base(label: str) -> Profile:
+            return Profile(
+                id=f"experimental-live-{label}-{uuid.uuid4().hex}",
+                name=f"Experimental Live {label}",
+                lossless_profile_title=native_title,
             )
-            controller.activate_profile(Profile(
-                id="autoscale-game", name="Autoscale Game",
-                target_process="AutoscaleGame.exe", auto_scale=True,
-            ))
-            game_scaled = state.is_scaling_active and len(triggers) == 1
 
-            manager.config.disable_native_auto_scale = False
-            disabled_state = AppState()
-            disabled_triggers = []
-            disabled = AutomationController(
-                manager, disabled_state, asset_store=store,
-                hotkey_trigger=lambda **kwargs: disabled_triggers.append(kwargs) or True,
-                scaling_state_probe=lambda: True,
-            )
-            disabled.activate_profile(Profile(
-                id="disabled-game", name="Disabled Game",
-                target_process="DisabledGame.exe", auto_scale=True,
-            ))
-            master_blocked = not disabled_state.is_scaling_active and not disabled_triggers
+        profiles: list[Profile] = []
+        proxy = packages.get("lossless-proxy")
+        reshade = packages.get("reshade")
+        special_k = packages.get("special-k")
+        feeder = packages.get("dlss5-feeder")
+        neural = packages.get("lsp-neural-render")
 
-            manager.config.disable_native_auto_scale = True
-            browser_state = AppState()
-            browser_triggers = []
-            browser = AutomationController(
-                manager, browser_state, asset_store=store,
-                hotkey_trigger=lambda **kwargs: browser_triggers.append(kwargs) or True,
-                scaling_state_probe=lambda: True,
+        if proxy:
+            profile = base("lossless-proxy")
+            profile.graphics.lossless_proxy.enabled = True
+            profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+            profiles.append(profile)
+        if reshade:
+            profile = base("reshade-proxy" if proxy else "reshade")
+            profile.graphics.reshade.enabled = True
+            profile.graphics.reshade.version = str(reshade.get("version") or "") or None
+            if proxy:
+                profile.graphics.lossless_proxy.enabled = True
+                profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+            profiles.append(profile)
+        if special_k:
+            profile = base("special-k")
+            profile.graphics.special_k.enabled = True
+            profile.graphics.special_k.version = str(special_k.get("version") or "") or None
+            profiles.append(profile)
+        if feeder:
+            profile = base("dlss5-feeder")
+            profile.graphics.neural_render.implementation = "ls_reshade_feeder"
+            profile.graphics.neural_render.package.enabled = True
+            profile.graphics.neural_render.package.version = str(feeder.get("version") or "") or None
+            profiles.append(profile)
+        if neural and proxy:
+            runtime = next(
+                (
+                    item for item in self.server.asset_store.list_imports()
+                    if str(item.get("filename") or "").casefold() == "nvngx_dlssnr.dll"
+                    and item.get("architecture") == "x64"
+                ),
+                None,
             )
-            browser.activate_profile(Profile(
-                id="browser", name="Browser", target_process="chrome.exe", auto_scale=True,
-            ))
-            browser_blocked = not browser_state.is_scaling_active and not browser_triggers
-            passed = game_scaled and master_blocked and browser_blocked
-            return self._result("pass" if passed else "fail", "Production autoscale logic scaled an eligible game and blocked disabled/browser cases." if passed else "Autoscale decision behavior did not match its contract.", eligibleGameScaled=game_scaled, globalMasterSwitchBlocked=master_blocked, browserFocusBlocked=browser_blocked, activationTriggerCount=len(triggers))
+            if runtime:
+                profile = base("lsp-neural-render")
+                profile.graphics.lossless_proxy.enabled = True
+                profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+                profile.graphics.neural_render.implementation = "lsp_neural_render"
+                profile.graphics.neural_render.package.enabled = True
+                profile.graphics.neural_render.package.version = str(neural.get("version") or "") or None
+                profile.graphics.neural_render.runtime_asset_sha256 = str(runtime["sha256"])
+                profiles.append(profile)
+        return profiles
+
+    def _live_addon_deployment_behavior(self) -> Dict:
+        exe_value = self.server.config.lossless_scaling_exe_path
+        executable = Path(exe_value) if exe_value else None
+        if not executable or not executable.is_file():
+            return self._result("fail", "LosslessScaling.exe is required for live add-on deployment.")
+        profiles = self._installed_addon_profiles()
+        if not profiles:
+            return self._result("warn", "No installed add-on packages were available for live deployment.")
+
+        manager = self.server.automation.deployment_manager
+        resolver = self.server.automation.graphics_resolver
+        previous = self.server.state.current_active_profile
+        was_running = self.server.process_watcher.check_is_lossless_scaling_running()
+        checks = []
+        failures = []
+        workload_process: Optional[subprocess.Popen] = None
+        try:
+            from scripts.benchmark_lossless_scaling import find_largest_window, focus_window
+            from .ls_inspector import LosslessScalingInspector
+
+            workload = self.server._embedded_benchmark_executable()
+            if not workload or not Path(workload).is_file():
+                raise RuntimeError("the bundled LSBenchmark.exe is unavailable")
+            if self.server.state.is_scaling_active:
+                self.server.automation.set_scaling(
+                    False, reason="experimental_addon_test_setup", force=True,
+                    park_runtime_on_stop=False,
+                )
+            workload_process = subprocess.Popen(
+                [str(workload), "--duration", "300"], cwd=str(Path(workload).parent)
+            )
+            hwnd = find_largest_window(workload_process.pid, timeout=12.0)
+            if not focus_window(hwnd):
+                raise RuntimeError("Windows did not grant the benchmark foreground ownership")
+            if was_running and not self.server.process_watcher.stop_lossless_scaling():
+                raise RuntimeError("Lossless Scaling could not be stopped for live deployment")
+            for profile in profiles:
+                try:
+                    if self.server.process_watcher.check_is_lossless_scaling_running():
+                        if not self.server.process_watcher.stop_lossless_scaling():
+                            raise RuntimeError("Lossless Scaling could not be stopped between add-on tests")
+                    plan = resolver.resolve(profile, lossless_scaling_exe=str(executable))
+                    manifest = manager.apply(
+                        profile_id=profile.id,
+                        lossless_scaling_exe=str(executable),
+                        files=plan,
+                    )
+                    file_checks = []
+                    for item in manifest.get("files", []):
+                        destination = executable.parent / item["relative_path"]
+                        actual = AssetStore.sha256(destination) if destination.is_file() else None
+                        good = actual == item.get("deployed_sha256")
+                        file_checks.append({
+                            "path": self._path(destination),
+                            "role": item.get("role"),
+                            "sourcePackage": item.get("source_package"),
+                            "expectedSha256": item.get("deployed_sha256"),
+                            "actualSha256": actual,
+                            "verified": good,
+                        })
+                    if not plan or not all(item["verified"] for item in file_checks):
+                        raise RuntimeError("one or more deployed files failed destination verification")
+
+                    log_inspector = LosslessScalingInspector(
+                        settings_xml_path=self.server.config.lossless_settings_xml_path,
+                        lossless_exe_path=str(executable),
+                    )
+                    active_log = log_inspector._find_log_file()
+                    log_paths = [active_log] if active_log else []
+                    log_snapshot = self._log_snapshot(log_paths)
+                    runtime_paths = list(executable.parent.glob("*.log"))
+                    runtime_snapshot = self._log_snapshot(runtime_paths)
+                    if not self.server.process_watcher.launch_lossless_scaling(force=True):
+                        raise RuntimeError("Lossless Scaling could not launch with the deployed recipe")
+                    focus_window(hwnd)
+                    self.server.state.current_active_profile = profile
+                    scaled = self.server.automation.set_scaling(
+                        True,
+                        profile,
+                        reason=f"experimental_addon_test:{profile.id}",
+                        force=True,
+                        target_pid=workload_process.pid,
+                        target_hwnd=hwnd,
+                        park_runtime_on_stop=False,
+                    )
+                    active_observed = scaled and self._wait_until(
+                        lambda: bool(log_inspector.inspect_current_scaling_target().is_active), 5.0
+                    )
+                    stopped = self.server.automation.set_scaling(
+                        False,
+                        profile,
+                        reason=f"experimental_addon_test_complete:{profile.id}",
+                        force=True,
+                        park_runtime_on_stop=False,
+                    ) if scaled else False
+                    time.sleep(0.3)
+                    if active_log is None:
+                        active_log = log_inspector._find_log_file()
+                        if active_log:
+                            log_paths = [active_log]
+                    lossless_delta = self._log_delta(log_snapshot, log_paths)
+                    current_runtime_paths = list(executable.parent.glob("*.log"))
+                    runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
+                    log_confirmed = bool(lossless_delta)
+                    runtime_confirmed = scaled and active_observed and stopped and log_confirmed
+                    if not runtime_confirmed:
+                        raise RuntimeError(
+                            "deployment verified, but scaling/start-stop/log confirmation did not complete"
+                        )
+                    checks.append({
+                        "profile": profile.name,
+                        "files": file_checks,
+                        "scalingConfirmed": scaled and active_observed,
+                        "deactivationConfirmed": stopped,
+                        "losslessLogFiles": [self._path(item) for item in lossless_delta],
+                        "losslessLogTail": self._path("\n".join(lossless_delta.values())[-8000:]),
+                        "runtimeLogFiles": [self._path(item) for item in runtime_delta],
+                        "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
+                    })
+                except Exception as error:
+                    failures.append({"profile": profile.name, "error": str(error)})
+        except Exception as error:
+            failures.append({"profile": "test setup", "error": str(error)})
+        finally:
+            if workload_process and workload_process.poll() is None:
+                workload_process.terminate()
+                try:
+                    workload_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    workload_process.kill()
+            try:
+                if self.server.state.is_scaling_active:
+                    self.server.automation.set_scaling(
+                        False, reason="experimental_addon_cleanup", force=True,
+                        park_runtime_on_stop=False,
+                    )
+                self.server.process_watcher.stop_lossless_scaling()
+            except Exception:
+                pass
+            try:
+                restore_plan = resolver.resolve(previous, lossless_scaling_exe=str(executable)) if previous else []
+                manager.apply(
+                    profile_id=previous.id if previous else None,
+                    lossless_scaling_exe=str(executable),
+                    files=restore_plan,
+                )
+            except Exception as error:
+                failures.append({"profile": "restore", "error": str(error)})
+            if was_running:
+                self.server.process_watcher.launch_lossless_scaling(force=True)
+
+        passed = bool(checks) and not failures
+        return self._result(
+            "pass" if passed else "fail",
+            "Every installed add-on recipe was deployed, hash-verified, used for a logged benchmark scaling cycle, and the prior deployment was restored."
+            if passed else "One or more live add-on deployments or the restoration failed.",
+            losslessDirectory=self._path(executable.parent),
+            testedProfiles=checks,
+            failures=failures,
+        )
+
+    def _live_scaling_result(self, key: str) -> Dict:
+        if self._live_scaling_results is None:
+            self._live_scaling_results = self._run_live_scaling_workflow()
+        return self._live_scaling_results[key]
+
+    @staticmethod
+    def _log_snapshot(paths: Iterable[Path]) -> Dict[Path, int]:
+        return {path: path.stat().st_size for path in paths if path.is_file()}
+
+    @staticmethod
+    def _log_delta(snapshot: Dict[Path, int], paths: Iterable[Path]) -> Dict[str, str]:
+        output: Dict[str, str] = {}
+        for path in paths:
+            if not path.is_file():
+                continue
+            offset = snapshot.get(path, 0)
+            try:
+                with path.open("r", encoding="utf-8", errors="ignore") as stream:
+                    stream.seek(min(offset, path.stat().st_size))
+                    text = stream.read()
+                if text:
+                    output[str(path)] = text[-12000:]
+            except OSError:
+                continue
+        return output
+
+    def _run_live_scaling_workflow(self) -> Dict[str, Dict]:
+        results = {
+            key: self._result("fail", "The live scaling workflow did not complete.")
+            for key in ("autoscale", "hotkey_override", "lossless_log", "reshade_runtime")
+        }
+        if self.server.state.simulation_mode:
+            message = "Live tests cannot run while simulation mode is active."
+            return {key: self._result("fail", message) for key in results}
+        executable = Path(self.server.config.lossless_scaling_exe_path or "")
+        workload = self.server._embedded_benchmark_executable()
+        if not executable.is_file() or not workload or not Path(workload).is_file():
+            message = "LosslessScaling.exe and the bundled LSBenchmark.exe are required."
+            return {key: self._result("fail", message) for key in results}
+
+        from scripts.benchmark_lossless_scaling import find_largest_window, focus_window
+
+        manager = self.server.profile_manager
+        config = manager.config
+        original_profiles = [item.model_copy(deep=True) for item in config.profiles]
+        original_fields = {
+            "active_profile_id": config.active_profile_id,
+            "disable_native_auto_scale": config.disable_native_auto_scale,
+            "lossless_control_configured": config.lossless_control_configured,
+            "override_lossless_hotkey": config.override_lossless_hotkey,
+            "override_hotkey": config.override_hotkey.model_copy(deep=True),
+            "global_hotkey": config.global_hotkey.model_copy(deep=True),
+        }
+        previous = self.server.state.current_active_profile
+        was_running = self.server.process_watcher.check_is_lossless_scaling_running()
+        settings_path = self.server.ls_settings.path
+        settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
+        # The server does not own the inspector directly; the production scaling probe
+        # closes over it. Create the same inspector type for independent log evidence.
+        from .ls_inspector import LosslessScalingInspector
+        log_inspector = LosslessScalingInspector(
+            settings_xml_path=config.lossless_settings_xml_path,
+            lossless_exe_path=str(executable),
+        )
+        active_log = log_inspector._find_log_file()
+        ls_paths = [active_log] if active_log else []
+        ls_snapshot = self._log_snapshot(ls_paths)
+        reshade_paths = list(executable.parent.glob("*ReShade*.log")) + list(executable.parent.glob("reshade*.log"))
+        reshade_snapshot = self._log_snapshot(reshade_paths)
+
+        addon_profiles = self._installed_addon_profiles()
+        live_profile = next(
+            (item for item in addon_profiles if item.graphics.reshade.enabled),
+            Profile(id=f"experimental-live-scale-{uuid.uuid4().hex}", name="Experimental Live Scaling"),
+        )
+        live_profile.target_process = Path(workload).name
+        live_profile.target_executable_path = str(Path(workload).resolve())
+        live_profile.auto_scale = True
+        default = next((item for item in config.profiles if item.is_default), None)
+        if default and not live_profile.lossless_profile_title:
+            live_profile.lossless_profile_title = default.lossless_profile_title
+
+        process: Optional[subprocess.Popen] = None
+        autoscale_ok = override_ok = active_seen = False
+        hwnd = None
+        try:
+            if self.server.state.is_scaling_active:
+                self.server.automation.set_scaling(False, reason="experimental_test_setup", force=True)
+            config.disable_native_auto_scale = True
+            self.server.state.auto_scale_enabled = True
+            manager.add_or_update_profile(live_profile)
+            process = subprocess.Popen(
+                [str(workload), "--duration", "60"],
+                cwd=str(Path(workload).parent),
+            )
+            hwnd = find_largest_window(process.pid, timeout=12.0)
+            if not focus_window(hwnd):
+                raise RuntimeError("Windows did not grant the benchmark foreground ownership")
+            if not self.server.process_watcher.check_is_lossless_scaling_running():
+                if not self.server.process_watcher.launch_lossless_scaling(force=True):
+                    raise RuntimeError("Lossless Scaling could not be launched")
+                focus_window(hwnd)
+
+            self.server.process_watcher.invalidate_foreground_cache()
+            self.server.process_watcher.check_foreground_and_update()
+            autoscale_ok = self._wait_until(lambda: bool(self.server.state.is_scaling_active), 10.0)
+            active_seen = autoscale_ok or self._wait_until(
+                lambda: bool(log_inspector.inspect_current_scaling_target().is_active), 5.0
+            )
+            results["autoscale"] = self._result(
+                "pass" if autoscale_ok else "fail",
+                "Foreground detection selected the temporary profile and Lossless Scaling confirmed automatic activation."
+                if autoscale_ok else "The real benchmark window did not automatically enter scaling.",
+                workload=self._path(workload), pid=process.pid, hwnd=hwnd,
+                activeProfileId=getattr(self.server.state.current_active_profile, "id", None),
+                scalingControl=dict(self.server.state.scaling_control_status),
+            )
+
+            if self.server.state.is_scaling_active:
+                self.server.automation.set_scaling(
+                    False, live_profile, reason="experimental_autoscale_complete", force=True,
+                    park_runtime_on_stop=False,
+                )
+            config.override_lossless_hotkey = True
+            config.override_hotkey = HotkeyConfig(modifiers=["ctrl", "shift"], key="f23")
+            config.lossless_control_configured = True
+            manager.save_config()
+            controls_synced = self.server.process_watcher.enforce_helper_scaling_control()
+            if self.server.hotkey_listener:
+                self.server.hotkey_listener.refresh()
+            registered = self._wait_until(
+                lambda: bool(self.server.hotkey_listener and self.server.hotkey_listener._registered), 3.0
+            )
+            focus_window(hwnd)
+            emitted = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
+            override_on = emitted and self._wait_until(lambda: bool(self.server.state.is_scaling_active), 10.0)
+            focus_window(hwnd)
+            emitted_off = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
+            override_off = emitted_off and self._wait_until(lambda: not self.server.state.is_scaling_active, 10.0)
+            override_ok = controls_synced and registered and override_on and override_off
+            results["hotkey_override"] = self._result(
+                "pass" if override_ok else "fail",
+                "The registered override hotkey activated and deactivated scaling through the real listener."
+                if override_ok else "The real override-hotkey activation cycle failed.",
+                nativeControlsSynchronized=controls_synced,
+                listenerRegistered=registered,
+                activationConfirmed=override_on,
+                deactivationConfirmed=override_off,
+                scalingControl=dict(self.server.state.scaling_control_status),
+            )
+
+            time.sleep(0.5)
+            if active_log is None:
+                active_log = log_inspector._find_log_file()
+                if active_log:
+                    ls_paths = [active_log]
+            ls_delta = self._log_delta(ls_snapshot, ls_paths)
+            combined_ls = "\n".join(ls_delta.values())
+            log_confirmed = active_seen and bool(combined_ls.strip())
+            results["lossless_log"] = self._result(
+                "pass" if log_confirmed else "fail",
+                "A fresh Lossless Scaling log delta was captured after confirmed scaling."
+                if log_confirmed else "Scaling was not corroborated by a fresh Lossless Scaling log delta.",
+                logFiles=[self._path(item) for item in ls_delta],
+                activeStateObserved=active_seen,
+                logTail=self._path(combined_ls[-12000:]),
+            )
+
+            current_reshade_paths = list(executable.parent.glob("*ReShade*.log")) + list(executable.parent.glob("reshade*.log"))
+            reshade_delta = self._log_delta(reshade_snapshot, current_reshade_paths)
+            reshade_selected = bool(live_profile.graphics.reshade.enabled)
+            reshade_loaded = bool(reshade_delta)
+            status = "pass" if reshade_selected and reshade_loaded else "warn" if not reshade_selected else "fail"
+            results["reshade_runtime"] = self._result(
+                status,
+                "ReShade was deployed and produced fresh runtime log output while scaling the benchmark."
+                if status == "pass" else "No installed ReShade package was available for the live run."
+                if status == "warn" else "ReShade was selected, but no fresh ReShade runtime log was produced.",
+                selected=reshade_selected,
+                logFiles=[self._path(item) for item in reshade_delta],
+                logTail=self._path("\n".join(reshade_delta.values())[-12000:]),
+            )
+        except Exception as error:
+            failure = f"Live scaling workflow raised {type(error).__name__}: {error}"
+            for key, value in list(results.items()):
+                if value["summary"] == "The live scaling workflow did not complete.":
+                    results[key] = self._result("fail", failure, traceback=traceback.format_exc())
+        finally:
+            try:
+                if self.server.state.is_scaling_active:
+                    self.server.automation.set_scaling(False, reason="experimental_test_cleanup", force=True)
+            except Exception:
+                pass
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            try:
+                self.server.process_watcher.stop_lossless_scaling()
+            except Exception:
+                pass
+            config.profiles = original_profiles
+            for field, value in original_fields.items():
+                setattr(config, field, value)
+            manager.save_config()
+            if settings_bytes is not None:
+                settings_path.write_bytes(settings_bytes)
+            try:
+                restored = next((item for item in config.profiles if previous and item.id == previous.id), None)
+                plan = self.server.automation.graphics_resolver.resolve(
+                    restored, lossless_scaling_exe=str(executable)
+                ) if restored else []
+                self.server.automation.deployment_manager.apply(
+                    profile_id=restored.id if restored else None,
+                    lossless_scaling_exe=str(executable),
+                    files=plan,
+                )
+                self.server.state.current_active_profile = restored
+            except Exception as error:
+                for value in results.values():
+                    value.setdefault("details", {})["cleanupError"] = str(error)
+                    value["status"] = "fail"
+            if self.server.hotkey_listener:
+                self.server.hotkey_listener.refresh()
+            if was_running:
+                self.server.process_watcher.launch_lossless_scaling(force=True)
+        return results
 
     def _process_windows(self) -> Dict:
         if not self.server.process_watcher:
@@ -418,20 +893,93 @@ class DiagnosticRunner:
         return self._result("pass" if passed else "fail", "The exact dashboard benchmark argument contract parses successfully." if passed else "The dashboard benchmark arguments are rejected by the runner.", arguments=arguments, parsed={"benchmarkExe": parsed.benchmark_exe, "presentMonExe": parsed.presentmon_exe, "useDefaultProfile": parsed.use_default_profile, "yes": parsed.yes})
 
     def _rtss(self) -> Dict:
-        enabled = self.server.config.rtss_frame_limiting_enabled
         status = self.server.rtss_manager.status(self.server.config.rtss_install_path)
-        result = "pass" if (not enabled or status.get("installed")) else "fail"
-        return self._result(result, "RTSS readiness matches the current configuration." if result == "pass" else "RTSS integration is enabled but RTSS was not detected.", enabled=enabled, installed=status.get("installed"), running=status.get("running"), path=self._path(status.get("path")))
+        if not status.get("installed"):
+            result = "fail" if self.server.config.rtss_frame_limiting_enabled else "warn"
+            return self._result(
+                result,
+                "RTSS is not installed, so its real profile write/remove cycle could not run.",
+                enabled=self.server.config.rtss_frame_limiting_enabled,
+                installed=False,
+            )
+        profile = Profile(
+            id=f"experimental-rtss-{uuid.uuid4().hex}",
+            name="Experimental RTSS Test",
+            target_process=f"LSCompanionDiagnostic-{uuid.uuid4().hex[:8]}.exe",
+        )
+        profile.rtss.enabled = True
+        profile.rtss.framerate_limit = 73
+        path = None
+        applied = removed = False
+        error = None
+        try:
+            path = self.server.rtss_manager.apply_profile(
+                profile,
+                configured_path=self.server.config.rtss_install_path,
+            )
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            applied = path.is_file() and "Limit=73" in text
+            removed = self.server.rtss_manager.remove_profile(
+                profile, self.server.config.rtss_install_path
+            ) and not path.exists()
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            if path and path.exists():
+                try:
+                    self.server.rtss_manager.remove_profile(
+                        profile, self.server.config.rtss_install_path
+                    )
+                except Exception:
+                    pass
+        passed = applied and removed
+        return self._result(
+            "pass" if passed else "fail",
+            "A real RTSS application profile was written, verified, removed, and its change notification sent."
+            if passed else "The real RTSS profile write/remove cycle failed.",
+            installed=True,
+            running=status.get("running"),
+            installPath=self._path(status.get("path")),
+            profilePath=self._path(path),
+            applied=applied,
+            removed=removed,
+            error=error,
+        )
 
     def _startup(self) -> Dict:
-        expected = self.server.config.run_at_startup
-        actual = self.server.startup_manager.is_enabled()
+        initial = self.server.startup_manager.is_enabled()
         launch_arguments = (
             self.server.startup_manager.launch_arguments()
             if hasattr(self.server.startup_manager, "launch_arguments")
             else []
         )
-        return self._result("pass" if expected == actual else "warn", "Startup task state matches settings." if expected == actual else "Saved startup preference and Task Scheduler state differ.", configured=expected, taskEnabled=actual, launchArguments=[self._path(item) for item in launch_arguments])
+        toggled = restored = False
+        error = None
+        try:
+            self.server.startup_manager.set_enabled(not initial)
+            toggled = self.server.startup_manager.is_enabled() is (not initial)
+            self.server.startup_manager.set_enabled(initial)
+            restored = self.server.startup_manager.is_enabled() is initial
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            if self.server.startup_manager.is_enabled() is not initial:
+                try:
+                    self.server.startup_manager.set_enabled(initial)
+                    restored = self.server.startup_manager.is_enabled() is initial
+                except Exception as exc:
+                    error = f"{error or ''}; restore failed: {exc}".strip("; ")
+        passed = toggled and restored
+        return self._result(
+            "pass" if passed else "fail",
+            "The real Task Scheduler startup entry was toggled, verified, and restored."
+            if passed else "The real startup-task toggle or restoration failed.",
+            initialState=initial,
+            toggled=toggled,
+            restored=restored,
+            launchArguments=[self._path(item) for item in launch_arguments],
+            error=error,
+        )
 
     def _runtime(self) -> Dict:
         return self._result("pass", "Core runtime services are instantiated and responding.", connectedClients=self.server.state.connected_clients, companionPid=os.getpid(), processExists=psutil.pid_exists(os.getpid()), automation=type(self.server.automation).__name__, processWatcher=type(self.server.process_watcher).__name__ if self.server.process_watcher else None, simulationMode=self.server.state.simulation_mode)

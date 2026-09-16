@@ -33,6 +33,29 @@ class CompanionTrayIconTests(unittest.TestCase):
             self.assertFalse(menu.items[0].enabled)
             native_icon.run.assert_called_once_with()
 
+    @patch("companion.ui.tray.close_dashboard_window")
+    def test_exit_closes_dashboard_and_stops_application(self, close_dashboard):
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        tray.icon = Mock()
+        tray.on_exit_callback = Mock()
+
+        tray._on_exit(tray.icon, None)
+
+        tray.icon.stop.assert_called_once_with()
+        close_dashboard.assert_called_once_with()
+        tray.on_exit_callback.assert_called_once_with()
+
+    @patch("companion.ui.tray.close_dashboard_window", side_effect=OSError("window unavailable"))
+    def test_exit_still_stops_application_when_dashboard_close_fails(self, _close_dashboard):
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        tray.icon = Mock()
+        tray.on_exit_callback = Mock()
+
+        tray._on_exit(tray.icon, None)
+
+        tray.icon.stop.assert_called_once_with()
+        tray.on_exit_callback.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
