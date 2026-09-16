@@ -40,6 +40,7 @@ from .startup_manager import StartupTaskManager
 from .process_lasso_monitor import ProcessLassoLogTailer
 from .rtss_manager import RtssProfileManager
 from .dynamic_limiter import DynamicLimiterController
+from .diagnostic_runner import DiagnosticRunner
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
 from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
@@ -98,6 +99,10 @@ class CompanionWebSocketServer:
         self._detected_presentmon_path: Optional[Path] = None
         self._detected_presentmon_sha256: Optional[str] = None
         self.reshade_profiles = ReshadeProfileService(profile_manager)
+        self.diagnostic_runner = DiagnosticRunner(self)
+        self.diagnostics_task: Optional[asyncio.Task] = None
+        self.last_diagnostics_result: Optional[Dict] = None
+        self._last_diagnostics_archive: Optional[Path] = None
 
     async def start(self) -> None:
         logger.info(f"Starting WebSocket server on {self.config.host}:{self.config.port}...")
@@ -124,6 +129,9 @@ class CompanionWebSocketServer:
         for task in self.fullscreen_tasks.values():
             task.cancel()
         self.fullscreen_tasks.clear()
+        if self.diagnostics_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.diagnostics_task
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -231,6 +239,8 @@ class CompanionWebSocketServer:
                 "SAVE_RESHADE_PROFILE",
                 "IMPORT_RESHADE_PRESET",
                 "DELETE_RESHADE_PROFILE",
+                "RUN_DIAGNOSTICS",
+                "OPEN_DIAGNOSTICS_FOLDER",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
             authority = self.client_authority.get(websocket, "readonly")
@@ -337,6 +347,29 @@ class CompanionWebSocketServer:
 
             if msg_type == "GET_BENCHMARK_STATUS":
                 await websocket.send(json.dumps(self._benchmark_status_payload()))
+                return
+
+            if msg_type == "GET_DIAGNOSTICS_STATUS":
+                payload = self.last_diagnostics_result or {
+                    "type": "DIAGNOSTICS_STATUS",
+                    "running": bool(self.diagnostics_task and not self.diagnostics_task.done()),
+                    "results": [],
+                }
+                await websocket.send(json.dumps(payload))
+                return
+
+            if msg_type == "RUN_DIAGNOSTICS":
+                if self.diagnostics_task and not self.diagnostics_task.done():
+                    raise RuntimeError("Application diagnostics are already running")
+                self.diagnostics_task = asyncio.create_task(self._run_diagnostics())
+                await websocket.send(json.dumps({
+                    "type": "DIAGNOSTICS_STATUS", "running": True, "results": [],
+                }))
+                return
+
+            if msg_type == "OPEN_DIAGNOSTICS_FOLDER":
+                self.diagnostic_runner.root.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(os.startfile, str(self.diagnostic_runner.root.resolve()))
                 return
 
             if msg_type == "GET_RESHADE_PROFILES":
@@ -1269,7 +1302,28 @@ class CompanionWebSocketServer:
 
     async def process_http_request(self, path, request_headers):
         """Serve the dashboard from the WebSocket server's trusted origin."""
-        request_path = urlsplit(path).path
+        parsed = urlsplit(path)
+        request_path = parsed.path
+        if request_path == "/diagnostics/download":
+            token = parse_qs(parsed.query).get("token", [""])[0]
+            archive_path = self._last_diagnostics_archive
+            if not secrets.compare_digest(token, self.dashboard_token):
+                return HTTPStatus.FORBIDDEN, [("Content-Type", "text/plain")], b"Forbidden"
+            diagnostics_root = self.diagnostic_runner.root.resolve()
+            if (
+                not archive_path
+                or archive_path.parent != diagnostics_root
+                or not archive_path.is_file()
+            ):
+                return HTTPStatus.NOT_FOUND, [("Content-Type", "text/plain")], b"No diagnostic archive"
+            body = archive_path.read_bytes()
+            return HTTPStatus.OK, [
+                ("Content-Type", "application/zip"),
+                ("Content-Length", str(len(body))),
+                ("Content-Disposition", f'attachment; filename="{archive_path.name}"'),
+                ("Cache-Control", "no-store"),
+                ("X-Content-Type-Options", "nosniff"),
+            ], body
         if request_path == "/favicon.png":
             body = lightning_icon_png()
             return HTTPStatus.OK, [
@@ -1297,6 +1351,29 @@ class CompanionWebSocketServer:
                 f"ws://localhost:{self.config.port} ws://[::1]:{self.config.port}",
             ),
         ], body
+
+    async def _run_diagnostics(self) -> None:
+        try:
+            result = await self._run_background_thread(self.diagnostic_runner.run)
+            archive = result.pop("archivePath", None)
+            self._last_diagnostics_archive = Path(archive).resolve() if archive else None
+            self.last_diagnostics_result = result
+        except Exception as error:
+            logger.exception("Application diagnostic run failed")
+            self.last_diagnostics_result = {
+                "type": "DIAGNOSTICS_RESULT",
+                "running": False,
+                "error": str(error),
+                "results": [],
+            }
+        finally:
+            self.diagnostics_task = None
+        if self.clients:
+            encoded = json.dumps(self.last_diagnostics_result)
+            await asyncio.gather(
+                *(client.send(encoded) for client in list(self.clients)),
+                return_exceptions=True,
+            )
 
     async def handle_fullscreen_event(self, data: dict) -> None:
         if not self.state.auto_scale_enabled:

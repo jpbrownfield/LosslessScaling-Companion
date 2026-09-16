@@ -149,6 +149,44 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("--minimum-fps", command)
         self.assertNotIn("--maximum-fps", command)
 
+    async def test_dashboard_runs_diagnostics_and_broadcasts_result(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.clients.add(websocket)
+        expected = {
+            "type": "DIAGNOSTICS_RESULT",
+            "running": False,
+            "counts": {"pass": 1, "warn": 0, "fail": 0},
+            "results": [{"id": "runtime", "name": "Runtime", "status": "pass", "summary": "ok"}],
+        }
+        self.server.diagnostic_runner.run = Mock(return_value=expected)
+
+        await self.server.process_message(websocket, json.dumps({"type": "RUN_DIAGNOSTICS"}))
+        task = self.server.diagnostics_task
+        self.assertIsNotNone(task)
+        await task
+
+        payloads = [json.loads(message) for message in websocket.messages]
+        self.assertTrue(any(item.get("running") is True for item in payloads))
+        self.assertIn(expected, payloads)
+
+    async def test_diagnostic_archive_download_requires_dashboard_token(self):
+        self.server.diagnostic_runner.root.mkdir(parents=True)
+        archive = self.server.diagnostic_runner.root / "diagnostics.zip"
+        archive.write_bytes(b"diagnostics")
+        self.server._last_diagnostics_archive = archive.resolve()
+
+        forbidden = await self.server.process_http_request(
+            "/diagnostics/download?token=wrong", {},
+        )
+        allowed = await self.server.process_http_request(
+            f"/diagnostics/download?token={self.server.dashboard_token}", {},
+        )
+
+        self.assertEqual(forbidden[0], 403)
+        self.assertEqual(allowed[0], 200)
+        self.assertEqual(allowed[2], b"diagnostics")
+
     def test_startup_detection_accepts_only_release_digest_matched_presentmon(self):
         home = Path(self.temp_dir.name) / "user"
         downloads = home / "Downloads"
@@ -321,13 +359,17 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-dashboard-panel="general"', body)
             self.assertIn('data-dashboard-panel="lossless-addons"', body)
             self.assertIn('data-dashboard-panel="performance-benchmark"', body)
+            self.assertIn('data-dashboard-panel="testing"', body)
             self.assertIn('header { position: sticky;', body)
             self.assertIn("window.scrollTo({ top: Math.max(0, panelTop), behavior: 'smooth' })", body)
             self.assertIn('id="profilesPanel"', body)
             self.assertIn('id="generalSettingsPanel"', body)
             self.assertIn('id="losslessAddonsPanel"', body)
             self.assertIn('id="performanceBenchmarkPanel"', body)
-            self.assertIn('const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel]', body)
+            self.assertIn('id="testingPanel"', body)
+            self.assertIn('id="runDiagnosticsBtn"', body)
+            self.assertIn('id="downloadDiagnosticsBtn"', body)
+            self.assertIn('const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel, testingPanel]', body)
             self.assertIn("setRuntimeStatus(`Scaling: ${target} | Profile: ${profile}`, 'scaling')", body)
             self.assertIn('if (candidate !== panel) candidate.open = false', body)
             self.assertNotIn('id="settingsArea" class="settings-area hidden"', body)

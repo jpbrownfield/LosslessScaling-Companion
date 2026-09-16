@@ -112,6 +112,14 @@
     .pack-link { flex:0 0 auto; margin-left:auto; color:var(--accent); font-size:12px; }
     @media (max-width:650px) { .shader-grid { grid-template-columns:1fr; } }
     .addon-description { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+    .diagnostic-summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; }
+    .diagnostic-results { display:grid; gap:8px; margin-top:12px; }
+    .diagnostic-result { display:grid; grid-template-columns:72px minmax(0,1fr); gap:10px; padding:11px 12px; border:1px solid var(--card-border); border-radius:8px; background:rgba(15,23,42,.7); }
+    .diagnostic-result-status { align-self:start; padding:3px 7px; border-radius:999px; font-size:10px; font-weight:800; text-align:center; text-transform:uppercase; }
+    .diagnostic-result.pass .diagnostic-result-status { background:rgba(16,185,129,.15); color:var(--success); }
+    .diagnostic-result.warn .diagnostic-result-status { background:rgba(245,158,11,.15); color:#fbbf24; }
+    .diagnostic-result.fail .diagnostic-result-status { background:rgba(239,68,68,.15); color:var(--danger); }
+    .diagnostic-result strong { display:block; margin-bottom:3px; font-size:13px; }
     .addon-status { margin-top: auto; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
     .addon-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .addon-badge { flex: 0 0 auto; border: 1px solid var(--card-border); border-radius: 999px; padding: 4px 8px; color: var(--text-muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }
@@ -256,6 +264,7 @@
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="general" aria-controls="generalSettingsPanel" aria-pressed="false">Settings</button>
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="lossless-addons" aria-controls="losslessAddonsPanel" aria-pressed="false">Add-ons</button>
       <button class="dashboard-nav-btn" type="button" data-dashboard-panel="performance-benchmark" aria-controls="performanceBenchmarkPanel" aria-pressed="false">Benchmark</button>
+      <button class="dashboard-nav-btn" type="button" data-dashboard-panel="testing" aria-controls="testingPanel" aria-pressed="false">Testing</button>
     </nav>
     <div class="header-actions">
       <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
@@ -402,6 +411,20 @@
           <span id="performanceBenchmarkStatus" class="item-sub">Waiting for PresentMon.</span>
         </div>
         <p class="item-sub" style="white-space:normal;margin-top:10px">The test runs in the background, launches and scales the workload, then saves a JSON report under your local benchmark diagnostics folder.</p>
+      </div>
+    </details>
+    <details id="testingPanel" class="card settings-panel" data-collapsible-id="testing">
+      <summary><span class="settings-title"><strong>Application testing</strong><small>Run isolated checks and generate one uploadable log per fundamental function</small></span><span class="chevron" aria-hidden="true">&#8250;</span></summary>
+      <div class="settings-content">
+        <p class="profile-warning">Diagnostics are read-only: they inspect configuration, installed files, runtime services, and launch plans without activating scaling, injecting input, changing profiles, or running the GPU benchmark.</p>
+        <p class="item-sub" style="white-space:normal">The suite covers configuration persistence, duplicate/default profiles, profile matching, Lossless Scaling installation and XML, autoscale, process/window detection, hotkeys, assets, ReShade injection planning, deployed files, benchmark prerequisites and arguments, RTSS, startup, and runtime connectivity.</p>
+        <div class="diagnostic-summary">
+          <button id="runDiagnosticsBtn" class="btn btn-primary" type="button">Run all application tests</button>
+          <button id="openDiagnosticsFolderBtn" class="btn btn-secondary" type="button">Open log folder</button>
+          <a id="downloadDiagnosticsBtn" class="btn btn-secondary" href="#" hidden>Download ZIP</a>
+          <span id="diagnosticsStatus" class="item-sub">No diagnostic run in this session.</span>
+        </div>
+        <div id="diagnosticResults" class="diagnostic-results" aria-live="polite"></div>
       </div>
     </details>
     <div class="debug-settings-action">
@@ -816,6 +839,7 @@
         ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_UPDATES' }));
         ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_DIAGNOSTICS_STATUS' }));
       };
 
       ws.onmessage = (event) => {
@@ -886,6 +910,8 @@
           } else if (msg.type === 'BENCHMARK_STARTED') {
             document.getElementById('performanceBenchmarkStatus').textContent = 'Performance test running.';
             document.getElementById('startPerformanceBenchmarkBtn').disabled = true;
+          } else if (msg.type === 'DIAGNOSTICS_STATUS' || msg.type === 'DIAGNOSTICS_RESULT') {
+            renderDiagnostics(msg);
           } else if (msg.type === 'GRAPHICS_STATUS') {
             renderGraphicsStatus(msg);
           } else if (msg.type === 'RESHADE_PROFILES') {
@@ -1560,6 +1586,32 @@
       return targets.filter(Boolean).join(', ');
     }
 
+    function renderDiagnostics(msg) {
+      const button = document.getElementById('runDiagnosticsBtn');
+      const status = document.getElementById('diagnosticsStatus');
+      const download = document.getElementById('downloadDiagnosticsBtn');
+      const results = msg.results || [];
+      button.disabled = !!msg.running;
+      button.textContent = msg.running ? 'Running tests...' : 'Run all application tests';
+      if (msg.running) {
+        status.textContent = 'Inspecting application functions and writing individual logs...';
+      } else if (msg.error) {
+        status.textContent = `Diagnostic runner failed: ${msg.error}`;
+      } else if (msg.counts) {
+        status.textContent = `${msg.counts.pass || 0} passed, ${msg.counts.warn || 0} warnings, ${msg.counts.fail || 0} failed. Logs: ${msg.directory || 'diagnostics folder'}`;
+      }
+      download.hidden = !msg.archiveName;
+      if (msg.archiveName) {
+        download.href = `/diagnostics/download?token=__COMPANION_TOKEN__`;
+        download.download = msg.archiveName;
+      }
+      document.getElementById('diagnosticResults').innerHTML = results.map(result => `
+        <div class="diagnostic-result ${escapeHtml(result.status || 'warn')}">
+          <span class="diagnostic-result-status">${escapeHtml(result.status || 'unknown')}</span>
+          <div><strong>${escapeHtml(result.name || result.id || 'Diagnostic')}</strong><div class="item-sub" style="white-space:normal">${escapeHtml(result.summary || '')}</div><div class="item-sub" style="margin-top:3px">Log: ${escapeHtml(result.id || 'unknown')}.log</div></div>
+        </div>`).join('');
+    }
+
     function profileHasTarget(profile) {
       return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
     }
@@ -1866,8 +1918,9 @@
     const generalSettingsPanel = document.getElementById('generalSettingsPanel');
     const losslessAddonsPanel = document.getElementById('losslessAddonsPanel');
     const performanceBenchmarkPanel = document.getElementById('performanceBenchmarkPanel');
-    const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel];
-    const settingsDashboardPanels = [generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel];
+    const testingPanel = document.getElementById('testingPanel');
+    const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel, testingPanel];
+    const settingsDashboardPanels = [generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel, testingPanel];
     const dashboardNavButtons = [...document.querySelectorAll('[data-dashboard-panel]')];
 
     function closeProcessPicker() {
@@ -2193,6 +2246,15 @@
         document.getElementById('performanceBenchmarkStatus').textContent = 'Starting performance test...';
         ws.send(JSON.stringify({ type: 'START_PERFORMANCE_BENCHMARK' }));
       });
+    };
+    document.getElementById('runDiagnosticsBtn').onclick = function () {
+      this.disabled = true;
+      document.getElementById('diagnosticsStatus').textContent = 'Starting application diagnostics...';
+      document.getElementById('downloadDiagnosticsBtn').hidden = true;
+      ws.send(JSON.stringify({ type: 'RUN_DIAGNOSTICS' }));
+    };
+    document.getElementById('openDiagnosticsFolderBtn').onclick = () => {
+      ws.send(JSON.stringify({ type: 'OPEN_DIAGNOSTICS_FOLDER' }));
     };
     document.getElementById('openConfigFolderBtn').onclick = () => {
       document.getElementById('configFolderStatus').textContent = 'Opening configuration folder...';
