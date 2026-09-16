@@ -206,6 +206,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.companion_updater.launch_installer.return_value = {
             "type": "COMPANION_INSTALLER_LAUNCHED", "version": "1.1.0",
         }
+        self.server.on_installer_launched = Mock()
 
         await self.server.process_message(websocket, json.dumps({"type": "GET_COMPANION_UPDATE"}))
         await self.server.process_message(websocket, json.dumps({
@@ -214,12 +215,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         await self.server.process_message(websocket, json.dumps({
             "type": "INSTALL_COMPANION_UPDATE", "version": "1.1.0",
         }))
+        await asyncio.sleep(0)
 
         payloads = [json.loads(message) for message in websocket.messages]
         self.assertIn(status, payloads)
         self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOAD_STARTED" for item in payloads))
         self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOADED" for item in payloads))
         self.assertTrue(any(item["type"] == "COMPANION_INSTALLER_LAUNCHED" for item in payloads))
+        self.server.on_installer_launched.assert_called_once_with()
 
     async def test_dashboard_can_import_a_detected_graphics_source(self):
         websocket = self.FakeWebSocket()
@@ -393,6 +396,34 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             },
             template_title=None,
         )
+
+    async def test_default_alias_save_updates_only_existing_native_default(self):
+        native = self.manager.ensure_lossless_default_profile({
+            "Title": "True Native Default",
+            "Path": "",
+            "ScalingType": "LS1",
+        })
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.ls_settings = Mock()
+        self.server.ls_settings.path.is_file.return_value = True
+        self.server.ls_settings.update_profile.return_value = True
+
+        payload = native.model_dump(mode="json")
+        payload["name"] = "Attempted Rename"
+        payload["lossless_profile_title"] = "Attempted Duplicate"
+        payload["native_scaling_settings"]["ScalingType"] = "FSR"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE", "profile": payload,
+        }))
+
+        saved = self.manager.get_profile_by_id(native.id)
+        self.assertEqual(saved.name, "Game Default")
+        self.assertEqual(saved.lossless_profile_title, "True Native Default")
+        self.server.ls_settings.update_profile.assert_called_once_with(
+            "True Native Default", {"ScalingType": "FSR"}
+        )
+        self.server.ls_settings.upsert_profile.assert_not_called()
 
     async def test_dashboard_is_served_over_local_http(self):
         self.manager.config.port = 0

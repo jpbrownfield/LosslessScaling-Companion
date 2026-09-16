@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -33,7 +34,58 @@ class CompanionTrayIconTests(unittest.TestCase):
             self.assertIsInstance(menu, Menu)
             self.assertEqual(menu.items[0].text, "LS Companion")
             self.assertFalse(menu.items[0].enabled)
+            labels = [entry.text for entry in menu.items if hasattr(entry, "text")]
+            self.assertIn("Run at Windows Sign-In", labels)
+            self.assertIn("Check for Updates", labels)
             native_icon.run.assert_called_once_with()
+
+    def test_startup_tray_entry_updates_the_task_and_saved_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            startup = Mock()
+            startup.is_enabled.return_value = False
+            startup.set_enabled.return_value = {"enabled": True}
+            tray = CompanionTrayIcon(
+                manager, AppState(), watcher, automation=Mock(), startup_manager=startup
+            )
+            tray.icon = Mock()
+
+            with patch("companion.ui.tray.threading.Thread") as thread_type:
+                tray._on_toggle_startup(tray.icon, None)
+                thread_type.call_args.kwargs["target"]()
+
+            startup.set_enabled.assert_called_once_with(True)
+            self.assertTrue(manager.config.run_at_startup)
+            self.assertTrue(tray._startup_enabled)
+
+    @patch("companion.ui.tray.open_dashboard_window")
+    def test_update_tray_entry_opens_settings_when_update_is_available(self, open_window):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            future = Future()
+            tray = CompanionTrayIcon(
+                manager,
+                AppState(),
+                watcher,
+                automation=Mock(),
+                on_check_updates_callback=lambda: future,
+            )
+            tray.icon = Mock()
+
+            tray._on_check_updates(tray.icon, None)
+            future.set_result({
+                "currentVersion": "1.0.0",
+                "latestVersion": "1.1.0",
+                "updateAvailable": True,
+            })
+
+            open_window.assert_called_once()
+            self.assertIn("view=settings", open_window.call_args.args[0])
+            self.assertFalse(tray._update_check_running)
 
     @patch("companion.ui.tray.close_dashboard_window")
     def test_exit_closes_dashboard_and_stops_application(self, close_dashboard):
@@ -115,6 +167,18 @@ class CompanionApplicationShutdownTests(unittest.TestCase):
         app.server_thread.join.assert_called_once_with(timeout=3)
         instance_guard.release.assert_called_once_with()
         self.assertTrue(app._shutdown_complete.is_set())
+
+    @patch("companion.ui.dashboard_window.close_dashboard_window")
+    def test_installer_handoff_stops_tray_and_application(self, close_dashboard):
+        app = self.application_stub()
+        app.request_stop = Mock()
+        app.tray = Mock()
+
+        app.request_update_shutdown()
+
+        app.request_stop.assert_called_once_with()
+        app.tray.icon.stop.assert_called_once_with()
+        close_dashboard.assert_called_once_with()
 
 
 if __name__ == "__main__":

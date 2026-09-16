@@ -13,7 +13,7 @@ import sys
 import time
 from http import HTTPStatus
 from pathlib import Path
-from typing import Dict, Set, Optional, TYPE_CHECKING
+from typing import Callable, Dict, Set, Optional, TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 from websockets.legacy.server import WebSocketServerProtocol, serve
 from websockets.exceptions import ConnectionClosed
@@ -27,7 +27,7 @@ from ..core.models import (
     Profile,
     RtssLimiterConfig,
 )
-from ..core.profile_manager import ProfileManager
+from ..core.profile_manager import GAME_DEFAULT_PROFILE_NAME, ProfileManager
 from ..core.state import AppState
 from .process_watcher import ProcessWatcher
 from .automation import AutomationController
@@ -75,6 +75,7 @@ class CompanionWebSocketServer:
         rtss_manager: Optional[RtssProfileManager] = None,
         dynamic_limiter: Optional[DynamicLimiterController] = None,
         hotkey_listener: Optional["GlobalHotkeyListener"] = None,
+        on_installer_launched: Optional[Callable[[], None]] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -91,6 +92,7 @@ class CompanionWebSocketServer:
         )
         self.dynamic_limiter = dynamic_limiter
         self.hotkey_listener = hotkey_listener
+        self.on_installer_launched = on_installer_launched
         self.config: AppConfig = profile_manager.config
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
@@ -880,6 +882,8 @@ class CompanionWebSocketServer:
                     str(msg.get("version") or ""),
                 )
                 await websocket.send(json.dumps(result))
+                if self.on_installer_launched:
+                    asyncio.get_running_loop().call_soon(self.on_installer_launched)
                 return
 
             if msg_type == "DOWNLOAD_BENCHMARK_TOOL":
@@ -1064,6 +1068,22 @@ class CompanionWebSocketServer:
                         prof_data = merge_template(draft, prof_data)
                         prof_data["is_default"] = False
                     prof = Profile.model_validate(prof_data)
+                    previous = self.profile_manager.get_profile_by_id(prof.id)
+                    if previous and previous.is_default:
+                        # This helper profile is an alias for LS's first/native
+                        # profile. Its display name and native identity are not
+                        # user-editable and must never become a new XML profile.
+                        prof.is_default = True
+                        prof.name = GAME_DEFAULT_PROFILE_NAME
+                        prof.target_process = None
+                        prof.target_executable_path = None
+                        prof.target_processes = []
+                        prof.target_executable_paths = []
+                        prof.target_domain = None
+                        prof.lossless_profile_title = previous.lossless_profile_title
+                        prof.lossless_profile_path = previous.lossless_profile_path
+                    elif prof.is_default:
+                        raise ValueError("Only the native Lossless Scaling profile may be the default")
                     has_target = bool(
                         prof.is_default
                         or prof.target_domain
@@ -1072,7 +1092,8 @@ class CompanionWebSocketServer:
                         or prof.target_processes
                         or prof.target_executable_paths
                     )
-                    prof.lossless_profile_title = prof.name if has_target else None
+                    if not prof.is_default:
+                        prof.lossless_profile_title = prof.name if has_target else None
                     if (
                         prof.graphics.special_k.experimental_smooth_motion
                         and not self.automation.gpu_router.detect().get("hasNvidia")
@@ -1084,11 +1105,6 @@ class CompanionWebSocketServer:
                             for item in self.config.reshade_profiles
                         ):
                             raise ValueError("Select an existing managed ReShade profile")
-                    previous = self.profile_manager.get_profile_by_id(prof.id)
-                    if previous and previous.is_default:
-                        prof.is_default = True
-                    elif prof.is_default:
-                        raise ValueError("Only the native Lossless Scaling profile may be the default")
                     if previous:
                         calibration_changed = (
                             previous.target_process != prof.target_process
@@ -1175,23 +1191,35 @@ class CompanionWebSocketServer:
                                     "Lossless Scaling could not be stopped for the profile settings update"
                                 )
                             try:
-                                await asyncio.to_thread(
-                                    self.ls_settings.upsert_profile,
-                                    prof.lossless_profile_title,
-                                    native_values,
-                                    template_title=(
-                                        previous.lossless_profile_title
-                                        if previous and previous.lossless_profile_title
-                                        else next(
-                                            (
-                                                item.lossless_profile_title
-                                                for item in self.config.profiles
-                                                if item.is_default and item.lossless_profile_title
-                                            ),
-                                            None,
+                                if prof.is_default:
+                                    updated = await asyncio.to_thread(
+                                        self.ls_settings.update_profile,
+                                        prof.lossless_profile_title,
+                                        native_values,
+                                    )
+                                    if not updated:
+                                        raise RuntimeError(
+                                            "The native Lossless Scaling default profile could not be found; "
+                                            "no replacement profile was created"
                                         )
-                                    ),
-                                )
+                                else:
+                                    await asyncio.to_thread(
+                                        self.ls_settings.upsert_profile,
+                                        prof.lossless_profile_title,
+                                        native_values,
+                                        template_title=(
+                                            previous.lossless_profile_title
+                                            if previous and previous.lossless_profile_title
+                                            else next(
+                                                (
+                                                    item.lossless_profile_title
+                                                    for item in self.config.profiles
+                                                    if item.is_default and item.lossless_profile_title
+                                                ),
+                                                None,
+                                            )
+                                        ),
+                                    )
                             finally:
                                 if was_running:
                                     await asyncio.to_thread(

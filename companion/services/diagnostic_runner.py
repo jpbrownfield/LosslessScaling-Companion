@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 import psutil
 
@@ -529,6 +530,7 @@ class DiagnosticRunner:
         manager = self.server.automation.deployment_manager
         resolver = self.server.automation.graphics_resolver
         previous = self.server.state.current_active_profile
+        auto_scale_was_enabled = self.server.state.auto_scale_enabled
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         checks = []
         failures = []
@@ -540,6 +542,9 @@ class DiagnosticRunner:
             workload = self.server._embedded_benchmark_executable()
             if not workload or not Path(workload).is_file():
                 raise RuntimeError("the bundled LSBenchmark.exe is unavailable")
+            # Keep the foreground watcher from racing this explicitly controlled
+            # start/stop cycle and immediately reactivating scaling after stop.
+            self.server.state.auto_scale_enabled = False
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(
                     False, reason="experimental_addon_test_setup", force=True,
@@ -620,11 +625,27 @@ class DiagnosticRunner:
                     lossless_delta = self._log_delta(log_snapshot, log_paths)
                     current_runtime_paths = list(executable.parent.glob("*.log"))
                     runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
-                    log_confirmed = bool(lossless_delta)
-                    runtime_confirmed = scaled and active_observed and stopped and log_confirmed
+                    runtime_errors = self._runtime_log_errors(runtime_delta)
+                    runtime_evidence = self._runtime_log_evidence(runtime_delta)
+                    neural_render_selected = (
+                        profile.graphics.neural_render.implementation == "lsp_neural_render"
+                    )
+                    neural_render_exercised = (
+                        not neural_render_selected
+                        or runtime_evidence["neuralModelPrepared"]
+                        or runtime_evidence["neuralTapObserved"]
+                    )
+                    runtime_confirmed = (
+                        scaled and active_observed and stopped
+                        and bool(runtime_delta) and not runtime_errors
+                        and neural_render_exercised
+                    )
                     if not runtime_confirmed:
                         raise RuntimeError(
-                            "deployment verified, but scaling/start-stop/log confirmation did not complete"
+                            "deployment verified, but the scaling cycle or add-on runtime health check failed; "
+                            f"scaled={scaled}, activeObserved={active_observed}, stopped={stopped}, "
+                            f"runtimeLog={bool(runtime_delta)}, runtimeErrors={runtime_errors}, "
+                            f"runtimeEvidence={runtime_evidence}"
                         )
                     checks.append({
                         "profile": profile.name,
@@ -635,6 +656,8 @@ class DiagnosticRunner:
                         "losslessLogTail": self._path("\n".join(lossless_delta.values())[-8000:]),
                         "runtimeLogFiles": [self._path(item) for item in runtime_delta],
                         "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
+                        "runtimeErrors": runtime_errors,
+                        "runtimeEvidence": runtime_evidence,
                     })
                 except Exception as error:
                     failures.append({"profile": profile.name, "error": str(error)})
@@ -667,6 +690,7 @@ class DiagnosticRunner:
                 failures.append({"profile": "restore", "error": str(error)})
             if was_running:
                 self.server.process_watcher.launch_lossless_scaling(force=True)
+            self.server.state.auto_scale_enabled = auto_scale_was_enabled
 
         passed = bool(checks) and not failures
         return self._result(
@@ -695,14 +719,43 @@ class DiagnosticRunner:
                 continue
             offset = snapshot.get(path, 0)
             try:
+                current_size = path.stat().st_size
+                # Add-on loggers commonly truncate a log when LS restarts. Seeking
+                # to the old (larger) offset would incorrectly report no output.
+                if current_size < offset:
+                    offset = 0
                 with path.open("r", encoding="utf-8", errors="ignore") as stream:
-                    stream.seek(min(offset, path.stat().st_size))
+                    stream.seek(offset)
                     text = stream.read()
                 if text:
                     output[str(path)] = text[-12000:]
             except OSError:
                 continue
         return output
+
+    @staticmethod
+    def _runtime_log_errors(logs: Dict[str, str]) -> List[str]:
+        """Return explicit fatal add-on states, not NGX's fallback-path warnings."""
+        patterns = (
+            r"NrEngine FAILED:",
+            r"\bDISABLED:",
+            r"\[(?:FATAL|PANIC)\]",
+        )
+        findings: List[str] = []
+        for path, content in logs.items():
+            for line in content.splitlines():
+                if any(re.search(pattern, line, re.IGNORECASE) for pattern in patterns):
+                    findings.append(f"{Path(path).name}: {line.strip()}")
+        return findings[-20:]
+
+    @staticmethod
+    def _runtime_log_evidence(logs: Dict[str, str]) -> Dict[str, bool]:
+        content = "\n".join(logs.values())
+        return {
+            "neuralEngineReady": "NrEngine ready" in content,
+            "neuralModelPrepared": "Prepare:" in content,
+            "neuralTapObserved": bool(re.search(r"\btaps\s+[1-9]\d*\b", content)),
+        }
 
     def _run_live_scaling_workflow(self) -> Dict[str, Dict]:
         results = {
@@ -732,6 +785,7 @@ class DiagnosticRunner:
             "global_hotkey": config.global_hotkey.model_copy(deep=True),
         }
         previous = self.server.state.current_active_profile
+        auto_scale_was_enabled = self.server.state.auto_scale_enabled
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         settings_path = self.server.ls_settings.path
         settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
@@ -801,6 +855,9 @@ class DiagnosticRunner:
                     False, live_profile, reason="experimental_autoscale_complete", force=True,
                     park_runtime_on_stop=False,
                 )
+            # The autoscale portion is complete. Disable it while testing manual
+            # override toggles so the watcher cannot undo the OFF transition.
+            self.server.state.auto_scale_enabled = False
             config.override_lossless_hotkey = True
             config.override_hotkey = HotkeyConfig(modifiers=["ctrl", "shift"], key="f23")
             config.lossless_control_configured = True
@@ -814,10 +871,17 @@ class DiagnosticRunner:
             focus_window(hwnd)
             emitted = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
             override_on = emitted and self._wait_until(lambda: bool(self.server.state.is_scaling_active), 10.0)
+            first_dispatch_complete = self._wait_until(
+                lambda: not bool(
+                    self.server.hotkey_listener
+                    and self.server.hotkey_listener._callback_lock.locked()
+                ),
+                5.0,
+            )
             focus_window(hwnd)
             emitted_off = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
             override_off = emitted_off and self._wait_until(lambda: not self.server.state.is_scaling_active, 10.0)
-            override_ok = controls_synced and registered and override_on and override_off
+            override_ok = controls_synced and registered and override_on and first_dispatch_complete and override_off
             results["hotkey_override"] = self._result(
                 "pass" if override_ok else "fail",
                 "The registered override hotkey activated and deactivated scaling through the real listener."
@@ -825,6 +889,7 @@ class DiagnosticRunner:
                 nativeControlsSynchronized=controls_synced,
                 listenerRegistered=registered,
                 activationConfirmed=override_on,
+                activationHandlerCompleted=first_dispatch_complete,
                 deactivationConfirmed=override_off,
                 scalingControl=dict(self.server.state.scaling_control_status),
             )
@@ -837,10 +902,13 @@ class DiagnosticRunner:
             ls_delta = self._log_delta(ls_snapshot, ls_paths)
             combined_ls = "\n".join(ls_delta.values())
             log_confirmed = active_seen and bool(combined_ls.strip())
+            log_status = "pass" if log_confirmed else "warn" if active_seen else "fail"
             results["lossless_log"] = self._result(
-                "pass" if log_confirmed else "fail",
+                log_status,
                 "A fresh Lossless Scaling log delta was captured after confirmed scaling."
-                if log_confirmed else "Scaling was not corroborated by a fresh Lossless Scaling log delta.",
+                if log_confirmed else
+                "Scaling was confirmed by the live overlay, but this Lossless Scaling build did not expose a core log file."
+                if active_seen else "Scaling was not corroborated by either the live overlay or a fresh core log delta.",
                 logFiles=[self._path(item) for item in ls_delta],
                 activeStateObserved=active_seen,
                 logTail=self._path(combined_ls[-12000:]),
@@ -906,6 +974,7 @@ class DiagnosticRunner:
                 self.server.hotkey_listener.refresh()
             if was_running:
                 self.server.process_watcher.launch_lossless_scaling(force=True)
+            self.server.state.auto_scale_enabled = auto_scale_was_enabled
         return results
 
     def _process_windows(self) -> Dict:

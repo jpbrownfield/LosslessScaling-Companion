@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -21,6 +22,25 @@ from .asset_store import AssetStore, UnsafeAssetError
 
 USER_AGENT = "LosslessScalingHelper/1.0 (+local companion)"
 logger = logging.getLogger("LSCompanion.Releases")
+
+
+def github_request_headers(*, accept: str = "application/json") -> Dict[str, str]:
+    """Build GitHub headers, optionally authenticating private test builds.
+
+    The app-specific variable avoids ever baking a credential into a release.
+    Standard GitHub CLI/action variable names are also accepted for developer
+    launches. Public repositories continue to work without any token.
+    """
+    headers = {"Accept": accept, "User-Agent": USER_AGENT}
+    token = (
+        os.environ.get("LOSSLESS_COMPANION_GITHUB_TOKEN")
+        or os.environ.get("GH_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    return headers
 
 
 @dataclass
@@ -63,14 +83,29 @@ class ReleaseProvider:
 
 
 def _request_json(url: str) -> object:
+    parsed = urlparse(url)
+    headers = (
+        github_request_headers()
+        if parsed.hostname == "api.github.com"
+        else {"Accept": "application/json", "User-Agent": USER_AGENT}
+    )
     request = urllib.request.Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+        headers=headers,
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        if response.status != 200:
-            raise RuntimeError(f"Release metadata request failed with HTTP {response.status}")
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Release metadata request failed with HTTP {response.status}")
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if parsed.hostname == "api.github.com" and error.code == 404:
+            raise RuntimeError(
+                "GitHub release repository was not found or is private. Public releases work "
+                "without credentials; private test builds require the "
+                "LOSSLESS_COMPANION_GITHUB_TOKEN environment variable."
+            ) from error
+        raise
 
 
 class GitHubReleaseProvider(ReleaseProvider):

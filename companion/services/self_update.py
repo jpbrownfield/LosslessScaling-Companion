@@ -17,7 +17,11 @@ from urllib.parse import urlparse
 
 from ..version import current_version, stable_version_tuple
 from .asset_store import AssetStore, UnsafeAssetError
-from .release_providers import GitHubReleaseProvider, ReleaseManager
+from .release_providers import (
+    GitHubReleaseProvider,
+    ReleaseManager,
+    github_request_headers,
+)
 
 
 INSTALLER_NAME = "LosslessCompanion-Setup-x64.exe"
@@ -94,7 +98,8 @@ class CompanionUpdateService:
         if parsed.scheme != "https" or parsed.hostname not in GitHubReleaseProvider.allowed_hosts:
             raise UnsafeAssetError("Companion update URL is outside the GitHub allowlist")
         request = urllib.request.Request(
-            str(asset["url"]), headers={"User-Agent": "LosslessScalingHelper/1.0 (+self-update)"}
+            str(asset["url"]),
+            headers=github_request_headers(accept="application/octet-stream"),
         )
         with urllib.request.urlopen(request, timeout=60) as response:
             final = urlparse(response.geturl())
@@ -182,7 +187,9 @@ class CompanionUpdateService:
             digest = AssetStore.sha256(installer)
             if digest.casefold() != str(receipt.get("sha256") or "").casefold():
                 raise UnsafeAssetError("Companion installer changed after verification")
-            parameters = subprocess.list2cmdline(["/SP-", "/CLOSEAPPLICATIONS"])
+            parameters = subprocess.list2cmdline([
+                "/SP-", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS",
+            ])
             result = ctypes.windll.shell32.ShellExecuteW(
                 None,
                 "runas",

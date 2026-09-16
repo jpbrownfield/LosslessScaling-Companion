@@ -31,6 +31,11 @@ DEFAULT_BROWSER_EXECUTABLES = [
     "iexplore.exe",
 ]
 
+GAME_DEFAULT_PROFILE_ID = "default-game"
+BROWSER_DEFAULT_PROFILE_ID = "default-browser"
+GAME_DEFAULT_PROFILE_NAME = "Game Default"
+BROWSER_DEFAULT_PROFILE_NAME = "Browser Default"
+
 
 class ProfileManager:
     def __init__(self, config_dir: Optional[Path] = None):
@@ -57,16 +62,16 @@ class ProfileManager:
 
     def _get_default_config(self) -> AppConfig:
         default_game_profile = Profile(
-            id="default-game",
-            name="Default Game",
+            id=GAME_DEFAULT_PROFILE_ID,
+            name=GAME_DEFAULT_PROFILE_NAME,
             is_default=True,
             auto_scale=False,
             custom_notes="Base profile for games and new application profiles.",
         )
 
         default_browser_profile = Profile(
-            id="default-browser",
-            name="Default Browser",
+            id=BROWSER_DEFAULT_PROFILE_ID,
+            name=BROWSER_DEFAULT_PROFILE_NAME,
             target_process="chrome.exe",
             target_processes=DEFAULT_BROWSER_EXECUTABLES,
             auto_scale=False,
@@ -117,20 +122,20 @@ class ProfileManager:
             game = next((profile for profile in config.profiles if profile.is_default), None)
             if game is None:
                 game = Profile(
-                    id="default-game",
-                    name="Default Game",
+                    id=GAME_DEFAULT_PROFILE_ID,
+                    name=GAME_DEFAULT_PROFILE_NAME,
                     is_default=True,
                     auto_scale=False,
                     custom_notes="Base profile for games and new application profiles.",
                 )
                 config.profiles.insert(0, game)
             elif game.id == "lossless-default":
-                game.name = "Default Game"
+                game.name = GAME_DEFAULT_PROFILE_NAME
 
-            if not any(profile.id == "default-browser" for profile in config.profiles):
+            if not any(profile.id == BROWSER_DEFAULT_PROFILE_ID for profile in config.profiles):
                 config.profiles.append(Profile(
-                    id="default-browser",
-                    name="Default Browser",
+                    id=BROWSER_DEFAULT_PROFILE_ID,
+                    name=BROWSER_DEFAULT_PROFILE_NAME,
                     target_process="chrome.exe",
                     target_processes=DEFAULT_BROWSER_EXECUTABLES,
                     auto_scale=False,
@@ -140,10 +145,45 @@ class ProfileManager:
                 config.active_profile_id = game.id
 
         browser = next(
-            (profile for profile in config.profiles if profile.id == "default-browser"),
+            (profile for profile in config.profiles if profile.id == BROWSER_DEFAULT_PROFILE_ID),
             None,
         )
+        game = next(
+            (
+                profile for profile in config.profiles
+                if profile.is_default
+                and (profile.lossless_profile_title or profile.id == "lossless-default")
+            ),
+            None,
+        )
+        if game is None:
+            game = next(
+                (profile for profile in config.profiles if profile.id == GAME_DEFAULT_PROFILE_ID),
+                None,
+            )
+        if game is None:
+            game = next(
+                (
+                    profile for profile in config.profiles
+                    if profile.is_default and profile.id != BROWSER_DEFAULT_PROFILE_ID
+                ),
+                None,
+            )
+        if game:
+            if not game.is_default:
+                game.is_default = True
+                changed = True
+            if game.name != GAME_DEFAULT_PROFILE_NAME:
+                game.name = GAME_DEFAULT_PROFILE_NAME
+                changed = True
+            for other in config.profiles:
+                if other.id != game.id and other.is_default:
+                    other.is_default = False
+                    changed = True
         if browser:
+            if browser.name != BROWSER_DEFAULT_PROFILE_NAME:
+                browser.name = BROWSER_DEFAULT_PROFILE_NAME
+                changed = True
             extras = [
                 value for value in browser.target_processes
                 if value.casefold() not in {item.casefold() for item in DEFAULT_BROWSER_EXECUTABLES}
@@ -257,6 +297,17 @@ class ProfileManager:
     def add_or_update_profile(self, profile: Profile) -> None:
         existing_index = next((i for i, p in enumerate(self.config.profiles) if p.id == profile.id), None)
         if existing_index is not None:
+            existing = self.config.profiles[existing_index]
+            if existing.is_default or existing.id == GAME_DEFAULT_PROFILE_ID:
+                profile.is_default = True
+                profile.name = GAME_DEFAULT_PROFILE_NAME
+                profile.target_process = None
+                profile.target_executable_path = None
+                profile.target_processes = []
+                profile.target_executable_paths = []
+                profile.target_domain = None
+                profile.lossless_profile_title = existing.lossless_profile_title
+                profile.lossless_profile_path = existing.lossless_profile_path
             self.config.profiles[existing_index] = profile
         else:
             self.config.profiles.append(profile)
@@ -270,6 +321,8 @@ class ProfileManager:
         title = str(native_profile.get("Title") or "Default").strip() or "Default"
         path = str(native_profile.get("Path") or "").strip() or None
         profile = next((item for item in self.config.profiles if item.is_default), None)
+        if profile is None:
+            profile = self.get_profile_by_id(GAME_DEFAULT_PROFILE_ID)
         if profile is None:
             profile = next(
                 (
@@ -287,7 +340,7 @@ class ProfileManager:
             )
             profile = Profile(
                 id=profile_id,
-                name=title,
+                name=GAME_DEFAULT_PROFILE_NAME,
                 is_default=True,
                 auto_scale=False,
                 lossless_profile_title=title,
@@ -296,6 +349,12 @@ class ProfileManager:
             self.config.profiles.insert(0, profile)
         else:
             profile.is_default = True
+            profile.name = GAME_DEFAULT_PROFILE_NAME
+            profile.target_process = None
+            profile.target_executable_path = None
+            profile.target_processes = []
+            profile.target_executable_paths = []
+            profile.target_domain = None
             profile.lossless_profile_title = title
             profile.lossless_profile_path = path
         profile.native_scaling_settings = {
@@ -311,7 +370,7 @@ class ProfileManager:
 
     def delete_profile(self, profile_id: str) -> bool:
         selected = self.get_profile_by_id(profile_id)
-        if selected and selected.is_default:
+        if selected and (selected.is_default or selected.id == GAME_DEFAULT_PROFILE_ID):
             return False
         initial_len = len(self.config.profiles)
         self.config.profiles = [p for p in self.config.profiles if p.id != profile_id]

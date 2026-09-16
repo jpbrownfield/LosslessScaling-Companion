@@ -101,6 +101,31 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertEqual(arguments[1], "runas")
         self.assertEqual(Path(arguments[2]).name, INSTALLER_NAME)
         self.assertIn("/CLOSEAPPLICATIONS", arguments[3])
+        self.assertIn("/FORCECLOSEAPPLICATIONS", arguments[3])
+
+    def test_private_download_uses_configured_github_token(self):
+        installer = b"verified installer payload"
+        digest = hashlib.sha256(installer).hexdigest()
+        release = self.release()
+        manager = SimpleNamespace(check=lambda *args, **kwargs: [release])
+        authorization = []
+
+        def open_url(request, timeout=60):
+            authorization.append(request.headers.get("Authorization"))
+            content = (
+                f"{digest}  {INSTALLER_NAME}".encode("ascii")
+                if request.full_url.endswith(".sha256") else installer
+            )
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"LOSSLESS_COMPANION_GITHUB_TOKEN": "private-test-token"}, clear=True
+        ), patch(
+            "companion.services.self_update.urllib.request.urlopen", side_effect=open_url
+        ):
+            CompanionUpdateService(manager, Path(directory), enabled=True).download("2.0.0")
+
+        self.assertEqual(authorization, ["Bearer private-test-token"] * 2)
 
     def test_installer_launch_reports_a_rejected_uac_handoff(self):
         installer = b"verified installer payload"

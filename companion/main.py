@@ -138,6 +138,7 @@ class CompanionApplication:
             startup_manager=(
                 SimulationStartupTaskManager() if self.simulation_mode else None
             ),
+            on_installer_launched=self.request_update_shutdown,
         )
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -157,7 +158,9 @@ class CompanionApplication:
             self.process_watcher,
             self.ls_inspector,
             self.automation,
-            on_exit_callback=self.request_stop
+            on_exit_callback=self.request_stop,
+            startup_manager=self.server.startup_manager,
+            on_check_updates_callback=self.check_for_updates,
         )
 
     def _start_shutdown_watchdog(self) -> None:
@@ -189,6 +192,30 @@ class CompanionApplication:
         self._start_shutdown_watchdog()
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(lambda: None)
+
+    def check_for_updates(self):
+        """Run a forced companion update check on the server event loop."""
+        if not self.loop or not self.loop.is_running():
+            raise RuntimeError("The companion update service is not running yet")
+        return asyncio.run_coroutine_threadsafe(
+            self.server._refresh_companion_update(force=True), self.loop
+        )
+
+    def request_update_shutdown(self) -> None:
+        """Release the installed payload after handing control to its installer."""
+        logger.info("Installer launched; releasing LS Companion files for replacement.")
+        self.request_stop()
+        try:
+            if self.tray.icon:
+                self.tray.icon.stop()
+        except Exception:
+            logger.exception("Could not stop the tray after launching the installer")
+        try:
+            from .ui.dashboard_window import close_dashboard_window
+
+            close_dashboard_window()
+        except Exception:
+            logger.exception("Could not close the dashboard for the companion update")
 
     def _run_async_server(self):
         """Runs the asyncio WebSocket server in a dedicated thread."""

@@ -85,6 +85,50 @@ class DiagnosticRunnerTests(unittest.TestCase):
             "configuration", "profile_integrity", "profile_matching",
         ])
 
+    def test_log_delta_reads_restarted_truncated_log_from_the_beginning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LosslessProxy.log"
+            path.write_text("old output that is considerably longer", encoding="utf-8")
+            snapshot = DiagnosticRunner._log_snapshot([path])
+            path.write_text("new output", encoding="utf-8")
+
+            delta = DiagnosticRunner._log_delta(snapshot, [path])
+
+            self.assertEqual(delta[str(path)], "new output")
+
+    def test_runtime_log_errors_ignores_ngx_fallback_warnings_after_ready(self):
+        errors = DiagnosticRunner._runtime_log_errors({
+            "LSP-NeuralRender.log": (
+                "error: failed to load NGXCore: 126 (_nvngx.dll)\n"
+                "nvLoadSignedLibraryW() failed: missing or corrupted\n"
+                "NrEngine ready (float slot 6)\n"
+            )
+        })
+
+        self.assertEqual(errors, [])
+
+    def test_runtime_log_errors_reports_explicit_neural_engine_failure(self):
+        errors = DiagnosticRunner._runtime_log_errors({
+            "LSP-NeuralRender.log": "NrEngine FAILED: CreateFeature(18): FeatureNotSupported\n"
+        })
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("FeatureNotSupported", errors[0])
+
+    def test_runtime_log_evidence_requires_model_work_beyond_engine_ready(self):
+        ready = DiagnosticRunner._runtime_log_evidence({
+            "LSP-NeuralRender.log": "NrEngine ready (float slot 6)\nticks 0, taps 0\n"
+        })
+        exercised = DiagnosticRunner._runtime_log_evidence({
+            "LSP-NeuralRender.log": "NrEngine ready (float slot 6)\nPrepare: frame 1280x720\ntaps 1\n"
+        })
+
+        self.assertTrue(ready["neuralEngineReady"])
+        self.assertFalse(ready["neuralModelPrepared"])
+        self.assertFalse(ready["neuralTapObserved"])
+        self.assertTrue(exercised["neuralModelPrepared"])
+        self.assertTrue(exercised["neuralTapObserved"])
+
 
 if __name__ == "__main__":
     unittest.main()

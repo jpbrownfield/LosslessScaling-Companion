@@ -303,7 +303,7 @@
         <details class="settings-group" open>
           <summary>Startup <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content"><div class="form-row">
-            <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run at Windows Sign-In (Elevated Scheduled Task)</label></div>
+            <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run on Startup</label></div>
           </div></div>
         </details>
 
@@ -1884,6 +1884,11 @@
       editingOriginalProfile = profile ? JSON.parse(JSON.stringify(profile)) : null;
       renderNativeSettings(profile);
 
+      const nativeDefaultAlias = !!(profile && profile.is_default);
+      document.getElementById('profileName').readOnly = nativeDefaultAlias;
+      document.getElementById('targetType').disabled = nativeDefaultAlias;
+      document.getElementById('targetValue').readOnly = nativeDefaultAlias;
+
       if (profile) {
         document.getElementById('modalTitle').textContent = creating ? 'Create Profile' : 'Edit Profile';
         document.getElementById('profileId').value = profile.id;
@@ -2507,7 +2512,9 @@
           target_processes: targetProcesses,
           target_executable_paths: targetExecutablePaths,
           target_domain: targetType === 'web_domain' ? (targetValue || null) : null,
-          lossless_profile_title: profileName,
+          lossless_profile_title: editingOriginalProfile && editingOriginalProfile.is_default
+            ? editingOriginalProfile.lossless_profile_title
+            : profileName,
           lossless_profile_path: editingOriginalProfile && editingOriginalProfile.lossless_profile_path || null,
           last_imported_hash: editingOriginalProfile && editingOriginalProfile.last_imported_hash || null,
           native_scaling_settings: nativeSettingsPayload(),

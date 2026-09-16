@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 
 from companion.core.models import Profile
-from companion.core.profile_manager import DEFAULT_BROWSER_EXECUTABLES, ProfileManager
+from companion.core.profile_manager import (
+    BROWSER_DEFAULT_PROFILE_NAME,
+    DEFAULT_BROWSER_EXECUTABLES,
+    GAME_DEFAULT_PROFILE_NAME,
+    ProfileManager,
+)
 
 
 class ProfileManagerTests(unittest.TestCase):
@@ -57,6 +62,8 @@ class ProfileManagerTests(unittest.TestCase):
             ["default-game", "default-browser"],
         )
         self.assertTrue(self.manager.get_profile_by_id("default-game").is_default)
+        self.assertEqual(self.manager.get_profile_by_id("default-game").name, GAME_DEFAULT_PROFILE_NAME)
+        self.assertEqual(self.manager.get_profile_by_id("default-browser").name, BROWSER_DEFAULT_PROFILE_NAME)
         self.assertEqual(
             self.manager.get_profile_by_id("default-browser").target_process,
             "chrome.exe",
@@ -177,6 +184,7 @@ class ProfileManagerTests(unittest.TestCase):
 
         self.assertEqual(first.id, second.id)
         self.assertTrue(first.is_default)
+        self.assertEqual(first.name, GAME_DEFAULT_PROFILE_NAME)
         self.assertEqual(first.lossless_profile_title, "Lossless Default")
         self.assertEqual(first.native_scaling_settings["ScalingType"], "LS1")
         self.assertEqual(
@@ -185,6 +193,48 @@ class ProfileManagerTests(unittest.TestCase):
         )
         self.assertFalse(self.manager.delete_profile(first.id))
         self.assertIsNotNone(self.manager.get_profile_by_id(first.id))
+
+    def test_legacy_default_names_migrate_to_canonical_alias_names(self):
+        self.manager.get_profile_by_id("default-game").name = "Default Game"
+        self.manager.get_profile_by_id("default-browser").name = "Default Browser"
+        self.manager.save_config()
+
+        migrated = ProfileManager(Path(self.temp_dir.name))
+
+        self.assertEqual(migrated.get_profile_by_id("default-game").name, "Game Default")
+        self.assertEqual(migrated.get_profile_by_id("default-browser").name, "Browser Default")
+
+    def test_default_alias_update_cannot_change_native_identity_or_targets(self):
+        default = self.manager.ensure_lossless_default_profile({
+            "Title": "True Native Default", "Path": "", "ScalingType": "LS1",
+        })
+        changed = default.model_copy(deep=True)
+        changed.name = "Dangerous Rename"
+        changed.lossless_profile_title = "Duplicate Native Profile"
+        changed.target_process = "game.exe"
+
+        self.manager.add_or_update_profile(changed)
+
+        saved = self.manager.get_profile_by_id(default.id)
+        self.assertEqual(saved.name, "Game Default")
+        self.assertEqual(saved.lossless_profile_title, "True Native Default")
+        self.assertIsNone(saved.target_process)
+
+    def test_corrupt_default_flags_are_repaired_without_duplicating_profiles(self):
+        game = self.manager.get_profile_by_id("default-game")
+        browser = self.manager.get_profile_by_id("default-browser")
+        game.is_default = False
+        browser.is_default = True
+        duplicate = Profile(id="duplicate-default", name="Duplicate", is_default=True)
+        self.manager.config.profiles.append(duplicate)
+        self.manager.save_config()
+
+        repaired = ProfileManager(Path(self.temp_dir.name))
+
+        defaults = [profile for profile in repaired.config.profiles if profile.is_default]
+        self.assertEqual(len(defaults), 1)
+        self.assertEqual(defaults[0].id, "default-game")
+        self.assertEqual(defaults[0].name, "Game Default")
 
     def test_native_import_preview_prefers_executable_filename_before_title(self):
         profile = Profile(

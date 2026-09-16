@@ -87,6 +87,9 @@ class LosslessScalingInspector:
         "special k",
         "hook",
         "proxy",
+        "lsp",
+        "neural",
+        "nvngx",
         "presentmon",
         "rtss",
     )
@@ -150,7 +153,12 @@ class LosslessScalingInspector:
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\*.log"),
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\logs\*.log"),
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\log.txt"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Lossless Scaling\*.log"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Lossless Scaling\logs\*.log"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Lossless Scaling\log.txt"),
             os.path.expandvars(r"%APPDATA%\LosslessScaling\*.log"),
+            os.path.expandvars(r"%APPDATA%\Lossless Scaling\*.log"),
+            os.path.expandvars(r"%APPDATA%\Lossless Scaling\logs\*.log"),
         ]
         # Resolve the real install dir instead of a hardcoded C:\ Steam path
         # (the user's install may live on another drive, e.g. J:\Steam).

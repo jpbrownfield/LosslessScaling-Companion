@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ from companion.services.release_providers import (
     ReleaseInfo,
     ReleaseManager,
     ReleaseProvider,
+    _request_json,
+    github_request_headers,
 )
 
 
@@ -36,6 +39,27 @@ class CountingProvider(ReleaseProvider):
 
 
 class ReleaseManagerTests(unittest.TestCase):
+    def test_private_github_token_is_added_only_when_configured(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertNotIn("Authorization", github_request_headers())
+        with patch.dict(
+            "os.environ", {"LOSSLESS_COMPANION_GITHUB_TOKEN": "private-test-token"}, clear=True
+        ):
+            headers = github_request_headers()
+        self.assertEqual(headers["Authorization"], "Bearer private-test-token")
+
+    def test_private_repository_404_has_actionable_message(self):
+        error = urllib.error.HTTPError(
+            "https://api.github.com/repos/example/private/releases",
+            404,
+            "Not Found",
+            {},
+            None,
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "private test builds require"):
+                _request_json("https://api.github.com/repos/example/private/releases")
+
     def test_companion_provider_accepts_only_installer_and_checksum(self):
         provider = ProviderRegistry().get("companion")
         self.assertIsNotNone(provider.asset_pattern.search("LosslessCompanion-Setup-x64.exe"))
