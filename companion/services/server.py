@@ -34,6 +34,7 @@ from .automation import AutomationController
 from .ls_settings import LosslessSettingsXml
 from .asset_store import AssetStore, UnsafeAssetError
 from .graphics_source_detector import GraphicsSourceDetector
+from .graphics_source_importer import GraphicsSourceImporter
 from .reshade_profiles import ReshadeProfileService
 from .release_providers import ReleaseManager
 from .startup_manager import StartupTaskManager
@@ -106,6 +107,7 @@ class CompanionWebSocketServer:
         self._detected_presentmon_path: Optional[Path] = None
         self._detected_presentmon_sha256: Optional[str] = None
         self.reshade_profiles = ReshadeProfileService(profile_manager)
+        self.graphics_source_importer = GraphicsSourceImporter(self.asset_store)
         self.diagnostic_runner = DiagnosticRunner(self)
         self.diagnostics_task: Optional[asyncio.Task] = None
         self._diagnostics_selected_test: Optional[str] = None
@@ -238,6 +240,7 @@ class CompanionWebSocketServer:
                 "DELETE_PROFILE",
                 "CHECK_GRAPHICS_RELEASES",
                 "STAGE_GRAPHICS_RELEASE",
+                "IMPORT_GRAPHICS_SOURCE",
                 "INSTALL_LATEST_GRAPHICS_ADDON",
                 "DOWNLOAD_BENCHMARK_TOOL",
                 "START_PERFORMANCE_BENCHMARK",
@@ -364,6 +367,17 @@ class CompanionWebSocketServer:
 
             if msg_type == "GET_BENCHMARK_STATUS":
                 await websocket.send(json.dumps(self._benchmark_status_payload()))
+                return
+
+            if msg_type == "IMPORT_GRAPHICS_SOURCE":
+                result = await asyncio.to_thread(
+                    self.graphics_source_importer.stage,
+                    str(msg.get("provider") or ""),
+                    str(msg.get("operationId") or ""),
+                )
+                await websocket.send(json.dumps({
+                    "type": "GRAPHICS_RELEASE_STAGED", "package": result,
+                }))
                 return
 
             if msg_type == "GET_DIAGNOSTICS_STATUS":

@@ -21,6 +21,7 @@ CREATE_NO_WINDOW = 0x08000000
 SW_RESTORE = 9
 user32 = ctypes.windll.user32 if os.name == "nt" else None
 gdi32 = ctypes.windll.gdi32 if os.name == "nt" else None
+kernel32 = ctypes.windll.kernel32 if os.name == "nt" else None
 if user32 is not None:
     user32.IsWindow.argtypes = (wintypes.HWND,)
     user32.IsWindow.restype = wintypes.BOOL
@@ -70,10 +71,43 @@ def focus_window(hwnd: int, timeout: float = 2.0) -> bool:
         return False
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
+
+    def focused() -> bool:
+        return int(user32.GetForegroundWindow() or 0) == int(hwnd)
+
+    user32.BringWindowToTop(hwnd)
     user32.SetForegroundWindow(hwnd)
+    if not focused():
+        # Windows restricts foreground activation. An elevated companion is
+        # especially likely to be denied even when the request originated in
+        # the dashboard. Temporarily join the relevant UI input queues and
+        # retry without injecting a synthetic keystroke into the workload.
+        current_thread = int(kernel32.GetCurrentThreadId())
+        foreground = int(user32.GetForegroundWindow() or 0)
+        foreground_thread = (
+            int(user32.GetWindowThreadProcessId(foreground, None))
+            if foreground else 0
+        )
+        target_thread = int(user32.GetWindowThreadProcessId(hwnd, None))
+        attached = []
+        try:
+            for thread_id in (foreground_thread, target_thread):
+                if (
+                    thread_id
+                    and thread_id != current_thread
+                    and thread_id not in attached
+                    and user32.AttachThreadInput(current_thread, thread_id, True)
+                ):
+                    attached.append(thread_id)
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        finally:
+            for thread_id in reversed(attached):
+                user32.AttachThreadInput(current_thread, thread_id, False)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if int(user32.GetForegroundWindow() or 0) == hwnd:
+        if focused():
             return True
         time.sleep(0.025)
     return False

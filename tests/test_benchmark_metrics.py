@@ -1,12 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from companion.services.benchmark_metrics import (
     read_presentmon_csv,
     summarize_presentmon_rows,
 )
-from companion.services.performance_benchmark import PresentMonCapture
+from companion.services.performance_benchmark import PresentMonCapture, focus_window
 from companion.core.models import Profile, RtssLimiterConfig
 from scripts.benchmark_lossless_scaling import (
     default_profile_limiter_settings,
@@ -15,6 +16,28 @@ from scripts.benchmark_lossless_scaling import (
 
 
 class BenchmarkMetricTests(unittest.TestCase):
+    def test_focus_window_retries_with_attached_windows_input_threads(self):
+        native = Mock()
+        native.IsWindow.return_value = True
+        native.IsIconic.return_value = False
+        native.GetForegroundWindow.side_effect = [99, 99, 42]
+        native.GetWindowThreadProcessId.side_effect = [7, 8]
+        native.AttachThreadInput.return_value = True
+        kernel = Mock()
+        kernel.GetCurrentThreadId.return_value = 6
+
+        with (
+            patch("companion.services.performance_benchmark.user32", native),
+            patch("companion.services.performance_benchmark.kernel32", kernel),
+        ):
+            self.assertTrue(focus_window(42, timeout=0.01))
+
+        native.AttachThreadInput.assert_any_call(6, 7, True)
+        native.AttachThreadInput.assert_any_call(6, 8, True)
+        native.AttachThreadInput.assert_any_call(6, 8, False)
+        native.AttachThreadInput.assert_any_call(6, 7, False)
+        self.assertEqual(native.SetForegroundWindow.call_count, 2)
+
     def test_default_profile_limiter_uses_saved_limit_without_mutation(self):
         profile = Profile(
             name="Default",

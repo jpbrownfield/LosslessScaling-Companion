@@ -34,6 +34,15 @@ class FakeResponse:
 
 
 class CompanionUpdateServiceTests(unittest.TestCase):
+    def test_dashboard_exposes_manual_companion_update_check(self):
+        dashboard = (
+            Path(__file__).resolve().parents[1] / "companion" / "ui" / "dashboard.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('id="checkCompanionUpdateBtn"', dashboard)
+        self.assertIn("type: 'CHECK_COMPANION_UPDATE'", dashboard)
+        self.assertIn('id="companionUpdateStatusText"', dashboard)
+
     def release(self, version="v2.0.0"):
         base = f"https://github.com/example/releases/download/{version}"
         return {

@@ -342,7 +342,8 @@ an unchecked desktop-shortcut option. The installed application retains its own
 `requireAdministrator` manifest.
 
 Packaged builds check this repository's stable GitHub Releases at dashboard
-startup and once per day. When a newer semantic version is available, Companion
+startup and once per day. You can also open **Settings → Companion Updates** and
+select **Check for updates** to bypass the cached result immediately. When a newer semantic version is available, Companion
 offers to download `LosslessCompanion-Setup-x64.exe`, requires the matching
 `LosslessCompanion-Setup-x64.exe.sha256` release asset, verifies the installer,
 and then waits for explicit confirmation before launching it. Source and

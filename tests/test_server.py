@@ -221,6 +221,26 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOADED" for item in payloads))
         self.assertTrue(any(item["type"] == "COMPANION_INSTALLER_LAUNCHED" for item in payloads))
 
+    async def test_dashboard_can_import_a_detected_graphics_source(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        package = {"provider": "reshade", "version": "6.8.0"}
+        self.server.graphics_source_importer = Mock()
+        self.server.graphics_source_importer.stage.return_value = package
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "IMPORT_GRAPHICS_SOURCE",
+            "provider": "reshade",
+            "operationId": "test-operation",
+        }))
+
+        self.server.graphics_source_importer.stage.assert_called_once_with(
+            "reshade", "test-operation"
+        )
+        self.assertEqual(json.loads(websocket.messages[-1]), {
+            "type": "GRAPHICS_RELEASE_STAGED", "package": package,
+        })
+
     def test_startup_detection_accepts_only_release_digest_matched_presentmon(self):
         home = Path(self.temp_dir.name) / "user"
         downloads = home / "Downloads"

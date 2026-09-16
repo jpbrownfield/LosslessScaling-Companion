@@ -308,6 +308,17 @@
         </details>
 
         <details class="settings-group" open>
+          <summary>Companion Updates <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+          <div class="settings-group-content">
+            <div class="settings-toolbar">
+              <p id="companionUpdateStatusText" class="item-sub" style="white-space:normal">Checking GitHub releases...</p>
+              <button id="checkCompanionUpdateBtn" class="btn btn-secondary" type="button">Check for updates</button>
+            </div>
+            <p class="item-sub" style="white-space:normal;margin-top:8px">Available updates are downloaded only after confirmation, verified against the release SHA-256 file, and launched through the Windows administrator prompt.</p>
+          </div>
+        </details>
+
+        <details class="settings-group" open>
           <summary>GPU Selection <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
             <div class="form-group section-primary-field"><label for="preferredScalingGpu">Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Auto-Route to App Display GPU</option></select></div>
@@ -379,7 +390,7 @@
         <section class="addon-card addon-card-wide">
           <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. When LosslessProxy is also selected, Companion automatically adds its bundled ReShade input bridge.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
           <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
-          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
+          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-primary" type="button" data-addon-import="reshade" hidden>Import downloaded runtime</button><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
           <p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p>
           <div class="reshade-hdr-settings">
             <div class="form-group"><label for="reshadeHdrPeakNits">HDR Peak Brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
@@ -390,7 +401,7 @@
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
-        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-primary" type="button" data-addon-import="special-k" hidden>Import installed runtime</button><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
       <div class="addon-grid">
         <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button></div></section>
@@ -891,6 +902,11 @@
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
+            if (companionUpdateBusy) {
+              companionUpdateBusy = false;
+              document.getElementById('checkCompanionUpdateBtn').disabled = false;
+              document.getElementById('companionUpdateStatusText').textContent = `Update operation failed: ${errorText}`;
+            }
             pendingProfileReshadeImport = false;
             profileSaveInFlight = false;
             reshadeSaveInFlight = false;
@@ -998,6 +1014,8 @@
           } else if (msg.type === 'COMPANION_UPDATE_DOWNLOAD_STARTED') {
             companionUpdateBusy = true;
             document.getElementById('companionUpdateText').textContent = `Downloading and verifying LS Companion ${msg.version}...`;
+            document.getElementById('companionUpdateStatusText').textContent = `Downloading and verifying LS Companion ${msg.version}...`;
+            document.getElementById('checkCompanionUpdateBtn').disabled = true;
             document.getElementById('downloadCompanionUpdateBtn').disabled = true;
           } else if (msg.type === 'COMPANION_UPDATE_DOWNLOADED') {
             companionUpdateBusy = false;
@@ -1006,6 +1024,7 @@
           } else if (msg.type === 'COMPANION_INSTALLER_LAUNCHED') {
             companionUpdateBusy = false;
             document.getElementById('companionUpdateText').textContent = `Installer for ${msg.version} launched. Follow its prompts; Companion may close during installation.`;
+            document.getElementById('companionUpdateStatusText').textContent = `Installer for ${msg.version} launched. Follow the Windows prompts.`;
           } else if (msg.type === 'CONTROL_SETTINGS_SAVED') {
             controlSettings = msg.controlSettings;
             renderControlSettings();
@@ -1330,10 +1349,15 @@
       if (!source) return;
       const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
       const status = document.querySelector(`[data-addon-status="${provider}"]`);
+      const importButton = document.querySelector(`[data-addon-import="${provider}"]`);
       badge.textContent = source.detected ? (provider === 'reshade' ? 'Downloaded' : 'Installed') : (provider === 'reshade' ? 'Not downloaded' : 'Not installed');
       badge.classList.toggle('ready', !!source.detected);
       status.textContent = source.message || 'Status unavailable.';
       status.title = source.path || '';
+      if (importButton) {
+        importButton.hidden = !source.detected;
+        importButton.disabled = false;
+      }
       if (source.detected && addonDetectionTimers[provider]) {
         clearInterval(addonDetectionTimers[provider]);
         delete addonDetectionTimers[provider];
@@ -1367,8 +1391,24 @@
       const download = document.getElementById('downloadCompanionUpdateBtn');
       const install = document.getElementById('installCompanionUpdateBtn');
       const releaseLink = document.getElementById('companionReleaseLink');
+      const statusText = document.getElementById('companionUpdateStatusText');
+      const checkButton = document.getElementById('checkCompanionUpdateBtn');
       const ignored = localStorage.getItem('ignored-companion-update-version');
       const visible = !!status.updateAvailable && ignored !== status.latestVersion;
+      checkButton.disabled = companionUpdateBusy;
+      if (status.error) {
+        statusText.textContent = `Update check failed: ${status.error}`;
+      } else if (status.supported === false) {
+        statusText.textContent = `Installed version: ${status.currentVersion}. Updates are available in packaged builds.`;
+      } else if (status.updateAvailable) {
+        statusText.textContent = status.downloaded
+          ? `Version ${status.latestVersion} is downloaded and verified. Installed: ${status.currentVersion}.`
+          : `Version ${status.latestVersion} is available. Installed: ${status.currentVersion}.`;
+      } else if (status.latestVersion) {
+        statusText.textContent = `LS Companion ${status.currentVersion} is up to date. Latest release: ${status.latestVersion}.`;
+      } else {
+        statusText.textContent = `No compatible installer release was found. Installed: ${status.currentVersion}.`;
+      }
       notice.hidden = !visible;
       if (!visible) return;
       document.getElementById('companionUpdateText').textContent = status.downloaded
@@ -2104,6 +2144,16 @@
     document.getElementById('showAddonDownloadsBtn').onclick = () => {
       openMajorDashboardPanel(losslessAddonsPanel, true);
     };
+    document.getElementById('checkCompanionUpdateBtn').onclick = function () {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        document.getElementById('companionUpdateStatusText').textContent = 'The companion is not connected.';
+        return;
+      }
+      companionUpdateBusy = true;
+      this.disabled = true;
+      document.getElementById('companionUpdateStatusText').textContent = 'Checking GitHub releases...';
+      ws.send(JSON.stringify({ type: 'CHECK_COMPANION_UPDATE' }));
+    };
     document.getElementById('laterCompanionUpdateBtn').onclick = () => {
       if (companionUpdateState && companionUpdateState.latestVersion) {
         localStorage.setItem('ignored-companion-update-version', companionUpdateState.latestVersion);
@@ -2395,6 +2445,17 @@
             operationId: crypto.randomUUID().replaceAll('-', '')
           }));
         });
+      };
+    });
+    document.querySelectorAll('[data-addon-import]').forEach(button => {
+      button.onclick = () => {
+        const provider = button.dataset.addonImport;
+        button.disabled = true;
+        setGraphicsStatus(`Importing the detected ${provider} runtime without executing its installer...`);
+        ws.send(JSON.stringify({
+          type: 'IMPORT_GRAPHICS_SOURCE', provider,
+          operationId: crypto.randomUUID().replaceAll('-', '')
+        }));
       };
     });
     document.getElementById('profileForm').onsubmit = (e) => {

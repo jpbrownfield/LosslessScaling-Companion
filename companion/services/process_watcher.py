@@ -205,8 +205,9 @@ class ProcessWatcher:
         if owner_pid.value != pid:
             return False
         if int(user32.GetForegroundWindow() or 0) != int(hwnd):
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            if not user32.SetForegroundWindow(hwnd):
+            from .performance_benchmark import focus_window
+
+            if not focus_window(int(hwnd)):
                 return False
         time.sleep(0.1)
         focused_hwnd = int(user32.GetForegroundWindow() or 0)
