@@ -12,7 +12,7 @@ import sys
 import threading
 import urllib.request
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from ..version import current_version, stable_version_tuple
@@ -93,7 +93,12 @@ class CompanionUpdateService:
         }
 
     @staticmethod
-    def _download_bytes(asset: Dict, *, max_bytes: int) -> bytes:
+    def _download_bytes(
+        asset: Dict,
+        *,
+        max_bytes: int,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> bytes:
         parsed = urlparse(str(asset.get("url") or ""))
         if parsed.scheme != "https" or parsed.hostname not in GitHubReleaseProvider.allowed_hosts:
             raise UnsafeAssetError("Companion update URL is outside the GitHub allowlist")
@@ -106,6 +111,9 @@ class CompanionUpdateService:
             if final.scheme != "https" or final.hostname not in GitHubReleaseProvider.allowed_hosts:
                 raise UnsafeAssetError("Companion update redirected outside the GitHub allowlist")
             chunks, received = [], 0
+            expected_size = max(0, int(asset.get("size") or 0))
+            if progress_callback:
+                progress_callback(0, expected_size)
             while True:
                 chunk = response.read(min(1024 * 1024, max_bytes + 1 - received))
                 if not chunk:
@@ -114,6 +122,8 @@ class CompanionUpdateService:
                 if received > max_bytes:
                     raise UnsafeAssetError("Companion update exceeded its size limit")
                 chunks.append(chunk)
+                if progress_callback:
+                    progress_callback(received, expected_size)
             return b"".join(chunks)
 
     @staticmethod
@@ -124,7 +134,12 @@ class CompanionUpdateService:
             raise UnsafeAssetError("Release checksum file has an invalid format")
         return match.group(1).casefold()
 
-    def download(self, version: str) -> Dict:
+    def download(
+        self,
+        version: str,
+        *,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict:
         with self._lock:
             if not self.enabled:
                 raise RuntimeError("Companion updates are available only in packaged builds")
@@ -145,7 +160,11 @@ class CompanionUpdateService:
             expected = self._expected_checksum(
                 self._download_bytes(checksum_asset, max_bytes=4096)
             )
-            payload = self._download_bytes(installer_asset, max_bytes=512 * 1024 * 1024)
+            payload = self._download_bytes(
+                installer_asset,
+                max_bytes=512 * 1024 * 1024,
+                progress_callback=progress_callback,
+            )
             calculated = hashlib.sha256(payload).hexdigest()
             if calculated != expected:
                 raise UnsafeAssetError("Downloaded companion installer SHA-256 does not match")

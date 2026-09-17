@@ -224,6 +224,38 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item["type"] == "COMPANION_INSTALLER_LAUNCHED" for item in payloads))
         self.server.on_installer_launched.assert_called_once_with()
 
+    async def test_dashboard_can_download_and_launch_update_in_one_operation(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.clients.add(websocket)
+        self.server.companion_updater = Mock()
+
+        def download(version, *, progress_callback):
+            progress_callback(5, 10)
+            progress_callback(10, 10)
+            return {"type": "COMPANION_UPDATE_DOWNLOADED", "version": version}
+
+        self.server.companion_updater.download.side_effect = download
+        self.server.companion_updater.launch_installer.return_value = {
+            "type": "COMPANION_INSTALLER_LAUNCHED", "version": "1.1.0",
+        }
+        self.server.on_installer_launched = Mock()
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "APPLY_COMPANION_UPDATE", "version": "1.1.0",
+        }))
+        await asyncio.sleep(0)
+
+        payloads = [json.loads(message) for message in websocket.messages]
+        types = [item["type"] for item in payloads]
+        self.assertIn("COMPANION_UPDATE_DOWNLOAD_STARTED", types)
+        self.assertIn("COMPANION_UPDATE_DOWNLOAD_PROGRESS", types)
+        self.assertIn("COMPANION_UPDATE_DOWNLOADED", types)
+        self.assertIn("COMPANION_INSTALLER_STARTING", types)
+        self.assertIn("COMPANION_INSTALLER_LAUNCHED", types)
+        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
+        self.server.on_installer_launched.assert_called_once_with()
+
     async def test_dashboard_can_import_a_detected_graphics_source(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"

@@ -283,7 +283,7 @@
     <div class="update-notice-actions">
       <a id="companionReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
       <button id="laterCompanionUpdateBtn" class="btn btn-secondary" type="button">Later</button>
-      <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download verified installer</button>
+      <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download and install</button>
       <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Run installer</button>
     </div>
   </aside>
@@ -903,10 +903,14 @@
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
-            if (companionUpdateBusy) {
+            const updateWasBusy = companionUpdateBusy;
+            if (updateWasBusy) {
               companionUpdateBusy = false;
               document.getElementById('checkCompanionUpdateBtn').disabled = false;
               document.getElementById('companionUpdateStatusText').textContent = `Update operation failed: ${errorText}`;
+              document.getElementById('companionUpdateText').textContent = `Update failed: ${errorText}`;
+              document.getElementById('downloadCompanionUpdateBtn').disabled = false;
+              document.getElementById('installCompanionUpdateBtn').disabled = false;
             }
             pendingProfileReshadeImport = false;
             profileSaveInFlight = false;
@@ -934,12 +938,6 @@
             document.getElementById('controlSettingsStatus').textContent = errorText;
             document.getElementById('revertAllChangesBtn').disabled = false;
             document.getElementById('performanceBenchmarkStatus').textContent = msg.message || 'Benchmark operation failed.';
-            if (companionUpdateBusy) {
-              companionUpdateBusy = false;
-              document.getElementById('companionUpdateText').textContent = `Update failed: ${errorText}`;
-              document.getElementById('downloadCompanionUpdateBtn').disabled = false;
-              document.getElementById('installCompanionUpdateBtn').disabled = false;
-            }
             ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
           } else if (msg.type === 'BENCHMARK_STATUS') {
             renderBenchmarkStatus(msg);
@@ -1018,10 +1016,22 @@
             document.getElementById('companionUpdateStatusText').textContent = `Downloading and verifying LS Companion ${msg.version}...`;
             document.getElementById('checkCompanionUpdateBtn').disabled = true;
             document.getElementById('downloadCompanionUpdateBtn').disabled = true;
+          } else if (msg.type === 'COMPANION_UPDATE_DOWNLOAD_PROGRESS') {
+            const receivedMb = (Number(msg.receivedBytes || 0) / 1048576).toFixed(1);
+            const total = Number(msg.totalBytes || 0);
+            const progressText = total > 0
+              ? `${Math.min(100, Math.round(Number(msg.receivedBytes || 0) * 100 / total))}% (${receivedMb} of ${(total / 1048576).toFixed(1)} MB)`
+              : `${receivedMb} MB received`;
+            document.getElementById('companionUpdateText').textContent = `Downloading LS Companion ${msg.version}: ${progressText}`;
+            document.getElementById('companionUpdateStatusText').textContent = `Downloading and verifying: ${progressText}`;
           } else if (msg.type === 'COMPANION_UPDATE_DOWNLOADED') {
             companionUpdateBusy = false;
             companionUpdateState = { ...(companionUpdateState || {}), latestVersion: msg.version, downloaded: true, updateAvailable: true };
             renderCompanionUpdate(companionUpdateState);
+          } else if (msg.type === 'COMPANION_INSTALLER_STARTING') {
+            companionUpdateBusy = true;
+            document.getElementById('companionUpdateText').textContent = `Verified. Starting the LS Companion ${msg.version} installer...`;
+            document.getElementById('companionUpdateStatusText').textContent = 'Starting the Windows installer. Approve the administrator prompt if it appears.';
           } else if (msg.type === 'COMPANION_INSTALLER_LAUNCHED') {
             companionUpdateBusy = false;
             document.getElementById('companionUpdateText').textContent = `Installer for ${msg.version} launched. Follow its prompts; Companion may close during installation.`;
@@ -2193,11 +2203,17 @@
     };
     document.getElementById('downloadCompanionUpdateBtn').onclick = function () {
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;
-      companionUpdateBusy = true;
-      this.disabled = true;
-      ws.send(JSON.stringify({
-        type: 'DOWNLOAD_COMPANION_UPDATE', version: companionUpdateState.latestVersion
-      }));
+      confirmDialog(
+        `Download, verify, and install LS Companion ${companionUpdateState.latestVersion}? Companion will close after the Windows installer starts.`,
+        { title: 'Update LS Companion', okLabel: 'Download and install' }
+      ).then(accepted => {
+        if (!accepted) return;
+        companionUpdateBusy = true;
+        this.disabled = true;
+        ws.send(JSON.stringify({
+          type: 'APPLY_COMPANION_UPDATE', version: companionUpdateState.latestVersion
+        }));
+      });
     };
     document.getElementById('installCompanionUpdateBtn').onclick = function () {
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;

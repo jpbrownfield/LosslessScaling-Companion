@@ -41,6 +41,8 @@ class CompanionUpdateServiceTests(unittest.TestCase):
 
         self.assertIn('id="checkCompanionUpdateBtn"', dashboard)
         self.assertIn("type: 'CHECK_COMPANION_UPDATE'", dashboard)
+        self.assertIn("type: 'APPLY_COMPANION_UPDATE'", dashboard)
+        self.assertIn("COMPANION_UPDATE_DOWNLOAD_PROGRESS", dashboard)
         self.assertIn('id="companionUpdateStatusText"', dashboard)
 
     def release(self, version="v2.0.0"):
@@ -102,6 +104,31 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertEqual(Path(arguments[2]).name, INSTALLER_NAME)
         self.assertIn("/CLOSEAPPLICATIONS", arguments[3])
         self.assertIn("/FORCECLOSEAPPLICATIONS", arguments[3])
+
+    def test_download_reports_installer_byte_progress(self):
+        installer = b"verified installer payload"
+        digest = hashlib.sha256(installer).hexdigest()
+        release = self.release()
+        release["assets"][0]["size"] = len(installer)
+        manager = SimpleNamespace(check=lambda *args, **kwargs: [release])
+        progress = []
+
+        def open_url(request, timeout=60):
+            content = (
+                f"{digest}  {INSTALLER_NAME}".encode("ascii")
+                if request.full_url.endswith(".sha256") else installer
+            )
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "companion.services.self_update.urllib.request.urlopen", side_effect=open_url
+        ):
+            CompanionUpdateService(manager, Path(directory), enabled=True).download(
+                "2.0.0", progress_callback=lambda received, total: progress.append((received, total))
+            )
+
+        self.assertEqual(progress[0], (0, len(installer)))
+        self.assertEqual(progress[-1], (len(installer), len(installer)))
 
     def test_private_download_uses_configured_github_token(self):
         installer = b"verified installer payload"

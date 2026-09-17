@@ -262,6 +262,7 @@ class CompanionWebSocketServer:
                 "OPEN_DIAGNOSTICS_FOLDER",
                 "CHECK_COMPANION_UPDATE",
                 "DOWNLOAD_COMPANION_UPDATE",
+                "APPLY_COMPANION_UPDATE",
                 "INSTALL_COMPANION_UPDATE",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
@@ -866,14 +867,24 @@ class CompanionWebSocketServer:
 
             if msg_type == "DOWNLOAD_COMPANION_UPDATE":
                 version = str(msg.get("version") or "")
-                await websocket.send(json.dumps({
-                    "type": "COMPANION_UPDATE_DOWNLOAD_STARTED", "version": version,
-                }))
-                result = await self._run_background_thread(
-                    self.companion_updater.download, version
-                )
+                result = await self._download_companion_update(websocket, version)
                 await websocket.send(json.dumps(result))
                 await self._refresh_companion_update(force=False)
+                return
+
+            if msg_type == "APPLY_COMPANION_UPDATE":
+                version = str(msg.get("version") or "")
+                result = await self._download_companion_update(websocket, version)
+                await websocket.send(json.dumps(result))
+                await websocket.send(json.dumps({
+                    "type": "COMPANION_INSTALLER_STARTING", "version": version,
+                }))
+                launched = await asyncio.to_thread(
+                    self.companion_updater.launch_installer, version
+                )
+                await websocket.send(json.dumps(launched))
+                if self.on_installer_launched:
+                    asyncio.get_running_loop().call_soon(self.on_installer_launched)
                 return
 
             if msg_type == "INSTALL_COMPANION_UPDATE":
@@ -1699,6 +1710,39 @@ class CompanionWebSocketServer:
                     return_exceptions=True,
                 )
             return status
+
+    async def _download_companion_update(
+        self, websocket: WebSocketServerProtocol, version: str
+    ) -> Dict:
+        """Download an update without leaving the dashboard silently waiting."""
+        await websocket.send(json.dumps({
+            "type": "COMPANION_UPDATE_DOWNLOAD_STARTED", "version": version,
+        }))
+        loop = asyncio.get_running_loop()
+        progress: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+
+        def report_progress(received: int, total: int) -> None:
+            loop.call_soon_threadsafe(progress.put_nowait, (received, total))
+
+        task = asyncio.create_task(self._run_background_thread(
+            self.companion_updater.download,
+            version,
+            progress_callback=report_progress,
+        ))
+        while not task.done():
+            try:
+                received, total = await asyncio.wait_for(progress.get(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
+            while not progress.empty():
+                received, total = progress.get_nowait()
+            await websocket.send(json.dumps({
+                "type": "COMPANION_UPDATE_DOWNLOAD_PROGRESS",
+                "version": version,
+                "receivedBytes": received,
+                "totalBytes": total,
+            }))
+        return await task
 
     def _verified_benchmark_executable(self, provider: str) -> Optional[Path]:
         """Return a staged x64 tool only while its immutable package still verifies."""
