@@ -6,6 +6,7 @@ Monitors foreground window transitions and enumerates running applications for p
 import ctypes
 from ctypes import wintypes
 import logging
+import threading
 import time
 from typing import Callable, List, Dict, Optional, Tuple
 import psutil
@@ -397,7 +398,7 @@ class ProcessWatcher:
             startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startup_info.wShowWindow = 0  # SW_HIDE
             process = subprocess.Popen(
-                [str(executable)],
+                [str(executable), "-StartMinimized"],
                 cwd=str(executable.parent),
                 close_fds=True,
                 startupinfo=startup_info,
@@ -407,7 +408,7 @@ class ProcessWatcher:
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
-            self._hide_process_windows(process.pid)
+            self._suppress_startup_window(process.pid)
             return True
         except Exception as exc:
             logger.error("Failed to launch Lossless Scaling: %s", exc)
@@ -415,17 +416,43 @@ class ProcessWatcher:
             return False
 
     @staticmethod
-    def _hide_process_windows(pid: int) -> None:
+    def _hide_process_windows(pid: int) -> int:
         """Hide any top-level configuration window created during a background launch."""
+        hidden = 0
+
         def callback(hwnd, _extra):
+            nonlocal hidden
             owner_pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
             if owner_pid.value == pid and user32.IsWindowVisible(hwnd):
-                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+                show_window = getattr(user32, "ShowWindowAsync", user32.ShowWindow)
+                show_window(hwnd, 0)  # SW_HIDE
+                hidden += 1
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
         user32.EnumWindows(callback_type(callback), 0)
+        return hidden
+
+    def _suppress_startup_window(self, pid: int, timeout: float = 6.0) -> None:
+        """Hide LS's delayed main window without watching long enough to catch its overlay."""
+        if self._hide_process_windows(pid):
+            return
+
+        def wait_for_window() -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if not psutil.pid_exists(pid):
+                    return
+                if self._hide_process_windows(pid):
+                    return
+                time.sleep(0.1)
+
+        threading.Thread(
+            target=wait_for_window,
+            name=f"LSStartupWindowSuppressor-{pid}",
+            daemon=True,
+        ).start()
 
     def enforce_helper_scaling_control(self) -> bool:
         """Synchronize hotkey/Auto Scale with at most one Lossless Scaling restart."""

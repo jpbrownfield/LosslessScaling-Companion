@@ -280,7 +280,6 @@ class DeploymentManager:
                 destination = self._destination(root, entry["relative_path"])
                 mutable_config = (
                     entry.get("role") in {"lossless_proxy_config", "special_k_config"}
-                    and folded in desired_by_path
                 )
                 if (
                     not mutable_config

@@ -176,6 +176,9 @@ class ProfileManager:
             if game.name != GAME_DEFAULT_PROFILE_NAME:
                 game.name = GAME_DEFAULT_PROFILE_NAME
                 changed = True
+            if game.auto_scale:
+                game.auto_scale = False
+                changed = True
             for other in config.profiles:
                 if other.id != game.id and other.is_default:
                     other.is_default = False
@@ -301,6 +304,7 @@ class ProfileManager:
             if existing.is_default or existing.id == GAME_DEFAULT_PROFILE_ID:
                 profile.is_default = True
                 profile.name = GAME_DEFAULT_PROFILE_NAME
+                profile.auto_scale = False
                 profile.target_process = None
                 profile.target_executable_path = None
                 profile.target_processes = []
@@ -350,6 +354,7 @@ class ProfileManager:
         else:
             profile.is_default = True
             profile.name = GAME_DEFAULT_PROFILE_NAME
+            profile.auto_scale = False
             profile.target_process = None
             profile.target_executable_path = None
             profile.target_processes = []

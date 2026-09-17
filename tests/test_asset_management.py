@@ -194,6 +194,31 @@ class DeploymentManagerTests(unittest.TestCase):
                 manager.apply(profile_id="one", lossless_scaling_exe=str(executable), files=files)
             self.assertEqual(deployed_dll.read_bytes(), b"external-change")
 
+    def test_runtime_modified_special_k_config_can_be_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            source = root / "generated.ini"
+            source.write_text("generated=true", encoding="utf-8")
+            destination = root / "dxgi.ini"
+            destination.write_text("original=true", encoding="utf-8")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+            manager.apply(
+                profile_id="special-k",
+                lossless_scaling_exe=str(executable),
+                files=[{
+                    "relative_path": "dxgi.ini",
+                    "source_path": str(source),
+                    "role": "special_k_config",
+                }],
+            )
+
+            destination.write_text("runtime-added=true", encoding="utf-8")
+            manager.apply(profile_id=None, lossless_scaling_exe=str(executable), files=[])
+
+            self.assertEqual(destination.read_text(encoding="utf-8"), "original=true")
+
     def test_game_destination_is_not_part_of_resolved_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

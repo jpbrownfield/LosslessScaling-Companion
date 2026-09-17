@@ -212,6 +212,7 @@ class ProfileManagerTests(unittest.TestCase):
         changed.name = "Dangerous Rename"
         changed.lossless_profile_title = "Duplicate Native Profile"
         changed.target_process = "game.exe"
+        changed.auto_scale = True
 
         self.manager.add_or_update_profile(changed)
 
@@ -219,6 +220,7 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertEqual(saved.name, "Game Default")
         self.assertEqual(saved.lossless_profile_title, "True Native Default")
         self.assertIsNone(saved.target_process)
+        self.assertFalse(saved.auto_scale)
 
     def test_corrupt_default_flags_are_repaired_without_duplicating_profiles(self):
         game = self.manager.get_profile_by_id("default-game")

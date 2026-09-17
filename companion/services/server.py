@@ -1075,6 +1075,7 @@ class CompanionWebSocketServer:
                         # user-editable and must never become a new XML profile.
                         prof.is_default = True
                         prof.name = GAME_DEFAULT_PROFILE_NAME
+                        prof.auto_scale = False
                         prof.target_process = None
                         prof.target_executable_path = None
                         prof.target_processes = []

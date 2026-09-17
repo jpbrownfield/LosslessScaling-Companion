@@ -412,6 +412,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payload = native.model_dump(mode="json")
         payload["name"] = "Attempted Rename"
         payload["lossless_profile_title"] = "Attempted Duplicate"
+        payload["auto_scale"] = True
         payload["native_scaling_settings"]["ScalingType"] = "FSR"
         await self.server.process_message(websocket, json.dumps({
             "type": "SAVE_PROFILE", "profile": payload,
@@ -420,6 +421,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         saved = self.manager.get_profile_by_id(native.id)
         self.assertEqual(saved.name, "Game Default")
         self.assertEqual(saved.lossless_profile_title, "True Native Default")
+        self.assertFalse(saved.auto_scale)
         self.server.ls_settings.update_profile.assert_called_once_with(
             "True Native Default", {"ScalingType": "FSR"}
         )
@@ -485,14 +487,17 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('>Save ReShade Profile</button>', body)
             self.assertNotIn('id="losslessProfileTitle"', body)
             self.assertIn('class="modal-content profile-editor-content"', body)
+            self.assertIn('[hidden] { display: none !important; }', body)
             self.assertIn('#profileModal { background: #020617; backdrop-filter: none; }', body)
             self.assertIn('body.profile-editor-open > header', body)
             self.assertIn('data-native-key="CaptureApi"', body)
             self.assertIn('data-native-key="MaxFrameLatency"', body)
             self.assertIn('data-native-key="QueueTarget"', body)
             self.assertIn('id="nativeFrameGenerationType"', body)
-            self.assertIn('data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="0.1"', body)
+            self.assertIn('data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="1"', body)
             self.assertIn('id="nativeLsfgTargetRow"', body)
+            self.assertIn("control.dataset.nativeAvailable = String(available)", body)
+            self.assertIn("if (control.dataset.nativeAvailable !== 'true') return", body)
             self.assertIn('id="nativeAdditionalSettingsGroup"', body)
             self.assertIn('id="reshadeShaderSearch"', body)
             self.assertIn('id="browseReshadePresetBtn"', body)

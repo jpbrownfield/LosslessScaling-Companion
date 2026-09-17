@@ -1,0 +1,19 @@
+{
+  "version": "3.2.2",
+  "source": "LosslessScaling.dll metadata and embedded UI resources from the user-supplied ls.zip",
+  "fields": {
+    "FrameGeneration": {"values": ["OFF", "LSFG1", "LSFG2", "LSFG3"]},
+    "LSFG2Mode": {"values": ["X2", "X3", "X4"]},
+    "LSFG3Mode1": {"values": ["FIXED", "ADAPTIVE"]},
+    "LSFG3Multiplier": {"min": 1, "max": 20, "step": 1},
+    "LSFG3Target": {"min": 10, "max": 1000, "step": 1},
+    "LSFGFlowScale": {"min": 25, "max": 100, "step": 5},
+    "LSFGSize": {"values": ["BALANCED", "PERFORMANCE"]},
+    "ScalingType": {"values": ["OFF", "LS1", "FSR", "NIS", "Integer", "Nearest", "SharpBilinear", "xBR", "Anime4K", "BicubicCAS", "SGSR"]},
+    "LS1Type": {"values": ["BALANCED", "PERFORMANCE"]},
+    "FSRType": {"values": ["ORIGINAL", "OPTIMIZED"]},
+    "Anime4kType": {"values": ["S", "M", "L", "UL", "VL"]},
+    "CaptureApi": {"values": ["DXGI", "WGC"]},
+    "SyncMode": {"values": ["OFF", "DEFAULT", "VSYNC1", "VSYNC2", "VSYNC3"]}
+  }
+}

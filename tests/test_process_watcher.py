@@ -102,14 +102,15 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
                 patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
                 patch("companion.services.process_watcher.subprocess.Popen", return_value=process) as popen,
                 patch("companion.services.process_watcher.time.sleep"),
-                patch.object(watcher, "_hide_process_windows") as hide,
+                patch.object(watcher, "_suppress_startup_window") as suppress,
             ):
                 self.assertTrue(watcher.launch_lossless_scaling(force=True))
 
             kwargs = popen.call_args.kwargs
+            self.assertEqual(popen.call_args.args[0], [str(executable), "-StartMinimized"])
             self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
-            hide.assert_called_once_with(4242)
+            suppress.assert_called_once_with(4242)
 
     def test_running_check_ignores_a_different_simulation_executable(self):
         watcher, _settings = self.make_watcher()

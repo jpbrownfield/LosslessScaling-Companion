@@ -27,6 +27,7 @@ from .asset_store import AssetStore
 from .automation import AutomationController
 from .deployment_manager import DeploymentManager
 from .input_simulator import InputSimulator
+from .graphics_source_importer import GraphicsSourceImporter
 from .reshade_manager import ReshadeManager
 
 
@@ -405,7 +406,29 @@ class DiagnosticRunner:
         profiles = data.get("profiles", []) if isinstance(data, dict) else []
         default = next((item for item in profiles if str(item.get("Title", "")).casefold() == "default"), None)
         status = "pass" if path.is_file() and profiles else "fail"
-        return self._result(status, "Settings.xml parses and contains native profiles." if status == "pass" else "Settings.xml is missing, unreadable, or contains no profiles.", path=self._path(path), nativeProfileCount=len(profiles), defaultProfileFound=bool(default), backupFound=self.server.ls_settings.initial_backup_path.is_file(), nativeAutoScaleEnabled=self.server.ls_settings.native_auto_scale_enabled())
+        sanitized_profiles = [
+            {
+                "index": index,
+                "settings": {
+                    key: self._path(value)
+                    for key, value in profile.items()
+                    if key not in {"Title", "Path"}
+                },
+            }
+            for index, profile in enumerate(profiles)
+        ]
+        return self._result(
+            status,
+            "Settings.xml parses and contains native profiles."
+            if status == "pass"
+            else "Settings.xml is missing, unreadable, or contains no profiles.",
+            path=self._path(path),
+            nativeProfileCount=len(profiles),
+            defaultProfileFound=bool(default),
+            backupFound=self.server.ls_settings.initial_backup_path.is_file(),
+            nativeAutoScaleEnabled=self.server.ls_settings.native_auto_scale_enabled(),
+            nativeProfileSchemas=sanitized_profiles,
+        )
 
     def _autoscale(self) -> Dict:
         config = self.server.config
@@ -878,6 +901,9 @@ class DiagnosticRunner:
                 ),
                 5.0,
             )
+            # Give both the listener and Lossless Scaling time to release the
+            # first chord before emitting the same override chord again.
+            time.sleep(0.75)
             focus_window(hwnd)
             emitted_off = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
             override_off = emitted_off and self._wait_until(lambda: not self.server.state.is_scaling_active, 10.0)
@@ -1008,6 +1034,20 @@ class DiagnosticRunner:
     def _reshade(self) -> Dict:
         selected = [p for p in self.server.config.profiles if (p.graphics.reshade.enabled or (p.reshade and p.reshade.enabled))]
         checks, failures = [], []
+        staged = None
+        if selected and not any(
+            item.get("provider") == "reshade"
+            for item in self.server.asset_store.list_packages()
+        ):
+            try:
+                staged = GraphicsSourceImporter(self.server.asset_store).stage(
+                    "reshade", f"diagnostic-reshade-{uuid.uuid4().hex}"
+                )
+            except Exception as error:
+                failures.append({
+                    "profile": "setup",
+                    "error": f"ReShade is selected but its detected installer could not be staged: {error}",
+                })
         known = {item.id for item in self.server.config.reshade_profiles}
         exe = self.server.config.lossless_scaling_exe_path
         for profile in selected:
@@ -1024,7 +1064,13 @@ class DiagnosticRunner:
                 failures.append({"profile": profile.id, "error": str(error)})
         status = "fail" if failures else "pass" if selected else "warn"
         summary = "Every selected ReShade profile resolves to an injection plan." if status == "pass" else "ReShade is not selected by any profile." if status == "warn" else "One or more ReShade injection plans are invalid."
-        return self._result(status, summary, selectedProfileCount=len(selected), checks=checks, failures=failures)
+        return self._result(
+            status, summary,
+            selectedProfileCount=len(selected),
+            stagedPackage=(staged or {}).get("version"),
+            checks=checks,
+            failures=failures,
+        )
 
     def _reshade_move_behavior(self) -> Dict:
         with self._sandbox("reshade-move") as directory:

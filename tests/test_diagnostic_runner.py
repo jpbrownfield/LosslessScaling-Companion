@@ -10,6 +10,33 @@ from companion.services.diagnostic_runner import DiagnosticRunner
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_lossless_settings_log_exposes_schema_without_titles_or_paths(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        settings = Mock()
+        settings.path = Mock()
+        settings.path.is_file.return_value = True
+        settings.path.__str__ = Mock(return_value="Settings.xml")
+        settings.read.return_value = {
+            "profiles": [{
+                "Title": "Private Game",
+                "Path": r"D:\Private\Game.exe",
+                "FrameGeneration": "LSFG3",
+                "LSFG3Multiplier": "2",
+            }]
+        }
+        settings.initial_backup_path = Mock()
+        settings.initial_backup_path.is_file.return_value = True
+        settings.native_auto_scale_enabled.return_value = False
+        runner.server = SimpleNamespace(ls_settings=settings)
+        runner._path = lambda value: str(value)
+
+        result = runner._lossless_settings()
+
+        schema = result["details"]["nativeProfileSchemas"][0]["settings"]
+        self.assertEqual(schema, {"FrameGeneration": "LSFG3", "LSFG3Multiplier": "2"})
+        self.assertNotIn("Private Game", json.dumps(result))
+        self.assertNotIn("Game.exe", json.dumps(result))
+
     def test_isolated_component_helpers_execute_production_code(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = DiagnosticRunner.__new__(DiagnosticRunner)

@@ -171,7 +171,8 @@ class AutomationController:
                 self._set_control_status("error", f"Hotkey injection failed for {reason}")
                 logger.error("Hotkey injection failed for %s", reason)
                 return False
-            if not self._confirm_scaling_state(active):
+            confirmation_timeout = 5.0 if active else 8.0
+            if not self._confirm_scaling_state(active, timeout=confirmation_timeout):
                 self._set_control_status(
                     "error",
                     f"Lossless Scaling did not confirm {'activation' if active else 'deactivation'}",
@@ -501,6 +502,7 @@ class AutomationController:
                 runtime_providers = self._runtime_providers(profile)
                 will_auto_scale = bool(
                     profile
+                    and not profile.is_default
                     and profile.auto_scale
                     and self.profile_manager.config.disable_native_auto_scale
                     and self.state.auto_scale_enabled
@@ -691,7 +693,8 @@ class AutomationController:
         if reshade_swapped and profile.reshade and profile.reshade.reload_hotkey:
             ReshadeManager.trigger_reshade_reload(profile.reshade.reload_hotkey)
         if (
-            profile.auto_scale
+            not profile.is_default
+            and profile.auto_scale
             and self.profile_manager.config.disable_native_auto_scale
             and self.state.auto_scale_enabled
             and not suppress_auto_scale

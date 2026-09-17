@@ -19,6 +19,7 @@
       --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    [hidden] { display: none !important; }
     body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
     .container { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
     header { position: sticky; z-index: 50; top: 0; max-width: 1400px; margin: 0 auto 24px auto; padding: 12px 16px; display: grid; grid-template-columns: auto minmax(420px, 1fr) auto; align-items: center; gap: 18px; border: 1px solid rgba(35,45,66,.9); border-radius: 12px; background: rgba(11,15,25,.94); box-shadow: 0 8px 24px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
@@ -523,18 +524,18 @@
 
         <section class="native-settings">
           <h4>Lossless Scaling Profile Settings</h4>
-          <p class="item-sub" style="white-space:normal">These values map directly to the selected Lossless Scaling profile. Native Auto Scale is kept off while Companion automatic scaling is enabled.</p>
+          <p class="item-sub" style="white-space:normal">These values map directly to fields present in the selected Lossless Scaling profile. Unsupported fields are not written. Native Auto Scale is kept off while Companion automatic scaling is enabled.</p>
           <div class="ls-settings-board">
             <div class="ls-settings-column">
               <section class="ls-settings-card">
                 <h5>Frame Generation</h5>
-                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeFrameGenerationType" data-native-key="FrameGeneration" data-native-default="Off"><option value="Off">Off</option><option value="LSFG">LSFG</option><option value="LSFG2">LSFG 2</option><option value="LSFG3">LSFG 3</option></select></div></div>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeFrameGenerationType" data-native-key="FrameGeneration" data-native-default="OFF"><option value="OFF">Off</option><option value="LSFG1">LSFG 1</option><option value="LSFG2">LSFG 2</option><option value="LSFG3">LSFG 3</option></select></div></div>
                 <div id="nativeLsfgModeRow" class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select id="nativeLsfgMode" data-native-key="LSFG3Mode1" data-native-default="FIXED"><option value="FIXED">Fixed</option><option value="ADAPTIVE">Adaptive (dynamic)</option></select></div></div>
-                <div id="nativeLsfgMultiplierRow" class="ls-setting-row"><label>Multiplier</label><div class="ls-setting-control"><input data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="0.1" inputmode="decimal"></div></div>
+                <div id="nativeLsfgMultiplierRow" class="ls-setting-row"><label>Multiplier</label><div class="ls-setting-control"><input data-native-key="LSFG3Multiplier" data-native-default="2" type="number" min="1" max="20" step="1" inputmode="numeric"></div></div>
                 <div id="nativeLsfg2MultiplierRow" class="ls-setting-row" hidden><label>Multiplier</label><div class="ls-setting-control"><select data-native-key="LSFG2Mode" data-native-default="X2"><option value="X2">X2</option><option value="X3">X3</option><option value="X4">X4</option></select></div></div>
-                <div id="nativeLsfgTargetRow" class="ls-setting-row" hidden><label>Target FPS</label><div class="ls-setting-control"><input data-native-key="LSFG3TargetFps" data-native-aliases="LSFG3TargetFPS,LSFG3Target,LSFGTargetFps,LSFGTargetFPS" data-native-default="120" type="number" min="1" max="1000" step="1"></div></div>
-                <div class="ls-setting-row"><label>Flow scale</label><div class="ls-setting-control ls-range-control"><input data-native-key="LSFGResolutionScale" data-native-default="100" type="range" min="1" max="100"><output>100</output></div></div>
-                <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LSFGType" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <div id="nativeLsfgTargetRow" class="ls-setting-row" hidden><label>Target FPS</label><div class="ls-setting-control"><input data-native-key="LSFG3Target" data-native-aliases="LSFG3TargetFps,LSFG3TargetFPS,LSFGTargetFps,LSFGTargetFPS" data-native-default="120" type="number" min="10" max="1000" step="1"></div></div>
+                <div class="ls-setting-row"><label>Flow scale</label><div class="ls-setting-control ls-range-control"><input data-native-key="LSFGFlowScale" data-native-aliases="LSFGResolutionScale" data-native-default="100" type="range" min="25" max="100" step="5"><output>100</output></div></div>
+                <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LSFGSize" data-native-aliases="LSFGType" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
               </section>
               <section class="ls-settings-card">
                 <h5>Capture</h5>
@@ -561,7 +562,7 @@
             <div class="ls-settings-column">
               <section class="ls-settings-card">
                 <h5>Scaling</h5>
-                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR</option><option value="NIS">NIS</option><option value="Integer">Integer</option><option value="NearestNeighbor">Nearest Neighbor</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option></select></div></div>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select data-native-key="ScalingType" data-native-default="LS1"><option value="OFF">Off</option><option value="LS1">LS1</option><option value="FSR">FSR</option><option value="NIS">NIS</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
                 <div class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
                 <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LS1Type" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
                 <div class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select data-native-key="ScalingMode" data-native-default="Auto"><option value="Auto">Auto</option><option value="Custom">Custom</option></select></div></div>
@@ -569,7 +570,7 @@
               </section>
               <section class="ls-settings-card">
                 <h5>Rendering</h5>
-                <div class="ls-setting-row"><label>Sync mode</label><div class="ls-setting-control"><select data-native-key="SyncMode" data-native-default="DEFAULT"><option value="DEFAULT">Default</option><option value="VSYNC">VSync</option><option value="ALLOW_TEARING">Allow tearing</option></select></div></div>
+                <div class="ls-setting-row"><label>Sync mode</label><div class="ls-setting-control"><select data-native-key="SyncMode" data-native-default="DEFAULT"><option value="OFF">Off (allow tearing)</option><option value="DEFAULT">Default</option><option value="VSYNC1">VSync 1</option><option value="VSYNC2">VSync 2</option><option value="VSYNC3">VSync 3</option></select></div></div>
                 <div class="ls-setting-row"><label>Max frame latency</label><div class="ls-setting-control"><input data-native-key="MaxFrameLatency" data-native-default="1" type="number" min="1" max="16"></div></div>
                 <div class="ls-setting-row"><label>HDR support</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="HdrSupport" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
                 <div class="ls-setting-row"><label>G-Sync support</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="GsyncSupport" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
@@ -592,8 +593,8 @@
               <div class="form-group"><label>Scale Factor</label><input data-native-key="ScaleFactor" data-native-default="1" type="number" min="0.1" step="0.1"></div>
               <div class="form-group"><label>Auto Scale Delay (seconds)</label><input data-native-key="AutoScaleDelay" data-native-default="0" type="number" min="0" step="0.1"></div>
               <div class="form-group"><label>Generic Sharpness</label><input data-native-key="Sharpness" data-native-default="0" type="number" step="1"></div>
-              <div class="form-group"><label>FSR Type</label><input data-native-key="FSRType" data-native-default="ORIGINAL" type="text"></div>
-              <div class="form-group"><label>Anime4K Type</label><input data-native-key="Anime4kType" data-native-default="S" type="text"></div>
+              <div class="form-group"><label>FSR Type</label><select data-native-key="FSRType" data-native-default="ORIGINAL"><option value="ORIGINAL">Original</option><option value="OPTIMIZED">Optimized</option></select></div>
+              <div class="form-group"><label>Anime4K Type</label><select data-native-key="Anime4kType" data-native-default="S"><option value="S">Small</option><option value="M">Medium</option><option value="L">Large</option><option value="UL">Ultra Large</option><option value="VL">Very Large</option></select></div>
               <div class="form-group"><label>Legacy LSFG 3 Mode</label><input data-native-key="LSFG3Mode" data-native-default="X2" type="text"></div>
               <div class="form-group checkbox-group"><input data-native-key="ResizeBeforeScaling" type="checkbox"><label>Resize before scaling</label></div>
               <div class="form-group checkbox-group"><input data-native-key="WindowedMode" type="checkbox"><label>Windowed mode</label></div>
@@ -1734,14 +1735,23 @@
     function renderFrameGenerationModeSettings() {
       const type = document.getElementById('nativeFrameGenerationType');
       const mode = document.getElementById('nativeLsfgMode');
+      const multiplier = document.querySelector('#nativeLsfgMultiplierRow [data-native-key]');
+      const lsfg2Mode = document.querySelector('#nativeLsfg2MultiplierRow [data-native-key]');
+      const target = document.querySelector('#nativeLsfgTargetRow [data-native-key]');
       const typeValue = String(type && type.value || '').toUpperCase();
-      const supportsAdaptive = typeValue.startsWith('LSFG3');
+      const usesLsfg3 = typeValue.startsWith('LSFG3');
       const usesLsfg2Multiplier = typeValue.startsWith('LSFG2');
-      const adaptive = supportsAdaptive && mode && ['ADAPTIVE', 'DYNAMIC'].includes(mode.value.toUpperCase());
-      document.getElementById('nativeLsfgModeRow').hidden = !supportsAdaptive;
-      document.getElementById('nativeLsfgMultiplierRow').hidden = !supportsAdaptive || adaptive;
-      document.getElementById('nativeLsfg2MultiplierRow').hidden = !usesLsfg2Multiplier;
-      document.getElementById('nativeLsfgTargetRow').hidden = !adaptive;
+      const modeAvailable = mode && mode.dataset.nativeAvailable === 'true';
+      const adaptive = usesLsfg3 && modeAvailable
+        && ['ADAPTIVE', 'DYNAMIC'].includes(mode.value.toUpperCase());
+      document.getElementById('nativeLsfgModeRow').hidden = !usesLsfg3 || !modeAvailable;
+      document.getElementById('nativeLsfgMultiplierRow').hidden = !usesLsfg3
+        || multiplier.dataset.nativeAvailable !== 'true'
+        || adaptive;
+      document.getElementById('nativeLsfg2MultiplierRow').hidden = !usesLsfg2Multiplier
+        || lsfg2Mode.dataset.nativeAvailable !== 'true';
+      document.getElementById('nativeLsfgTargetRow').hidden = !adaptive
+        || target.dataset.nativeAvailable !== 'true';
     }
 
     function renderNativeSettings(profile) {
@@ -1755,6 +1765,8 @@
         ];
         const key = candidates.find(candidate => Object.prototype.hasOwnProperty.call(values, candidate)) || candidates[0];
         control.dataset.nativeKey = key;
+        const available = candidates.some(candidate => Object.prototype.hasOwnProperty.call(values, candidate));
+        control.dataset.nativeAvailable = String(available);
         let value = Object.prototype.hasOwnProperty.call(values, key)
           ? values[key]
           : (control.dataset.nativeDefault || '');
@@ -1765,6 +1777,14 @@
         if (!control.id) control.id = `nativeSetting${index}`;
         const settingRow = control.closest('.ls-setting-row');
         const formGroup = control.closest('.form-group');
+        const dynamicFrameGenerationRow = settingRow && [
+          'nativeLsfgModeRow',
+          'nativeLsfgMultiplierRow',
+          'nativeLsfg2MultiplierRow',
+          'nativeLsfgTargetRow'
+        ].includes(settingRow.id);
+        if (settingRow && !dynamicFrameGenerationRow) settingRow.hidden = !available;
+        if (formGroup) formGroup.hidden = !available;
         const label = settingRow ? settingRow.querySelector(':scope > label') : (formGroup && formGroup.querySelector('label'));
         if (label) label.htmlFor = control.id;
         if (control.type === 'checkbox') {
@@ -1817,6 +1837,8 @@
         input.type = 'text';
         input.dataset.nativeExtraKey = key;
         input.value = value == null ? '' : String(value);
+        input.readOnly = true;
+        input.title = 'Preserved exactly; editing is disabled until this setting is mapped and validated.';
         row.append(name, input);
         container.appendChild(row);
       });
@@ -1828,6 +1850,7 @@
         ...(editingOriginalProfile && editingOriginalProfile.native_scaling_settings || {})
       };
       document.querySelectorAll('[data-native-key]').forEach(control => {
+        if (control.dataset.nativeAvailable !== 'true') return;
         values[control.dataset.nativeKey] = control.type === 'checkbox'
           ? (control.dataset.nativeCheckedValue
               ? (control.checked ? control.dataset.nativeCheckedValue : control.dataset.nativeUncheckedValue)
@@ -1888,6 +1911,7 @@
       document.getElementById('profileName').readOnly = nativeDefaultAlias;
       document.getElementById('targetType').disabled = nativeDefaultAlias;
       document.getElementById('targetValue').readOnly = nativeDefaultAlias;
+      document.getElementById('autoScale').disabled = nativeDefaultAlias;
 
       if (profile) {
         document.getElementById('modalTitle').textContent = creating ? 'Create Profile' : 'Edit Profile';
@@ -1899,7 +1923,9 @@
           ? (profile.target_domain || '')
           : profileTargets(profile);
         renderTargetType();
-        document.getElementById('autoScale').checked = profile.auto_scale !== false;
+        document.getElementById('autoScale').checked = nativeDefaultAlias
+          ? false
+          : profile.auto_scale !== false;
         const rtss = profile.rtss || {};
         document.getElementById('rtssEnabled').checked = !!rtss.enabled;
         document.getElementById('rtssLimitMode').value = rtss.limit_mode || 'inherit';
@@ -2519,7 +2545,9 @@
           last_imported_hash: editingOriginalProfile && editingOriginalProfile.last_imported_hash || null,
           native_scaling_settings: nativeSettingsPayload(),
           custom_notes: editingOriginalProfile && editingOriginalProfile.custom_notes || null,
-          auto_scale: document.getElementById('autoScale').checked,
+          auto_scale: !!(editingOriginalProfile && editingOriginalProfile.is_default)
+            ? false
+            : document.getElementById('autoScale').checked,
           rtss: {
             enabled: document.getElementById('rtssEnabled').checked,
             limit_mode: document.getElementById('rtssLimitMode').value,
