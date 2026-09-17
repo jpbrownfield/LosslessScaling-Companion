@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "companion" / "ui" / "dashboard.html"
 FIXTURE = ROOT / "tests" / "fixtures" / "lossless_scaling" / "Settings.xml"
+FIXTURE_322 = ROOT / "tests" / "fixtures" / "lossless_scaling" / "Settings-3.2.2.xml"
 SCHEMA_322 = ROOT / "tests" / "fixtures" / "lossless_scaling" / "3.2.2-schema.json"
 
 
@@ -27,11 +28,13 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
 
     def test_normalized_native_fixture_fields_have_editor_mappings(self):
-        profile = ET.parse(FIXTURE).getroot().find("./GameProfiles/Profile")
-        fixture_keys = {
-            child.tag for child in profile
-            if child.tag not in {"Title", "Path", "AutoScale"}
-        }
+        fixture_keys = set()
+        for fixture in (FIXTURE, FIXTURE_322):
+            for profile in ET.parse(fixture).getroot().findall("./GameProfiles/Profile"):
+                fixture_keys.update(
+                    child.tag for child in profile
+                    if child.tag not in {"Title", "Path", "AutoScale"}
+                )
         native_keys = set(re.findall(r'data-native-key="([^"]+)"', self.html))
         aliases = {
             alias.strip()
@@ -41,6 +44,28 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         }
 
         self.assertEqual(fixture_keys - native_keys - aliases, set())
+
+    def test_lossless_scaling_322_serialized_select_values_are_options(self):
+        profiles = ET.parse(FIXTURE_322).getroot().findall("./GameProfiles/Profile")
+        observed = {}
+        for profile in profiles:
+            for child in profile:
+                observed.setdefault(child.tag, set()).add(child.text or "")
+        for key, values in observed.items():
+            if key in {"PreferredGpuId", "OutputDisplayId"}:
+                continue
+            match = re.search(
+                rf'<select[^>]*data-native-key="{re.escape(key)}"[^>]*>(.*?)</select>',
+                self.html,
+                flags=re.DOTALL,
+            )
+            if match is None:
+                continue
+            for value in values:
+                self.assertIn(
+                    f'value="{value}"', match.group(0),
+                    f"{key} is missing serialized Lossless Scaling value {value!r}",
+                )
 
     def test_hidden_and_version_specific_controls_fail_closed(self):
         self.assertIn("[hidden] { display: none !important; }", self.html)

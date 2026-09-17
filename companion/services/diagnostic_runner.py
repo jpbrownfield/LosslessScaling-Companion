@@ -47,7 +47,7 @@ class DiagnosticRunner:
         "hotkey_override_behavior": ("autoscale_behavior", "hotkeys"),
         "lossless_scaling_log": ("autoscale_behavior",),
         "reshade": ("assets", "lossless_installation"),
-        "reshade_runtime": ("reshade", "autoscale_behavior"),
+        "reshade_runtime": ("reshade", "deployment_behavior"),
         "deployment": ("assets", "lossless_installation"),
         "deployment_behavior": ("deployment", "benchmark", "process_windows"),
         "benchmark": ("assets", "lossless_installation"),
@@ -56,11 +56,13 @@ class DiagnosticRunner:
         "runtime": ("configuration",),
     }
     LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
+    ALWAYS_RUN_AFTER_DEPENDENCIES = {"reshade_runtime"}
 
     def __init__(self, server):
         self.server = server
         self.root = server.profile_manager.config_dir / "diagnostics" / "application-tests"
         self._live_scaling_results: Optional[Dict[str, Dict]] = None
+        self._live_addon_result: Optional[Dict] = None
 
     @staticmethod
     def _result(status: str, summary: str, **details) -> Dict:
@@ -152,6 +154,7 @@ class DiagnosticRunner:
     def run(self, selected_test: Optional[str] = None) -> Dict:
         # Each button press must execute a fresh live workflow and collect new log deltas.
         self._live_scaling_results = None
+        self._live_addon_result = None
         started = datetime.now(timezone.utc)
         stamp = started.strftime("%Y%m%dT%H%M%SZ")
         session = self.root / stamp
@@ -173,7 +176,7 @@ class DiagnosticRunner:
                 dependency for dependency in self.DEPENDENCIES.get(test_id, ())
                 if result_by_id.get(dependency, {}).get("status") == "fail"
             ]
-            if failed_dependencies:
+            if failed_dependencies and test_id not in self.ALWAYS_RUN_AFTER_DEPENDENCIES:
                 result = self._result(
                     "fail",
                     "Not run because required setup tests failed: " + ", ".join(failed_dependencies),
@@ -457,7 +460,24 @@ class DiagnosticRunner:
         return self._live_scaling_result("lossless_log")
 
     def _reshade_runtime_behavior(self) -> Dict:
-        return self._live_scaling_result("reshade_runtime")
+        deployment = self._live_addon_deployment_behavior()
+        attempts = [
+            item for item in deployment.get("details", {}).get("testedProfiles", [])
+            if "reshade" in str(item.get("profile") or "").casefold()
+        ]
+        if not attempts:
+            return self._result(
+                "warn", "No installed ReShade package was available for the live run.",
+                selected=False, attempts=[],
+            )
+        passed = all(item.get("status") == "pass" for item in attempts)
+        return self._result(
+            "pass" if passed else "fail",
+            "ReShade was deployed and produced fresh runtime evidence while scaling the benchmark."
+            if passed else "ReShade was deployed, but its live scaling or runtime confirmation failed.",
+            selected=True,
+            attempts=attempts,
+        )
 
     @staticmethod
     def _wait_until(predicate: Callable[[], bool], timeout: float, interval: float = 0.2) -> bool:
@@ -542,6 +562,11 @@ class DiagnosticRunner:
         return profiles
 
     def _live_addon_deployment_behavior(self) -> Dict:
+        if self._live_addon_result is None:
+            self._live_addon_result = self._run_live_addon_deployment_behavior()
+        return self._live_addon_result
+
+    def _run_live_addon_deployment_behavior(self) -> Dict:
         exe_value = self.server.config.lossless_scaling_exe_path
         executable = Path(exe_value) if exe_value else None
         if not executable or not executable.is_file():
@@ -582,6 +607,15 @@ class DiagnosticRunner:
             if was_running and not self.server.process_watcher.stop_lossless_scaling():
                 raise RuntimeError("Lossless Scaling could not be stopped for live deployment")
             for profile in profiles:
+                attempt = {"profile": profile.name, "status": "fail", "files": []}
+                lossless_delta: Dict[str, str] = {}
+                runtime_delta: Dict[str, str] = {}
+                runtime_errors: List[str] = []
+                runtime_evidence = {
+                    "neuralEngineReady": False,
+                    "neuralModelPrepared": False,
+                    "neuralTapObserved": False,
+                }
                 try:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
                         if not self.server.process_watcher.stop_lossless_scaling():
@@ -605,6 +639,7 @@ class DiagnosticRunner:
                             "actualSha256": actual,
                             "verified": good,
                         })
+                    attempt["files"] = file_checks
                     if not plan or not all(item["verified"] for item in file_checks):
                         raise RuntimeError("one or more deployed files failed destination verification")
 
@@ -650,6 +685,34 @@ class DiagnosticRunner:
                     runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
                     runtime_errors = self._runtime_log_errors(runtime_delta)
                     runtime_evidence = self._runtime_log_evidence(runtime_delta)
+                    expected_proxy_version = (
+                        str(profile.graphics.lossless_proxy.version or "").removeprefix("v")
+                        if profile.graphics.lossless_proxy.enabled else None
+                    )
+                    reported_proxy_version = self._reported_lossless_proxy_version(runtime_delta)
+                    proxy_version_matches = (
+                        None
+                        if not expected_proxy_version or not reported_proxy_version
+                        else expected_proxy_version.casefold() == reported_proxy_version.casefold()
+                    )
+                    attempt.update({
+                        "scalingConfirmed": scaled and active_observed,
+                        "deactivationConfirmed": stopped,
+                        "losslessLogFiles": [self._path(item) for item in lossless_delta],
+                        "losslessLogTail": self._path("\n".join(lossless_delta.values())[-8000:]),
+                        "runtimeLogFiles": [self._path(item) for item in runtime_delta],
+                        "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
+                        "runtimeErrors": runtime_errors,
+                        "runtimeEvidence": runtime_evidence,
+                        "expectedLosslessProxyVersion": expected_proxy_version,
+                        "reportedLosslessProxyVersion": reported_proxy_version,
+                        "losslessProxyVersionMatches": proxy_version_matches,
+                        "losslessProxyVersionNote": (
+                            "The runtime self-reported a different version. This can be a stale "
+                            "embedded label and is recorded as evidence, not treated as a failure."
+                            if proxy_version_matches is False else None
+                        ),
+                    })
                     neural_render_selected = (
                         profile.graphics.neural_render.implementation == "lsp_neural_render"
                     )
@@ -670,20 +733,12 @@ class DiagnosticRunner:
                             f"runtimeLog={bool(runtime_delta)}, runtimeErrors={runtime_errors}, "
                             f"runtimeEvidence={runtime_evidence}"
                         )
-                    checks.append({
-                        "profile": profile.name,
-                        "files": file_checks,
-                        "scalingConfirmed": scaled and active_observed,
-                        "deactivationConfirmed": stopped,
-                        "losslessLogFiles": [self._path(item) for item in lossless_delta],
-                        "losslessLogTail": self._path("\n".join(lossless_delta.values())[-8000:]),
-                        "runtimeLogFiles": [self._path(item) for item in runtime_delta],
-                        "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
-                        "runtimeErrors": runtime_errors,
-                        "runtimeEvidence": runtime_evidence,
-                    })
+                    attempt["status"] = "pass"
                 except Exception as error:
+                    attempt["error"] = str(error)
                     failures.append({"profile": profile.name, "error": str(error)})
+                finally:
+                    checks.append(attempt)
         except Exception as error:
             failures.append({"profile": "test setup", "error": str(error)})
         finally:
@@ -731,22 +786,42 @@ class DiagnosticRunner:
         return self._live_scaling_results[key]
 
     @staticmethod
-    def _log_snapshot(paths: Iterable[Path]) -> Dict[Path, int]:
-        return {path: path.stat().st_size for path in paths if path.is_file()}
+    def _log_snapshot(paths: Iterable[Path]) -> Dict[Path, Dict[str, object]]:
+        snapshot: Dict[Path, Dict[str, object]] = {}
+        for path in paths:
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+            with path.open("rb") as stream:
+                stream.seek(max(0, size - 256))
+                tail = stream.read()
+            snapshot[path] = {"size": size, "tail": tail}
+        return snapshot
 
     @staticmethod
-    def _log_delta(snapshot: Dict[Path, int], paths: Iterable[Path]) -> Dict[str, str]:
+    def _log_delta(snapshot: Dict[Path, object], paths: Iterable[Path]) -> Dict[str, str]:
         output: Dict[str, str] = {}
         for path in paths:
             if not path.is_file():
                 continue
-            offset = snapshot.get(path, 0)
+            saved = snapshot.get(path, {"size": 0, "tail": b""})
+            if isinstance(saved, dict):
+                offset = int(saved.get("size") or 0)
+                tail = bytes(saved.get("tail") or b"")
+            else:  # Compatibility with older callers and archived tests.
+                offset = int(saved or 0)
+                tail = b""
             try:
                 current_size = path.stat().st_size
                 # Add-on loggers commonly truncate a log when LS restarts. Seeking
                 # to the old (larger) offset would incorrectly report no output.
                 if current_size < offset:
                     offset = 0
+                elif offset and tail:
+                    with path.open("rb") as binary:
+                        binary.seek(max(0, offset - len(tail)))
+                        if binary.read(len(tail)) != tail:
+                            offset = 0
                 with path.open("r", encoding="utf-8", errors="ignore") as stream:
                     stream.seek(offset)
                     text = stream.read()
@@ -780,10 +855,16 @@ class DiagnosticRunner:
             "neuralTapObserved": bool(re.search(r"\btaps\s+[1-9]\d*\b", content)),
         }
 
+    @staticmethod
+    def _reported_lossless_proxy_version(logs: Dict[str, str]) -> Optional[str]:
+        content = "\n".join(logs.values())
+        match = re.search(r"\bLosslessProxy\s+v([^\s]+)\s+starting", content, re.IGNORECASE)
+        return match.group(1).rstrip(".,;:") if match else None
+
     def _run_live_scaling_workflow(self) -> Dict[str, Dict]:
         results = {
             key: self._result("fail", "The live scaling workflow did not complete.")
-            for key in ("autoscale", "hotkey_override", "lossless_log", "reshade_runtime")
+            for key in ("autoscale", "hotkey_override", "lossless_log")
         }
         if self.server.state.simulation_mode:
             message = "Live tests cannot run while simulation mode is active."
@@ -822,13 +903,9 @@ class DiagnosticRunner:
         active_log = log_inspector._find_log_file()
         ls_paths = [active_log] if active_log else []
         ls_snapshot = self._log_snapshot(ls_paths)
-        reshade_paths = list(executable.parent.glob("*ReShade*.log")) + list(executable.parent.glob("reshade*.log"))
-        reshade_snapshot = self._log_snapshot(reshade_paths)
-
-        addon_profiles = self._installed_addon_profiles()
-        live_profile = next(
-            (item for item in addon_profiles if item.graphics.reshade.enabled),
-            Profile(id=f"experimental-live-scale-{uuid.uuid4().hex}", name="Experimental Live Scaling"),
+        live_profile = Profile(
+            id=f"experimental-live-scale-{uuid.uuid4().hex}",
+            name="Experimental Live Scaling",
         )
         live_profile.target_process = Path(workload).name
         live_profile.target_executable_path = str(Path(workload).resolve())
@@ -940,20 +1017,6 @@ class DiagnosticRunner:
                 logTail=self._path(combined_ls[-12000:]),
             )
 
-            current_reshade_paths = list(executable.parent.glob("*ReShade*.log")) + list(executable.parent.glob("reshade*.log"))
-            reshade_delta = self._log_delta(reshade_snapshot, current_reshade_paths)
-            reshade_selected = bool(live_profile.graphics.reshade.enabled)
-            reshade_loaded = bool(reshade_delta)
-            status = "pass" if reshade_selected and reshade_loaded else "warn" if not reshade_selected else "fail"
-            results["reshade_runtime"] = self._result(
-                status,
-                "ReShade was deployed and produced fresh runtime log output while scaling the benchmark."
-                if status == "pass" else "No installed ReShade package was available for the live run."
-                if status == "warn" else "ReShade was selected, but no fresh ReShade runtime log was produced.",
-                selected=reshade_selected,
-                logFiles=[self._path(item) for item in reshade_delta],
-                logTail=self._path("\n".join(reshade_delta.values())[-12000:]),
-            )
         except Exception as error:
             failure = f"Live scaling workflow raised {type(error).__name__}: {error}"
             for key, value in list(results.items()):

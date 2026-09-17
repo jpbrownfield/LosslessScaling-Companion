@@ -15,3 +15,8 @@ The public example predates current Lossless Scaling releases, so consumers
 should tolerate missing and unknown elements. Do not copy this fixture over a
 live configuration. If testing replacement behavior, work on a temporary copy
 and ensure Lossless Scaling is closed first.
+
+`Settings-3.2.2.xml` is a privacy-normalized fixture derived from two real
+Lossless Scaling 3.2.2 files supplied for compatibility testing. It preserves
+the field names, casing, and representative values while replacing profile
+identities and paths.

@@ -9,7 +9,7 @@
     "LSFG3Target": {"min": 10, "max": 1000, "step": 1},
     "LSFGFlowScale": {"min": 25, "max": 100, "step": 5},
     "LSFGSize": {"values": ["BALANCED", "PERFORMANCE"]},
-    "ScalingType": {"values": ["OFF", "LS1", "FSR", "NIS", "Integer", "Nearest", "SharpBilinear", "xBR", "Anime4K", "BicubicCAS", "SGSR"]},
+    "ScalingType": {"values": ["Off", "LS1", "FSR", "NIS", "Integer", "Nearest", "SharpBilinear", "xBR", "Anime4K", "BicubicCAS", "SGSR"]},
     "LS1Type": {"values": ["BALANCED", "PERFORMANCE"]},
     "FSRType": {"values": ["ORIGINAL", "OPTIMIZED"]},
     "Anime4kType": {"values": ["S", "M", "L", "UL", "VL"]},

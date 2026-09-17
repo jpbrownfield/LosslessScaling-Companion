@@ -57,15 +57,61 @@ class DiagnosticRunnerTests(unittest.TestCase):
         runner._live_scaling_results = None
         expected = {
             key: runner._result("pass", key)
-            for key in ("autoscale", "hotkey_override", "lossless_log", "reshade_runtime")
+            for key in ("autoscale", "hotkey_override", "lossless_log")
         }
         runner._run_live_scaling_workflow = Mock(return_value=expected)
 
         self.assertIs(runner._autoscale_behavior(), expected["autoscale"])
         self.assertIs(runner._hotkey_override_behavior(), expected["hotkey_override"])
         self.assertIs(runner._lossless_scaling_log_behavior(), expected["lossless_log"])
-        self.assertIs(runner._reshade_runtime_behavior(), expected["reshade_runtime"])
         runner._run_live_scaling_workflow.assert_called_once_with()
+
+    def test_reshade_runtime_uses_the_cached_live_deployment_attempt(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner._live_addon_result = None
+        deployment = runner._result(
+            "fail", "one failed",
+            testedProfiles=[{
+                "profile": "Experimental Live reshade-proxy",
+                "status": "fail",
+                "runtimeLogFiles": [],
+                "error": "scaling was not confirmed",
+            }],
+            failures=[{"profile": "Experimental Live reshade-proxy"}],
+        )
+        runner._run_live_addon_deployment_behavior = Mock(return_value=deployment)
+
+        result = runner._reshade_runtime_behavior()
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["details"]["attempts"][0]["profile"], "Experimental Live reshade-proxy")
+        self.assertIs(runner._live_addon_deployment_behavior(), deployment)
+        runner._run_live_addon_deployment_behavior.assert_called_once_with()
+
+    def test_reshade_runtime_still_interprets_a_failed_deployment_dependency(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.root = Path(tempfile.mkdtemp())
+        runner._live_scaling_results = {"stale": {}}
+        runner._live_addon_result = {"stale": True}
+        runner.server = SimpleNamespace(
+            profile_manager=SimpleNamespace(config_dir=runner.root),
+            state=SimpleNamespace(simulation_mode=False),
+            process_watcher=None,
+        )
+        runner._tests = lambda: (
+            ("deployment_behavior", "Deployment", lambda: runner._result("fail", "failed")),
+            ("reshade_runtime", "ReShade", lambda: runner._result("fail", "interpreted")),
+        )
+        runner.DEPENDENCIES = {"reshade_runtime": ("deployment_behavior",)}
+        runner._reset_lossless_folder = lambda _running: runner._result("pass", "reset")
+        try:
+            result = runner.run("reshade_runtime")
+        finally:
+            import shutil
+            shutil.rmtree(runner.root, ignore_errors=True)
+
+        summaries = {item["id"]: item["summary"] for item in result["results"]}
+        self.assertEqual(summaries["reshade_runtime"], "interpreted")
 
     def test_run_writes_one_log_per_test_and_downloadable_archive(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,6 +169,17 @@ class DiagnosticRunnerTests(unittest.TestCase):
 
             self.assertEqual(delta[str(path)], "new output")
 
+    def test_log_delta_detects_a_truncated_log_that_regrew_past_its_old_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "LosslessProxy.log"
+            path.write_text("old-prefix\n" + "x" * 20, encoding="utf-8")
+            snapshot = DiagnosticRunner._log_snapshot([path])
+            path.write_text("new-prefix\n" + "y" * 80, encoding="utf-8")
+
+            delta = DiagnosticRunner._log_delta(snapshot, [path])
+
+            self.assertTrue(delta[str(path)].startswith("new-prefix"))
+
     def test_runtime_log_errors_ignores_ngx_fallback_warnings_after_ready(self):
         errors = DiagnosticRunner._runtime_log_errors({
             "LSP-NeuralRender.log": (
@@ -155,6 +212,20 @@ class DiagnosticRunnerTests(unittest.TestCase):
         self.assertFalse(ready["neuralTapObserved"])
         self.assertTrue(exercised["neuralModelPrepared"])
         self.assertTrue(exercised["neuralTapObserved"])
+
+    def test_runtime_log_extracts_lossless_proxy_self_reported_version(self):
+        version = DiagnosticRunner._reported_lossless_proxy_version({
+            "LosslessProxy.log": "[INFO] [Core] LosslessProxy v0.2.0 starting...\n"
+        })
+
+        self.assertEqual(version, "0.2.0")
+
+    def test_proxy_version_label_is_not_a_runtime_error(self):
+        errors = DiagnosticRunner._runtime_log_errors({
+            "LosslessProxy.log": "[INFO] [Core] LosslessProxy v0.2.0 starting...\n"
+        })
+
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":
