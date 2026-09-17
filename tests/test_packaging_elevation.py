@@ -15,6 +15,7 @@ class PackagingElevationTests(unittest.TestCase):
         self.assertIn('requestedExecutionLevel level="requireAdministrator"', manifest)
         self.assertIn('manifest="installer/LosslessCompanion.exe.manifest"', spec)
         self.assertIn("uac_admin=True", spec)
+        self.assertIn("icon=str(app_icon)", spec)
 
     def test_installer_and_postinstall_launch_are_elevated(self):
         script = (ROOT / "installer" / "LosslessCompanion.iss").read_text(encoding="utf-8")

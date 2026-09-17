@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -11,7 +12,7 @@ class GlobalHotkeyListenerTests(unittest.TestCase):
     def test_blocking_message_loop_refreshes_and_stops(self):
         manager = SimpleNamespace(config=SimpleNamespace(
             override_lossless_hotkey=False,
-            override_hotkey=HotkeyConfig(),
+            override_hotkey=HotkeyConfig(activation_delay_ms=0),
         ))
         listener = GlobalHotkeyListener(manager, AppState(), lambda: None)
 
@@ -48,6 +49,22 @@ class GlobalHotkeyListenerTests(unittest.TestCase):
         allow_callback_to_finish.set()
 
         self.assertEqual(calls, [True])
+
+    def test_dispatch_waits_for_override_keys_to_be_released(self):
+        callback_called = threading.Event()
+        manager = SimpleNamespace(config=SimpleNamespace(
+            override_lossless_hotkey=True,
+            override_hotkey=HotkeyConfig(
+                modifiers=["alt"], key="l", activation_delay_ms=75
+            ),
+        ))
+        listener = GlobalHotkeyListener(manager, AppState(), callback_called.set)
+
+        started = time.monotonic()
+        listener._dispatch()
+
+        self.assertTrue(callback_called.wait(timeout=1))
+        self.assertGreaterEqual(time.monotonic() - started, 0.06)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@ System Tray interface for LS Companion using pystray and Pillow.
 """
 
 import logging
+import math
 import threading
+import time
 from typing import Callable, Optional
 from PIL import Image
 import pystray
@@ -49,11 +51,44 @@ class CompanionTrayIcon:
                 logger.exception("Could not query the startup task for the tray menu")
         self._startup_change_running = False
         self._update_check_running = False
+        self._animation_stop = threading.Event()
+        self._animation_thread: Optional[threading.Thread] = None
         self.icon: Optional[pystray.Icon] = None
 
-    def _create_icon_image(self, width: int = 64, height: int = 64) -> Image.Image:
+    def _visual_state(self) -> str:
+        if not self.state.lossless_scaling_running:
+            return "closed"
+        if self.state.is_scaling_active:
+            return "scaling"
+        return "open"
+
+    def _create_icon_image(
+        self, width: int = 64, height: int = 64, *, pulse: float = 1.0
+    ) -> Image.Image:
         """Return the same artwork used by the dashboard window."""
-        return create_lightning_icon(width, height)
+        return create_lightning_icon(
+            width, height, state=self._visual_state(), pulse=pulse
+        )
+
+    def _animate_icon(self) -> None:
+        """Animate only the bolt while preserving the white outer ring."""
+        while not self._animation_stop.is_set():
+            visual_state = self._visual_state()
+            if visual_state == "closed":
+                pulse = 1.0
+                delay = 0.25
+            else:
+                # Open LS has a deliberately slower blue breathing effect;
+                # active scaling uses a more visible yellow pulse.
+                period = 2.8 if visual_state == "open" else 1.2
+                pulse = 0.5 + (0.5 * math.sin((time.monotonic() / period) * math.tau))
+                delay = 0.10
+            try:
+                if self.icon:
+                    self.icon.icon = self._create_icon_image(pulse=pulse)
+            except Exception:
+                logger.debug("Could not update animated tray artwork", exc_info=True)
+            self._animation_stop.wait(delay)
 
     def _on_add_profile_from_process(self, proc_name: str):
         def handler(icon, item):
@@ -209,9 +244,23 @@ class CompanionTrayIcon:
             "LS Companion",
             menu=self._build_menu()
         )
-        self.icon.run()
+        self._animation_stop.clear()
+        self._animation_thread = threading.Thread(
+            target=self._animate_icon,
+            daemon=True,
+            name="TrayIconAnimation",
+        )
+        self._animation_thread.start()
+        try:
+            self.icon.run()
+        finally:
+            self._animation_stop.set()
+            self._animation_thread.join(timeout=1.0)
 
     def update_menu(self) -> None:
         if self.icon:
+            # Reflect state changes immediately instead of waiting for the next
+            # animation frame.
+            self.icon.icon = self._create_icon_image()
             self.icon.menu = self._build_menu()
             self.icon.update_menu()

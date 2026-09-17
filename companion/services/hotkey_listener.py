@@ -122,9 +122,18 @@ class GlobalHotkeyListener:
     def _dispatch(self) -> None:
         if not self._callback_lock.acquire(blocking=False):
             return
+        # WM_HOTKEY arrives while the triggering keys may still be physically
+        # held. Without a release window, the hidden LS hotkey can be emitted
+        # as (for example) Alt+F24 instead of F24 and be ignored.
+        release_delay = max(
+            0,
+            int(self.profile_manager.config.override_hotkey.activation_delay_ms),
+        ) / 1000.0
 
         def invoke() -> None:
             try:
+                if release_delay and self._stop_event.wait(release_delay):
+                    return
                 self.callback()
             except Exception:
                 logger.exception("Override hotkey callback failed")

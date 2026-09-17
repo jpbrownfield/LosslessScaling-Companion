@@ -5,6 +5,8 @@ from pathlib import Path
 import json
 import os
 
+from companion.ui.icons import create_lightning_icon
+
 
 hiddenimports = collect_submodules("pystray")
 benchmark = Path("build/native/LSBenchmark.exe")
@@ -27,6 +29,12 @@ version_metadata.parent.mkdir(parents=True, exist_ok=True)
 version_metadata.write_text(
     json.dumps({"version": os.environ.get("LS_COMPANION_VERSION", "0.0.0-dev")}),
     encoding="utf-8",
+)
+app_icon = Path("build/package/LosslessCompanion.ico")
+create_lightning_icon(256, 256, state="open", pulse=1.0).save(
+    app_icon,
+    format="ICO",
+    sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
 )
 
 a = Analysis(
@@ -54,6 +62,7 @@ exe = EXE(
     # Packed executables attract heuristic detections and obscure reproducibility.
     upx=False,
     console=False,
+    icon=str(app_icon),
     manifest="installer/LosslessCompanion.exe.manifest",
     uac_admin=True,
 )

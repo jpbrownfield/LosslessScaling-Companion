@@ -227,6 +227,19 @@ class DiagnosticRunnerTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_runtime_log_paths_include_special_k_nested_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root_log = root / "LosslessProxy.log"
+            nested_log = root / "logs" / "crash.log"
+            nested_log.parent.mkdir()
+            root_log.write_text("proxy", encoding="utf-8")
+            nested_log.write_text("special k", encoding="utf-8")
+
+            paths = DiagnosticRunner._runtime_log_paths(root)
+
+            self.assertEqual(set(paths), {root_log, nested_log})
+
 
 if __name__ == "__main__":
     unittest.main()

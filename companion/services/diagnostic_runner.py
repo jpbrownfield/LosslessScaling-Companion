@@ -650,12 +650,16 @@ class DiagnosticRunner:
                     active_log = log_inspector._find_log_file()
                     log_paths = [active_log] if active_log else []
                     log_snapshot = self._log_snapshot(log_paths)
-                    runtime_paths = list(executable.parent.glob("*.log"))
+                    runtime_paths = self._runtime_log_paths(executable.parent)
                     runtime_snapshot = self._log_snapshot(runtime_paths)
                     if not self.server.process_watcher.launch_lossless_scaling(force=True):
                         raise RuntimeError("Lossless Scaling could not launch with the deployed recipe")
+                    # Process creation precedes global-hotkey and injected
+                    # add-on initialization on slower installations.
+                    time.sleep(1.5)
                     focus_window(hwnd)
                     self.server.state.current_active_profile = profile
+                    activation_attempts = 1
                     scaled = self.server.automation.set_scaling(
                         True,
                         profile,
@@ -665,6 +669,22 @@ class DiagnosticRunner:
                         target_hwnd=hwnd,
                         park_runtime_on_stop=False,
                     )
+                    if not scaled:
+                        # The first hotkey can still race a slow injected
+                        # runtime. It was observed idle, so retrying cannot turn
+                        # a confirmed scaling session back off.
+                        time.sleep(1.5)
+                        focus_window(hwnd)
+                        activation_attempts += 1
+                        scaled = self.server.automation.set_scaling(
+                            True,
+                            profile,
+                            reason=f"experimental_addon_test_retry:{profile.id}",
+                            force=True,
+                            target_pid=workload_process.pid,
+                            target_hwnd=hwnd,
+                            park_runtime_on_stop=False,
+                        )
                     active_observed = scaled and self._wait_until(
                         lambda: bool(log_inspector.inspect_current_scaling_target().is_active), 5.0
                     )
@@ -681,7 +701,7 @@ class DiagnosticRunner:
                         if active_log:
                             log_paths = [active_log]
                     lossless_delta = self._log_delta(log_snapshot, log_paths)
-                    current_runtime_paths = list(executable.parent.glob("*.log"))
+                    current_runtime_paths = self._runtime_log_paths(executable.parent)
                     runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
                     runtime_errors = self._runtime_log_errors(runtime_delta)
                     runtime_evidence = self._runtime_log_evidence(runtime_delta)
@@ -704,6 +724,7 @@ class DiagnosticRunner:
                         "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
                         "runtimeErrors": runtime_errors,
                         "runtimeEvidence": runtime_evidence,
+                        "activationAttempts": activation_attempts,
                         "expectedLosslessProxyVersion": expected_proxy_version,
                         "reportedLosslessProxyVersion": reported_proxy_version,
                         "losslessProxyVersionMatches": proxy_version_matches,
@@ -861,6 +882,15 @@ class DiagnosticRunner:
         match = re.search(r"\bLosslessProxy\s+v([^\s]+)\s+starting", content, re.IGNORECASE)
         return match.group(1).rstrip(".,;:") if match else None
 
+    @staticmethod
+    def _runtime_log_paths(lossless_directory: Path) -> List[Path]:
+        """Return root and nested add-on logs without duplicating paths."""
+        paths = [*lossless_directory.glob("*.log")]
+        logs_directory = lossless_directory / "logs"
+        if logs_directory.is_dir():
+            paths.extend(logs_directory.rglob("*.log"))
+        return list(dict.fromkeys(paths))
+
     def _run_live_scaling_workflow(self) -> Dict[str, Dict]:
         results = {
             key: self._result("fail", "The live scaling workflow did not complete.")
@@ -968,6 +998,9 @@ class DiagnosticRunner:
             registered = self._wait_until(
                 lambda: bool(self.server.hotkey_listener and self.server.hotkey_listener._registered), 3.0
             )
+            # Synchronizing the hidden native hotkey may restart LS. Let its
+            # message loop register F24 before exercising the override.
+            time.sleep(1.5)
             focus_window(hwnd)
             emitted = InputSimulator.trigger_hotkey(modifiers=["ctrl", "shift"], key="f23", hold_ms=80)
             override_on = emitted and self._wait_until(lambda: bool(self.server.state.is_scaling_active), 10.0)

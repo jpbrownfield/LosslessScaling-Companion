@@ -14,6 +14,16 @@ from companion.ui.tray import CompanionTrayIcon
 
 
 class CompanionTrayIconTests(unittest.TestCase):
+    def test_visual_state_follows_lossless_scaling_runtime(self):
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        tray.state = AppState()
+
+        self.assertEqual(tray._visual_state(), "closed")
+        tray.state.lossless_scaling_running = True
+        self.assertEqual(tray._visual_state(), "open")
+        tray.state.is_scaling_active = True
+        self.assertEqual(tray._visual_state(), "scaling")
+
     def test_run_passes_a_built_menu_to_pystray(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory))
