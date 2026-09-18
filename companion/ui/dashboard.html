@@ -171,6 +171,7 @@
     body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
     .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
+    .profile-basics-grid.native-default-profile { grid-template-areas: "name name name name" "type path path path"; }
     .profile-basics-grid > .form-group { min-width: 0; margin: 0; }
     .profile-name-field { grid-area: name; }
     .profile-target-type-field { grid-area: type; }
@@ -178,8 +179,10 @@
     .profile-target-path-field.invalid > label { color: #f87171; }
     .profile-target-path-field.invalid > label::after { content: " !"; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 6px; border-radius: 50%; background: var(--danger); color: #fff; font-size: 11px; font-weight: 900; }
     .profile-target-path-field.invalid input { border-color: var(--danger); box-shadow: 0 0 0 1px rgba(239,68,68,.25); }
-    .profile-auto-scale { grid-area: auto; display: flex; flex-direction: column; align-self: stretch; justify-content: flex-end; min-width: 0; }
+    .profile-auto-scale { grid-area: auto; display: flex; flex-direction: column; align-self: stretch; justify-content: center; min-width: 0; padding: 9px 11px; border: 1px solid rgba(56,189,248,.58); border-radius: 8px; background: rgba(56,189,248,.11); box-shadow: 0 0 0 1px rgba(56,189,248,.08), 0 5px 18px rgba(2,132,199,.12); }
     .profile-auto-scale .checkbox-group { margin: 0; }
+    .profile-auto-scale input[type="checkbox"] { width: 19px; height: 19px; accent-color: var(--accent); }
+    .profile-auto-scale label { color: #e0f2fe !important; font-weight: 800; }
     .profile-auto-scale-help { margin: 2px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.35; white-space: normal; }
     .profile-reshade-picker { display: flex; align-items: stretch; gap: 8px; margin-top: 8px; }
     .profile-reshade-help { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
@@ -322,7 +325,7 @@
         <details class="settings-group" open>
           <summary>GPU Selection <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Auto-Route to App Display GPU</option></select></div>
+            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Match Application Monitor GPU</option></select></div>
             <div class="form-group checkbox-group"><input id="nvidiaRtxHdrEnabled" type="checkbox"><label for="nvidiaRtxHdrEnabled">NVIDIA RTX HDR for Lossless Scaling (Experimental)</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto-route follows the display containing the scaled window. If it moves to a display driven by another GPU, Companion unscales, updates that Lossless Scaling profile's preferred GPU and output display, restarts Lossless Scaling, restores target focus, and rescales.</p>
@@ -342,7 +345,7 @@
             </div>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When enabled, the companion disables Lossless Scaling's native Auto Scale to prevent conflicts, verifies and restores focus to the exact target window, loads that application's ReShade preset and managed custom DLLs into Lossless Scaling, then sends Lossless Scaling's own configured activation hotkey.</p>
-            <p class="item-sub" style="white-space:normal">Only profiles with “Automatically scale this application” enabled are started automatically. The monitor option restores only windows minimized by the helper when scaling stops.</p>
+            <p class="item-sub" style="white-space:normal">Only profiles with “Auto-Scale” enabled are started automatically. Windows minimized by the monitor option remain minimized until you restore them manually.</p>
           </div>
         </details>
 
@@ -497,10 +500,10 @@
             <input type="text" id="profileName" placeholder="Uses executable name when blank">
           </div>
 
-          <div class="profile-auto-scale">
+          <div id="profileAutoScaleControl" class="profile-auto-scale">
             <div class="form-group checkbox-group">
               <input type="checkbox" id="autoScale" checked>
-              <label for="autoScale" style="text-transform:none; font-size:13px; color:#fff; cursor:pointer;">Automatically scale this application</label>
+              <label for="autoScale" style="text-transform:none; font-size:13px; cursor:pointer;">Auto-Scale</label>
             </div>
             <p class="profile-auto-scale-help">Scaling remains active when focus changes. Browser video automation uses the optional <a href="https://github.com/jpbrownfield/LosslessScaling-Companion/archive/refs/heads/main.zip" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Bridge extension</a>.</p>
           </div>
@@ -579,8 +582,8 @@
               </section>
               <section class="ls-settings-card">
                 <h5>GPU &amp; Display</h5>
-                <div class="ls-setting-row"><label>Preferred GPU</label><div class="ls-setting-control"><select data-native-key="PreferredGpuId" data-native-default="0"><option value="0">Auto</option></select></div></div>
-                <div class="ls-setting-row"><label>Output display</label><div class="ls-setting-control"><select data-native-key="OutputDisplayId" data-native-default="0"><option value="0">Auto</option></select></div></div>
+                <div class="ls-setting-row"><label>Preferred GPU</label><div class="ls-setting-control"><select id="nativePreferredGpu" data-native-key="PreferredGpuId" data-native-default="0"><option value="0">Follow General Settings</option></select></div></div>
+                <div class="ls-setting-row"><label>Output display</label><div class="ls-setting-control"><select id="nativeOutputDisplay" data-native-key="OutputDisplayId" data-native-default="0"><option value="0">Follow General Settings</option></select></div></div>
               </section>
               <section class="ls-settings-card">
                 <h5>Behavior</h5>
@@ -588,7 +591,7 @@
               </section>
             </div>
           </div>
-          <details class="native-settings-group">
+          <details id="nativeAdvancedSettingsGroup" class="native-settings-group" hidden>
             <summary>Advanced Lossless Scaling Settings</summary>
             <div class="native-settings-grid">
               <div class="form-group"><label>Scale Factor</label><input data-native-key="ScaleFactor" data-native-default="1" type="number" min="0.1" step="0.1"></div>
@@ -664,16 +667,10 @@
           <div class="form-group checkbox-group"><input id="dlss5Enabled" type="checkbox"><label for="dlss5Enabled" style="text-transform:none; font-size:13px; color:#fff">Enable DLSS 5 neural rendering</label></div>
           <div class="form-row">
             <div class="form-group checkbox-group"><input id="losslessProxyEnabled" type="checkbox"><label for="losslessProxyEnabled">LosslessProxy</label></div>
-            <div class="form-group"><label>LosslessProxy Version</label><select id="losslessProxyVersion"><option value="">Install it in Lossless Scaling Add-ons</option></select></div>
-            <div class="form-group"><label>LosslessProxy Updates</label><select id="losslessProxyUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
           </div>
           <div id="specialKSettings" class="special-k-settings disabled">
             <div class="form-group checkbox-group"><input id="specialKEnabled" type="checkbox"><label for="specialKEnabled" style="color:#fff;font-size:13px">Enable Special K for this profile</label></div>
             <fieldset id="specialKFields" disabled>
-              <div class="form-row">
-                <div class="form-group"><label>Special K Version</label><select id="specialKVersion"><option value="">Install it in Lossless Scaling Add-ons</option></select></div>
-                <div class="form-group"><label>Special K Updates</label><select id="specialKUpdatePolicy"><option value="pinned">Pinned</option><option value="notify" selected>Notify</option><option value="stage">Stage</option></select></div>
-              </div>
               <div class="form-group checkbox-group"><input id="specialKSdrToHdr" type="checkbox"><label for="specialKSdrToHdr">SDR-to-HDR conversion</label></div>
               <div id="specialKHDRSettings" hidden>
                 <div id="specialKHDRWarning" class="profile-warning"><strong>Use only with an SDR application.</strong> Do not also enable ReShade tone mapping or NVIDIA RTX HDR; stacking tone mappers can clip highlights and distort color.</div>
@@ -1198,7 +1195,7 @@
       const selected = controlSettings.autoRouteGpuToDisplay
         ? '__auto__'
         : (controlSettings.preferredScalingGpuDeviceId || '__auto__');
-      select.innerHTML = '<option value="__auto__">Auto-Route to App Display GPU</option>';
+      select.innerHTML = '<option value="__auto__">Match Application Monitor GPU</option>';
       (inventory.gpus || []).forEach(gpu => {
         const option = document.createElement('option');
         option.value = gpu.deviceId || '';
@@ -1351,8 +1348,6 @@
       runtimeStatus.textContent = dlssnrRuntimes.length
         ? `${dlssnrRuntimes.length} validated x64 DLSS 5 runtime${dlssnrRuntimes.length === 1 ? '' : 's'} available.`
         : 'DLSS 5 runtime not installed.';
-      renderPackageChoice('losslessProxyVersion', 'lossless-proxy');
-      renderPackageChoice('specialKVersion', 'special-k');
       renderExternalSourceStatus('reshade', msg.externalSources && msg.externalSources.reshade);
       renderExternalSourceStatus('special-k', msg.externalSources && msg.externalSources['special-k']);
     }
@@ -1407,6 +1402,12 @@
       const checkButton = document.getElementById('checkCompanionUpdateBtn');
       const ignored = localStorage.getItem('ignored-companion-update-version');
       const visible = !!status.updateAvailable && ignored !== status.latestVersion;
+      const updateActionAvailable = !!status.updateAvailable && !!status.latestVersion;
+      checkButton.textContent = updateActionAvailable
+        ? (status.downloaded ? 'Run installer' : 'Download and install')
+        : 'Check for updates';
+      checkButton.classList.toggle('btn-primary', updateActionAvailable);
+      checkButton.classList.toggle('btn-secondary', !updateActionAvailable);
       checkButton.disabled = companionUpdateBusy;
       if (status.error) {
         statusText.textContent = `Update check failed: ${status.error}`;
@@ -1765,8 +1766,42 @@
         || target.dataset.nativeAvailable !== 'true';
     }
 
+    function renderNativeGpuChoices() {
+      const inventory = controlSettings && controlSettings.gpuInventory || { gpus: [], displays: [] };
+      const preferredGpu = document.getElementById('nativePreferredGpu');
+      const outputDisplay = document.getElementById('nativeOutputDisplay');
+      if (!preferredGpu || !outputDisplay) return;
+      const globalGpu = controlSettings && controlSettings.autoRouteGpuToDisplay
+        ? 'match the monitor containing most of the application window'
+        : (() => {
+            const selected = (inventory.gpus || []).find(
+              gpu => gpu.deviceId === controlSettings.preferredScalingGpuDeviceId
+            );
+            return selected ? selected.name : 'automatic GPU selection';
+          })();
+      preferredGpu.replaceChildren();
+      preferredGpu.appendChild(new Option(`Follow General Settings (${globalGpu})`, '0'));
+      (inventory.gpus || []).forEach(gpu => {
+        const displays = (gpu.connectedDisplays || []).join(', ');
+        preferredGpu.appendChild(new Option(
+          `${gpu.lsGpuId} — ${gpu.name}${displays ? ` (${displays})` : ''}`,
+          String(gpu.lsGpuId)
+        ));
+      });
+      outputDisplay.replaceChildren();
+      outputDisplay.appendChild(new Option('Follow General Settings (application display)', '0'));
+      (inventory.displays || []).forEach(display => {
+        const gpu = (inventory.gpus || []).find(item => item.deviceId === display.gpuDeviceId);
+        outputDisplay.appendChild(new Option(
+          `${display.lsDisplayId} — ${display.name}${gpu ? ` (${gpu.name})` : ''}`,
+          String(display.lsDisplayId)
+        ));
+      });
+    }
+
     function renderNativeSettings(profile) {
       const values = profile && profile.native_scaling_settings || {};
+      renderNativeGpuChoices();
       const controls = [...document.querySelectorAll('[data-native-key]')];
       controls.forEach((control, index) => {
         if (!control.dataset.nativeCanonicalKey) control.dataset.nativeCanonicalKey = control.dataset.nativeKey;
@@ -1919,6 +1954,8 @@
       renderNativeSettings(profile);
 
       const nativeDefaultAlias = !!(profile && profile.is_default);
+      document.getElementById('profileAutoScaleControl').hidden = nativeDefaultAlias;
+      document.querySelector('.profile-basics-grid').classList.toggle('native-default-profile', nativeDefaultAlias);
       document.getElementById('profileName').readOnly = nativeDefaultAlias;
       document.getElementById('targetType').disabled = nativeDefaultAlias;
       document.getElementById('targetValue').readOnly = nativeDefaultAlias;
@@ -1953,12 +1990,8 @@
         const neural = graphics.neural_render || {};
         document.getElementById('dlss5Enabled').checked = neural.implementation !== 'disabled';
         document.getElementById('losslessProxyEnabled').checked = !!(graphics.lossless_proxy && graphics.lossless_proxy.enabled);
-        renderPackageChoice('losslessProxyVersion', 'lossless-proxy', graphics.lossless_proxy && graphics.lossless_proxy.version || '');
-        document.getElementById('losslessProxyUpdatePolicy').value = graphics.lossless_proxy && graphics.lossless_proxy.update_policy || 'notify';
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
-        renderPackageChoice('specialKVersion', 'special-k', specialK.version || '');
-        document.getElementById('specialKUpdatePolicy').value = specialK.update_policy || 'notify';
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
         document.getElementById('specialKPeakBrightness').value = specialK.hdr_peak_brightness_nits == null ? 1000 : specialK.hdr_peak_brightness_nits;
         document.getElementById('specialKPaperWhite').value = specialK.hdr_paper_white_nits == null ? 203 : specialK.hdr_paper_white_nits;
@@ -2189,6 +2222,13 @@
     document.getElementById('checkCompanionUpdateBtn').onclick = function () {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         document.getElementById('companionUpdateStatusText').textContent = 'The companion is not connected.';
+        return;
+      }
+      if (companionUpdateState && companionUpdateState.updateAvailable) {
+        const action = companionUpdateState.downloaded
+          ? document.getElementById('installCompanionUpdateBtn')
+          : document.getElementById('downloadCompanionUpdateBtn');
+        action.click();
         return;
       }
       companionUpdateBusy = true;
@@ -2535,6 +2575,8 @@
       const dlss5Enabled = document.getElementById('dlss5Enabled').checked;
       const existingNeural = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.neural_render || {};
       const existingNeuralPackage = existingNeural.package || {};
+      const existingLosslessProxy = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.lossless_proxy || {};
+      const existingSpecialK = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.special_k || {};
       const installedNeuralPackages = graphicsPackages.filter(item => item.provider === 'lsp-neural-render');
       const installedNeuralPackage = installedNeuralPackages[installedNeuralPackages.length - 1];
       const availableRuntime = dlssnrRuntimes[dlssnrRuntimes.length - 1];
@@ -2584,9 +2626,9 @@
           graphics: {
             lossless_proxy: {
               enabled: document.getElementById('losslessProxyEnabled').checked,
-              version: document.getElementById('losslessProxyVersion').value.trim() || null,
-              channel: 'stable',
-              update_policy: document.getElementById('losslessProxyUpdatePolicy').value
+              version: existingLosslessProxy.version || null,
+              channel: existingLosslessProxy.channel || 'stable',
+              update_policy: existingLosslessProxy.update_policy || 'notify'
             },
             neural_render: {
               ...existingNeural,
@@ -2605,9 +2647,9 @@
             },
             special_k: {
               enabled: document.getElementById('specialKEnabled').checked,
-              version: document.getElementById('specialKVersion').value.trim() || null,
-              channel: 'stable',
-              update_policy: document.getElementById('specialKUpdatePolicy').value,
+              version: existingSpecialK.version || null,
+              channel: existingSpecialK.channel || 'stable',
+              update_policy: existingSpecialK.update_policy || 'notify',
               sdr_to_hdr: document.getElementById('specialKSdrToHdr').checked,
               hdr_peak_brightness_nits: Number(document.getElementById('specialKPeakBrightness').value),
               hdr_paper_white_nits: Number(document.getElementById('specialKPaperWhite').value),

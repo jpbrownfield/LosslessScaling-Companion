@@ -103,6 +103,47 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             r'data-native-key="LSFGSize" data-native-aliases="[^"]*LSFGType',
         )
 
+    def test_advanced_and_package_maintenance_controls_are_not_shown(self):
+        self.assertIn(
+            'id="nativeAdvancedSettingsGroup" class="native-settings-group" hidden',
+            self.html,
+        )
+        self.assertNotIn("Special K Version</label>", self.html)
+        self.assertNotIn("Special K Updates</label>", self.html)
+        self.assertNotIn("ReShade Version</label>", self.html)
+        self.assertNotIn("ReShade Updates</label>", self.html)
+        self.assertNotIn("LosslessProxy Version</label>", self.html)
+        self.assertNotIn("LosslessProxy Updates</label>", self.html)
+
+    def test_hidden_special_k_package_choices_are_preserved_on_save(self):
+        self.assertIn("version: existingSpecialK.version || null", self.html)
+        self.assertIn("channel: existingSpecialK.channel || 'stable'", self.html)
+        self.assertIn(
+            "update_policy: existingSpecialK.update_policy || 'notify'",
+            self.html,
+        )
+        self.assertIn("version: existingLosslessProxy.version || null", self.html)
+        self.assertIn("channel: existingLosslessProxy.channel || 'stable'", self.html)
+        self.assertIn(
+            "update_policy: existingLosslessProxy.update_policy || 'notify'",
+            self.html,
+        )
+
+    def test_profile_gpu_choices_use_friendly_inventory_and_global_inheritance(self):
+        self.assertIn("function renderNativeGpuChoices()", self.html)
+        self.assertIn("Follow General Settings (${globalGpu})", self.html)
+        self.assertIn("`${gpu.lsGpuId} — ${gpu.name}", self.html)
+        self.assertIn("`${display.lsDisplayId} — ${display.name}", self.html)
+
+    def test_auto_scale_is_highlighted_and_hidden_for_native_default(self):
+        self.assertIn('id="profileAutoScaleControl" class="profile-auto-scale"', self.html)
+        self.assertIn('>Auto-Scale</label>', self.html)
+        self.assertIn(
+            "document.getElementById('profileAutoScaleControl').hidden = nativeDefaultAlias",
+            self.html,
+        )
+        self.assertIn("border: 1px solid rgba(56,189,248,.58)", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+from ctypes import wintypes
 from typing import Callable, Dict, List, Optional
 
 
@@ -133,16 +134,133 @@ class GpuRouter:
         return monitors
 
     @staticmethod
+    def _monitor_for_window_bounds(
+        window_bounds: tuple[int, int, int, int], monitors: List[Dict]
+    ) -> Optional[str]:
+        """Select the display containing the largest area of a window."""
+        left, top, right, bottom = window_bounds
+        if right <= left or bottom <= top:
+            return None
+        center_x = (left + right) / 2
+        center_y = (top + bottom) / 2
+        best: Optional[tuple[int, bool, bool, str]] = None
+        for monitor in monitors:
+            bounds = monitor.get("bounds") or ()
+            if len(bounds) != 4:
+                continue
+            m_left, m_top, m_right, m_bottom = map(int, bounds)
+            width = max(0, min(right, m_right) - max(left, m_left))
+            height = max(0, min(bottom, m_bottom) - max(top, m_top))
+            area = width * height
+            if not area:
+                continue
+            contains_center = (
+                m_left <= center_x < m_right and m_top <= center_y < m_bottom
+            )
+            candidate = (
+                area,
+                contains_center,
+                bool(monitor.get("primary")),
+                str(monitor.get("deviceName") or ""),
+            )
+            if best is None or candidate[:3] > best[:3]:
+                best = candidate
+        return best[3] if best and best[3] else None
+
+    @staticmethod
     def _window_display_device(hwnd: int) -> Optional[str]:
         if os.name != "nt" or not hwnd:
             return None
         user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if not user32.IsWindow(ctypes.c_void_p(hwnd)):
+            return None
         monitor_from_window = user32.MonitorFromWindow
         monitor_from_window.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         monitor_from_window.restype = ctypes.c_void_p
         get_monitor_info = user32.GetMonitorInfoW
         get_monitor_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MonitorInfoExW)]
         get_monitor_info.restype = ctypes.c_bool
+
+        window_rect = _Rect()
+        bounds_found = False
+        try:
+            dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+            get_extended_bounds = dwmapi.DwmGetWindowAttribute
+            get_extended_bounds.argtypes = [
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+            ]
+            get_extended_bounds.restype = ctypes.c_long
+            # Extended frame bounds exclude invisible resize borders and more
+            # closely match the application pixels occupying each monitor.
+            bounds_found = (
+                get_extended_bounds(
+                    ctypes.c_void_p(hwnd),
+                    9,  # DWMWA_EXTENDED_FRAME_BOUNDS
+                    ctypes.byref(window_rect),
+                    ctypes.sizeof(window_rect),
+                )
+                == 0
+            )
+        except OSError:
+            bounds_found = False
+        if not bounds_found:
+            bounds_found = bool(
+                user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(window_rect))
+            )
+
+        monitors: List[Dict] = []
+        monitor_callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_bool,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(_Rect),
+            wintypes.LPARAM,
+        )
+
+        def collect_monitor(handle, _dc, rect, _data):
+            info = _MonitorInfoExW()
+            info.cbSize = ctypes.sizeof(_MonitorInfoExW)
+            if get_monitor_info(handle, ctypes.byref(info)):
+                monitors.append({
+                    "deviceName": info.szDevice,
+                    "bounds": (
+                        int(info.rcMonitor.left),
+                        int(info.rcMonitor.top),
+                        int(info.rcMonitor.right),
+                        int(info.rcMonitor.bottom),
+                    ),
+                    "primary": bool(info.dwFlags & 1),
+                })
+            return True
+
+        callback = monitor_callback_type(collect_monitor)
+        if bounds_found:
+            enum_monitors = user32.EnumDisplayMonitors
+            enum_monitors.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_Rect),
+                monitor_callback_type,
+                wintypes.LPARAM,
+            ]
+            enum_monitors.restype = ctypes.c_bool
+            enum_monitors(None, None, callback, 0)
+            selected = GpuRouter._monitor_for_window_bounds(
+                (
+                    int(window_rect.left),
+                    int(window_rect.top),
+                    int(window_rect.right),
+                    int(window_rect.bottom),
+                ),
+                monitors,
+            )
+            if selected:
+                return selected
+
+        # Minimized, cloaked, and wholly off-screen windows may not intersect
+        # the desktop layout. Retain the nearest-monitor API as a fallback.
         monitor = monitor_from_window(ctypes.c_void_p(hwnd), MONITOR_DEFAULTTONEAREST)
         if not monitor:
             return None
@@ -227,3 +345,35 @@ class GpuRouter:
             if gpu["deviceId"].casefold() == device_id.casefold():
                 return {"gpuDeviceId": gpu["deviceId"], "lsGpuId": gpu["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
         return {"gpuDeviceId": None, "lsGpuId": 0, "lsDisplayId": 0, "deviceName": ""}
+
+    def route_for_ls_ids(self, gpu_id: int, display_id: int) -> Dict:
+        """Resolve LS numeric IDs back to the corresponding Windows devices."""
+        inventory = self.detect()
+        selected_display = next(
+            (
+                item for item in inventory["displays"]
+                if display_id and int(item.get("lsDisplayId") or 0) == display_id
+            ),
+            None,
+        )
+        selected_gpu = next(
+            (
+                item for item in inventory["gpus"]
+                if gpu_id and int(item.get("lsGpuId") or 0) == gpu_id
+            ),
+            None,
+        )
+        if selected_display and not selected_gpu:
+            selected_gpu = next(
+                (
+                    item for item in inventory["gpus"]
+                    if item.get("deviceId") == selected_display.get("gpuDeviceId")
+                ),
+                None,
+            )
+        return {
+            "gpuDeviceId": selected_gpu.get("deviceId") if selected_gpu else None,
+            "lsGpuId": int(selected_gpu.get("lsGpuId") or 0) if selected_gpu else gpu_id,
+            "lsDisplayId": int(selected_display.get("lsDisplayId") or 0) if selected_display else display_id,
+            "deviceName": selected_display.get("deviceName", "") if selected_display else "",
+        }

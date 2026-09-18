@@ -217,6 +217,38 @@ class ProcessWatcher:
             user32.GetWindowThreadProcessId(focused_hwnd, ctypes.byref(focused_pid))
         return focused_hwnd == int(hwnd) and focused_pid.value == pid
 
+    @staticmethod
+    def foreground_window_identity() -> tuple[int, int]:
+        hwnd = int(user32.GetForegroundWindow() or 0)
+        pid = wintypes.DWORD()
+        if hwnd:
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value), hwnd
+
+    def target_is_foreground(self, pid: int, hwnd: int) -> bool:
+        return self.foreground_window_identity() == (int(pid), int(hwnd))
+
+    def maintain_scaling_target_foreground(self, pid: int, hwnd: int) -> bool:
+        """Refocus after LS steals focus, but never override a user app switch."""
+        foreground_pid, foreground_hwnd = self.foreground_window_identity()
+        if (foreground_pid, foreground_hwnd) == (int(pid), int(hwnd)):
+            return True
+        configured = self.profile_manager.config.lossless_scaling_exe_path
+        try:
+            foreground_name = psutil.Process(foreground_pid).name().casefold()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return False
+        if foreground_name != "losslessscaling.exe":
+            return False
+        if configured:
+            try:
+                foreground_exe = psutil.Process(foreground_pid).exe()
+                if Path(foreground_exe).resolve() != Path(configured).resolve():
+                    return False
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                return False
+        return self.focus_window_identity(pid, hwnd)
+
     def invalidate_foreground_cache(self) -> None:
         """Force the next monitor tick to reconsider the current foreground app."""
         self._last_foreground_pid = None
@@ -562,11 +594,11 @@ class ProcessWatcher:
                 else:
                     logger.info(f"Cleared active profile for {info.name}")
             if self.on_profile_changed:
-                # Same profile + same window: deployment already matches, so
-                # skip re-activation. Re-running apply() on every HWND change
-                # rewrote the manifests each second and, on a permission
-                # error, left scaling state flapping (the UI flicker).
-                if matched_id == current_id:
+                # While scaling, the automation controller tracks the original
+                # scaling target and handles monitor handoff separately. When
+                # inactive, let it cheaply refresh the already-active profile's
+                # GPU route for this new HWND; it will not redeploy manifests.
+                if matched_id == current_id and self.state.is_scaling_active:
                     return info
                 self.on_profile_changed(
                     matched,

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from companion.core.models import HotkeyConfig
 from companion.core.state import AppState
-from companion.services.process_watcher import ProcessWatcher
+from companion.services.process_watcher import ProcessInfo, ProcessWatcher
 
 
 class ProcessWatcherScalingControlTests(unittest.TestCase):
@@ -138,6 +138,30 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
 
             with patch("companion.services.process_watcher.psutil.process_iter", return_value=[process]):
                 self.assertTrue(watcher.check_is_lossless_scaling_running())
+
+    def test_new_window_for_active_profile_refreshes_runtime_route(self):
+        profile = SimpleNamespace(id="game")
+        manager = SimpleNamespace(
+            config=SimpleNamespace(),
+            match_target_profile=Mock(return_value=profile),
+        )
+        state = AppState()
+        state.current_active_profile = profile
+        callback = Mock()
+        watcher = ProcessWatcher(manager, state, on_profile_changed=callback)
+        watcher._last_foreground_pid = 41
+        watcher._last_foreground_hwnd = 81
+        window = ProcessInfo(42, "game.exe", r"C:\Game\game.exe", "Game", 82)
+
+        with patch.object(watcher, "get_foreground_window_info", return_value=window):
+            watcher.check_foreground_and_update()
+
+        callback.assert_called_once_with(
+            profile,
+            r"C:\Game\game.exe",
+            target_pid=42,
+            target_hwnd=82,
+        )
 
 
 if __name__ == "__main__":

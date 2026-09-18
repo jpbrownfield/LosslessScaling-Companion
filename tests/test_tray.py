@@ -83,6 +83,7 @@ class CompanionTrayIconTests(unittest.TestCase):
                 watcher,
                 automation=Mock(),
                 on_check_updates_callback=lambda: future,
+                on_install_update_callback=Mock(),
             )
             tray.icon = Mock()
 
@@ -95,6 +96,41 @@ class CompanionTrayIconTests(unittest.TestCase):
 
             open_window.assert_called_once()
             self.assertIn("view=settings", open_window.call_args.args[0])
+            self.assertFalse(tray._update_check_running)
+            labels = [
+                entry.text for entry in tray._build_menu().items
+                if hasattr(entry, "text")
+            ]
+            self.assertIn("Download and Install Update", labels)
+
+    def test_update_tray_entry_downloads_and_installs_detected_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            future = Future()
+            install = Mock(return_value=future)
+            tray = CompanionTrayIcon(
+                manager,
+                AppState(),
+                watcher,
+                automation=Mock(),
+                on_install_update_callback=install,
+            )
+            tray.icon = Mock()
+            tray._update_status = {
+                "latestVersion": "1.1.0",
+                "updateAvailable": True,
+                "downloaded": False,
+            }
+
+            tray._on_install_update(tray.icon, None)
+            future.set_result({
+                "type": "COMPANION_INSTALLER_LAUNCHED",
+                "version": "1.1.0",
+            })
+
+            install.assert_called_once_with("1.1.0")
             self.assertFalse(tray._update_check_running)
 
     @patch("companion.ui.tray.close_dashboard_window")

@@ -34,6 +34,7 @@ class CompanionTrayIcon:
         on_exit_callback: Optional[Callable] = None,
         startup_manager: Optional[StartupTaskManager] = None,
         on_check_updates_callback: Optional[Callable] = None,
+        on_install_update_callback: Optional[Callable] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -43,6 +44,8 @@ class CompanionTrayIcon:
         self.on_exit_callback = on_exit_callback
         self.startup_manager = startup_manager
         self.on_check_updates_callback = on_check_updates_callback
+        self.on_install_update_callback = on_install_update_callback
+        self._update_status: Optional[dict] = None
         self._startup_enabled = bool(profile_manager.config.run_at_startup)
         if self.startup_manager:
             try:
@@ -159,6 +162,7 @@ class CompanionTrayIcon:
         def completed(result_future) -> None:
             try:
                 status = result_future.result()
+                self._update_status = status
                 if status.get("error"):
                     self._notify(f"Update check failed: {status['error']}")
                 elif status.get("updateAvailable"):
@@ -173,6 +177,41 @@ class CompanionTrayIcon:
             except Exception as error:
                 logger.exception("Tray update check failed")
                 self._notify(f"Update check failed: {error}")
+            finally:
+                self._update_check_running = False
+                self.update_menu()
+
+        future.add_done_callback(completed)
+
+    def _on_install_update(self, icon, menu_item):
+        status = self._update_status or {}
+        version = status.get("latestVersion")
+        if (
+            not version
+            or not status.get("updateAvailable")
+            or not self.on_install_update_callback
+            or self._update_check_running
+        ):
+            return
+        self._update_check_running = True
+        self.update_menu()
+        self._notify(f"Downloading, verifying, and installing LS Companion {version}...")
+        try:
+            future = self.on_install_update_callback(str(version))
+        except Exception as error:
+            self._update_check_running = False
+            logger.exception("Could not start the tray update installation")
+            self._notify(f"Update installation could not start: {error}")
+            self.update_menu()
+            return
+
+        def completed(result_future) -> None:
+            try:
+                result_future.result()
+                self._notify(f"LS Companion {version} installer launched.")
+            except Exception as error:
+                logger.exception("Tray update installation failed")
+                self._notify(f"Update installation failed: {error}")
             finally:
                 self._update_check_running = False
                 self.update_menu()
@@ -226,9 +265,21 @@ class CompanionTrayIcon:
                 enabled=lambda menu_item: bool(self.startup_manager) and not self._startup_change_running,
             ),
             item(
-                "Check for Updates",
-                self._on_check_updates,
-                enabled=lambda menu_item: bool(self.on_check_updates_callback) and not self._update_check_running,
+                (
+                    "Install Update"
+                    if self._update_status and self._update_status.get("downloaded")
+                    else "Download and Install Update"
+                )
+                if self._update_status and self._update_status.get("updateAvailable")
+                else "Check for Updates",
+                self._on_install_update
+                if self._update_status and self._update_status.get("updateAvailable")
+                else self._on_check_updates,
+                enabled=lambda menu_item: bool(
+                    self.on_install_update_callback
+                    if self._update_status and self._update_status.get("updateAvailable")
+                    else self.on_check_updates_callback
+                ) and not self._update_check_running,
             ),
             Menu.SEPARATOR,
             item("Exit", self._on_exit)

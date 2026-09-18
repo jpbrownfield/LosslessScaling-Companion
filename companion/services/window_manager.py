@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from ctypes import wintypes
-from typing import Dict, Optional
+from typing import Optional
 import psutil
 
 
@@ -18,7 +18,6 @@ GWL_EXSTYLE = -20
 GW_OWNER = 4
 MONITOR_DEFAULTTONULL = 0
 SW_MINIMIZE = 6
-SW_RESTORE = 9
 WS_EX_TOOLWINDOW = 0x00000080
 
 SHELL_CLASSES = {
@@ -31,11 +30,10 @@ SHELL_CLASSES = {
 
 
 class MonitorWindowManager:
-    """Tracks only windows it minimized, allowing a bounded later restore."""
+    """Minimizes eligible peers without later altering the user's window order."""
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._minimized: Dict[int, int] = {}
 
     @staticmethod
     def _window_pid(hwnd: int) -> int:
@@ -106,7 +104,6 @@ class MonitorWindowManager:
                 try:
                     user32.ShowWindow(hwnd, SW_MINIMIZE)
                     if user32.IsIconic(hwnd):
-                        self._minimized[handle] = pid
                         minimized += 1
                 except OSError:
                     logger.debug("Could not minimize HWND %s", handle, exc_info=True)
@@ -116,23 +113,3 @@ class MonitorWindowManager:
             user32.EnumWindows(callback_type(enum_callback), 0)
             logger.info("Minimized %d other window(s) on the scaled application's monitor", minimized)
             return minimized
-
-    def restore_managed_windows(self) -> int:
-        """Restore surviving windows only when HWND and owning PID still match."""
-        with self._lock:
-            restored = 0
-            for hwnd, original_pid in list(self._minimized.items()):
-                try:
-                    if (
-                        user32.IsWindow(hwnd)
-                        and self._window_pid(hwnd) == original_pid
-                        and user32.IsIconic(hwnd)
-                    ):
-                        user32.ShowWindow(hwnd, SW_RESTORE)
-                        restored += 1
-                except OSError:
-                    logger.debug("Could not restore HWND %s", hwnd, exc_info=True)
-            self._minimized.clear()
-            if restored:
-                logger.info("Restored %d window(s) minimized for scaling", restored)
-            return restored

@@ -1744,6 +1744,25 @@ class CompanionWebSocketServer:
             }))
         return await task
 
+    async def apply_companion_update(self, version: str) -> Dict:
+        """Download, verify, and launch an update requested outside the dashboard."""
+        normalized = str(version or "").strip().removeprefix("v")
+        status = self.companion_update_status or await self._refresh_companion_update(
+            force=True
+        )
+        if not status.get("updateAvailable") or status.get("latestVersion") != normalized:
+            raise ValueError("The requested companion update is no longer available")
+        if not status.get("downloaded"):
+            await self._run_background_thread(
+                self.companion_updater.download, normalized
+            )
+        launched = await self._run_background_thread(
+            self.companion_updater.launch_installer, normalized
+        )
+        if self.on_installer_launched:
+            asyncio.get_running_loop().call_soon(self.on_installer_launched)
+        return launched
+
     def _verified_benchmark_executable(self, provider: str) -> Optional[Path]:
         """Return a staged x64 tool only while its immutable package still verifies."""
         expected_names = {

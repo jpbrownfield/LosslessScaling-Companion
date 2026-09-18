@@ -76,19 +76,15 @@ class AutomationController:
             return None
         return str(Path(configured).parent)
 
-    def _minimize_other_windows(self) -> None:
+    def _minimize_other_windows(self, target_hwnd: Optional[int] = None) -> None:
         try:
             self.window_manager.minimize_others_on_target_monitor(
-                self.state.current_foreground_hwnd
+                target_hwnd
+                or self.state.scaling_target_hwnd
+                or self.state.current_foreground_hwnd
             )
         except Exception:
             logger.exception("Scaling continued, but peer windows could not be minimized")
-
-    def _restore_managed_windows(self) -> None:
-        try:
-            self.window_manager.restore_managed_windows()
-        except Exception:
-            logger.exception("Managed minimized windows could not be restored")
 
     def set_scaling(
         self,
@@ -139,6 +135,20 @@ class AutomationController:
                     return False
             if active and (target_pid is not None or target_hwnd is not None):
                 if (
+                    reason == "focus"
+                    and target_pid is not None
+                    and target_hwnd is not None
+                    and self.process_watcher is not None
+                    and not self.process_watcher.maintain_scaling_target_foreground(
+                        target_pid, target_hwnd
+                    )
+                ):
+                    self._set_control_status(
+                        "idle", "Cancelled stale automatic scaling target"
+                    )
+                    self.process_watcher.invalidate_foreground_cache()
+                    return False
+                if (
                     target_pid is None
                     or target_hwnd is None
                     or self.process_watcher is None
@@ -172,7 +182,12 @@ class AutomationController:
                 logger.error("Hotkey injection failed for %s", reason)
                 return False
             confirmation_timeout = 5.0 if active else 8.0
-            if not self._confirm_scaling_state(active, timeout=confirmation_timeout):
+            if not self._confirm_scaling_state(
+                active,
+                timeout=confirmation_timeout,
+                target_pid=target_pid if active else None,
+                target_hwnd=target_hwnd if active else None,
+            ):
                 self._set_control_status(
                     "error",
                     f"Lossless Scaling did not confirm {'activation' if active else 'deactivation'}",
@@ -197,9 +212,8 @@ class AutomationController:
                 self.state.scaling_target_pid = None
                 self.state.scaling_target_hwnd = None
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
-                self._minimize_other_windows()
+                self._minimize_other_windows(target_hwnd)
             elif not active:
-                self._restore_managed_windows()
                 if self.process_watcher:
                     self.process_watcher.invalidate_foreground_cache()
                 if (
@@ -242,7 +256,14 @@ class AutomationController:
             providers.add("special-k")
         return providers
 
-    def _confirm_scaling_state(self, expected: bool, timeout: float = 3.0) -> bool:
+    def _confirm_scaling_state(
+        self,
+        expected: bool,
+        timeout: float = 3.0,
+        *,
+        target_pid: Optional[int] = None,
+        target_hwnd: Optional[int] = None,
+    ) -> bool:
         """Wait for an authoritative LS overlay/log observation when available."""
         if self.scaling_state_probe is None:
             return True
@@ -255,7 +276,17 @@ class AutomationController:
                 return False
             if observed is expected:
                 return True
-            time.sleep(0.1)
+            if expected and target_pid and target_hwnd and self.process_watcher:
+                if not self.process_watcher.maintain_scaling_target_foreground(
+                    target_pid, target_hwnd
+                ):
+                    logger.info(
+                        "Cancelled stale scaling activation after foreground moved away from PID %s / HWND %s",
+                        target_pid,
+                        target_hwnd,
+                    )
+                    return False
+            time.sleep(0.075)
         return False
 
     def _set_control_status(self, state: str, message: str) -> None:
@@ -340,8 +371,6 @@ class AutomationController:
                 return
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
                 self._minimize_other_windows()
-            elif not active:
-                self._restore_managed_windows()
 
     def reconcile_window_management_setting(self) -> None:
         """Apply a changed minimize setting immediately to the current scaling state."""
@@ -351,16 +380,40 @@ class AutomationController:
                 and self.profile_manager.config.minimize_other_windows_on_scale
             ):
                 self._minimize_other_windows()
-            else:
-                self._restore_managed_windows()
 
-    def _desired_gpu_route(self, target_hwnd: Optional[int]) -> Dict:
+    @staticmethod
+    def _profile_gpu_route_ids(profile: Optional[Profile]) -> tuple[int, int]:
+        values = profile.native_scaling_settings if profile else {}
+        try:
+            gpu_id = int(values.get("PreferredGpuId") or 0)
+        except (TypeError, ValueError):
+            gpu_id = 0
+        try:
+            display_id = int(values.get("OutputDisplayId") or 0)
+        except (TypeError, ValueError):
+            display_id = 0
+        return max(0, gpu_id), max(0, display_id)
+
+    def _desired_gpu_route(
+        self, profile: Optional[Profile], target_hwnd: Optional[int]
+    ) -> Dict:
+        profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(profile)
         config = self.profile_manager.config
         route = self.gpu_router.route_for_gpu(config.preferred_scaling_gpu_device_id)
         if config.auto_route_gpu_to_display and target_hwnd:
             detected = self.gpu_router.route_for_window(target_hwnd)
             if detected:
                 route = detected
+        if profile_gpu_id or profile_display_id:
+            selected = self.gpu_router.route_for_ls_ids(
+                profile_gpu_id, profile_display_id
+            )
+            if profile_gpu_id:
+                route["lsGpuId"] = selected["lsGpuId"]
+                route["gpuDeviceId"] = selected["gpuDeviceId"]
+            if profile_display_id:
+                route["lsDisplayId"] = selected["lsDisplayId"]
+                route["deviceName"] = selected["deviceName"]
         return route
 
     @staticmethod
@@ -381,7 +434,11 @@ class AutomationController:
                 and target_hwnd
             ):
                 return False
-            route = self._desired_gpu_route(target_hwnd)
+            if any(self._profile_gpu_route_ids(profile)):
+                # A profile-specific numeric route is fixed; only profiles set
+                # to Auto follow the global per-display handoff behavior.
+                return False
+            route = self._desired_gpu_route(profile, target_hwnd)
             route_key = self._gpu_route_key(route)
             if route_key == self.state.current_gpu_route_key:
                 return False
@@ -468,7 +525,47 @@ class AutomationController:
         with self._lock:
             previous = self.state.current_active_profile
             same_profile = bool(previous and profile and previous.id == profile.id)
-            if not force and previous and profile and previous.id == profile.id:
+            if not force and same_profile:
+                # A different window can match the profile that is already
+                # active. Re-check its runtime monitor route without
+                # redeploying DLLs/manifests or re-running profile actions.
+                try:
+                    gpu_route = self._desired_gpu_route(profile, target_hwnd)
+                    route_change = self.lossless_settings.gpu_route_changes_required(
+                        profile.lossless_profile_title,
+                        int(gpu_route.get("lsGpuId", 0)),
+                        int(gpu_route.get("lsDisplayId", 0)),
+                    )
+                except (OSError, ValueError, RuntimeError) as error:
+                    logger.error("Could not refresh profile '%s' GPU route: %s", profile.name, error)
+                    return
+                if not route_change:
+                    if route_change is False:
+                        self.state.current_gpu_route_key = self._gpu_route_key(gpu_route)
+                    return
+                restart_lossless_scaling = bool(
+                    self.process_watcher
+                    and self.process_watcher.check_is_lossless_scaling_running()
+                )
+                if restart_lossless_scaling and not self.process_watcher.stop_lossless_scaling():
+                    logger.error(
+                        "Profile '%s' GPU route was not updated because Lossless Scaling could not be stopped",
+                        profile.name,
+                    )
+                    return
+                try:
+                    route_updated = self.lossless_settings.update_gpu_route(
+                        profile.lossless_profile_title,
+                        int(gpu_route.get("lsGpuId", 0)),
+                        int(gpu_route.get("lsDisplayId", 0)),
+                    )
+                    if route_updated:
+                        self.state.current_gpu_route_key = self._gpu_route_key(gpu_route)
+                except (OSError, ValueError) as error:
+                    logger.error("Could not update profile '%s' GPU route: %s", profile.name, error)
+                finally:
+                    if restart_lossless_scaling:
+                        self.process_watcher.launch_lossless_scaling(force=True)
                 return
 
             if not force and self.state.is_scaling_active and previous and not same_profile:
@@ -518,7 +615,7 @@ class AutomationController:
                     )
                 )
                 deployment_change = deployment_change or runtime_state_change
-                gpu_route = self._desired_gpu_route(target_hwnd) if profile else None
+                gpu_route = self._desired_gpu_route(profile, target_hwnd) if profile else None
                 gpu_route_change = self.lossless_settings.gpu_route_changes_required(
                     profile.lossless_profile_title,
                     int(gpu_route.get("lsGpuId", 0)),
@@ -710,8 +807,22 @@ class AutomationController:
                 )
                 return
             delay_ms = self.profile_manager.config.global_hotkey.activation_delay_ms
-            if target_pid is not None and delay_ms:
-                time.sleep(delay_ms / 1000.0)
+            if target_pid is not None and target_hwnd is not None and self.process_watcher:
+                deadline = time.monotonic() + (delay_ms / 1000.0)
+                while True:
+                    if not self.process_watcher.target_is_foreground(
+                        target_pid, target_hwnd
+                    ):
+                        logger.info(
+                            "Cancelled stale auto-scale for '%s' because foreground moved away",
+                            profile.name,
+                        )
+                        self.process_watcher.invalidate_foreground_cache()
+                        return
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.05, remaining))
             self.set_scaling(
                 True,
                 profile,
@@ -758,7 +869,6 @@ class AutomationController:
             self.state.current_active_profile = None
             self.state.scaling_owner_profile_id = None
             self.state.scaling_trigger = None
-            self._restore_managed_windows()
             manifest["nvidiaProfileReverted"] = nvidia_reverted
             return manifest
 
@@ -767,4 +877,3 @@ class AutomationController:
             for reshade_ini in list(self._reshade_inis.values()):
                 ReshadeManager.restore_backup(reshade_ini)
             self._reshade_inis.clear()
-            self._restore_managed_windows()

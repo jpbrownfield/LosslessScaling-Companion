@@ -161,6 +161,7 @@ class CompanionApplication:
             on_exit_callback=self.request_stop,
             startup_manager=self.server.startup_manager,
             on_check_updates_callback=self.check_for_updates,
+            on_install_update_callback=self.install_update,
         )
 
     def _start_shutdown_watchdog(self) -> None:
@@ -199,6 +200,14 @@ class CompanionApplication:
             raise RuntimeError("The companion update service is not running yet")
         return asyncio.run_coroutine_threadsafe(
             self.server._refresh_companion_update(force=True), self.loop
+        )
+
+    def install_update(self, version: str):
+        """Download, verify, and launch the selected release from the tray."""
+        if not self.loop or not self.loop.is_running():
+            raise RuntimeError("The companion update service is not running yet")
+        return asyncio.run_coroutine_threadsafe(
+            self.server.apply_companion_update(version), self.loop
         )
 
     def request_update_shutdown(self) -> None:

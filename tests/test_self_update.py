@@ -42,6 +42,7 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertIn('id="checkCompanionUpdateBtn"', dashboard)
         self.assertIn("type: 'CHECK_COMPANION_UPDATE'", dashboard)
         self.assertIn("type: 'APPLY_COMPANION_UPDATE'", dashboard)
+        self.assertIn("? (status.downloaded ? 'Run installer' : 'Download and install')", dashboard)
         self.assertIn("COMPANION_UPDATE_DOWNLOAD_PROGRESS", dashboard)
         self.assertIn('id="companionUpdateStatusText"', dashboard)
 

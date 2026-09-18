@@ -256,6 +256,32 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
         self.server.on_installer_launched.assert_called_once_with()
 
+    async def test_tray_can_download_and_launch_detected_update(self):
+        self.server.companion_update_status = {
+            "type": "COMPANION_UPDATE_STATUS",
+            "currentVersion": "1.0.0",
+            "latestVersion": "1.1.0",
+            "updateAvailable": True,
+            "downloaded": False,
+        }
+        self.server.companion_updater = Mock()
+        self.server.companion_updater.download.return_value = {
+            "type": "COMPANION_UPDATE_DOWNLOADED", "version": "1.1.0",
+        }
+        expected = {
+            "type": "COMPANION_INSTALLER_LAUNCHED", "version": "1.1.0",
+        }
+        self.server.companion_updater.launch_installer.return_value = expected
+        self.server.on_installer_launched = Mock()
+
+        result = await self.server.apply_companion_update("1.1.0")
+        await asyncio.sleep(0)
+
+        self.assertEqual(result, expected)
+        self.server.companion_updater.download.assert_called_once_with("1.1.0")
+        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
+        self.server.on_installer_launched.assert_called_once_with()
+
     async def test_dashboard_can_import_a_detected_graphics_source(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
@@ -502,7 +528,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="browseProcessLassoLogBtn"', body)
             self.assertIn('id="browseRtssInstallBtn"', body)
             self.assertIn('id="preferredScalingGpu"', body)
-            self.assertIn("Auto-Route to App Display GPU", body)
+            self.assertIn("Match Application Monitor GPU", body)
             self.assertNotIn('id="autoRouteAppDisplayGpu"', body)
             self.assertNotIn('id="defaultProfileAutoScale"', body)
             self.assertIn('id="rtssDefaultGpuTargetGroup"', body)
