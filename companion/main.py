@@ -106,9 +106,14 @@ class CompanionApplication:
                 else None
             ),
         )
-        self.automation.scaling_state_probe = (
-            lambda: self.ls_inspector.detect_lossless_scaling_overlay_window()[0]
-        )
+        if not self.simulation_mode:
+            self.automation.scaling_state_probe = self.ls_inspector.probe_scaling_state
+            self.automation.scaling_confirmation_begin = (
+                self.ls_inspector.begin_scaling_confirmation
+            )
+            self.automation.scaling_confirmation_end = (
+                self.ls_inspector.end_scaling_confirmation
+            )
         self.process_watcher.on_profile_changed = self.automation.activate_profile
         self.process_lasso_monitor = ProcessLassoScalingMonitor(
             self.profile_manager, self.state, self.process_watcher, self.automation
@@ -284,9 +289,18 @@ class CompanionApplication:
                         self.state.current_active_profile.lossless_profile_title
                         if self.state.current_active_profile else None
                     )
-                    target_info = self.ls_inspector.inspect_current_scaling_target(
-                        settings_profile_title=settings_title
-                    )
+                    if not lossless_running and not self.simulation_mode:
+                        self.ls_inspector.reset_runtime_state()
+                        target_info = self.ls_inspector.inspect_current_scaling_target(
+                            fallback_foreground=False,
+                            settings_profile_title=settings_title,
+                        )
+                        target_info.is_active = False
+                        target_info.source = "process_state"
+                    else:
+                        target_info = self.ls_inspector.inspect_current_scaling_target(
+                            settings_profile_title=settings_title
+                        )
                     self.state.current_scaled_target = target_info.to_dict()
                     if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
                         self.automation.reconcile_observed_scaling_state(

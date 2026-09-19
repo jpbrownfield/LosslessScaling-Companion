@@ -98,11 +98,22 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             executable.write_bytes(b"exe")
             watcher.profile_manager.config.lossless_scaling_exe_path = str(executable)
             process = SimpleNamespace(pid=4242)
+            launch_events = []
             with (
                 patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
-                patch("companion.services.process_watcher.subprocess.Popen", return_value=process) as popen,
-                patch("companion.services.process_watcher.time.sleep"),
-                patch.object(watcher, "_suppress_startup_window") as suppress,
+                patch(
+                    "companion.services.process_watcher.subprocess.Popen",
+                    side_effect=lambda *args, **kwargs: (launch_events.append("popen"), process)[1],
+                ) as popen,
+                patch(
+                    "companion.services.process_watcher.time.sleep",
+                    side_effect=lambda *_args: launch_events.append("sleep"),
+                ),
+                patch.object(
+                    watcher,
+                    "_suppress_startup_window",
+                    side_effect=lambda _pid: launch_events.append("suppress"),
+                ) as suppress,
             ):
                 self.assertTrue(watcher.launch_lossless_scaling(force=True))
 
@@ -111,6 +122,7 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
             suppress.assert_called_once_with(4242)
+            self.assertEqual(launch_events, ["popen", "suppress", "sleep"])
 
     def test_running_check_ignores_a_different_simulation_executable(self):
         watcher, _settings = self.make_watcher()

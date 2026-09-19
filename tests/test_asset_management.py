@@ -441,11 +441,27 @@ class GraphicsResolverTests(unittest.TestCase):
 
             plan = GraphicsResolver(
                 store, bundled_reshade_bridge_dir=str(bridge_dir)
-            ).resolve(profile, lossless_scaling_exe=str(executable))
+            ).resolve(
+                profile,
+                lossless_scaling_exe=str(executable),
+                reshade_overlay_hotkey="f8",
+            )
             by_destination = {item["relative_path"]: item for item in plan}
             self.assertIn("ReShade64.dll", by_destination)
             self.assertIn("addons/LSP-ReShade/LSC_ReShadeBridge.dll", by_destination)
             self.assertIn("addons/LSP-ReShade/addon.json", by_destination)
+            self.assertIn("addons/config.json", by_destination)
+            proxy_config = json.loads(
+                Path(by_destination["addons/config.json"]["source_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                proxy_config["addons"]["LSP-ReShade"]["hotkey_vk"], "119"
+            )
+            self.assertIs(
+                proxy_config["addons"]["LSP-ReShade"]["enabled"], True
+            )
             self.assertTrue(
                 by_destination["addons/LSP-ReShade/LSC_ReShadeBridge.dll"]
                 ["source_package"].startswith("reshade/bundled-")
@@ -476,6 +492,35 @@ class GraphicsResolverTests(unittest.TestCase):
 
             plan = GraphicsResolver(store).resolve(profile)
             self.assertEqual([item["relative_path"] for item in plan], ["ReShade64.dll"])
+
+    def test_proxy_without_reshade_does_not_deploy_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            ls_root = root / "Lossless Scaling"
+            ls_root.mkdir()
+            executable = ls_root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            (ls_root / "Lossless.dll").write_bytes(b"original-engine")
+            self._package(
+                store, root, "lossless-proxy", "v1",
+                {"Lossless.dll": self._x64_pe(b"proxy")},
+            )
+            profile = Profile.model_validate({
+                "id": "proxy-only",
+                "name": "Proxy only",
+                "graphics": {
+                    "lossless_proxy": {"enabled": True, "version": "v1"},
+                },
+            })
+
+            plan = GraphicsResolver(store).resolve(
+                profile, lossless_scaling_exe=str(executable)
+            )
+            destinations = [item["relative_path"] for item in plan]
+
+            self.assertEqual(destinations, ["Lossless.dll", "Lossless_original.dll"])
+            self.assertFalse(any("LSP-ReShade" in item for item in destinations))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 from ..core.models import ManagedReshadeProfile
 from ..core.profile_manager import ProfileManager
 from .hdr_display import HdrDisplayDetector
+from .input_simulator import InputSimulator
 
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,11 @@ class ReshadeProfileService:
                 continue
             folder = self._folder(profile.id)
             preset = folder / self._preset_filename(profile.name)
-            if preset.is_file() and (folder / "ReShade.ini").is_file():
+            if (
+                preset.is_file()
+                and (folder / "ReShade.ini").is_file()
+                and (folder / "ReShade.Interactive.ini").is_file()
+            ):
                 continue
             try:
                 self._install_selected_shaders(profile, catalog)
@@ -414,22 +419,31 @@ class ReshadeProfileService:
 
     def _write_config(self, profile: ManagedReshadeProfile, preset: Path) -> None:
         folder = self._folder(profile.id)
-        overlay_key = "36,0,0,0" if profile.overlay_enabled else "0,0,0,0"
-        config = (
-            "[GENERAL]\n"
-            f"CurrentPresetPath={preset.resolve()}\n"
-            f"EffectSearchPaths={(folder / 'packages').resolve()}\\**\n"
-            f"TextureSearchPaths={(folder / 'packages').resolve()}\\**\n"
-            "PerformanceMode=1\n\n"
-            "[INPUT]\n"
-            f"KeyOverlay={overlay_key}\n\n"
-            "[OVERLAY]\n"
-            "TutorialProgress=4\n"
-            "ShowForceLoadEffectsButton=0\n"
-            "ShowPresetName=0\n"
-            "ShowScreenshotMessage=0\n"
+        virtual_key = InputSimulator.vk_from_string(
+            self.profile_manager.config.reshade_overlay_hotkey
         )
-        self._atomic_write(folder / "ReShade.ini", config)
+
+        def content(overlay_key: str) -> str:
+            return (
+                "[GENERAL]\n"
+                f"CurrentPresetPath={preset.resolve()}\n"
+                f"EffectSearchPaths={(folder / 'packages').resolve()}\\**\n"
+                f"TextureSearchPaths={(folder / 'packages').resolve()}\\**\n"
+                "PerformanceMode=1\n\n"
+                "[INPUT]\n"
+                f"KeyOverlay={overlay_key}\n\n"
+                "[OVERLAY]\n"
+                "TutorialProgress=4\n"
+                "ShowForceLoadEffectsButton=0\n"
+                "ShowPresetName=0\n"
+                "ShowScreenshotMessage=0\n"
+            )
+
+        self._atomic_write(folder / "ReShade.ini", content("0,0,0,0"))
+        self._atomic_write(
+            folder / "ReShade.Interactive.ini",
+            content(f"{virtual_key},0,0,0"),
+        )
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
@@ -444,7 +458,14 @@ class ReshadeProfileService:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
-    def config_path(self, profile_id: str) -> Optional[Path]:
+    def sync_all_configs(self) -> None:
+        """Keep each hidden interactive/non-interactive INI pair synchronized."""
+        for profile in self.profile_manager.config.reshade_profiles:
+            preset = self._folder(profile.id) / self._preset_filename(profile.name)
+            if preset.is_file():
+                self._write_config(profile, preset)
+
+    def config_path(self, profile_id: str, *, interactive: bool = False) -> Optional[Path]:
         if profile_id in {profile.id for profile in BUILTIN_PROFILES}:
             self._ensure_builtin_profiles(retry=True)
         profile = next(
@@ -453,6 +474,11 @@ class ReshadeProfileService:
         )
         if profile:
             self._sync_profile_hdr_peak(profile)
-            path = self._folder(profile_id) / "ReShade.ini"
+            preset = self._folder(profile.id) / self._preset_filename(profile.name)
+            if not preset.is_file():
+                return None
+            self._write_config(profile, preset)
+            filename = "ReShade.Interactive.ini" if interactive else "ReShade.ini"
+            path = self._folder(profile_id) / filename
             return path if path.is_file() else None
         return None

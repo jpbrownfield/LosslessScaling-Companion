@@ -62,8 +62,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--download-presentmon", action="store_true",
         help="Download and stage the latest official PresentMon x64 console release",
     )
-    parser.add_argument("--duration", type=float, default=90.0)
-    parser.add_argument("--warmup", type=float, default=10.0)
+    parser.add_argument("--duration", type=float, default=30.0)
+    parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--window-timeout", type=float, default=20.0)
     parser.add_argument("--report-dir", help="Default: diagnostics/performance-benchmark")
     parser.add_argument("--no-scale", action="store_true", help="Capture an unscaled baseline")

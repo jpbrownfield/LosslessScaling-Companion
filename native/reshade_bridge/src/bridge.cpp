@@ -59,7 +59,7 @@ void ReShadeBridge::start(IHost* host) {
     {
         std::lock_guard lock(mutex_);
         host_ = host;
-        hotkey_ = config_integer(host, "hotkey_vk", VK_HOME, 1, 255);
+        hotkey_ = config_integer(host, "hotkey_vk", VK_END, 1, 255);
         require_ctrl_ = config_boolean(host, "hotkey_ctrl", false);
         require_alt_ = config_boolean(host, "hotkey_alt", false);
         require_shift_ = config_boolean(host, "hotkey_shift", false);

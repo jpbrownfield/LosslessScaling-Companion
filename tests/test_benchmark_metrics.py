@@ -88,6 +88,7 @@ class BenchmarkMetricTests(unittest.TestCase):
         self.assertEqual(result["application"], "Asteroids.exe")
         self.assertEqual(result["process_id"], 42)
         self.assertEqual(result["metrics"]["frame_time_ms"]["median"], 15)
+        self.assertAlmostEqual(result["metrics"]["displayed_fps"]["average"], 1000 / 15)
         self.assertAlmostEqual(result["metrics"]["displayed_fps"]["median"], 1000 / 15)
         self.assertEqual(result["metrics"]["click_to_visible_ms"]["count"], 2)
 

@@ -57,6 +57,8 @@ class AutomationController:
         self.graphics_resolver = graphics_resolver or GraphicsResolver(self.asset_store)
         self.window_manager = window_manager or MonitorWindowManager()
         self.scaling_state_probe = scaling_state_probe
+        self.scaling_confirmation_begin: Optional[Callable[[bool], None]] = None
+        self.scaling_confirmation_end: Optional[Callable[[], None]] = None
         self.nvidia_profile_manager = nvidia_profile_manager or NvidiaProfileManager(
             receipt_path=Path(profile_manager.config_dir) / "nvidia-profile-rollback.json"
         )
@@ -171,6 +173,13 @@ class AutomationController:
                 "pending",
                 f"Waiting for Lossless Scaling to confirm {'activation' if active else 'deactivation'}",
             )
+            if self.scaling_confirmation_begin is not None:
+                try:
+                    self.scaling_confirmation_begin(active)
+                except Exception:
+                    logger.exception("Could not initialize Lossless Scaling confirmation")
+                    self._set_control_status("error", "Could not initialize Lossless Scaling confirmation")
+                    return False
             trigger_hotkey = self.hotkey_trigger or InputSimulator.trigger_hotkey
             emitted = trigger_hotkey(
                 modifiers=hotkey.modifiers,
@@ -178,16 +187,23 @@ class AutomationController:
                 hold_ms=hotkey.hold_delay_ms,
             )
             if not emitted:
+                if self.scaling_confirmation_end is not None:
+                    self.scaling_confirmation_end()
                 self._set_control_status("error", f"Hotkey injection failed for {reason}")
                 logger.error("Hotkey injection failed for %s", reason)
                 return False
             confirmation_timeout = 5.0 if active else 8.0
-            if not self._confirm_scaling_state(
-                active,
-                timeout=confirmation_timeout,
-                target_pid=target_pid if active else None,
-                target_hwnd=target_hwnd if active else None,
-            ):
+            try:
+                confirmed = self._confirm_scaling_state(
+                    active,
+                    timeout=confirmation_timeout,
+                    target_pid=target_pid if active else None,
+                    target_hwnd=target_hwnd if active else None,
+                )
+            finally:
+                if self.scaling_confirmation_end is not None:
+                    self.scaling_confirmation_end()
+            if not confirmed:
                 self._set_control_status(
                     "error",
                     f"Lossless Scaling did not confirm {'activation' if active else 'deactivation'}",
@@ -586,7 +602,11 @@ class AutomationController:
             try:
                 configured_exe = self.profile_manager.config.lossless_scaling_exe_path
                 deployment_files = self.graphics_resolver.resolve(
-                    profile, lossless_scaling_exe=configured_exe
+                    profile,
+                    lossless_scaling_exe=configured_exe,
+                    reshade_overlay_hotkey=(
+                        self.profile_manager.config.reshade_overlay_hotkey
+                    ),
                 )
                 deployment_change = bool(
                     configured_exe
@@ -747,7 +767,13 @@ class AutomationController:
             lossless_dir = self._lossless_scaling_dir()
             reshade_ini_path = str(Path(lossless_dir) / "ReShade.ini") if lossless_dir else None
             managed_config = (
-                self.reshade_profiles.config_path(reshade.managed_profile_id)
+                self.reshade_profiles.config_path(
+                    reshade.managed_profile_id,
+                    interactive=bool(
+                        profile.graphics.lossless_proxy.enabled
+                        and profile.graphics.reshade.enabled
+                    ),
+                )
                 if reshade.managed_profile_id
                 else None
             )

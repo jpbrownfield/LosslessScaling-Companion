@@ -11,6 +11,7 @@ import re
 import glob
 import logging
 import ctypes
+import threading
 from ctypes import wintypes
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
@@ -80,7 +81,10 @@ class LosslessScalingInspector:
     # these as "the LS log" poisons parse state, so they are skipped during
     # discovery.
     _LOG_EXCLUDED_NAME_SUBSTRINGS = (
+        "crash",
         "dxgi",
+        "game_output",
+        "steam_api",
         "modules",
         "reshade",
         "specialk",
@@ -93,6 +97,20 @@ class LosslessScalingInspector:
         "presentmon",
         "rtss",
     )
+    _SCALING_STARTED_RE = re.compile(
+        r"(?:\bscaling(?:\s+session)?\s*[:=_-]?\s*"
+        r"(?:started|starting|active|initialized|initialised|enabled)\b|"
+        r"\b(?:start|started|starting|initialize|initialized|initialise|initialised|enable|enabled)"
+        r"\s+(?:lossless\s+)?scaling\b)",
+        re.IGNORECASE,
+    )
+    _SCALING_STOPPED_RE = re.compile(
+        r"(?:\bscaling(?:\s+session)?\s*[:=_-]?\s*"
+        r"(?:stopped|stopping|terminated|closed|ended|disabled)\b|"
+        r"\b(?:stop|stopped|stopping|terminate|terminated|end|ended|disable|disabled)"
+        r"\s+(?:lossless\s+)?scaling\b)",
+        re.IGNORECASE,
+    )
 
     def __init__(
         self,
@@ -103,13 +121,21 @@ class LosslessScalingInspector:
         self.custom_log_path = custom_log_path
         self.lossless_exe_path = lossless_exe_path
         self.active_log_file: Optional[Path] = None
-        self._last_log_pos: int = 0
+        self._log_positions: Dict[Path, int] = {}
+        self._log_state: Optional[bool] = None
+        self._log_event_sequence = 0
+        self._confirmation_baseline: Optional[int] = None
+        self._confirmation_requires_log = False
+        self._inspection_lock = threading.RLock()
         self.last_known_target = ScaledTargetInfo()
         self.settings_xml = LosslessSettingsXml(settings_xml_path)
         self._overlay_true_streak = 0
         self._overlay_false_streak = 0
         self._overlay_stable_present = False
-        self._find_log_file()
+        # Existing logs are historical evidence, not current state. Start at
+        # EOF so an old unmatched "scaling started" line cannot make a new
+        # Companion process report a false active session.
+        self._refresh_log_files(initialize_at_end=True)
 
     @staticmethod
     def _lossless_exe_directories(configured_exe: Optional[str] = None) -> List[Path]:
@@ -143,12 +169,11 @@ class LosslessScalingInspector:
             pass
         return directories
 
-    def _find_log_file(self) -> Optional[Path]:
-        """Locates the active Lossless Scaling log file."""
-        if self.custom_log_path and Path(self.custom_log_path).exists():
-            self.active_log_file = Path(self.custom_log_path)
-            return self.active_log_file
-
+    def _candidate_log_files(self) -> List[Path]:
+        """Return possible LS event logs, excluding known add-on/debug logs."""
+        if self.custom_log_path:
+            custom = Path(self.custom_log_path)
+            return [custom] if custom.is_file() else []
         candidate_patterns = [
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\*.log"),
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\logs\*.log"),
@@ -167,7 +192,7 @@ class LosslessScalingInspector:
             candidate_patterns.append(str(directory / "log.txt"))
             candidate_patterns.append(str(directory / "logs" / "*.log"))
 
-        found_files = []
+        found_files: Dict[Path, float] = {}
         for pattern in candidate_patterns:
             for f in glob.glob(pattern):
                 p = Path(f)
@@ -175,40 +200,58 @@ class LosslessScalingInspector:
                 if any(key in name_lower for key in self._LOG_EXCLUDED_NAME_SUBSTRINGS):
                     continue
                 if p.is_file():
-                    found_files.append((p, p.stat().st_mtime))
+                    try:
+                        found_files[p] = p.stat().st_mtime
+                    except OSError:
+                        continue
+        return [item[0] for item in sorted(found_files.items(), key=lambda item: item[1], reverse=True)]
 
-        if found_files:
-            # Pick the most recently modified log file
-            found_files.sort(key=lambda x: x[1], reverse=True)
-            self.active_log_file = found_files[0][0]
-            logger.info(f"Detected Lossless Scaling log file: {self.active_log_file}")
+    def _refresh_log_files(self, *, initialize_at_end: bool = False) -> List[Path]:
+        candidates = self._candidate_log_files()
+        for path in candidates:
+            if path not in self._log_positions:
+                try:
+                    # A log discovered after startup may have been created for
+                    # the current session, so consume it from the beginning.
+                    self._log_positions[path] = path.stat().st_size if initialize_at_end else 0
+                except OSError:
+                    continue
+        self.active_log_file = candidates[0] if candidates else None
+        return candidates
+
+    def _find_log_file(self) -> Optional[Path]:
+        """Locate the newest eligible log (diagnostic compatibility helper)."""
+        with self._inspection_lock:
+            self._refresh_log_files()
             return self.active_log_file
 
-        return None
-
     def parse_log_updates(self) -> Optional[ScaledTargetInfo]:
-        """Tails the Lossless Scaling log file for new scaling events."""
-        if not self.active_log_file or not self.active_log_file.exists():
-            self._find_log_file()
-            if not self.active_log_file:
-                return None
-
-        try:
-            current_size = self.active_log_file.stat().st_size
-            if current_size < self._last_log_pos:
-                # Log was rotated or cleared
-                self._last_log_pos = 0
-
-            if current_size == self._last_log_pos:
-                return None
-
-            with open(self.active_log_file, "r", encoding="utf-8", errors="ignore") as f:
-                f.seek(self._last_log_pos)
-                new_lines = f.readlines()
-                self._last_log_pos = f.tell()
-
+        """Tail all eligible logs and return only newly observed state events."""
+        with self._inspection_lock:
+            candidates = self._refresh_log_files()
             # Parse lines for target window, process, and scaling state
             saw_state_transition = False
+            transition_file: Optional[Path] = None
+            new_lines: List[str] = []
+            for path in candidates:
+                try:
+                    current_size = path.stat().st_size
+                    position = self._log_positions.get(path, current_size)
+                    if current_size < position:
+                        position = 0
+                    if current_size == position:
+                        continue
+                    with open(path, "r", encoding="utf-8", errors="ignore") as stream:
+                        stream.seek(position)
+                        lines = stream.readlines()
+                        self._log_positions[path] = stream.tell()
+                    for line in lines:
+                        if self._SCALING_STARTED_RE.search(line) or self._SCALING_STOPPED_RE.search(line):
+                            transition_file = path
+                        new_lines.append(line)
+                except (OSError, UnicodeError) as error:
+                    logger.debug("Error reading Lossless Scaling log %s: %s", path, error)
+
             for line in new_lines:
                 line_str = line.strip()
                 # Pattern examples:
@@ -216,9 +259,11 @@ class LosslessScalingInspector:
                 # "Target HWND: 0x00010203 - Window: YouTube - Google Chrome"
                 # "Capture method: WGC, Scaling mode: LS1"
                 # "Scaling stopped"
-                if re.search(r"scaling\s+(started|active|init)", line_str, re.IGNORECASE):
+                if self._SCALING_STARTED_RE.search(line_str):
                     self.last_known_target.is_active = True
                     self.last_known_target.source = "log_file"
+                    self._log_state = True
+                    self._log_event_sequence += 1
                     saw_state_transition = True
 
                     # Check for window title
@@ -236,9 +281,11 @@ class LosslessScalingInspector:
                     if pid_match:
                         self.last_known_target.pid = int(pid_match.group(1))
 
-                elif re.search(r"scaling\s+(stopped|terminated|closed|ended)", line_str, re.IGNORECASE):
+                elif self._SCALING_STOPPED_RE.search(line_str):
                     self.last_known_target.is_active = False
                     self.last_known_target.source = "log_file"
+                    self._log_state = False
+                    self._log_event_sequence += 1
                     saw_state_transition = True
 
                 capture_match = re.search(r"capture(?:\s+(?:method|api))?[:=]\s*([A-Za-z0-9_-]+)", line_str, re.IGNORECASE)
@@ -252,12 +299,39 @@ class LosslessScalingInspector:
             # appeared. Reporting latched state on every no-op poll is what
             # kept "unknown" sources from ever clearing.
             if saw_state_transition:
+                if transition_file is not None:
+                    self.active_log_file = transition_file
+                    logger.info(
+                        "Observed Lossless Scaling state=%s in %s",
+                        "active" if self._log_state else "idle",
+                        transition_file,
+                    )
                 return self.last_known_target
             return None
 
-        except Exception as e:
-            logger.debug(f"Error reading Lossless Scaling log: {e}")
-            return None
+    def reset_runtime_state(self) -> None:
+        """Clear latched evidence after the real LS process has exited."""
+        with self._inspection_lock:
+            self._log_state = None
+            self._confirmation_baseline = None
+            self._confirmation_requires_log = False
+            self.last_known_target.is_active = False
+            self._overlay_true_streak = 0
+            self._overlay_false_streak = 0
+            self._overlay_stable_present = False
+
+    def begin_scaling_confirmation(self, expected: bool) -> None:
+        """Snapshot log offsets before the hotkey so only a new event can confirm it."""
+        del expected  # Reserved for richer per-direction log rules.
+        with self._inspection_lock:
+            self.parse_log_updates()
+            self._confirmation_baseline = self._log_event_sequence
+            self._confirmation_requires_log = bool(self._candidate_log_files())
+
+    def end_scaling_confirmation(self) -> None:
+        with self._inspection_lock:
+            self._confirmation_baseline = None
+            self._confirmation_requires_log = False
 
     @classmethod
     def _window_title(cls, hwnd) -> str:
@@ -368,6 +442,29 @@ class LosslessScalingInspector:
         fallback_foreground: bool = True,
         settings_profile_title: Optional[str] = None,
     ) -> ScaledTargetInfo:
+        with self._inspection_lock:
+            return self._inspect_current_scaling_target(
+                fallback_foreground=fallback_foreground,
+                settings_profile_title=settings_profile_title,
+            )
+
+    def probe_scaling_state(self) -> Optional[bool]:
+        """Return observed LS state for command confirmation, never command intent."""
+        target = self.inspect_current_scaling_target(fallback_foreground=False)
+        with self._inspection_lock:
+            if (
+                self._confirmation_baseline is not None
+                and self._confirmation_requires_log
+                and self._log_event_sequence == self._confirmation_baseline
+            ):
+                return None
+        return None if target.source == "unknown" else target.is_active
+
+    def _inspect_current_scaling_target(
+        self,
+        fallback_foreground: bool = True,
+        settings_profile_title: Optional[str] = None,
+    ) -> ScaledTargetInfo:
         """
         Combines log parsing + Win32 overlay checks + foreground tracking
         to accurately report what application is being scaled.
@@ -378,25 +475,22 @@ class LosslessScalingInspector:
         is_overlay_present = self._stable_overlay_present(raw_overlay_present)
 
         # 2. Check logs for new events
-        log_info = self.parse_log_updates()
+        self.parse_log_updates()
 
-        # 3. Formulate target report. Log state is only trusted when the log
-        # actually produced a fresh observation; otherwise the overlay
-        # decides. Never latch a stale log "active" across polls, which is
-        # what kept the UI flickering between detected and idle.
-        log_active = log_info.is_active if log_info is not None else None
-        if log_active is not None:
-            target_active = log_active or is_overlay_present
-        else:
-            target_active = is_overlay_present
+        # 3. Explicit log transitions are authoritative for this LS process.
+        # The overlay is only a fallback if no eligible log has produced a
+        # state event. In particular, a false-positive HWND cannot turn a
+        # logged "stopped" state back into "active".
         target = ScaledTargetInfo()
-        target.is_active = target_active
+        target.is_active = self._log_state if self._log_state is not None else is_overlay_present
         target.capture_mode = self.last_known_target.capture_mode
         target.scale_factor = self.last_known_target.scale_factor
-        if is_overlay_present:
-            target.source = "overlay_window"
-        elif log_info is not None:
+        if self._log_state is not None:
             target.source = "log_file"
+        elif is_overlay_present:
+            target.source = "overlay_window"
+        elif self._overlay_false_streak >= self._OVERLAY_DEACTIVATE_STREAK:
+            target.source = "overlay_absent"
         else:
             target.source = "unknown"
 

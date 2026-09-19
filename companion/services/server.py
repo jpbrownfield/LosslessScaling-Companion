@@ -42,6 +42,7 @@ from .process_lasso_monitor import ProcessLassoLogTailer
 from .rtss_manager import RtssProfileManager
 from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
+from .input_simulator import InputSimulator
 from .self_update import CompanionUpdateService
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
@@ -106,6 +107,8 @@ class CompanionWebSocketServer:
         self.addon_update_status: Optional[Dict] = None
         self.benchmark_task: Optional[asyncio.Task] = None
         self._benchmark_previous_profile: Optional[Profile] = None
+        self._last_benchmark_result: Optional[Dict] = None
+        self._last_benchmark_report_path: Optional[Path] = None
         self._detected_presentmon_path: Optional[Path] = None
         self._detected_presentmon_sha256: Optional[str] = None
         self.reshade_profiles = ReshadeProfileService(profile_manager)
@@ -588,10 +591,34 @@ class CompanionWebSocketServer:
                 reshade_peak_changed = (
                     requested_reshade_peak != self.config.reshade_hdr_peak_nits
                 )
+                requested_reshade_hotkey = str(
+                    msg.get("reshadeOverlayHotkey", self.config.reshade_overlay_hotkey)
+                ).strip().casefold()
+                if not requested_reshade_hotkey:
+                    raise ValueError("Enter a ReShade menu hotkey")
+                reshade_virtual_key = InputSimulator.vk_from_string(
+                    requested_reshade_hotkey
+                )
+                if not 1 <= reshade_virtual_key <= 255:
+                    raise ValueError("ReShade menu hotkey must be a Windows virtual key")
+                reshade_hotkey_changed = (
+                    requested_reshade_hotkey != self.config.reshade_overlay_hotkey
+                )
                 enable_rtss = bool(msg.get("rtssFrameLimitingEnabled", False))
                 requested_default_mode = str(msg.get("rtssDefaultLimitMode") or "static")
                 if requested_default_mode not in {"static", "dynamic"}:
                     raise ValueError("Unsupported default RTSS limiter mode")
+                requested_static_limit_raw = float(
+                    msg.get(
+                        "rtssDefaultStaticFramerateLimit",
+                        self.config.rtss_default_static_framerate_limit,
+                    )
+                )
+                if not requested_static_limit_raw.is_integer():
+                    raise ValueError("Default RTSS static frame limit must be a whole number")
+                requested_static_limit = int(requested_static_limit_raw)
+                if not 1 <= requested_static_limit <= 1000:
+                    raise ValueError("Default RTSS static frame limit must be between 1 and 1000 FPS")
                 requested_gpu_target = float(msg.get("rtssDefaultGpuTargetPercent", 15.0))
                 if not 1.0 <= requested_gpu_target <= 100.0:
                     raise ValueError("Default Lossless Scaling GPU target must be between 1 and 100")
@@ -689,6 +716,7 @@ class CompanionWebSocketServer:
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.reshade_hdr_peak_nits = requested_reshade_peak
+                self.config.reshade_overlay_hotkey = requested_reshade_hotkey
                 self.config.default_profile_auto_scale = requested_default_auto_scale
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
@@ -705,11 +733,14 @@ class CompanionWebSocketServer:
                 self.config.rtss_frame_limiting_enabled = enable_rtss
                 self.config.rtss_install_path = requested_rtss_path
                 self.config.rtss_default_limit_mode = requested_default_mode
+                self.config.rtss_default_static_framerate_limit = requested_static_limit
                 self.config.rtss_default_gpu_target_percent = requested_gpu_target
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
                 if reshade_peak_changed:
                     await asyncio.to_thread(self.reshade_profiles.refresh_hdr_peak_settings)
+                if reshade_hotkey_changed:
+                    await asyncio.to_thread(self.reshade_profiles.sync_all_configs)
                 await asyncio.to_thread(
                     self.automation.reconcile_window_management_setting
                 )
@@ -1919,6 +1950,7 @@ class CompanionWebSocketServer:
                 self.state.benchmark_mode_active = False
         if self.process_watcher:
             self.process_watcher.invalidate_foreground_cache()
+        self._load_latest_benchmark_result()
         self.benchmark_task = None
         payload = self._benchmark_status_payload()
         payload["lastExitCode"] = return_code
@@ -1934,11 +1966,74 @@ class CompanionWebSocketServer:
         return [
             "--benchmark-exe", str(workload),
             "--presentmon-exe", str(presentmon),
+            "--duration", "30",
+            "--warmup", "5",
+            "--report-dir", str(self._benchmark_report_root()),
             "--use-default-profile",
             "--yes",
         ]
 
+    def _benchmark_report_root(self) -> Path:
+        return Path(self.profile_manager.config_dir) / "benchmarks"
+
+    def _load_latest_benchmark_result(self) -> None:
+        try:
+            reports = list(self._benchmark_report_root().glob("*/result.json"))
+            if not reports:
+                return
+            latest = max(reports, key=lambda path: path.stat().st_mtime_ns)
+            if latest == self._last_benchmark_report_path:
+                return
+            payload = json.loads(latest.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                self._last_benchmark_result = payload
+                self._last_benchmark_report_path = latest
+        except (OSError, json.JSONDecodeError):
+            logger.debug("Could not read the latest benchmark result", exc_info=True)
+
+    def _benchmark_result_summary(self, report: Optional[Dict]) -> Optional[Dict]:
+        if not report:
+            return None
+        captures = report.get("presentmon_captures") or []
+        output_pid = report.get("lossless_scaling_pid")
+        source_pid = report.get("benchmark_pid")
+        output = next(
+            (item for item in captures if item.get("process_id") == output_pid),
+            None,
+        )
+        source = next(
+            (item for item in captures if item.get("process_id") == source_pid),
+            None,
+        )
+        selected = output or source or (captures[0] if captures else None)
+        metrics = (selected or {}).get("metrics") or {}
+        fps = (metrics.get("displayed_fps") or {}).get("average")
+
+        software_latency = report.get("software_visible_latency_ms") or {}
+        latency = software_latency.get("mean")
+        latency_label = "Average input-to-visible latency"
+        latency_scope = "software-visible"
+        if latency is None:
+            input_metrics = (source or {}).get("metrics") or {}
+            latency = (input_metrics.get("all_input_to_visible_ms") or {}).get("mean")
+            latency_scope = "presentmon-input-to-visible"
+        if latency is None:
+            latency = (metrics.get("display_latency_ms") or {}).get("mean")
+            latency_label = "Average display latency"
+            latency_scope = "presentmon-display"
+        return {
+            "averageFps": fps,
+            "averageLatencyMs": latency,
+            "latencyLabel": latency_label,
+            "latencyScope": latency_scope if latency is not None else None,
+            "captureProcess": (selected or {}).get("application"),
+            "durationSeconds": report.get("duration_seconds"),
+            "reportPath": str(self._last_benchmark_report_path or ""),
+        }
+
     def _benchmark_status_payload(self) -> Dict:
+        if self._last_benchmark_result is None:
+            self._load_latest_benchmark_result()
         workload = self._embedded_benchmark_executable()
         managed_presentmon = self._verified_benchmark_executable("presentmon")
         presentmon = managed_presentmon or self._presentmon_executable()
@@ -1947,6 +2042,7 @@ class CompanionWebSocketServer:
             "type": "BENCHMARK_STATUS",
             "ready": bool(workload and presentmon),
             "running": running,
+            "result": self._benchmark_result_summary(self._last_benchmark_result),
             "tools": {
                 "workload": {"ready": bool(workload)},
                 "presentmon": {
@@ -2022,6 +2118,7 @@ class CompanionWebSocketServer:
             "rtssInstallPath": self.config.rtss_install_path or "",
             "rtssStatus": self.rtss_manager.status(self.config.rtss_install_path),
             "rtssDefaultLimitMode": self.config.rtss_default_limit_mode,
+            "rtssDefaultStaticFramerateLimit": self.config.rtss_default_static_framerate_limit,
             "rtssDefaultGpuTargetPercent": self.config.rtss_default_gpu_target_percent,
             "defaultProfileAutoScale": self.config.default_profile_auto_scale,
             "gpuInventory": gpu_inventory,
@@ -2030,6 +2127,7 @@ class CompanionWebSocketServer:
             "autoRouteGpuToDisplay": self.config.auto_route_gpu_to_display,
             "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
             "reshadeHdr": self.reshade_profiles.hdr_settings_payload(),
+            "reshadeOverlayHotkey": self.config.reshade_overlay_hotkey,
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
             "overrideLosslessHotkey": self.config.override_lossless_hotkey,

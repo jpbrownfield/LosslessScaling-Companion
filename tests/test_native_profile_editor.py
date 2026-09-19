@@ -144,6 +144,16 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
         self.assertIn("border: 1px solid rgba(56,189,248,.58)", self.html)
 
+    def test_integrations_are_grouped_with_addons_and_benchmark_results_are_visible(self):
+        addons_start = self.html.index('id="losslessAddonsPanel"')
+        benchmark_start = self.html.index('id="performanceBenchmarkPanel"')
+        addon_markup = self.html[addons_start:benchmark_start]
+        self.assertIn('id="processLassoPerformanceModeScaling"', addon_markup)
+        self.assertIn('id="rtssFrameLimitingEnabled"', addon_markup)
+        self.assertIn('id="performanceBenchmarkResults"', self.html)
+        self.assertIn('id="benchmarkAverageFps"', self.html)
+        self.assertIn('id="benchmarkAverageLatency"', self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

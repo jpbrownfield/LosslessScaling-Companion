@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 from ..core.models import ManagedPackageConfig, Profile, SpecialKConfig
 from .asset_store import AssetStore
+from .input_simulator import InputSimulator
 
 
 class GraphicsResolutionError(RuntimeError):
@@ -168,11 +169,19 @@ class GraphicsResolver:
         imported = self.store.import_file(str(source), allowed_suffixes=(".dll",))
         return Path(imported["path"]).resolve(strict=True)
 
-    def _neural_render_config(self, profile: Profile, lossless_scaling_exe: str) -> Path:
-        """Merge LSP-NR keys into LosslessProxy config without dropping other addons."""
+    def _lossless_proxy_config(
+        self,
+        profile: Profile,
+        lossless_scaling_exe: str,
+        *,
+        neural_enabled: bool,
+        reshade_bridge_enabled: bool,
+        reshade_overlay_hotkey: str,
+    ) -> Path:
+        """Merge Companion-managed addon keys without dropping other proxy settings."""
         executable = Path(lossless_scaling_exe).resolve()
         if executable.name.casefold() != "losslessscaling.exe":
-            raise GraphicsResolutionError("LSP-NeuralRender configuration must target LosslessScaling.exe")
+            raise GraphicsResolutionError("LosslessProxy configuration must target LosslessScaling.exe")
         config_path = executable.parent / "addons" / "config.json"
         data: Dict = {"global": {}, "addons": {}}
         if config_path.is_file():
@@ -188,33 +197,50 @@ class GraphicsResolver:
         if not isinstance(addons, dict):
             raise GraphicsResolutionError("LosslessProxy config.json has an invalid addons section")
 
-        neural = profile.graphics.neural_render
-        styles = {"standard": 0, "natural": 1, "cinematic": 2}
-        existing = addons.get("LSP-NeuralRender", {})
-        if not isinstance(existing, dict):
-            existing = {}
-        # LosslessProxy owns the boolean `enabled` field. LSP-NR's other settings
-        # use strings through IHost::GetConfig/SetConfig.
-        existing.update(
-            {
-                "enabled": True,
-                "style": str(styles[neural.style]),
-                "autoMask": "1" if neural.auto_skin_mask else "0",
-                "intensity": f"{neural.intensity:g}",
-                "localStructure": f"{neural.local_structure:g}",
-                "localTone": f"{neural.local_tone:g}",
-                "skinStructure": f"{neural.skin_structure:g}",
-                "useFlow": "1" if neural.use_lsfg_optical_flow else "0",
-                "workingScale": f"{neural.working_scale:g}",
-                "lsFirst": "1" if neural.prioritize_ls_gpu_work else "0",
-                "composeIntensity": f"{neural.apply_strength:g}",
-                "maxDelta": f"{neural.max_delta:g}",
-                "hiProtect": f"{neural.protect_highlights_above:g}",
-                "watchdogMs": str(neural.watchdog_ms),
-                "snippetPath": "",
-            }
-        )
-        addons["LSP-NeuralRender"] = existing
+        if neural_enabled:
+            neural = profile.graphics.neural_render
+            styles = {"standard": 0, "natural": 1, "cinematic": 2}
+            existing = addons.get("LSP-NeuralRender", {})
+            if not isinstance(existing, dict):
+                existing = {}
+            # LosslessProxy owns the boolean `enabled` field. LSP-NR's other settings
+            # use strings through IHost::GetConfig/SetConfig.
+            existing.update(
+                {
+                    "enabled": True,
+                    "style": str(styles[neural.style]),
+                    "autoMask": "1" if neural.auto_skin_mask else "0",
+                    "intensity": f"{neural.intensity:g}",
+                    "localStructure": f"{neural.local_structure:g}",
+                    "localTone": f"{neural.local_tone:g}",
+                    "skinStructure": f"{neural.skin_structure:g}",
+                    "useFlow": "1" if neural.use_lsfg_optical_flow else "0",
+                    "workingScale": f"{neural.working_scale:g}",
+                    "lsFirst": "1" if neural.prioritize_ls_gpu_work else "0",
+                    "composeIntensity": f"{neural.apply_strength:g}",
+                    "maxDelta": f"{neural.max_delta:g}",
+                    "hiProtect": f"{neural.protect_highlights_above:g}",
+                    "watchdogMs": str(neural.watchdog_ms),
+                    "snippetPath": "",
+                }
+            )
+            addons["LSP-NeuralRender"] = existing
+
+        if reshade_bridge_enabled:
+            existing_bridge = addons.get("LSP-ReShade", {})
+            if not isinstance(existing_bridge, dict):
+                existing_bridge = {}
+            existing_bridge.update(
+                {
+                    "enabled": True,
+                    "hotkey_vk": str(InputSimulator.vk_from_string(reshade_overlay_hotkey)),
+                    "hotkey_ctrl": "0",
+                    "hotkey_alt": "0",
+                    "hotkey_shift": "0",
+                    "hotkey_win": "0",
+                }
+            )
+            addons["LSP-ReShade"] = existing_bridge
         return self.store.write_generated_json(profile.id, "config.json", data)
 
     def _special_k_config(self, profile_id: str, config: SpecialKConfig) -> Path:
@@ -250,7 +276,11 @@ class GraphicsResolver:
         return self.store.write_generated_text(profile_id, "dxgi.ini", text)
 
     def resolve(
-        self, profile: Optional[Profile], *, lossless_scaling_exe: Optional[str] = None
+        self,
+        profile: Optional[Profile],
+        *,
+        lossless_scaling_exe: Optional[str] = None,
+        reshade_overlay_hotkey: str = "end",
     ) -> List[Dict]:
         if profile is None:
             return []
@@ -326,19 +356,6 @@ class GraphicsResolver:
                     "source_package": f"manual-import/{neural.runtime_asset_sha256}",
                 }
             )
-            if not lossless_scaling_exe:
-                raise GraphicsResolutionError(
-                    "LSP-NeuralRender requires a configured LosslessScaling.exe path"
-                )
-            generated_config = self._neural_render_config(profile, lossless_scaling_exe)
-            files.append(
-                {
-                    "relative_path": "addons/config.json",
-                    "source_path": str(generated_config),
-                    "role": "lossless_proxy_config",
-                    "source_package": "generated/lsp-neural-render-config",
-                }
-            )
         elif neural.implementation == "ls_reshade_feeder":
             feeder_package = self._package("dlss5-feeder", neural.package)
             if feeder_package is None:
@@ -348,8 +365,33 @@ class GraphicsResolver:
         reshade_package = self._package("reshade", graphics.reshade)
         if reshade_package:
             files.extend(self._recipe_files(reshade_package))
+            # This bridge is not a standalone add-on. ReShade supplies the
+            # overlay and LosslessProxy supplies the host that loads the bridge.
             if proxy_package:
                 files.extend(self._bundled_reshade_bridge_files())
+
+        neural_enabled = neural.implementation == "lsp_neural_render"
+        reshade_bridge_enabled = bool(proxy_package and reshade_package)
+        if neural_enabled or reshade_bridge_enabled:
+            if not lossless_scaling_exe:
+                raise GraphicsResolutionError(
+                    "LosslessProxy addon configuration requires a configured LosslessScaling.exe path"
+                )
+            generated_config = self._lossless_proxy_config(
+                profile,
+                lossless_scaling_exe,
+                neural_enabled=neural_enabled,
+                reshade_bridge_enabled=reshade_bridge_enabled,
+                reshade_overlay_hotkey=reshade_overlay_hotkey,
+            )
+            files.append(
+                {
+                    "relative_path": "addons/config.json",
+                    "source_path": str(generated_config),
+                    "role": "lossless_proxy_config",
+                    "source_package": "generated/lossless-proxy-config",
+                }
+            )
 
         special_k_package = self._package("special-k", graphics.special_k)
         if special_k_package:

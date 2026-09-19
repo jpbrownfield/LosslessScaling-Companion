@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -61,6 +62,30 @@ class ProcessLassoParserTests(unittest.TestCase):
                 ),
             ):
                 self.assertEqual(ProcessLassoLogTailer.resolve_path(None), path)
+
+    def test_auto_detection_finds_current_processlasso_log_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder)
+            path = local / "ProcessLasso" / "processlasso.log"
+            path.parent.mkdir()
+            path.write_text("", encoding="utf-8")
+            with (
+                patch.object(ProcessLassoLogTailer, "runtime_paths", return_value=iter(())),
+                patch.object(ProcessLassoLogTailer, "registry_paths", return_value=iter(())),
+                patch.dict(os.environ, {"LOCALAPPDATA": str(local), "APPDATA": "", "PROGRAMDATA": ""}),
+            ):
+                self.assertEqual(ProcessLassoLogTailer.resolve_path(None), path)
+
+    def test_auto_detection_prefers_newest_live_log(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            current = root / "processlasso.log"
+            legacy = root / "prolasso.log"
+            current.write_text("current", encoding="utf-8")
+            legacy.write_text("legacy", encoding="utf-8")
+            os.utime(legacy, (1, 1))
+            os.utime(current, (2, 2))
+            self.assertEqual(ProcessLassoLogTailer.resolve_path(str(root)), current)
 
     def test_log_folder_command_line_supports_quoted_paths(self):
         match = _LOG_FOLDER_ARGUMENT_RE.search(

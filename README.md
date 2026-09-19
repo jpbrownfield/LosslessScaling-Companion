@@ -41,7 +41,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
 7. **Process Lasso Performance Mode Trigger:**
    - Optionally tails new records in Process Lasso's CSV action log.
    - Activates scaling only when the triggering executable has an explicit helper profile and a focusable visible window.
-   - With the override blank, discovers `/LogFolder=` on running Process Lasso components, the `LogFolder` registry setting, and then common `prolasso.log` locations.
+   - With the override blank, discovers `/LogFolder=` on running Process Lasso components, the `LogFolder` registry setting, and then current `processlasso.log` or legacy `prolasso.log` locations.
    - Attaches at the end of the log so old launches are never replayed, and handles later log truncation or replacement.
    - Performance Mode ending does not de-scale the application.
    - Uses the application path for detection only; managed files remain confined to the Lossless Scaling directory.

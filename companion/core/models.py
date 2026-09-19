@@ -100,7 +100,6 @@ class ManagedReshadeProfile(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = Field(min_length=1, max_length=120)
-    overlay_enabled: bool = False
     shaders: Dict[str, List[str]] = Field(default_factory=dict)
     imported_preset: bool = False
 
@@ -287,6 +286,7 @@ class AppConfig(BaseModel):
     auto_route_gpu_to_display: bool = True
     nvidia_rtx_hdr_enabled: bool = False
     reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)
+    reshade_overlay_hotkey: str = "end"
     minimize_other_windows_on_scale: bool = False
     override_lossless_hotkey: bool = False
     override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
@@ -295,6 +295,7 @@ class AppConfig(BaseModel):
     rtss_frame_limiting_enabled: bool = False
     rtss_install_path: Optional[str] = None
     rtss_default_limit_mode: Literal["static", "dynamic"] = "static"
+    rtss_default_static_framerate_limit: int = Field(default=60, ge=1, le=1000)
     rtss_default_gpu_target_percent: float = Field(default=15.0, ge=1.0, le=100.0)
     global_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     allowed_websocket_origins: List[str] = Field(

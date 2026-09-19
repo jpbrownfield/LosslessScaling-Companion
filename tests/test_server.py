@@ -82,6 +82,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_general_settings_save_configures_editable_hotkey_override(self):
         self.server.startup_manager = FakeStartupManager()
         self.server.hotkey_listener = Mock()
+        self.server.reshade_profiles.sync_all_configs = Mock()
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
 
@@ -90,6 +91,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "runAtStartup": False,
             "smartAutoScaleEnabled": True,
             "defaultProfileAutoScale": True,
+            "rtssDefaultStaticFramerateLimit": 144,
+            "reshadeOverlayHotkey": "f8",
             "overrideLosslessHotkey": True,
             "overrideHotkey": {"modifiers": ["ctrl", "shift"], "key": "g"},
         }))
@@ -99,8 +102,15 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.config.override_hotkey.key, "g")
         self.assertEqual(self.manager.config.global_hotkey.modifiers, [])
         self.assertEqual(self.manager.config.global_hotkey.key, "f24")
+        self.assertEqual(self.manager.config.rtss_default_static_framerate_limit, 144)
+        self.assertEqual(self.manager.config.reshade_overlay_hotkey, "f8")
         response = json.loads(websocket.messages[-1])
         self.assertTrue(response["controlSettings"]["overrideLosslessHotkey"])
+        self.assertEqual(
+            response["controlSettings"]["rtssDefaultStaticFramerateLimit"], 144
+        )
+        self.assertEqual(response["controlSettings"]["reshadeOverlayHotkey"], "f8")
+        self.server.reshade_profiles.sync_all_configs.assert_called_once_with()
         self.server.hotkey_listener.refresh.assert_called_once_with()
 
     def test_benchmark_requires_embedded_workload_and_verified_presentmon(self):
@@ -145,9 +155,32 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             Path("C:/tools/PresentMon-2.5.1-x64.exe"),
         )
         self.assertIn("--use-default-profile", command)
+        self.assertIn("--duration", command)
+        self.assertEqual(command[command.index("--duration") + 1], "30")
+        self.assertIn("--report-dir", command)
         self.assertNotIn("--dynamic-limiter", command)
         self.assertNotIn("--minimum-fps", command)
         self.assertNotIn("--maximum-fps", command)
+
+    def test_benchmark_summary_prefers_scaled_output_and_visible_latency(self):
+        summary = self.server._benchmark_result_summary({
+            "duration_seconds": 30,
+            "benchmark_pid": 10,
+            "lossless_scaling_pid": 20,
+            "software_visible_latency_ms": {"mean": 18.25},
+            "presentmon_captures": [
+                {"process_id": 10, "application": "LSBenchmark.exe", "metrics": {
+                    "displayed_fps": {"average": 120.0},
+                }},
+                {"process_id": 20, "application": "LosslessScaling.exe", "metrics": {
+                    "displayed_fps": {"average": 237.5},
+                    "display_latency_ms": {"mean": 6.5},
+                }},
+            ],
+        })
+        self.assertEqual(summary["averageFps"], 237.5)
+        self.assertEqual(summary["averageLatencyMs"], 18.25)
+        self.assertEqual(summary["captureProcess"], "LosslessScaling.exe")
 
     async def test_dashboard_runs_diagnostics_and_broadcasts_result(self):
         websocket = self.FakeWebSocket()
@@ -381,6 +414,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         })
         default.graphics.special_k.enabled = True
         default.graphics.special_k.hdr_peak_brightness_nits = 1400
+        self.manager.config.rtss_default_static_framerate_limit = 165
         self.manager.save_config()
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
@@ -399,6 +433,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(created.graphics.special_k.enabled)
         self.assertEqual(created.graphics.special_k.hdr_peak_brightness_nits, 1400)
         self.assertEqual(created.native_scaling_settings["ScalingType"], "LS1")
+        self.assertEqual(created.rtss.framerate_limit, 165)
 
     async def test_targetless_autosaved_draft_is_returned_without_rtss_application(self):
         websocket = self.FakeWebSocket()

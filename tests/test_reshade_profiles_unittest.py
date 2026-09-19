@@ -67,7 +67,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             )
             self.assertIn("TargetBrightness=1200.000000", preset.read_text(encoding="utf-8"))
 
-    def test_named_profile_generates_overlay_disabled_config(self):
+    def test_named_profile_generates_synchronized_safe_and_interactive_configs(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp_path = Path(directory)
             manager = ProfileManager(config_dir=tmp_path / "config")
@@ -76,13 +76,33 @@ class ReshadeProfileFileTests(unittest.TestCase):
 
             saved = service.save(ManagedReshadeProfile(id="hdr-clean", name="HDR Clean"))
 
-            config = (tmp_path / "config" / "reshade-profiles" / "hdr-clean" / "ReShade.ini").read_text()
+            folder = tmp_path / "config" / "reshade-profiles" / "hdr-clean"
+            config = (folder / "ReShade.ini").read_text()
+            interactive = (folder / "ReShade.Interactive.ini").read_text()
             preset = tmp_path / "config" / "reshade-profiles" / "hdr-clean" / "HDR Clean.ini"
             self.assertEqual(saved["name"], "HDR Clean")
             self.assertTrue(preset.is_file())
             self.assertIn("KeyOverlay=0,0,0,0", config)
+            self.assertIn("KeyOverlay=35,0,0,0", interactive)
             self.assertIn("TutorialProgress=4", config)
             self.assertIn(f"CurrentPresetPath={preset.resolve()}", config)
+            self.assertEqual(
+                config.replace("KeyOverlay=0,0,0,0", "KeyOverlay=35,0,0,0"),
+                interactive,
+            )
+            self.assertEqual(service.config_path("hdr-clean"), folder / "ReShade.ini")
+            self.assertEqual(
+                service.config_path("hdr-clean", interactive=True),
+                folder / "ReShade.Interactive.ini",
+            )
+
+            manager.config.reshade_overlay_hotkey = "f8"
+            service.sync_all_configs()
+            self.assertIn(
+                "KeyOverlay=119,0,0,0",
+                (folder / "ReShade.Interactive.ini").read_text(),
+            )
+            self.assertIn("KeyOverlay=0,0,0,0", (folder / "ReShade.ini").read_text())
 
     def test_selected_shader_archive_filters_unchecked_effects(self):
         archive_bytes = io.BytesIO()

@@ -415,6 +415,7 @@ class ProfileManager:
         profile.lossless_profile_title = None
         profile.lossless_profile_path = None
         profile.last_imported_hash = None
+        profile.rtss.framerate_limit = self.config.rtss_default_static_framerate_limit
         profile.rtss.learned_framerate_limit = None
         profile.rtss.game_gpu_baseline_percent = None
         profile.rtss.game_gpu_high_water_percent = None

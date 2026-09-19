@@ -437,10 +437,13 @@ class ProcessWatcher:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self.state.lossless_scaling_running = True
+            # Arm the window watcher immediately. Waiting until after the
+            # initialization delay allowed LS's delayed WPF window to paint
+            # for roughly one second before we ever attempted to hide it.
+            self._suppress_startup_window(process.pid)
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
-            self._suppress_startup_window(process.pid)
             return True
         except Exception as exc:
             logger.error("Failed to launch Lossless Scaling: %s", exc)
@@ -478,7 +481,10 @@ class ProcessWatcher:
                     return
                 if self._hide_process_windows(pid):
                     return
-                time.sleep(0.1)
+                # Poll faster than a typical display frame during startup so
+                # the fallback has the best chance of hiding a window before
+                # Desktop Window Manager presents it.
+                time.sleep(0.01)
 
         threading.Thread(
             target=wait_for_window,

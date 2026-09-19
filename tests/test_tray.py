@@ -24,6 +24,38 @@ class CompanionTrayIconTests(unittest.TestCase):
         tray.state.is_scaling_active = True
         self.assertEqual(tray._visual_state(), "scaling")
 
+    def test_runtime_status_is_shown_directly_below_title(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            executable = Path(directory) / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            manager.config.lossless_scaling_exe_path = str(executable)
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            state = AppState()
+            tray = CompanionTrayIcon(manager, state, watcher, automation=Mock())
+
+            menu = tray._build_menu()
+            self.assertEqual(menu.items[0].text, "LS Companion")
+            self.assertEqual(menu.items[1].text, "LS Disconnected")
+            self.assertFalse(menu.items[1].enabled)
+
+            state.lossless_scaling_running = True
+            self.assertEqual(tray._build_menu().items[1].text, "LS Active")
+
+            state.lossless_scaling_running = False
+            executable.unlink()
+            self.assertEqual(tray._build_menu().items[1].text, "LS Not Found")
+
+    def test_tray_popup_owners_are_promoted_above_taskbar(self):
+        native_icon = Mock(_hwnd=101, _menu_hwnd=202)
+        with patch("companion.ui.tray.ctypes.windll.user32.SetWindowPos") as set_position:
+            CompanionTrayIcon._pin_tray_menu_above_taskbar(native_icon)
+
+        self.assertEqual(set_position.call_count, 2)
+        self.assertEqual(set_position.call_args_list[0].args, (101, -1, 0, 0, 0, 0, 3))
+        self.assertEqual(set_position.call_args_list[1].args, (202, -1, 0, 0, 0, 0, 3))
+
     def test_run_passes_a_built_menu_to_pystray(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory))
@@ -44,6 +76,8 @@ class CompanionTrayIconTests(unittest.TestCase):
             self.assertIsInstance(menu, Menu)
             self.assertEqual(menu.items[0].text, "LS Companion")
             self.assertFalse(menu.items[0].enabled)
+            self.assertEqual(menu.items[1].text, "LS Not Found")
+            self.assertFalse(menu.items[1].enabled)
             labels = [entry.text for entry in menu.items if hasattr(entry, "text")]
             self.assertIn("Run at Windows Sign-In", labels)
             self.assertIn("Check for Updates", labels)

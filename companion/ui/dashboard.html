@@ -344,36 +344,10 @@
               <div class="form-group"><label>Modifiers</label><div class="modifier-options"><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div></div>
             </div>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
+            <div class="form-group" style="max-width:260px"><label for="reshadeOverlayHotkey">ReShade Menu Hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
+            <p class="item-sub" style="white-space:normal; margin-bottom:8px">Defaults to End. This shortcut requires the active application profile to use both LosslessProxy and ReShade. Companion keeps synchronized menu and no-menu INIs internally and deploys only the appropriate one.</p>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When enabled, the companion disables Lossless Scaling's native Auto Scale to prevent conflicts, verifies and restores focus to the exact target window, loads that application's ReShade preset and managed custom DLLs into Lossless Scaling, then sends Lossless Scaling's own configured activation hotkey.</p>
             <p class="item-sub" style="white-space:normal">Only profiles with “Auto-Scale” enabled are started automatically. Windows minimized by the monitor option remain minimized until you restore them manually.</p>
-          </div>
-        </details>
-
-        <details class="settings-group">
-          <summary>Process Lasso <span class="chevron" aria-hidden="true">&#8250;</span></summary>
-          <div class="settings-group-content">
-            <div class="form-row">
-              <div class="form-group checkbox-group section-primary-toggle"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode</label></div>
-              <div class="form-group"><label>CSV log override (optional)</label><div class="input-with-button"><input id="processLassoLogPath" type="text" placeholder="Blank uses automatic detection"><button id="browseProcessLassoLogBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="processLassoDetectedPath"></div></div>
-            </div>
-            <p class="item-sub" style="white-space:normal">Tails new CSV entries only and requires an existing helper profile plus a visible target window. It never deploys files to that application.</p>
-          </div>
-        </details>
-
-        <details class="settings-group">
-          <summary>RTSS frame limiting <span class="chevron" aria-hidden="true">&#8250;</span></summary>
-          <div class="settings-group-content">
-            <div class="settings-columns">
-              <div class="settings-column">
-                <div class="form-group checkbox-group section-primary-toggle"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
-                <div class="form-group"><label>Default Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
-                <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default minimum LS GPU target %</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
-              </div>
-              <div class="settings-column">
-                <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
-              </div>
-            </div>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">The global switch suspends or reapplies all selected profile limits without forgetting their configured FPS or limiter method.</p>
           </div>
         </details>
 
@@ -390,6 +364,33 @@
       <summary><span class="settings-title"><strong>Lossless Scaling Add-ons</strong><small>Install and manage each supported add-on directly</small></span><span class="chevron" aria-hidden="true">&#8250;</span></summary>
       <div class="settings-content">
       <div class="settings-toolbar"><p class="item-sub" style="white-space:normal">Installed add-ons become available to every profile and load only when selected in that profile.</p><button id="refreshGraphicsBtn" class="btn btn-secondary" type="button">Refresh status</button></div>
+      <details class="settings-group">
+        <summary>Process Lasso integration <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+        <div class="settings-group-content">
+          <div class="form-row">
+            <div class="form-group checkbox-group section-primary-toggle"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode</label></div>
+            <div class="form-group"><label>CSV log override (optional)</label><div class="input-with-button"><input id="processLassoLogPath" type="text" placeholder="Blank uses automatic detection"><button id="browseProcessLassoLogBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="processLassoDetectedPath"></div></div>
+          </div>
+          <p class="item-sub" style="white-space:normal">Automatically detects current <code>processlasso.log</code> and legacy <code>prolasso.log</code> files. New Performance Mode events require an existing Companion profile and a visible target window.</p>
+        </div>
+      </details>
+      <details class="settings-group">
+        <summary>RTSS frame limiting <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+        <div class="settings-group-content">
+          <div class="settings-columns">
+            <div class="settings-column">
+              <div class="form-group checkbox-group section-primary-toggle"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
+              <div class="form-group"><label>Default Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
+              <div id="rtssDefaultStaticLimitGroup" class="form-group"><label>Default static frame limit for new profiles</label><input id="rtssDefaultStaticFramerateLimit" type="number" value="60" min="1" max="1000" step="1"></div>
+              <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default minimum LS GPU target %</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
+            </div>
+            <div class="settings-column">
+              <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
+            </div>
+          </div>
+          <p class="item-sub" style="white-space:normal;margin-top:10px">The global switch suspends or reapplies all selected profile limits without forgetting their configured FPS or limiter method.</p>
+        </div>
+      </details>
       <div class="addon-primary-stack">
         <section class="addon-card addon-card-wide">
           <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. When LosslessProxy is also selected, Companion automatically adds its bundled ReShade input bridge.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
@@ -401,7 +402,7 @@
             <div id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</div>
           </div>
           <div class="reshade-library">
-            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay and first-run prompt are disabled by default because the Home menu cannot be used reliably inside Lossless Scaling.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
+            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay is disabled by default. If a game profile selects both LosslessProxy and one of these ReShade profiles, Companion deploys its input bridge and enables the menu hotkey configured in General Settings (End by default).</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
@@ -434,7 +435,11 @@
           <button id="startPerformanceBenchmarkBtn" class="btn btn-primary" type="button" disabled>Run performance test</button>
           <span id="performanceBenchmarkStatus" class="item-sub">Waiting for PresentMon.</span>
         </div>
-        <p class="item-sub" style="white-space:normal;margin-top:10px">The test runs in the background, launches and scales the workload, then saves a JSON report under your local benchmark diagnostics folder.</p>
+        <div id="performanceBenchmarkResults" class="addon-grid" style="margin-top:12px" hidden>
+          <section class="addon-card"><div class="addon-card-header"><div><h3>Average FPS</h3><p id="benchmarkAverageFps" class="addon-status">Unavailable</p></div></div></section>
+          <section class="addon-card"><div class="addon-card-header"><div><h3 id="benchmarkLatencyLabel">Average latency</h3><p id="benchmarkAverageLatency" class="addon-status">Unavailable</p></div></div></section>
+        </div>
+        <p class="item-sub" style="white-space:normal;margin-top:10px">The capture runs for 30 seconds, displays its average FPS and available software latency here, and retains the full JSON report in the local benchmark diagnostics folder.</p>
       </div>
     </details>
     <details id="testingPanel" class="card settings-panel" data-collapsible-id="testing">
@@ -668,6 +673,7 @@
           <div class="form-row">
             <div class="form-group checkbox-group"><input id="losslessProxyEnabled" type="checkbox"><label for="losslessProxyEnabled">LosslessProxy</label></div>
           </div>
+          <p class="item-sub" style="white-space:normal;margin-bottom:10px">The ReShade input bridge is deployed only when LosslessProxy is enabled here and a ReShade profile is selected above. NeuralRender does not enable the ReShade bridge by itself.</p>
           <div id="specialKSettings" class="special-k-settings disabled">
             <div class="form-group checkbox-group"><input id="specialKEnabled" type="checkbox"><label for="specialKEnabled" style="color:#fff;font-size:13px">Enable Special K for this profile</label></div>
             <fieldset id="specialKFields" disabled>
@@ -700,8 +706,7 @@
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
-        <div class="form-group checkbox-group"><input id="reshadeOverlayEnabled" type="checkbox"><label for="reshadeOverlayEnabled" style="text-transform:none;font-size:13px;color:#fff">Enable ReShade overlay (Home)</label></div>
-        <p class="item-sub" style="white-space:normal">Leave this off for normal use. Companion writes <code>KeyOverlay=0,0,0,0</code> and completes the tutorial so ReShade never displays the “Home to open configuration menu” prompt.</p>
+        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. The menu shortcut configured in General Settings is available only when the application profile uses both LosslessProxy and ReShade.</p>
         <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
       </form>
@@ -1137,6 +1142,7 @@
       document.getElementById('overrideHotkeyAlt').checked = overrideModifiers.includes('alt');
       document.getElementById('overrideHotkeyShift').checked = overrideModifiers.includes('shift');
       document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
+      document.getElementById('reshadeOverlayHotkey').value = controlSettings.reshadeOverlayHotkey || 'end';
       renderOverrideHotkeySettings();
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
       renderGpuRoutingSettings();
@@ -1166,6 +1172,7 @@
       document.getElementById('rtssFrameLimitingEnabled').checked = !!controlSettings.rtssFrameLimitingEnabled;
       document.getElementById('rtssInstallPath').value = controlSettings.rtssInstallPath || '';
       document.getElementById('rtssDefaultLimitMode').value = controlSettings.rtssDefaultLimitMode || 'static';
+      document.getElementById('rtssDefaultStaticFramerateLimit').value = controlSettings.rtssDefaultStaticFramerateLimit == null ? 60 : controlSettings.rtssDefaultStaticFramerateLimit;
       document.getElementById('rtssDefaultGpuTargetPercent').value = controlSettings.rtssDefaultGpuTargetPercent == null ? 15 : controlSettings.rtssDefaultGpuTargetPercent;
       renderRtssStatus(controlSettings.rtssStatus || {});
       renderRtssProfileAvailability();
@@ -1292,9 +1299,9 @@
       section.classList.toggle('disabled', !available);
       document.getElementById('rtssProfileFields').disabled = !available;
       document.getElementById('rtssProfileDisabledNotice').textContent = !globallyEnabled
-        ? 'Turn on Enable RTSS Frame Limiting in General Settings to configure this profile.'
+        ? 'Turn on Enable RTSS Frame Limiting in Add-ons to configure this profile.'
         : !installed
-          ? 'Install RTSS (or set its install directory) in General Settings to configure this profile.'
+          ? 'Install RTSS (or set its install directory) in Add-ons to configure this profile.'
           : 'The helper changes RTSS only; it never places files in the target application directory.';
     }
 
@@ -1321,10 +1328,24 @@
         : 'Not detected or downloaded.';
       document.getElementById('downloadPresentMonBtn').disabled = presentMonReady;
       document.getElementById('startPerformanceBenchmarkBtn').disabled = !msg.ready || !!msg.running;
+      const result = msg.result || null;
+      const resultPanel = document.getElementById('performanceBenchmarkResults');
+      resultPanel.hidden = !result;
+      if (result) {
+        const fps = result.averageFps == null ? Number.NaN : Number(result.averageFps);
+        const latency = result.averageLatencyMs == null ? Number.NaN : Number(result.averageLatencyMs);
+        document.getElementById('benchmarkAverageFps').textContent = Number.isFinite(fps)
+          ? `${fps.toFixed(1)} FPS${result.captureProcess ? ` · ${result.captureProcess}` : ''}`
+          : 'Unavailable';
+        document.getElementById('benchmarkLatencyLabel').textContent = result.latencyLabel || 'Average latency';
+        document.getElementById('benchmarkAverageLatency').textContent = Number.isFinite(latency)
+          ? `${latency.toFixed(2)} ms`
+          : 'Unavailable for this capture';
+      }
       document.getElementById('performanceBenchmarkStatus').textContent = msg.running
-        ? 'A performance test is already running.'
+        ? 'A 30-second performance capture is running.'
         : msg.lastExitCode === 0
-          ? 'Test completed. The JSON report is available in the benchmark diagnostics folder.'
+          ? 'Test completed. Results are shown below and the full JSON report was retained.'
           : msg.lastExitCode != null
             ? `Test failed with exit code ${msg.lastExitCode}${msg.lastError ? `: ${msg.lastError}` : '.'}`
         : msg.ready
@@ -1576,7 +1597,7 @@
       }
       list.innerHTML = reshadeProfiles.map(profile => {
         const count = Object.values(profile.shaders || {}).reduce((sum, files) => sum + files.length, 0);
-        return `<div class="reshade-profile-row"><div><strong>${escapeHtml(profile.name)}</strong><div class="item-sub">${count} shader file${count === 1 ? '' : 's'} · Overlay ${profile.overlay_enabled ? 'enabled' : 'disabled'}</div></div><div style="display:flex;gap:7px"><button class="btn btn-secondary" type="button" onclick="editReshadeProfile('${profile.id}')">Edit</button><button class="btn btn-danger" type="button" onclick="deleteReshadeProfile('${profile.id}')">&times;</button></div></div>`;
+        return `<div class="reshade-profile-row"><div><strong>${escapeHtml(profile.name)}</strong><div class="item-sub">${count} shader file${count === 1 ? '' : 's'}</div></div><div style="display:flex;gap:7px"><button class="btn btn-secondary" type="button" onclick="editReshadeProfile('${profile.id}')">Edit</button><button class="btn btn-danger" type="button" onclick="deleteReshadeProfile('${profile.id}')">&times;</button></div></div>`;
       }).join('');
     }
 
@@ -1644,7 +1665,6 @@
       document.getElementById('reshadeProfileForm').reset();
       document.getElementById('reshadeProfileId').value = profile ? profile.id : '';
       document.getElementById('reshadeProfileName').value = profile ? profile.name : '';
-      document.getElementById('reshadeOverlayEnabled').checked = !!(profile && profile.overlay_enabled);
       document.getElementById('reshadeProfileModalTitle').textContent = profile ? 'Edit ReShade Profile' : 'New ReShade Profile';
       const selected = profile && profile.shaders || {};
       reshadeShaderSelection = Object.fromEntries(
@@ -1677,6 +1697,7 @@
 
     function renderDefaultRtssModeSettings() {
       const dynamicMode = document.getElementById('rtssDefaultLimitMode').value === 'dynamic';
+      document.getElementById('rtssDefaultStaticLimitGroup').style.display = dynamicMode ? 'none' : 'flex';
       document.getElementById('rtssDefaultGpuTargetGroup').style.display = dynamicMode ? 'flex' : 'none';
     }
 
@@ -1940,6 +1961,7 @@
           auto_scale: !controlSettings || controlSettings.smartAutoScaleEnabled !== false
         };
         if (profile.rtss) {
+          profile.rtss.framerate_limit = controlSettings && controlSettings.rtssDefaultStaticFramerateLimit || 60;
           profile.rtss.learned_framerate_limit = null;
           profile.rtss.game_gpu_baseline_percent = null;
           profile.rtss.game_gpu_high_water_percent = null;
@@ -2302,7 +2324,6 @@
         profile: {
           id: document.getElementById('reshadeProfileId').value || undefined,
           name: document.getElementById('reshadeProfileName').value.trim(),
-          overlay_enabled: document.getElementById('reshadeOverlayEnabled').checked,
           imported_preset: !!(
             document.getElementById('reshadeProfileId').value
             && reshadeProfiles.find(item => item.id === document.getElementById('reshadeProfileId').value)?.imported_preset
@@ -2317,7 +2338,6 @@
       setGraphicsStatus('Generating the named ReShade configuration automatically...');
     };
     document.getElementById('reshadeProfileName').addEventListener('input', () => scheduleReshadeAutosave());
-    document.getElementById('reshadeOverlayEnabled').addEventListener('change', () => scheduleReshadeAutosave());
     document.getElementById('refreshProcsBtn').onclick = requestProcesses;
     document.getElementById('visibleWindowsOnlyToggle').onchange = requestProcesses;
 
@@ -2388,12 +2408,14 @@
           reshadeHdrPeakNits: document.getElementById('reshadeHdrPeakNits').value === ''
             ? null
             : Number(document.getElementById('reshadeHdrPeakNits').value),
+          reshadeOverlayHotkey: document.getElementById('reshadeOverlayHotkey').value.trim().toLowerCase(),
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
           processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
           rtssFrameLimitingEnabled: rtssEnabled,
           rtssInstallPath: rtssPath,
           rtssDefaultLimitMode: document.getElementById('rtssDefaultLimitMode').value,
+          rtssDefaultStaticFramerateLimit: Number(document.getElementById('rtssDefaultStaticFramerateLimit').value),
           rtssDefaultGpuTargetPercent: Number(document.getElementById('rtssDefaultGpuTargetPercent').value),
           confirmRtssGlobalChange: managedCount > 0 && deactivatesRtss
         }));
@@ -2435,7 +2457,9 @@
     document.getElementById('overrideLosslessHotkey').addEventListener('change', renderOverrideHotkeySettings);
     document.getElementById('overrideHotkeyKey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssDefaultGpuTargetPercent').addEventListener('change', () => scheduleGeneralSettingsSave());
+    document.getElementById('rtssDefaultStaticFramerateLimit').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('reshadeHdrPeakNits').addEventListener('change', () => scheduleGeneralSettingsSave());
+    document.getElementById('reshadeOverlayHotkey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('autoReshadeHdrPeakBtn').onclick = () => {
       document.getElementById('reshadeHdrPeakNits').value = '';
       scheduleGeneralSettingsSave(0);
@@ -2472,7 +2496,7 @@
       downloadBenchmarkTool('presentmon', this);
     };
     document.getElementById('startPerformanceBenchmarkBtn').onclick = function () {
-      confirmDialog("Run the GPU-intensive scaling test using the Default profile's current settings? It will open the workload for about two minutes.", { title: 'Run Benchmark' }).then(accepted => {
+      confirmDialog("Run a 30-second GPU-intensive scaling capture using the Default profile's current settings?", { title: 'Run Benchmark' }).then(accepted => {
         if (!accepted) return;
         this.disabled = true;
         document.getElementById('performanceBenchmarkStatus').textContent = 'Starting performance test...';

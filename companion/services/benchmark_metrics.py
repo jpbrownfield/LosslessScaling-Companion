@@ -100,6 +100,7 @@ def summarize_presentmon_rows(
     frame_time = displayed if displayed["count"] else metrics["frame_time_ms"]
     median_ms = frame_time["median"]
     metrics["displayed_fps"] = {
+        "average": 1000.0 / frame_time["mean"] if frame_time["mean"] else None,
         "median": 1000.0 / median_ms if median_ms else None,
         "one_percent_low": (
             1000.0 / frame_time["p99"] if frame_time["p99"] else None

@@ -82,6 +82,15 @@ class ProfileManagerTests(unittest.TestCase):
                     browser,
                 )
 
+    def test_new_profiles_use_configured_default_static_rtss_limit(self):
+        self.manager.config.rtss_default_static_framerate_limit = 144
+
+        profile = self.manager.new_profile_from_default(
+            "New Game", target_process="game.exe"
+        )
+
+        self.assertEqual(profile.rtss.framerate_limit, 144)
+
     def test_comma_separated_target_lists_are_normalized(self):
         profile = Profile(
             name="Browsers",
@@ -312,6 +321,7 @@ class ProfileManagerTests(unittest.TestCase):
         default.rtss.learned_framerate_limit = 68
         default.rtss.managed_target_process = "old.exe"
         default.custom_notes = "Template note"
+        self.manager.config.rtss_default_static_framerate_limit = 144
         self.manager.save_config()
 
         created = self.manager.create_profile_from_process("new-game.exe")
@@ -323,7 +333,7 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertEqual(created.native_scaling_settings["ScalingType"], "LS1")
         self.assertTrue(created.graphics.special_k.enabled)
         self.assertTrue(created.rtss.enabled)
-        self.assertEqual(created.rtss.framerate_limit, 72)
+        self.assertEqual(created.rtss.framerate_limit, 144)
         self.assertIsNone(created.rtss.learned_framerate_limit)
         self.assertIsNone(created.rtss.managed_target_process)
         self.assertEqual(created.custom_notes, "Template note")

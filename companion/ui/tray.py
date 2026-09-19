@@ -2,11 +2,13 @@
 System Tray interface for LS Companion using pystray and Pillow.
 """
 
+import ctypes
 import logging
 import math
 import threading
 import time
 from typing import Callable, Optional
+from pathlib import Path
 from PIL import Image
 import pystray
 from pystray import MenuItem as item, Menu
@@ -64,6 +66,55 @@ class CompanionTrayIcon:
         if self.state.is_scaling_active:
             return "scaling"
         return "open"
+
+    def _runtime_status_label(self) -> str:
+        if self.state.lossless_scaling_running:
+            return "LS Active"
+        configured = self.profile_manager.config.lossless_scaling_exe_path
+        if not configured or not Path(configured).is_file():
+            return "LS Not Found"
+        return "LS Disconnected"
+
+    @staticmethod
+    def _pin_tray_menu_above_taskbar(native_icon) -> None:
+        """Promote pystray's hidden popup owners before its menu is rendered."""
+        user32 = ctypes.windll.user32
+        hwnd_topmost = -1
+        swp_nomove = 0x0002
+        swp_nosize = 0x0001
+        for attribute in ("_hwnd", "_menu_hwnd"):
+            hwnd = getattr(native_icon, attribute, None)
+            if hwnd:
+                user32.SetWindowPos(
+                    hwnd,
+                    hwnd_topmost,
+                    0,
+                    0,
+                    0,
+                    0,
+                    swp_nomove | swp_nosize,
+                )
+
+    def _install_topmost_menu_hook(self, native_icon) -> None:
+        """Pin the native Windows tray popup above the taskbar on right-click."""
+        handlers = getattr(native_icon, "_message_handlers", None)
+        if not isinstance(handlers, dict):
+            return
+        try:
+            from pystray._util import win32
+
+            original = handlers.get(win32.WM_NOTIFY)
+            if original is None:
+                return
+
+            def notify(wparam, lparam):
+                if lparam == win32.WM_RBUTTONUP:
+                    self._pin_tray_menu_above_taskbar(native_icon)
+                return original(wparam, lparam)
+
+            handlers[win32.WM_NOTIFY] = notify
+        except Exception:
+            logger.exception("Could not enable topmost tray-menu behavior")
 
     def _create_icon_image(
         self, width: int = 64, height: int = 64, *, pulse: float = 1.0
@@ -253,6 +304,7 @@ class CompanionTrayIcon:
 
         menu_items = [
             item("LS Companion", None, enabled=False),
+            item(self._runtime_status_label(), None, enabled=False),
             Menu.SEPARATOR,
             item("Open Dashboard", self._open_dashboard, default=True),
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
@@ -295,6 +347,7 @@ class CompanionTrayIcon:
             "LS Companion",
             menu=self._build_menu()
         )
+        self._install_topmost_menu_hook(self.icon)
         self._animation_stop.clear()
         self._animation_thread = threading.Thread(
             target=self._animate_icon,

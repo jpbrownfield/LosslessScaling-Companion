@@ -29,6 +29,7 @@ _IGNORED_PROCESSES = {"processlasso.exe", "processgovernor.exe", "bitsumsessiona
 _LOG_FOLDER_ARGUMENT_RE = re.compile(
     r'(?i)(?:^|\s)[/-]logfolder\s*=\s*(?:"([^"]+)"|(\S+))'
 )
+_LOG_FILENAMES = ("processlasso.log", "prolasso.log")
 
 
 @dataclass(frozen=True)
@@ -102,11 +103,12 @@ class ProcessLassoLogTailer:
     @staticmethod
     def _paths_for_log_location(location: str) -> Iterable[Path]:
         expanded = Path(os.path.expandvars(location.strip().strip('"'))).expanduser()
-        if expanded.name.casefold().startswith("prolasso.log"):
+        if expanded.name.casefold() in _LOG_FILENAMES:
             yield expanded
             return
-        yield expanded / "prolasso.log"
-        yield expanded / "logs" / "prolasso.log"
+        for filename in _LOG_FILENAMES:
+            yield expanded / filename
+            yield expanded / "logs" / filename
 
     @classmethod
     def runtime_paths(cls) -> Iterable[Path]:
@@ -171,8 +173,9 @@ class ProcessLassoLogTailer:
             if not root:
                 continue
             for folder in ("ProcessLasso", "Process Lasso"):
-                for child in ("prolasso.log", str(Path("logs") / "prolasso.log")):
-                    discovered.append(Path(root) / folder / child)
+                for filename in _LOG_FILENAMES:
+                    for child in (filename, str(Path("logs") / filename)):
+                        discovered.append(Path(root) / folder / child)
         for path in discovered:
             key = str(path).casefold()
             if key not in seen:
@@ -183,8 +186,12 @@ class ProcessLassoLogTailer:
     def resolve_path(cls, configured_path: Optional[str]) -> Optional[Path]:
         if configured_path and configured_path.strip():
             candidates = list(cls._paths_for_log_location(configured_path))
-            return next((path for path in candidates if path.is_file()), candidates[0])
-        return next((path for path in cls.candidate_paths() if path.is_file()), None)
+            existing = [path for path in candidates if path.is_file()]
+            if existing:
+                return max(existing, key=lambda path: path.stat().st_mtime_ns)
+            return candidates[0]
+        existing = [path for path in cls.candidate_paths() if path.is_file()]
+        return max(existing, key=lambda path: path.stat().st_mtime_ns) if existing else None
 
     def reset(self) -> None:
         self.path = None

@@ -34,7 +34,7 @@ private:
     HANDLE stop_event_ = nullptr;
     std::atomic<bool> running_{false};
     std::atomic<bool> active_{false};
-    int hotkey_ = VK_HOME;
+    int hotkey_ = VK_END;
     bool require_ctrl_ = false;
     bool require_alt_ = false;
     bool require_shift_ = false;
