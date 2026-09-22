@@ -107,7 +107,9 @@ class CompanionApplication:
             ),
         )
         if not self.simulation_mode:
-            self.automation.scaling_state_probe = self.ls_inspector.probe_scaling_state
+            self.automation.scaling_state_probe = (
+                self.ls_inspector.probe_scaling_observation
+            )
             self.automation.scaling_confirmation_begin = (
                 self.ls_inspector.begin_scaling_confirmation
             )

@@ -260,6 +260,13 @@ class LosslessScalingInspector:
                 # "Capture method: WGC, Scaling mode: LS1"
                 # "Scaling stopped"
                 if self._SCALING_STARTED_RE.search(line_str):
+                    # Target identity belongs to this new scaling session.
+                    # Never carry a previous session's PID into confirmation
+                    # when the new start line omits its target details.
+                    self.last_known_target.process_name = None
+                    self.last_known_target.pid = None
+                    self.last_known_target.window_title = None
+                    self.last_known_target.exe_path = None
                     self.last_known_target.is_active = True
                     self.last_known_target.source = "log_file"
                     self._log_state = True
@@ -450,7 +457,12 @@ class LosslessScalingInspector:
 
     def probe_scaling_state(self) -> Optional[bool]:
         """Return observed LS state for command confirmation, never command intent."""
-        target = self.inspect_current_scaling_target(fallback_foreground=False)
+        observation = self.probe_scaling_observation()
+        return None if observation is None else bool(observation["isActive"])
+
+    def probe_scaling_observation(self) -> Optional[Dict]:
+        """Return observed state and target identity for command confirmation."""
+        target = self.inspect_current_scaling_target(fallback_foreground=True)
         with self._inspection_lock:
             if (
                 self._confirmation_baseline is not None
@@ -458,7 +470,7 @@ class LosslessScalingInspector:
                 and self._log_event_sequence == self._confirmation_baseline
             ):
                 return None
-        return None if target.source == "unknown" else target.is_active
+        return None if target.source == "unknown" else target.to_dict()
 
     def _inspect_current_scaling_target(
         self,

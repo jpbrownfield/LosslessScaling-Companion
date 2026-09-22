@@ -17,8 +17,22 @@ user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
 GW_OWNER = 4
 MONITOR_DEFAULTTONULL = 0
+MONITOR_DEFAULTTONEAREST = 2
 SW_MINIMIZE = 6
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+WS_CAPTION = 0x00C00000
 WS_EX_TOOLWINDOW = 0x00000080
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
 
 SHELL_CLASSES = {
     "progman",
@@ -34,6 +48,108 @@ class MonitorWindowManager:
 
     def __init__(self):
         self._lock = threading.RLock()
+
+    @staticmethod
+    def _near_monitor_adjustment(
+        window_bounds: tuple[int, int, int, int],
+        monitor_bounds: tuple[int, int, int, int],
+        tolerance_px: int,
+    ) -> Optional[tuple[int, int, int, int]]:
+        """Return per-edge corrections only for a nearly monitor-sized window."""
+        if tolerance_px < 0:
+            return None
+        deltas = tuple(
+            monitor - window
+            for window, monitor in zip(window_bounds, monitor_bounds)
+        )
+        if any(abs(delta) > tolerance_px for delta in deltas):
+            return None
+        return deltas
+
+    def snap_borderless_window_to_monitor(
+        self, target_hwnd: Optional[int], *, tolerance_px: int = 8
+    ) -> bool:
+        """Correct a few-pixel borderless-window overlap without general resizing."""
+        with self._lock:
+            target = self._target_window(target_hwnd)
+            if (
+                not target
+                or user32.IsIconic(target)
+                or user32.IsZoomed(target)
+                or user32.GetWindowLongW(target, -16) & WS_CAPTION
+            ):
+                return False
+            monitor = user32.MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST)
+            if not monitor:
+                return False
+            monitor_info = _MonitorInfo()
+            monitor_info.cbSize = ctypes.sizeof(_MonitorInfo)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+                return False
+
+            outer = wintypes.RECT()
+            if not user32.GetWindowRect(target, ctypes.byref(outer)):
+                return False
+            visible = wintypes.RECT()
+            visible_found = False
+            try:
+                visible_found = (
+                    ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                        target,
+                        DWMWA_EXTENDED_FRAME_BOUNDS,
+                        ctypes.byref(visible),
+                        ctypes.sizeof(visible),
+                    )
+                    == 0
+                )
+            except (AttributeError, OSError):
+                visible_found = False
+            if not visible_found:
+                visible = outer
+
+            window_bounds = (
+                int(visible.left),
+                int(visible.top),
+                int(visible.right),
+                int(visible.bottom),
+            )
+            monitor_bounds = (
+                int(monitor_info.rcMonitor.left),
+                int(monitor_info.rcMonitor.top),
+                int(monitor_info.rcMonitor.right),
+                int(monitor_info.rcMonitor.bottom),
+            )
+            corrections = self._near_monitor_adjustment(
+                window_bounds, monitor_bounds, tolerance_px
+            )
+            if corrections is None or not any(corrections):
+                return False
+            left_delta, top_delta, right_delta, bottom_delta = corrections
+            new_left = int(outer.left) + left_delta
+            new_top = int(outer.top) + top_delta
+            new_right = int(outer.right) + right_delta
+            new_bottom = int(outer.bottom) + bottom_delta
+            if new_right <= new_left or new_bottom <= new_top:
+                return False
+            changed = bool(
+                user32.SetWindowPos(
+                    target,
+                    None,
+                    new_left,
+                    new_top,
+                    new_right - new_left,
+                    new_bottom - new_top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            )
+            if changed:
+                logger.info(
+                    "Snapped borderless HWND %s from %s to monitor bounds %s",
+                    target,
+                    window_bounds,
+                    monitor_bounds,
+                )
+            return changed
 
     @staticmethod
     def _window_pid(hwnd: int) -> int:

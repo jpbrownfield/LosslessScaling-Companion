@@ -91,6 +91,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "runAtStartup": False,
             "smartAutoScaleEnabled": True,
             "defaultProfileAutoScale": True,
+            "snapNearFullscreenWindowsToMonitor": False,
             "rtssDefaultStaticFramerateLimit": 144,
             "reshadeOverlayHotkey": "f8",
             "overrideLosslessHotkey": True,
@@ -104,12 +105,18 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.config.global_hotkey.key, "f24")
         self.assertEqual(self.manager.config.rtss_default_static_framerate_limit, 144)
         self.assertEqual(self.manager.config.reshade_overlay_hotkey, "f8")
+        self.assertFalse(
+            self.manager.config.snap_near_fullscreen_windows_to_monitor
+        )
         response = json.loads(websocket.messages[-1])
         self.assertTrue(response["controlSettings"]["overrideLosslessHotkey"])
         self.assertEqual(
             response["controlSettings"]["rtssDefaultStaticFramerateLimit"], 144
         )
         self.assertEqual(response["controlSettings"]["reshadeOverlayHotkey"], "f8")
+        self.assertFalse(
+            response["controlSettings"]["snapNearFullscreenWindowsToMonitor"]
+        )
         self.server.reshade_profiles.sync_all_configs.assert_called_once_with()
         self.server.hotkey_listener.refresh.assert_called_once_with()
 
@@ -581,7 +588,13 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id="losslessProfileTitle"', body)
             self.assertIn('class="modal-content profile-editor-content"', body)
             self.assertIn('[hidden] { display: none !important; }', body)
-            self.assertIn('#profileModal { background: #020617; backdrop-filter: none; }', body)
+            self.assertIn('--bg: #3a3e44;', body)
+            self.assertIn('--card-bg: #202328;', body)
+            self.assertIn('--surface-bg: #282c31;', body)
+            self.assertIn(
+                '#profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }',
+                body,
+            )
             self.assertIn('body.profile-editor-open > header', body)
             self.assertIn('data-native-key="CaptureApi"', body)
             self.assertIn('data-native-key="MaxFrameLatency"', body)

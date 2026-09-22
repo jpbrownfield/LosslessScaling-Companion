@@ -515,6 +515,12 @@ class CompanionWebSocketServer:
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
                 self.state.auto_scale_enabled = smart_auto_scale_enabled
+                self.config.snap_near_fullscreen_windows_to_monitor = bool(
+                    msg.get(
+                        "snapNearFullscreenWindowsToMonitor",
+                        self.config.snap_near_fullscreen_windows_to_monitor,
+                    )
+                )
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get(
                         "minimizeOtherWindowsOnScale",
@@ -721,6 +727,12 @@ class CompanionWebSocketServer:
                 self.config.lossless_control_configured = True
                 self.config.disable_native_auto_scale = smart_auto_scale_enabled
                 self.state.auto_scale_enabled = smart_auto_scale_enabled
+                self.config.snap_near_fullscreen_windows_to_monitor = bool(
+                    msg.get(
+                        "snapNearFullscreenWindowsToMonitor",
+                        self.config.snap_near_fullscreen_windows_to_monitor,
+                    )
+                )
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get("minimizeOtherWindowsOnScale", False)
                 )
@@ -2107,6 +2119,9 @@ class CompanionWebSocketServer:
             )
         return {
             "smartAutoScaleEnabled": self.config.disable_native_auto_scale,
+            "snapNearFullscreenWindowsToMonitor": (
+                self.config.snap_near_fullscreen_windows_to_monitor
+            ),
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
             "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
             "processLassoLogPath": self.config.process_lasso_log_path or "",

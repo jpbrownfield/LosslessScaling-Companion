@@ -287,6 +287,7 @@ class AppConfig(BaseModel):
     nvidia_rtx_hdr_enabled: bool = False
     reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)
     reshade_overlay_hotkey: str = "end"
+    snap_near_fullscreen_windows_to_monitor: bool = True
     minimize_other_windows_on_scale: bool = False
     override_lossless_hotkey: bool = False
     override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)

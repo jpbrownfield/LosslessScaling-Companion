@@ -72,8 +72,15 @@ class ReshadeProfileService:
         self.hdr_display_detector = hdr_display_detector or HdrDisplayDetector()
 
     def _folder(self, profile_id: str) -> Path:
-        folder = (self.root / profile_id).resolve()
-        if folder.parent != self.root.resolve():
+        # Resolve a separate copy for containment validation, but preserve the
+        # caller's lexical path representation when returning it. Windows CI
+        # can expose the same temp directory through both its long user name
+        # (runneradmin) and DOS 8.3 alias (RUNNER~1); Path.resolve() silently
+        # switches between those spellings and makes otherwise identical
+        # paths compare unequal.
+        folder = self.root / profile_id
+        resolved_folder = folder.resolve()
+        if resolved_folder.parent != self.root.resolve():
             raise ValueError("Unsafe ReShade profile id")
         return folder
 

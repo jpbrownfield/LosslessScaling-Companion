@@ -17,6 +17,13 @@ class PackagingElevationTests(unittest.TestCase):
         self.assertIn("uac_admin=True", spec)
         self.assertIn("icon=str(app_icon)", spec)
 
+    def test_executable_manifest_uses_per_monitor_dpi_coordinates(self):
+        manifest = (ROOT / "installer" / "LosslessCompanion.exe.manifest").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(">PerMonitorV2,PerMonitor</dpiAwareness>", manifest)
+
     def test_installer_and_postinstall_launch_are_elevated(self):
         script = (ROOT / "installer" / "LosslessCompanion.iss").read_text(encoding="utf-8")
 

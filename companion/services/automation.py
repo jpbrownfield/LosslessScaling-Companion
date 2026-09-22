@@ -29,6 +29,9 @@ logger = logging.getLogger("LSCompanion.Automation")
 
 
 class AutomationController:
+    AUTO_SCALE_MAX_ATTEMPTS = 6
+    AUTO_SCALE_CONFIRMATION_SECONDS = 5.0
+
     def __init__(
         self,
         profile_manager: ProfileManager,
@@ -38,7 +41,7 @@ class AutomationController:
         deployment_manager: Optional[DeploymentManager] = None,
         graphics_resolver: Optional[GraphicsResolver] = None,
         window_manager: Optional[MonitorWindowManager] = None,
-        scaling_state_probe: Optional[Callable[[], Optional[bool]]] = None,
+        scaling_state_probe: Optional[Callable[[], Optional[object]]] = None,
         nvidia_profile_manager: Optional[NvidiaProfileManager] = None,
         gpu_router: Optional[GpuRouter] = None,
         lossless_settings: Optional[LosslessSettingsXml] = None,
@@ -57,6 +60,7 @@ class AutomationController:
         self.graphics_resolver = graphics_resolver or GraphicsResolver(self.asset_store)
         self.window_manager = window_manager or MonitorWindowManager()
         self.scaling_state_probe = scaling_state_probe
+        self._last_confirmation_wrong_target_pid: Optional[int] = None
         self.scaling_confirmation_begin: Optional[Callable[[bool], None]] = None
         self.scaling_confirmation_end: Optional[Callable[[], None]] = None
         self.nvidia_profile_manager = nvidia_profile_manager or NvidiaProfileManager(
@@ -87,6 +91,16 @@ class AutomationController:
             )
         except Exception:
             logger.exception("Scaling continued, but peer windows could not be minimized")
+
+    @staticmethod
+    def _profile_allows_monitor_edge_snap(profile: Optional[Profile]) -> bool:
+        """Snap only frame-generation/no-spatial-scale fullscreen profiles."""
+        if not profile:
+            return False
+        settings = profile.native_scaling_settings
+        scaling_type = str(settings.get("ScalingType") or "").strip().casefold()
+        windowed = str(settings.get("WindowedMode") or "false").strip().casefold()
+        return scaling_type == "off" and windowed not in {"1", "true", "yes", "on"}
 
     def set_scaling(
         self,
@@ -135,6 +149,21 @@ class AutomationController:
                 if self.process_watcher and changed and not self.process_watcher.launch_lossless_scaling(force=True):
                     self._set_control_status("error", "Could not restart Lossless Scaling with graphics add-ons")
                     return False
+            if (
+                active
+                and target_hwnd
+                and self.profile_manager.config.snap_near_fullscreen_windows_to_monitor
+                and self._profile_allows_monitor_edge_snap(selected)
+            ):
+                try:
+                    self.window_manager.snap_borderless_window_to_monitor(
+                        target_hwnd, tolerance_px=8
+                    )
+                except Exception:
+                    logger.exception(
+                        "Scaling continued without near-monitor boundary correction for HWND %s",
+                        target_hwnd,
+                    )
             if active and (target_pid is not None or target_hwnd is not None):
                 if (
                     reason == "focus"
@@ -169,40 +198,124 @@ class AutomationController:
             # Lossless Scaling exposes one global activation hotkey. Profile hotkeys
             # are retained only for migration/delay compatibility.
             hotkey = self.profile_manager.config.global_hotkey
-            self._set_control_status(
-                "pending",
-                f"Waiting for Lossless Scaling to confirm {'activation' if active else 'deactivation'}",
-            )
-            if self.scaling_confirmation_begin is not None:
-                try:
-                    self.scaling_confirmation_begin(active)
-                except Exception:
-                    logger.exception("Could not initialize Lossless Scaling confirmation")
-                    self._set_control_status("error", "Could not initialize Lossless Scaling confirmation")
-                    return False
             trigger_hotkey = self.hotkey_trigger or InputSimulator.trigger_hotkey
-            emitted = trigger_hotkey(
-                modifiers=hotkey.modifiers,
-                key=hotkey.key,
-                hold_ms=hotkey.hold_delay_ms,
-            )
-            if not emitted:
-                if self.scaling_confirmation_end is not None:
-                    self.scaling_confirmation_end()
-                self._set_control_status("error", f"Hotkey injection failed for {reason}")
-                logger.error("Hotkey injection failed for %s", reason)
-                return False
-            confirmation_timeout = 5.0 if active else 8.0
-            try:
-                confirmed = self._confirm_scaling_state(
-                    active,
-                    timeout=confirmation_timeout,
-                    target_pid=target_pid if active else None,
-                    target_hwnd=target_hwnd if active else None,
+            automatic_activation = bool(
+                active
+                and (
+                    reason in {"focus", "browser_video"}
+                    or reason.startswith("process_lasso_performance_mode:")
                 )
-            finally:
-                if self.scaling_confirmation_end is not None:
-                    self.scaling_confirmation_end()
+            )
+            max_attempts = (
+                self.AUTO_SCALE_MAX_ATTEMPTS if automatic_activation else 1
+            )
+            confirmation_timeout = (
+                self.AUTO_SCALE_CONFIRMATION_SECONDS if active else 8.0
+            )
+            confirmed = False
+            for attempt in range(1, max_attempts + 1):
+                attempt_started = time.monotonic()
+                if attempt > 1 and target_pid and target_hwnd and self.process_watcher:
+                    if not self.process_watcher.target_is_foreground(
+                        target_pid, target_hwnd
+                    ):
+                        self._set_control_status(
+                            "idle", "Cancelled automatic scaling retries after the target lost focus"
+                        )
+                        self.process_watcher.invalidate_foreground_cache()
+                        logger.info(
+                            "Cancelled %s retry %d/%d after PID %s / HWND %s lost focus",
+                            reason,
+                            attempt,
+                            max_attempts,
+                            target_pid,
+                            target_hwnd,
+                        )
+                        return False
+                attempt_suffix = (
+                    f" (attempt {attempt}/{max_attempts})" if max_attempts > 1 else ""
+                )
+                self._set_control_status(
+                    "pending",
+                    f"Waiting for Lossless Scaling to confirm "
+                    f"{'activation' if active else 'deactivation'}{attempt_suffix}",
+                )
+                if self.scaling_confirmation_begin is not None:
+                    try:
+                        self.scaling_confirmation_begin(active)
+                    except Exception:
+                        logger.exception("Could not initialize Lossless Scaling confirmation")
+                        self._set_control_status("error", "Could not initialize Lossless Scaling confirmation")
+                        return False
+                emitted = trigger_hotkey(
+                    modifiers=hotkey.modifiers,
+                    key=hotkey.key,
+                    hold_ms=hotkey.hold_delay_ms,
+                )
+                if not emitted:
+                    if self.scaling_confirmation_end is not None:
+                        self.scaling_confirmation_end()
+                    self._set_control_status("error", f"Hotkey injection failed for {reason}")
+                    logger.error("Hotkey injection failed for %s", reason)
+                    return False
+                try:
+                    confirmed = self._confirm_scaling_state(
+                        active,
+                        timeout=confirmation_timeout,
+                        target_pid=target_pid if active else None,
+                        target_hwnd=target_hwnd if active else None,
+                    )
+                finally:
+                    if self.scaling_confirmation_end is not None:
+                        self.scaling_confirmation_end()
+                if confirmed:
+                    break
+                wrong_target_pid = self._last_confirmation_wrong_target_pid
+                if wrong_target_pid is not None:
+                    logger.warning(
+                        "Lossless Scaling activated PID %s instead of requested PID %s; "
+                        "stopping the incorrect session before retrying",
+                        wrong_target_pid,
+                        target_pid,
+                    )
+                    recovered = self.set_scaling(
+                        False,
+                        selected,
+                        reason=f"{reason}_wrong_target_recovery",
+                        force=True,
+                        park_runtime_on_stop=False,
+                    )
+                    if not recovered:
+                        self._set_control_status(
+                            "error",
+                            "Wrong scaling target was detected but could not be stopped safely",
+                        )
+                        return False
+                if attempt < max_attempts:
+                    if target_pid and target_hwnd and self.process_watcher:
+                        if not self.process_watcher.target_is_foreground(
+                            target_pid, target_hwnd
+                        ):
+                            self._set_control_status(
+                                "idle",
+                                "Cancelled automatic scaling retries after the target lost focus",
+                            )
+                            self.process_watcher.invalidate_foreground_cache()
+                            return False
+                    logger.warning(
+                        "Lossless Scaling did not confirm %s after %s attempt %d/%d; retrying",
+                        "activation" if active else "deactivation",
+                        reason,
+                        attempt,
+                        max_attempts,
+                    )
+                    # Confirmation normally consumes this entire interval. If
+                    # a probe errors early, preserve the requested five-second
+                    # cadence instead of firing toggle hotkeys back-to-back.
+                    retry_at = attempt_started + self.AUTO_SCALE_CONFIRMATION_SECONDS
+                    remaining = retry_at - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(remaining)
             if not confirmed:
                 self._set_control_status(
                     "error",
@@ -281,17 +394,11 @@ class AutomationController:
         target_hwnd: Optional[int] = None,
     ) -> bool:
         """Wait for an authoritative LS overlay/log observation when available."""
+        self._last_confirmation_wrong_target_pid = None
         if self.scaling_state_probe is None:
             return True
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                observed = self.scaling_state_probe()
-            except Exception:
-                logger.exception("Lossless Scaling confirmation probe failed")
-                return False
-            if observed is expected:
-                return True
             if expected and target_pid and target_hwnd and self.process_watcher:
                 if not self.process_watcher.maintain_scaling_target_foreground(
                     target_pid, target_hwnd
@@ -302,6 +409,30 @@ class AutomationController:
                         target_hwnd,
                     )
                     return False
+            try:
+                observation = self.scaling_state_probe()
+            except Exception:
+                logger.exception("Lossless Scaling confirmation probe failed")
+                return False
+            observed_pid = None
+            if isinstance(observation, dict):
+                observed = observation.get("isActive", observation.get("is_active"))
+                try:
+                    observed_pid = int(observation.get("pid")) if observation.get("pid") else None
+                except (TypeError, ValueError):
+                    observed_pid = None
+            else:
+                observed = observation
+            if observed is expected:
+                if (
+                    expected
+                    and target_pid is not None
+                    and observed_pid is not None
+                    and observed_pid != target_pid
+                ):
+                    self._last_confirmation_wrong_target_pid = observed_pid
+                    return False
+                return True
             time.sleep(0.075)
         return False
 

@@ -140,6 +140,100 @@ class ProfileEffectsTests(unittest.TestCase):
 
             windows.minimize_others_on_target_monitor.assert_called_once_with(456)
 
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_frame_generation_only_profile_snaps_near_monitor_edges(self, _trigger):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            windows = Mock()
+            profile = Profile(
+                name="Frame generation only",
+                native_scaling_settings={
+                    "ScalingType": "Off",
+                    "WindowedMode": "false",
+                },
+            )
+            automation = AutomationController(
+                manager, state, watcher, window_manager=windows
+            )
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    profile,
+                    reason="manual_profile_switch",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        windows.snap_borderless_window_to_monitor.assert_called_once_with(
+            456, tolerance_px=8
+        )
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_monitor_edge_snap_can_be_disabled_globally(self, _trigger):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.snap_near_fullscreen_windows_to_monitor = False
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            windows = Mock()
+            profile = Profile(
+                name="Frame generation only",
+                native_scaling_settings={
+                    "ScalingType": "Off",
+                    "WindowedMode": "false",
+                },
+            )
+            automation = AutomationController(
+                manager, AppState(), watcher, window_manager=windows
+            )
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    profile,
+                    reason="manual_profile_switch",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        windows.snap_borderless_window_to_monitor.assert_not_called()
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_spatial_scaling_profile_does_not_resize_game_window(self, _trigger):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            windows = Mock()
+            profile = Profile(
+                name="Spatial scaling",
+                native_scaling_settings={
+                    "ScalingType": "LS1",
+                    "WindowedMode": "false",
+                },
+            )
+            automation = AutomationController(
+                manager, AppState(), watcher, window_manager=windows
+            )
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    profile,
+                    reason="manual_profile_switch",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        windows.snap_borderless_window_to_monitor.assert_not_called()
+
     def test_profile_auto_gpu_route_inherits_global_window_route(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory) / "config")
@@ -403,6 +497,127 @@ class ProfileEffectsTests(unittest.TestCase):
         )
         trigger_hotkey.assert_called_once()
         self.assertTrue(state.is_scaling_active)
+
+    @patch("companion.services.automation.time.sleep")
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_auto_scale_retries_six_times_at_five_second_cadence(
+        self, trigger_hotkey, sleep
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            watcher.maintain_scaling_target_foreground.return_value = True
+            watcher.target_is_foreground.return_value = True
+            automation = AutomationController(manager, state, watcher)
+            automation._confirm_scaling_state = Mock(
+                side_effect=[False, False, False, False, False, True]
+            )
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    Profile(name="Game", target_process="Game.exe"),
+                    reason="focus",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        self.assertEqual(trigger_hotkey.call_count, 6)
+        self.assertEqual(automation._confirm_scaling_state.call_count, 6)
+        self.assertEqual(sleep.call_count, 5)
+        self.assertTrue(all(call.args[0] <= 5.0 for call in sleep.call_args_list))
+        self.assertTrue(state.is_scaling_active)
+
+    @patch("companion.services.automation.time.sleep")
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_auto_scale_retry_stops_when_target_loses_focus(
+        self, trigger_hotkey, sleep
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            watcher.maintain_scaling_target_foreground.return_value = True
+            watcher.target_is_foreground.return_value = False
+            state = AppState()
+            automation = AutomationController(manager, state, watcher)
+            automation._confirm_scaling_state = Mock(return_value=False)
+
+            self.assertFalse(
+                automation.set_scaling(
+                    True,
+                    Profile(name="Game", target_process="Game.exe"),
+                    reason="focus",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        trigger_hotkey.assert_called_once()
+        sleep.assert_not_called()
+        watcher.invalidate_foreground_cache.assert_called_once()
+        self.assertFalse(state.is_scaling_active)
+
+    @patch("companion.services.automation.time.sleep")
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_auto_scale_stops_wrong_target_then_retries_intended_window(
+        self, trigger_hotkey, sleep
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            watcher = Mock()
+            watcher.focus_window_identity.return_value = True
+            watcher.maintain_scaling_target_foreground.return_value = True
+            watcher.target_is_foreground.return_value = True
+            observations = iter(
+                (
+                    {"isActive": True, "pid": 999},
+                    {"isActive": False, "pid": 999},
+                    {"isActive": True, "pid": 123},
+                )
+            )
+            automation = AutomationController(
+                manager,
+                state,
+                watcher,
+                scaling_state_probe=lambda: next(observations),
+            )
+
+            self.assertTrue(
+                automation.set_scaling(
+                    True,
+                    Profile(name="Game", target_process="Game.exe"),
+                    reason="focus",
+                    target_pid=123,
+                    target_hwnd=456,
+                )
+            )
+
+        # Wrong activation, recovery toggle, correct activation.
+        self.assertEqual(trigger_hotkey.call_count, 3)
+        self.assertTrue(state.is_scaling_active)
+        self.assertEqual(state.scaling_target_pid, 123)
+        self.assertEqual(state.scaling_target_hwnd, 456)
+        self.assertEqual(state.scaling_trigger, "focus")
+
+    @patch("companion.services.automation.time.sleep")
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
+    def test_manual_activation_remains_single_attempt(self, trigger_hotkey, sleep):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            automation = AutomationController(manager, state)
+            automation._confirm_scaling_state = Mock(return_value=False)
+
+            self.assertFalse(automation.set_scaling(True, reason="manual"))
+
+        trigger_hotkey.assert_called_once()
+        sleep.assert_not_called()
+        self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_smart_auto_scale_master_switch_blocks_automatic_hotkey(self, trigger_hotkey):

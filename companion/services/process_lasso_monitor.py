@@ -6,6 +6,7 @@ import csv
 import logging
 import os
 import re
+import time
 import winreg
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,13 @@ class PerformanceModeEvent:
     @property
     def key(self) -> str:
         return str(self.pid) if self.pid is not None else self.process_name.casefold()
+
+
+@dataclass
+class PendingPerformanceModeEvent:
+    event: PerformanceModeEvent
+    expires_at: float
+    retry_at: float
 
 
 def parse_performance_mode_line(line: str) -> Optional[PerformanceModeEvent]:
@@ -260,6 +268,8 @@ class ProcessLassoScalingMonitor:
     """Resolve log events to existing profiles and confirmed visible windows."""
 
     TRIGGER_PREFIX = "process_lasso_performance_mode:"
+    PENDING_TTL_SECONDS = 15.0
+    RETRY_INTERVAL_SECONDS = 0.25
 
     def __init__(self, profile_manager, state, process_watcher, automation):
         self.profile_manager = profile_manager
@@ -268,28 +278,73 @@ class ProcessLassoScalingMonitor:
         self.automation = automation
         self.tailer = ProcessLassoLogTailer(self._handle_event)
         self._owned_triggers = {}
+        self._pending_events: dict[str, PendingPerformanceModeEvent] = {}
 
     def poll(self) -> int:
         config = self.profile_manager.config
         if not config.process_lasso_performance_mode_scaling:
             self.tailer.reset()
             self._owned_triggers.clear()
+            self._pending_events.clear()
             return 0
-        return self.tailer.poll(config.process_lasso_log_path)
+        count = self.tailer.poll(config.process_lasso_log_path)
+        self._retry_pending_events()
+        return count
 
     def _handle_event(self, event: PerformanceModeEvent) -> None:
-        trigger = f"{self.TRIGGER_PREFIX}{event.key}"
         process_key = event.process_name.casefold()
         if not event.active:
             self._owned_triggers.pop(process_key, None)
+            self._cancel_pending_event(event)
             logger.info(
                 "Process Lasso Performance Mode ended for %s; scaling remains active",
                 event.process_name,
             )
             return
+        if self._attempt_activation(event):
+            self._pending_events.pop(event.key, None)
+            return
+        now = time.monotonic()
+        self._pending_events[event.key] = PendingPerformanceModeEvent(
+            event=event,
+            expires_at=now + self.PENDING_TTL_SECONDS,
+            retry_at=now + self.RETRY_INTERVAL_SECONDS,
+        )
+
+    def _cancel_pending_event(self, event: PerformanceModeEvent) -> None:
+        """Cancel PID-specific and name-only retries for a Performance Mode exit."""
+        for key, pending in list(self._pending_events.items()):
+            same_process = (
+                pending.event.process_name.casefold() == event.process_name.casefold()
+            )
+            same_pid = event.pid is None or pending.event.pid == event.pid
+            if same_process and same_pid:
+                self._pending_events.pop(key, None)
+
+    def _retry_pending_events(self) -> None:
+        now = time.monotonic()
+        for key, pending in list(self._pending_events.items()):
+            if now >= pending.expires_at:
+                logger.warning(
+                    "Process Lasso activation window expired for %s",
+                    pending.event.process_name,
+                )
+                self._pending_events.pop(key, None)
+                continue
+            if now < pending.retry_at:
+                continue
+            if self._attempt_activation(pending.event):
+                self._pending_events.pop(key, None)
+            else:
+                pending.retry_at = now + self.RETRY_INTERVAL_SECONDS
+
+    def _attempt_activation(self, event: PerformanceModeEvent) -> bool:
+        """Try one ordered activation; return False only for transient conditions."""
+        trigger = f"{self.TRIGGER_PREFIX}{event.key}"
+        process_key = event.process_name.casefold()
         if not self.state.auto_scale_enabled:
             logger.info("Ignored Process Lasso event because global auto-scaling is disabled")
-            return
+            return True
 
         window = self.process_watcher.find_visible_window_for_process(
             process_name=event.process_name,
@@ -300,7 +355,7 @@ class ProcessLassoScalingMonitor:
                 "Ignored Process Lasso Performance Mode event for %s: no visible window",
                 event.process_name,
             )
-            return
+            return False
         profile = self.profile_manager.match_target_profile(
             process_name=window.name,
             executable_path=window.exe_path,
@@ -310,7 +365,26 @@ class ProcessLassoScalingMonitor:
                 "Ignored Process Lasso Performance Mode event for %s: no explicit helper profile",
                 event.process_name,
             )
-            return
+            return True
+
+        active_profile_id = (
+            self.state.current_active_profile.id
+            if self.state.current_active_profile else None
+        )
+        if self.state.is_scaling_active:
+            if active_profile_id == profile.id:
+                logger.info(
+                    "Process Lasso event for %s needs no action; profile '%s' is already scaling",
+                    event.process_name,
+                    profile.name,
+                )
+                return True
+            logger.info(
+                "Deferred Process Lasso event for %s while another profile is scaling",
+                event.process_name,
+            )
+            return False
+
         self.automation.activate_profile(
             profile,
             window.exe_path,
@@ -320,7 +394,18 @@ class ProcessLassoScalingMonitor:
         )
         if not self.state.current_active_profile or self.state.current_active_profile.id != profile.id:
             logger.warning("Process Lasso profile activation did not complete for %s", profile.name)
-            return
+            return False
+
+        # Another serialized trigger may have completed while profile setup was
+        # in progress. Never emit Process Lasso's hotkey if that trigger already
+        # established the desired profile state.
+        if self.state.is_scaling_active:
+            logger.info(
+                "Process Lasso event for %s was satisfied during profile activation",
+                event.process_name,
+            )
+            return True
+
         # Profile activation may restart Lossless Scaling and steal focus, so focus
         # the intended source window only after the profile and DLL host are ready.
         if not self.process_watcher.focus_window(window):
@@ -328,7 +413,7 @@ class ProcessLassoScalingMonitor:
                 "Ignored Process Lasso Performance Mode event for %s: target window could not be focused",
                 event.process_name,
             )
-            return
+            return False
         self.automation.set_scaling(
             True,
             profile,
@@ -338,3 +423,15 @@ class ProcessLassoScalingMonitor:
         )
         if self.state.is_scaling_active and self.state.scaling_trigger == trigger:
             self._owned_triggers[process_key] = trigger
+        if not self.state.is_scaling_active:
+            logger.warning(
+                "Process Lasso scaling request for %s was not confirmed; "
+                "the toggle will not be resent because the observed state is ambiguous",
+                event.process_name,
+            )
+        # Once set_scaling() has been called, the global toggle may have been
+        # emitted even when confirmation later failed (its bool reports the
+        # complete operation, not merely injection). Retrying that ambiguous
+        # command could immediately unscale a session whose log event was
+        # missed, so consume this Performance Mode start either way.
+        return True
