@@ -17,6 +17,7 @@ from ..core.profile_manager import ProfileManager
 from ..core.models import HotkeyConfig
 from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
+from .proxy_menu import LosslessProxyMenuController
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -49,6 +50,7 @@ class ProcessWatcher:
         state: AppState,
         on_profile_changed: Optional[Callable] = None,
         lossless_settings: Optional[LosslessSettingsXml] = None,
+        proxy_menu: Optional[LosslessProxyMenuController] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -56,6 +58,7 @@ class ProcessWatcher:
         self._last_foreground_hwnd: Optional[int] = None
         self.on_profile_changed = on_profile_changed
         self.lossless_settings = lossless_settings
+        self.proxy_menu = proxy_menu or LosslessProxyMenuController(state)
 
     @staticmethod
     def get_foreground_window_info() -> Optional[ProcessInfo]:
@@ -441,6 +444,7 @@ class ProcessWatcher:
             # initialization delay allowed LS's delayed WPF window to paint
             # for roughly one second before we ever attempted to hide it.
             self._suppress_startup_window(process.pid)
+            self.proxy_menu.suppress_startup_window(process.pid)
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
@@ -459,7 +463,13 @@ class ProcessWatcher:
             nonlocal hidden
             owner_pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
-            if owner_pid.value == pid and user32.IsWindowVisible(hwnd):
+            class_name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_name, len(class_name))
+            if (
+                owner_pid.value == pid
+                and class_name.value != LosslessProxyMenuController.WINDOW_CLASS
+                and user32.IsWindowVisible(hwnd)
+            ):
                 show_window = getattr(user32, "ShowWindowAsync", user32.ShowWindow)
                 show_window(hwnd, 0)  # SW_HIDE
                 hidden += 1

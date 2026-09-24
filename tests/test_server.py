@@ -79,6 +79,19 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
+    async def test_dashboard_can_open_proxy_menu(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.proxy_menu = Mock()
+        self.server.proxy_menu.open.return_value = {"opened": True, "focused": True}
+
+        await self.server.process_message(
+            websocket, json.dumps({"type": "OPEN_PROXY_MENU"})
+        )
+
+        self.server.proxy_menu.open.assert_called_once_with()
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "PROXY_MENU_OPENED")
+
     async def test_general_settings_save_configures_editable_hotkey_override(self):
         self.server.startup_manager = FakeStartupManager()
         self.server.hotkey_listener = Mock()
@@ -621,6 +634,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Lossless Scaling Add-ons", body)
             self.assertIn('data-addon-install="lossless-proxy"', body)
             self.assertIn('data-addon-install="lsp-neural-render"', body)
+            self.assertIn('Latest version already downloaded', body)
+            self.assertIn('function updateAddonInstallButtons()', body)
+            self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
             self.assertIn("Install NeuralRender + runtime", body)
             self.assertIn("Community Runtime Warning", body)

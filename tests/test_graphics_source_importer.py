@@ -52,7 +52,7 @@ class GraphicsSourceImporterTests(unittest.TestCase):
                 "graphics": {"reshade": {"enabled": True, "version": "6.8.0"}},
             })
             plan = GraphicsResolver(store).resolve(profile)
-            self.assertEqual([item["relative_path"] for item in plan], ["ReShade64.dll"])
+            self.assertEqual([item["relative_path"] for item in plan], ["dxgi.dll"])
 
     def test_imports_detected_special_k_with_lossless_recipe(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -69,7 +69,7 @@
     details[open] > summary .chevron { transform: rotate(90deg); }
     .settings-content { border-top: 1px solid var(--card-border); padding: 18px 20px 20px; }
     .settings-group { border: 1px solid var(--card-border); border-radius: 9px; margin-bottom: 10px; background: var(--surface-bg); }
-    .settings-group > summary { display: flex; align-items: center; gap: 10px; padding: 12px 14px; color: var(--text); font-size: 13px; font-weight: 650; }
+    .settings-group > summary { display: flex; align-items: center; gap: 10px; padding: 9px 14px; color: var(--text); font-size: 15px; font-weight: 650; line-height: 1.25; }
     .settings-group > summary .chevron { margin-left: auto; font-size: 23px; }
     .settings-group-content { border-top: 1px solid var(--card-border); padding: 12px 14px; }
     .settings-group-content > .form-group:last-child,
@@ -161,6 +161,9 @@
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-secondary { background: #334155; color: #cbd5e1; }
     .btn-secondary:hover { background: #475569; }
+    .btn:disabled { cursor: not-allowed; opacity: 1; }
+    .btn-secondary:disabled { background: #4b5057; color: #c7cbd1; }
+    .btn[aria-disabled="true"] { cursor: not-allowed; background: #4b5057; color: #c7cbd1; }
     .btn-danger { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); }
     .btn-danger:hover { background: var(--danger); color: #fff; }
     .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
@@ -216,8 +219,8 @@
     .integration-section { margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px; }
     .integration-section.disabled { opacity: 0.48; }
     .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-    .special-k-settings { margin-top: 14px; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--surface-bg); }
-    .special-k-settings.disabled { opacity: 0.48; }
+    .profile-addon-section { margin: 16px 0; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--surface-bg); }
+    .profile-addon-section.disabled { opacity: 0.48; }
     .native-settings { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); }
     .native-settings > h4 { margin-bottom: 4px; color: var(--accent); font-size: 13px; }
     .ls-settings-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--input-bg); }
@@ -329,11 +332,9 @@
           <summary>GPU Selection <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
             <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Match Application Monitor GPU</option></select></div>
-            <div class="form-group checkbox-group"><input id="nvidiaRtxHdrEnabled" type="checkbox"><label for="nvidiaRtxHdrEnabled">NVIDIA RTX HDR for Lossless Scaling (Experimental)</label></div>
             <div class="form-group checkbox-group"><input id="snapNearFullscreenWindowsToMonitor" type="checkbox" checked><label for="snapNearFullscreenWindowsToMonitor">Fit Near-Fullscreen Games Exactly to Monitor Bounds</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto-route follows the display containing the scaled window. If it moves to a display driven by another GPU, Companion unscales, updates that Lossless Scaling profile's preferred GPU and output display, restarts Lossless Scaling, restores target focus, and rescales.</p>
-            <p class="item-sub" style="white-space:normal">RTX HDR is applied only to the LosslessScaling.exe NVIDIA application profile and takes effect the next time Lossless Scaling starts. Use it with SDR content and do not stack it with Special K or ReShade tone mapping.</p>
           </div>
         </details>
 
@@ -413,7 +414,7 @@
         <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-primary" type="button" data-addon-import="special-k" hidden>Import installed runtime</button><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
       <div class="addon-grid">
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button></div></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons. Its manager stays hidden until opened here or from the tray.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" hidden>Open Add-on Menu</button></div><p id="proxyMenuStatus" class="addon-description" hidden></p></section>
         <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs the add-on and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender + runtime</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
       </div>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No add-on operation running.</div>
@@ -593,6 +594,7 @@
                 <h5>GPU &amp; Display</h5>
                 <div class="ls-setting-row"><label>Preferred GPU</label><div class="ls-setting-control"><select id="nativePreferredGpu" data-native-key="PreferredGpuId" data-native-default="0"><option value="0">Follow General Settings</option></select></div></div>
                 <div class="ls-setting-row"><label>Output display</label><div class="ls-setting-control"><select id="nativeOutputDisplay" data-native-key="OutputDisplayId" data-native-default="0"><option value="0">Follow General Settings</option></select></div></div>
+                <p class="item-sub" style="white-space:normal;margin-top:8px">An explicit GPU or output display moves the application to that GPU's selected display before scaling.</p>
               </section>
               <section class="ls-settings-card">
                 <h5>Behavior</h5>
@@ -624,7 +626,9 @@
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Profile (Optional)</h4>
           <p class="profile-reshade-help">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
-          <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
+          <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
+          <div class="form-group checkbox-group" style="margin-top:9px"><input id="reshadeMenuProxyEnabled" type="checkbox"><label for="reshadeMenuProxyEnabled">Enable ReShade Menu Proxy</label></div>
+          <p class="item-sub" style="white-space:normal;margin-top:5px">Provides the configured ReShade menu hotkey through LosslessProxy. Proxy is enabled automatically.</p>
         </div>
 
         <div id="rtssProfileSection" class="integration-section">
@@ -671,19 +675,20 @@
           </fieldset>
         </div>
 
-        <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
-          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">LS Graphics Stack</h4>
+        <div class="profile-addon-section">
+          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">DLSS 5 NeuralRender</h4>
           <div class="form-group checkbox-group"><input id="dlss5Enabled" type="checkbox"><label for="dlss5Enabled" style="text-transform:none; font-size:13px; color:#fff">Enable DLSS 5 neural rendering</label></div>
-          <div class="form-row">
-            <div class="form-group checkbox-group"><input id="losslessProxyEnabled" type="checkbox"><label for="losslessProxyEnabled">LosslessProxy</label></div>
-          </div>
-          <p class="item-sub" style="white-space:normal;margin-bottom:10px">The ReShade input bridge is deployed only when LosslessProxy is enabled here and a ReShade profile is selected above. NeuralRender does not enable the ReShade bridge by itself.</p>
-          <div id="specialKSettings" class="special-k-settings disabled">
+          <p class="item-sub" style="white-space:normal;margin-bottom:10px">NeuralRender enables LosslessProxy and the imported ReShade runtime automatically, using a safe baseline ReShade.ini until a named profile is selected.</p>
+          <p class="item-sub" style="white-space:normal">Install the Proxy, NeuralRender, and ReShade packages in Lossless Scaling Add-ons before selecting them here.</p>
+        </div>
+
+        <div id="specialKSettings" class="profile-addon-section disabled">
+            <h4 style="font-size:13px;color:var(--accent);margin-bottom:10px">Special K</h4>
             <div class="form-group checkbox-group"><input id="specialKEnabled" type="checkbox"><label for="specialKEnabled" style="color:#fff;font-size:13px">Enable Special K for this profile</label></div>
             <fieldset id="specialKFields" disabled>
               <div class="form-group checkbox-group"><input id="specialKSdrToHdr" type="checkbox"><label for="specialKSdrToHdr">SDR-to-HDR conversion</label></div>
               <div id="specialKHDRSettings" hidden>
-                <div id="specialKHDRWarning" class="profile-warning"><strong>Use only with an SDR application.</strong> Do not also enable ReShade tone mapping or NVIDIA RTX HDR; stacking tone mappers can clip highlights and distort color.</div>
+                <div id="specialKHDRWarning" class="profile-warning"><strong>Use only with an SDR application.</strong> Do not also enable ReShade tone mapping; stacking tone mappers can clip highlights and distort color.</div>
                 <div class="form-row">
                   <div class="form-group"><label>HDR Peak Brightness (nits)</label><input id="specialKPeakBrightness" type="number" value="1000" min="80" max="10000" step="10"></div>
                   <div class="form-group"><label>HDR Paper White (nits)</label><input id="specialKPaperWhite" type="number" value="203" min="80" max="1000" step="1"></div>
@@ -696,8 +701,7 @@
               <p class="item-sub" style="white-space:normal;margin:-6px 0 0 24px">Creates or updates an NVIDIA application profile for LosslessScaling.exe only, and enables Special K's required flip-metering path. Global NVIDIA settings are not changed.</p>
               <p id="specialKSmoothMotionAvailability" class="item-sub" style="white-space:normal;margin:5px 0 0 24px"></p>
             </fieldset>
-          </div>
-          <p class="item-sub" style="white-space:normal">Install packages once in Lossless Scaling Add-ons, then select them here. Managed files are deployed only beneath LosslessScaling.exe.</p>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of LosslessProxy. Import it once in Lossless Scaling Add-ons, then enable it per profile.</p>
         </div>
 
       </form>
@@ -736,12 +740,15 @@
     let profiles = [];
     let activeProfileId = null;
     let graphicsPackages = [];
+    let latestAddonVersions = {};
+    let graphicsExternalSources = {};
     let dlssnrRuntimes = [];
     let reshadeProfiles = [];
     let diagnosticCatalog = [];
     let reshadeCatalog = [];
     let reshadeShaderSelection = {};
     let pendingProfileReshadeImport = false;
+    let pendingProfileReshadeCreate = false;
     let profileAutosaveTimer = null;
     let profileSaveInFlight = false;
     let profileSaveQueued = false;
@@ -760,6 +767,7 @@
     let visibleAddonUpdateKeys = [];
     let companionUpdateState = null;
     let companionUpdateBusy = false;
+    let runtimeActiveProfile = null;
 
     let wsReconnectTimer = null;
     let wsIntentionalClose = false;
@@ -908,6 +916,10 @@
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
+          } else if (msg.type === 'PROXY_MENU_OPENED') {
+            const status = document.getElementById('proxyMenuStatus');
+            status.textContent = 'LosslessProxy add-on manager opened.';
+            status.hidden = false;
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
             const updateWasBusy = companionUpdateBusy;
@@ -969,6 +981,11 @@
             const status = document.getElementById('reshadeAutosaveStatus');
             status.textContent = 'Saved automatically.';
             status.classList.remove('error');
+            if (pendingProfileReshadeCreate) {
+              renderReshadeProfileChoices(msg.profile.id);
+              pendingProfileReshadeCreate = false;
+              scheduleProfileAutosave();
+            }
             setGraphicsStatus(`Saved ReShade profile “${msg.profile.name}”.`);
             if (reshadeSaveQueued) {
               reshadeSaveQueued = false;
@@ -992,11 +1009,16 @@
             ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
           } else if (msg.type === 'GRAPHICS_RELEASES') {
             const latest = (msg.releases || [])[0];
+            if (latest) {
+              latestAddonVersions[msg.provider] = latest.version;
+              updateAddonInstallButtons();
+            }
             const status = document.querySelector(`[data-addon-status="${msg.provider}"]`);
             if (status) status.textContent = latest ? `Latest official version: ${latest.version}` : 'No release found.';
             if (msg.provider === 'reshade' && latest && /^\d+(?:\.\d+)+$/.test(latest.version)) {
               document.getElementById('reshadeDownloadLink').href = `https://reshade.me/downloads/ReShade_Setup_${latest.version}_Addon.exe`;
             }
+            updateAddonDownloadLinks();
             setGraphicsStatus(latest ? `${msg.provider}: ${latest.version} is the latest official version.` : `No release found for ${msg.provider}.`);
           } else if (msg.type === 'GRAPHICS_RELEASE_STAGED') {
             setGraphicsStatus(`Installed ${msg.package.provider} ${msg.package.version}; it is ready for profiles.`);
@@ -1124,6 +1146,10 @@
     }
 
     function renderRuntime(msg) {
+      if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
+        runtimeActiveProfile = msg.activeProfile;
+        renderProxyMenuAction();
+      }
       if (msg.losslessScalingFound === false) {
         setRuntimeStatus('LS Not Found', 'not-found');
         return;
@@ -1133,6 +1159,21 @@
         return;
       }
       setRuntimeStatus('LS Active', 'active');
+    }
+
+    function activeProfileUsesProxy() {
+      const profile = runtimeActiveProfile;
+      if (!profile) return false;
+      const neural = profile.graphics && profile.graphics.neural_render;
+      return !!(
+        neural && neural.implementation === 'lsp_neural_render' ||
+        profile.reshade && profile.reshade.menu_proxy_enabled
+      );
+    }
+
+    function renderProxyMenuAction() {
+      const button = document.getElementById('openProxyMenuBtn');
+      if (button) button.hidden = !activeProfileUsesProxy();
     }
 
     function renderControlSettings() {
@@ -1218,10 +1259,6 @@
       select.value = [...select.options].some(option => option.value === selected)
         ? selected
         : '__auto__';
-      const hasNvidia = !!(controlSettings.hasNvidiaGpu || inventory.hasNvidia);
-      const rtxHdr = document.getElementById('nvidiaRtxHdrEnabled');
-      rtxHdr.disabled = !hasNvidia;
-      rtxHdr.checked = hasNvidia && !!controlSettings.nvidiaRtxHdrEnabled;
       const status = document.getElementById('gpuRoutingStatus');
       if (!(inventory.gpus || []).length) {
         status.innerHTML = '<span class="integration-status missing">No physical GPU detected</span><div class="integration-path">Display routing is unavailable in this session.</div>';
@@ -1360,6 +1397,7 @@
 
     function renderGraphicsStatus(msg) {
       graphicsPackages = msg.packages || [];
+      graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
       ['lossless-proxy', 'lsp-neural-render'].forEach(provider => {
         const packages = graphicsPackages.filter(item => item.provider === provider);
@@ -1376,6 +1414,55 @@
         : 'DLSS 5 runtime not installed.';
       renderExternalSourceStatus('reshade', msg.externalSources && msg.externalSources.reshade);
       renderExternalSourceStatus('special-k', msg.externalSources && msg.externalSources['special-k']);
+      updateAddonInstallButtons();
+      updateAddonDownloadLinks();
+    }
+
+    function normalizedAddonVersion(value) {
+      const text = String(value || '').trim().toLowerCase();
+      const numbers = text.match(/\d+/g);
+      return numbers ? numbers.map(part => Number(part)).join('.') : text.replace(/^v/, '');
+    }
+
+    function updateAddonInstallButtons() {
+      document.querySelectorAll('[data-addon-install]').forEach(button => {
+        if (!button.dataset.installLabel) button.dataset.installLabel = button.textContent.trim();
+        const provider = button.dataset.addonInstall;
+        const latestVersion = latestAddonVersions[provider];
+        const latestDownloaded = !!latestVersion && graphicsPackages.some(item =>
+          item.provider === provider
+          && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestVersion)
+        );
+        button.disabled = latestDownloaded;
+        button.textContent = latestDownloaded
+          ? 'Latest version already downloaded'
+          : button.dataset.installLabel;
+        button.classList.toggle('btn-primary', !latestDownloaded);
+        button.classList.toggle('btn-secondary', latestDownloaded);
+      });
+    }
+
+    function updateAddonDownloadLinks() {
+      document.querySelectorAll('[data-addon-download]').forEach(link => {
+        if (!link.dataset.downloadLabel) link.dataset.downloadLabel = link.textContent.trim();
+        const provider = link.dataset.addonDownload;
+        const latestVersion = latestAddonVersions[provider];
+        const source = graphicsExternalSources[provider] || {};
+        const staged = graphicsPackages.some(item =>
+          item.provider === provider
+          && latestVersion
+          && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestVersion)
+        );
+        const detected = !!source.detected && !!latestVersion
+          && normalizedAddonVersion(source.version) === normalizedAddonVersion(latestVersion);
+        const latestDownloaded = staged || detected;
+        link.setAttribute('aria-disabled', latestDownloaded ? 'true' : 'false');
+        link.textContent = latestDownloaded
+          ? 'Latest version already downloaded'
+          : link.dataset.downloadLabel;
+        link.classList.toggle('btn-primary', !latestDownloaded);
+        link.classList.toggle('btn-secondary', latestDownloaded);
+      });
     }
 
     function renderExternalSourceStatus(provider, source) {
@@ -1399,11 +1486,14 @@
     }
 
     function renderAddonUpdateNotice(updates, latestVersions) {
+      latestAddonVersions = { ...latestAddonVersions, ...latestVersions };
+      updateAddonInstallButtons();
       const notice = document.getElementById('addonUpdateNotice');
       const reshadeVersion = latestVersions.reshade;
       if (reshadeVersion && /^\d+(?:\.\d+)+$/.test(reshadeVersion)) {
         document.getElementById('reshadeDownloadLink').href = `https://reshade.me/downloads/ReShade_Setup_${reshadeVersion}_Addon.exe`;
       }
+      updateAddonDownloadLinks();
       let ignored = [];
       try { ignored = JSON.parse(localStorage.getItem('ignored-addon-update-versions') || '[]'); } catch (_) {}
       const visible = updates.filter(item => !ignored.includes(`${item.provider}:${item.latestVersion}`));
@@ -1798,7 +1888,7 @@
       const outputDisplay = document.getElementById('nativeOutputDisplay');
       if (!preferredGpu || !outputDisplay) return;
       const globalGpu = controlSettings && controlSettings.autoRouteGpuToDisplay
-        ? 'match the monitor containing most of the application window'
+        ? 'match the application monitor GPU'
         : (() => {
             const selected = (inventory.gpus || []).find(
               gpu => gpu.deviceId === controlSettings.preferredScalingGpuDeviceId
@@ -2015,8 +2105,11 @@
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
         const graphics = profile.graphics || {};
         const neural = graphics.neural_render || {};
-        document.getElementById('dlss5Enabled').checked = neural.implementation !== 'disabled';
-        document.getElementById('losslessProxyEnabled').checked = !!(graphics.lossless_proxy && graphics.lossless_proxy.enabled);
+        const neuralEnabled = neural.implementation === 'lsp_neural_render';
+        document.getElementById('dlss5Enabled').checked = neuralEnabled;
+        document.getElementById('reshadeMenuProxyEnabled').checked = !!(
+          profile.reshade && profile.reshade.menu_proxy_enabled
+        );
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
@@ -2195,6 +2288,11 @@
           document.getElementById('reshadeProfileForm').requestSubmit();
         }
       }
+      if (
+        pendingProfileReshadeCreate
+        && !document.getElementById('reshadeProfileId').value
+        && !document.getElementById('reshadeProfileName').value.trim()
+      ) pendingProfileReshadeCreate = false;
       document.getElementById('reshadeProfileModal').classList.remove('active');
     }
 
@@ -2303,7 +2401,14 @@
       closeProcessPicker();
       openModal();
     };
-    document.getElementById('addReshadeProfileBtn').onclick = () => openReshadeProfileModal();
+    document.getElementById('addReshadeProfileBtn').onclick = () => {
+      pendingProfileReshadeCreate = false;
+      openReshadeProfileModal();
+    };
+    document.getElementById('newProfileReshadeBtn').onclick = () => {
+      pendingProfileReshadeCreate = true;
+      openReshadeProfileModal();
+    };
     document.getElementById('importReshadePresetBtn').onclick = () => {
       setGraphicsStatus('Choose a ReShade preset INI to import...');
       ws.send(JSON.stringify({ type: 'IMPORT_RESHADE_PRESET' }));
@@ -2409,7 +2514,7 @@
           defaultProfileAutoScale: document.getElementById('smartAutoScaleEnabled').checked,
           preferredScalingGpuDeviceId: gpuSelection === '__auto__' ? '' : gpuSelection,
           autoRouteGpuToDisplay: gpuSelection === '__auto__',
-          nvidiaRtxHdrEnabled: document.getElementById('nvidiaRtxHdrEnabled').checked,
+          nvidiaRtxHdrEnabled: false,
           reshadeHdrPeakNits: document.getElementById('reshadeHdrPeakNits').value === ''
             ? null
             : Number(document.getElementById('reshadeHdrPeakNits').value),
@@ -2456,7 +2561,7 @@
       'runAtStartup', 'smartAutoScaleEnabled',
       'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
       'overrideHotkeyShift', 'overrideHotkeyWin',
-      'preferredScalingGpu', 'nvidiaRtxHdrEnabled',
+      'preferredScalingGpu',
       'snapNearFullscreenWindowsToMonitor',
       'minimizeOtherWindowsOnScale', 'processLassoPerformanceModeScaling',
       'rtssFrameLimitingEnabled', 'rtssDefaultLimitMode'
@@ -2490,6 +2595,12 @@
       });
     };
     document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+    document.getElementById('openProxyMenuBtn').onclick = () => {
+      const status = document.getElementById('proxyMenuStatus');
+      status.textContent = 'Opening LosslessProxy add-on manager...';
+      status.hidden = false;
+      ws.send(JSON.stringify({ type: 'OPEN_PROXY_MENU' }));
+    };
     function downloadBenchmarkTool(provider, button) {
       button.disabled = true;
       document.getElementById('performanceBenchmarkStatus').textContent = 'Downloading and verifying release asset...';
@@ -2540,7 +2651,13 @@
       };
     });
     document.querySelectorAll('[data-addon-download]').forEach(link => {
-      link.addEventListener('click', () => startAddonDetection(link.dataset.addonDownload));
+      link.addEventListener('click', event => {
+        if (link.getAttribute('aria-disabled') === 'true') {
+          event.preventDefault();
+          return;
+        }
+        startAddonDetection(link.dataset.addonDownload);
+      });
     });
     document.querySelectorAll('[data-addon-install]').forEach(button => {
       button.onclick = () => {
@@ -2604,12 +2721,16 @@
         document.getElementById('profileName').value = profileName;
       }
       const dlss5Enabled = document.getElementById('dlss5Enabled').checked;
+      const reshadeMenuProxyEnabled = document.getElementById('reshadeMenuProxyEnabled').checked;
+      const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled;
       const existingNeural = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.neural_render || {};
       const existingNeuralPackage = existingNeural.package || {};
       const existingLosslessProxy = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.lossless_proxy || {};
       const existingSpecialK = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.special_k || {};
       const installedNeuralPackages = graphicsPackages.filter(item => item.provider === 'lsp-neural-render');
       const installedNeuralPackage = installedNeuralPackages[installedNeuralPackages.length - 1];
+      const installedReshadePackages = graphicsPackages.filter(item => item.provider === 'reshade');
+      const installedReshadePackage = installedReshadePackages[installedReshadePackages.length - 1];
       const availableRuntime = dlssnrRuntimes[dlssnrRuntimes.length - 1];
       const managedReshadeProfile = document.getElementById('reshadeManagedProfile').value;
       const legacyReshadePresetPath = managedReshadeProfile
@@ -2647,16 +2768,17 @@
             maximum_framerate_limit: Number(document.getElementById('rtssMaximumFramerate').value),
             limit_method: document.getElementById('rtssLimitMethod').value
           },
-          reshade: managedReshadeProfile || legacyReshadePresetPath ? {
+          reshade: managedReshadeProfile || legacyReshadePresetPath || reshadeMenuProxyEnabled ? {
             enabled: true,
             managed_profile_id: managedReshadeProfile || null,
+            menu_proxy_enabled: reshadeMenuProxyEnabled,
             reshade_ini_path: null,
             preset_path: legacyReshadePresetPath || null,
             reload_hotkey: null
           } : null,
           graphics: {
             lossless_proxy: {
-              enabled: document.getElementById('losslessProxyEnabled').checked,
+              enabled: losslessProxyEnabled,
               version: existingLosslessProxy.version || null,
               channel: existingLosslessProxy.channel || 'stable',
               update_policy: existingLosslessProxy.update_policy || 'notify'
@@ -2674,7 +2796,9 @@
             },
             reshade: {
               ...(editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade || {}),
-              enabled: !!document.getElementById('reshadeManagedProfile').value
+              enabled: dlss5Enabled || reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value,
+              version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
+                || (installedReshadePackage && installedReshadePackage.version) || null
             },
             special_k: {
               enabled: document.getElementById('specialKEnabled').checked,

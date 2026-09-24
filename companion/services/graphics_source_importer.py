@@ -82,7 +82,10 @@ class GraphicsSourceImporter:
                 "schema_version": 1,
                 "files": [{
                     "source": "ReShade64.dll",
-                    "destination": "ReShade64.dll",
+                    # ReShade's portable 64-bit runtime must use a Windows
+                    # proxy-DLL name beside LosslessScaling.exe. Merely
+                    # copying ReShade64.dll there does not load it.
+                    "destination": "dxgi.dll",
                     "role": "injector",
                 }],
             })

@@ -110,14 +110,13 @@ class ProfileEffectsTests(unittest.TestCase):
             manager = ProfileManager(Path(directory) / "config")
             manager.config.minimize_other_windows_on_scale = True
             state = AppState()
-            state.current_foreground_hwnd = 1234
             windows = Mock()
             automation = AutomationController(manager, state, window_manager=windows)
 
             automation.set_scaling(True, reason="test")
             automation.set_scaling(False, reason="test")
 
-            windows.minimize_others_on_target_monitor.assert_called_once_with(1234)
+            windows.minimize_others_on_target_monitor.assert_not_called()
             windows.restore_managed_windows.assert_not_called()
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
@@ -138,7 +137,9 @@ class ProfileEffectsTests(unittest.TestCase):
                 True, reason="test", target_pid=123, target_hwnd=456
             )
 
-            windows.minimize_others_on_target_monitor.assert_called_once_with(456)
+            windows.minimize_others_on_target_monitor.assert_called_once_with(
+                456, target_pid=123
+            )
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_frame_generation_only_profile_snaps_near_monitor_edges(self, _trigger):
@@ -282,6 +283,48 @@ class ProfileEffectsTests(unittest.TestCase):
             self.assertEqual(route["gpuDeviceId"], "gpu-a")
             self.assertEqual(route["lsDisplayId"], 3)
             self.assertEqual(route["deviceName"], r"\\.\DISPLAY3")
+
+    def test_explicit_profile_gpu_moves_target_before_focus_and_scaling_hotkey(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            profile = Profile(name="GPU target", native_scaling_settings={
+                "PreferredGpuId": "2", "OutputDisplayId": "0",
+            })
+            events = []
+            router = Mock()
+            router.route_for_ls_ids.return_value = {
+                "gpuDeviceId": "gpu-b", "lsGpuId": 2,
+                "lsDisplayId": 3, "deviceName": r"\\.\DISPLAY3",
+            }
+            windows = Mock()
+            windows.move_window_to_display.side_effect = (
+                lambda hwnd, device: events.append(("move", hwnd, device)) or True
+            )
+            watcher = Mock()
+            watcher.focus_window_identity.side_effect = (
+                lambda pid, hwnd: events.append(("focus", pid, hwnd)) or True
+            )
+            automation = AutomationController(
+                manager,
+                AppState(),
+                watcher,
+                gpu_router=router,
+                window_manager=windows,
+                scaling_state_probe=lambda: True,
+                hotkey_trigger=lambda **_kwargs: events.append(("hotkey",)) or True,
+            )
+
+            self.assertTrue(automation.set_scaling(
+                True, profile, reason="manual_profile_switch",
+                target_pid=42, target_hwnd=82,
+            ))
+
+            self.assertEqual(events, [
+                ("move", 82, r"\\.\DISPLAY3"),
+                ("focus", 42, 82),
+                ("hotkey",),
+            ])
+            router.route_for_ls_ids.assert_called_once_with(2, 0)
 
     def test_active_profile_new_window_updates_xml_route_without_redeployment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -698,6 +741,30 @@ class ProfileEffectsTests(unittest.TestCase):
 
             self.assertTrue(state.is_scaling_active)
             self.assertEqual(state.current_active_profile.id, game.id)
+
+    def test_observed_scaling_minimizes_only_with_observed_target_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            state.current_foreground_hwnd = 9999
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+
+            automation.reconcile_observed_scaling_state(
+                True,
+                {
+                    "processName": "Game.exe",
+                    "exePath": r"C:\Games\Game.exe",
+                    "pid": 42,
+                },
+            )
+
+            windows.minimize_others_on_target_monitor.assert_called_once_with(
+                None, target_pid=42
+            )
+            self.assertEqual(state.scaling_target_pid, 42)
+            self.assertIsNone(state.scaling_target_hwnd)
 
     def test_observed_scaling_ignores_unmatched_window(self):
         with tempfile.TemporaryDirectory() as directory:

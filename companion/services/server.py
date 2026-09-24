@@ -77,6 +77,7 @@ class CompanionWebSocketServer:
         dynamic_limiter: Optional[DynamicLimiterController] = None,
         hotkey_listener: Optional["GlobalHotkeyListener"] = None,
         on_installer_launched: Optional[Callable[[], None]] = None,
+        proxy_menu=None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -94,6 +95,7 @@ class CompanionWebSocketServer:
         self.dynamic_limiter = dynamic_limiter
         self.hotkey_listener = hotkey_listener
         self.on_installer_launched = on_installer_launched
+        self.proxy_menu = proxy_menu or getattr(process_watcher, "proxy_menu", None)
         self.config: AppConfig = profile_manager.config
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
@@ -256,6 +258,7 @@ class CompanionWebSocketServer:
                 "START_RTSS_MANUAL_CALIBRATION",
                 "REVERT_ALL_CHANGES",
                 "OPEN_CONFIG_FOLDER",
+                "OPEN_PROXY_MENU",
                 "BROWSE_GENERAL_PATH",
                 "GET_RESHADE_PROFILES",
                 "SAVE_RESHADE_PROFILE",
@@ -373,6 +376,15 @@ class CompanionWebSocketServer:
 
             if msg_type == "GET_BENCHMARK_STATUS":
                 await websocket.send(json.dumps(self._benchmark_status_payload()))
+                return
+
+            if msg_type == "OPEN_PROXY_MENU":
+                if not self.proxy_menu:
+                    raise RuntimeError("LosslessProxy menu control is unavailable")
+                result = await asyncio.to_thread(self.proxy_menu.open)
+                if not result.get("opened"):
+                    raise RuntimeError(str(result.get("reason") or "Could not open the LosslessProxy menu"))
+                await websocket.send(json.dumps({"type": "PROXY_MENU_OPENED"}))
                 return
 
             if msg_type == "IMPORT_GRAPHICS_SOURCE":

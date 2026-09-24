@@ -129,6 +129,31 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             self.html,
         )
 
+    def test_neural_and_reshade_menu_controls_derive_hidden_proxy_dependency(self):
+        self.assertIn("const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled", self.html)
+        self.assertIn('id="reshadeMenuProxyEnabled"', self.html)
+        self.assertNotIn('id="losslessProxyEnabled"', self.html)
+        self.assertIn("NeuralRender enables LosslessProxy", self.html)
+        self.assertIn("enabled: dlss5Enabled ||", self.html)
+
+    def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
+        proxy_heading = self.html.index("DLSS 5 NeuralRender")
+        proxy_section_end = self.html.index("</div>", self.html.index(
+            "Install the Proxy, NeuralRender, and ReShade packages", proxy_heading
+        ))
+        special_k = self.html.index('id="specialKSettings"', proxy_section_end)
+        self.assertGreater(special_k, proxy_section_end)
+        self.assertIn("Special K is independent of LosslessProxy", self.html)
+        self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 2)
+        self.assertNotIn('id="nvidiaRtxHdrEnabled"', self.html)
+        self.assertNotIn("NVIDIA RTX HDR for Lossless Scaling", self.html)
+        self.assertIn("nvidiaRtxHdrEnabled: false", self.html)
+
+    def test_profile_reshade_selector_can_create_and_select_a_new_profile(self):
+        self.assertIn('id="newProfileReshadeBtn"', self.html)
+        self.assertIn("pendingProfileReshadeCreate = true", self.html)
+        self.assertIn("renderReshadeProfileChoices(msg.profile.id)", self.html)
+
     def test_profile_gpu_choices_use_friendly_inventory_and_global_inheritance(self):
         self.assertIn("function renderNativeGpuChoices()", self.html)
         self.assertIn("Follow General Settings (${globalGpu})", self.html)
@@ -153,6 +178,14 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertIn('id="performanceBenchmarkResults"', self.html)
         self.assertIn('id="benchmarkAverageFps"', self.html)
         self.assertIn('id="benchmarkAverageLatency"', self.html)
+
+    def test_collapsible_box_titles_match_addon_title_size_with_compact_divider_spacing(self):
+        self.assertIn(
+            ".settings-group > summary { display: flex; align-items: center; gap: 10px; "
+            "padding: 9px 14px; color: var(--text); font-size: 15px;",
+            self.html,
+        )
+        self.assertIn(".addon-card h3 { color: var(--text); font-size: 15px;", self.html)
 
 
 if __name__ == "__main__":

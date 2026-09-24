@@ -21,6 +21,10 @@ class DeploymentConflictError(RuntimeError):
 
 class DeploymentManager:
     TARGET_ID = "lossless-scaling"
+    MUTABLE_CONFIG_ROLES = {
+        "lossless_proxy_config", "special_k_config", "neural_reshade_config",
+    }
+    RUNTIME_MUTATED_CONFIG_ROLES = {"neural_reshade_config"}
 
     def __init__(self, store: AssetStore):
         self.store = store
@@ -115,7 +119,12 @@ class DeploymentManager:
             destination = self._destination(root, entry["relative_path"])
             if entry.get("inactive"):
                 destination = destination.with_name(destination.name + ".inactive")
-            if not destination.is_file() or self._hash(destination) != entry.get("deployed_sha256"):
+            if not destination.is_file():
+                return False
+            if (
+                entry.get("role") not in self.RUNTIME_MUTATED_CONFIG_ROLES
+                and self._hash(destination) != entry.get("deployed_sha256")
+            ):
                 return False
         return True
 
@@ -278,9 +287,7 @@ class DeploymentManager:
             for folded in active_by_path:
                 entry = active_by_path[folded]
                 destination = self._destination(root, entry["relative_path"])
-                mutable_config = (
-                    entry.get("role") in {"lossless_proxy_config", "special_k_config"}
-                )
+                mutable_config = entry.get("role") in self.MUTABLE_CONFIG_ROLES
                 if (
                     not mutable_config
                     and destination.is_file()

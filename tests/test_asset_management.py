@@ -287,9 +287,36 @@ class GraphicsResolverTests(unittest.TestCase):
                 {
                     "addons/LSP-NeuralRender/LSP_NeuralRender.dll": self._x64_pe(b"addon"),
                     "addons/LSP-NeuralRender/nvngx.dll_lspnr.dll": self._x64_pe(b"forwarder"),
-                    "addons/LSP-NeuralRender/addon.json": b"{}",
+                    "addons/LSP-NeuralRender/addon.json": json.dumps({
+                        "name": "LSP-NeuralRender",
+                        "version": "v2",
+                        "min_host_version": "0.2.0",
+                        "future": {"preserved": True},
+                    }),
                 },
             )
+            self._package(
+                store, root, "reshade", "v6",
+                {
+                    "ReShade64.dll": self._x64_pe(b"reshade"),
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [{
+                            "source": "ReShade64.dll",
+                            "destination": "dxgi.dll",
+                            "role": "injector",
+                        }],
+                    }),
+                },
+            )
+            bridge_dir = root / "bundle" / "LSP-ReShade"
+            bridge_dir.mkdir(parents=True)
+            (bridge_dir / "LSC_ReShadeBridge.dll").write_bytes(self._x64_pe(b"bridge"))
+            (bridge_dir / "addon.json").write_text(json.dumps({
+                "name": "LS Companion ReShade Bridge",
+                "dll": "LSC_ReShadeBridge.dll",
+                "min_host_version": "0.3.0",
+            }), encoding="utf-8")
             runtime_source = root / "nvngx_dlssnr.dll"
             runtime_source.write_bytes(self._x64_pe(b"user-runtime"))
             runtime = store.import_file(str(runtime_source), allowed_suffixes=(".dll",))
@@ -308,7 +335,9 @@ class GraphicsResolverTests(unittest.TestCase):
                 },
             })
 
-            plan = GraphicsResolver(store).resolve(
+            plan = GraphicsResolver(
+                store, bundled_reshade_bridge_dir=str(bridge_dir)
+            ).resolve(
                 profile, lossless_scaling_exe=str(executable)
             )
             by_destination = {item["relative_path"]: item for item in plan}
@@ -328,6 +357,17 @@ class GraphicsResolverTests(unittest.TestCase):
             self.assertEqual(neural["style"], "2")
             self.assertEqual(neural["intensity"], "0.75")
             self.assertIs(neural["enabled"], True)
+            self.assertIn("ReShade.ini", by_destination)
+            baseline_reshade = Path(by_destination["ReShade.ini"]["source_path"]).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("KeyOverlay=0,0,0,0", baseline_reshade)
+            self.assertIn("TutorialProgress=4", baseline_reshade)
+            addon_manifest = json.loads(Path(
+                by_destination["addons/LSP-NeuralRender/addon.json"]["source_path"]
+            ).read_text(encoding="utf-8"))
+            self.assertEqual(addon_manifest["dll"], "LSP_NeuralRender.dll")
+            self.assertEqual(addon_manifest["future"], {"preserved": True})
 
             DeploymentManager(store).apply(
                 profile_id=profile.id,
@@ -433,6 +473,7 @@ class GraphicsResolverTests(unittest.TestCase):
             profile = Profile.model_validate({
                 "id": "proxy-reshade",
                 "name": "Proxy + ReShade",
+                "reshade": {"enabled": True, "menu_proxy_enabled": True},
                 "graphics": {
                     "lossless_proxy": {"enabled": True, "version": "v1"},
                     "reshade": {"enabled": True, "version": "v2"},
@@ -447,7 +488,7 @@ class GraphicsResolverTests(unittest.TestCase):
                 reshade_overlay_hotkey="f8",
             )
             by_destination = {item["relative_path"]: item for item in plan}
-            self.assertIn("ReShade64.dll", by_destination)
+            self.assertIn("dxgi.dll", by_destination)
             self.assertIn("addons/LSP-ReShade/LSC_ReShadeBridge.dll", by_destination)
             self.assertIn("addons/LSP-ReShade/addon.json", by_destination)
             self.assertIn("addons/config.json", by_destination)
@@ -491,7 +532,7 @@ class GraphicsResolverTests(unittest.TestCase):
             })
 
             plan = GraphicsResolver(store).resolve(profile)
-            self.assertEqual([item["relative_path"] for item in plan], ["ReShade64.dll"])
+            self.assertEqual([item["relative_path"] for item in plan], ["dxgi.dll"])
 
     def test_proxy_without_reshade_does_not_deploy_bridge(self):
         with tempfile.TemporaryDirectory() as directory:

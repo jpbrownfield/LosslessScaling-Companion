@@ -84,10 +84,49 @@ class GraphicsStackConfig(BaseModel):
     reshade: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
     special_k: SpecialKConfig = Field(default_factory=SpecialKConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def enforce_neural_proxy_dependency(cls, value):
+        """Keep serialized profiles from representing an unloadable stack.
+
+        LosslessProxy is an implementation dependency, not a profile feature.
+        Selecting NeuralRender always implies both Proxy and the ReShade runtime.
+        """
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        neural_value = data.get("neural_render")
+        implementation = (
+            neural_value.implementation
+            if isinstance(neural_value, NeuralRenderConfig)
+            else str((neural_value or {}).get("implementation") or "disabled")
+            if isinstance(neural_value, dict)
+            else "disabled"
+        )
+        if implementation != "lsp_neural_render":
+            return data
+
+        proxy_value = data.get("lossless_proxy")
+        if isinstance(proxy_value, ManagedPackageConfig):
+            data["lossless_proxy"] = proxy_value.model_copy(update={"enabled": True})
+        else:
+            proxy = dict(proxy_value or {})
+            proxy["enabled"] = True
+            data["lossless_proxy"] = proxy
+        reshade_value = data.get("reshade")
+        if isinstance(reshade_value, ManagedPackageConfig):
+            data["reshade"] = reshade_value.model_copy(update={"enabled": True})
+        else:
+            reshade = dict(reshade_value or {})
+            reshade["enabled"] = True
+            data["reshade"] = reshade
+        return data
+
 
 class ReshadeConfig(BaseModel):
     enabled: bool = False
     managed_profile_id: Optional[str] = None
+    menu_proxy_enabled: Optional[bool] = None
     # Retained for legacy configuration compatibility. Runtime deployment always
     # targets ReShade.ini beside LosslessScaling.exe.
     reshade_ini_path: Optional[str] = None
@@ -247,6 +286,18 @@ class Profile(BaseModel):
 
     @model_validator(mode="after")
     def fill_blank_name_from_target(self):
+        if self.reshade:
+            if self.reshade.menu_proxy_enabled is None:
+                # Profiles written before this setting existed used the
+                # combination of a named ReShade config and Proxy as the signal.
+                self.reshade.menu_proxy_enabled = bool(
+                    self.reshade.managed_profile_id
+                    and self.graphics.lossless_proxy.enabled
+                )
+            if self.reshade.menu_proxy_enabled:
+                self.reshade.enabled = True
+                self.graphics.lossless_proxy.enabled = True
+                self.graphics.reshade.enabled = True
         self.name = self.name.strip()
         if self.name:
             return self

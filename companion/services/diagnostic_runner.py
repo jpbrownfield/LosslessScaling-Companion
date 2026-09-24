@@ -20,7 +20,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 import psutil
 
-from ..core.models import HotkeyConfig, Profile
+from ..core.models import HotkeyConfig, Profile, ReshadeConfig
 from ..core.profile_manager import ProfileManager
 from ..core.state import AppState
 from .asset_store import AssetStore
@@ -48,6 +48,8 @@ class DiagnosticRunner:
         "lossless_scaling_log": ("autoscale_behavior",),
         "reshade": ("assets", "lossless_installation"),
         "reshade_runtime": ("reshade", "deployment_behavior"),
+        "proxy_reshade": ("reshade", "deployment_behavior"),
+        "proxy_neural_render": ("deployment_behavior",),
         "deployment": ("assets", "lossless_installation"),
         "deployment_behavior": ("deployment", "benchmark", "process_windows"),
         "benchmark": ("assets", "lossless_installation"),
@@ -56,7 +58,9 @@ class DiagnosticRunner:
         "runtime": ("configuration",),
     }
     LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
-    ALWAYS_RUN_AFTER_DEPENDENCIES = {"reshade_runtime"}
+    ALWAYS_RUN_AFTER_DEPENDENCIES = {
+        "reshade_runtime", "proxy_reshade", "proxy_neural_render",
+    }
 
     def __init__(self, server):
         self.server = server
@@ -99,6 +103,8 @@ class DiagnosticRunner:
             ("assets", "Managed asset store and package manifests", self._assets),
             ("reshade", "ReShade selection and injection plan", self._reshade),
             ("reshade_runtime", "Live ReShade deployment and load confirmation", self._reshade_runtime_behavior),
+            ("proxy_reshade", "LosslessProxy + ReShade end-to-end runtime", self._proxy_reshade_behavior),
+            ("proxy_neural_render", "LosslessProxy + NeuralRender end-to-end runtime", self._proxy_neural_render_behavior),
             ("deployment", "Active add-on deployment integrity", self._deployment),
             ("deployment_behavior", "Live add-on and proxy deployment behavior", self._live_addon_deployment_behavior),
             ("benchmark", "Benchmark workload and PresentMon command", self._benchmark),
@@ -479,6 +485,31 @@ class DiagnosticRunner:
             attempts=attempts,
         )
 
+    def _proxy_runtime_behavior(self, profile_fragment: str, label: str) -> Dict:
+        deployment = self._live_addon_deployment_behavior()
+        attempts = [
+            item for item in deployment.get("details", {}).get("testedProfiles", [])
+            if profile_fragment in str(item.get("profile") or "").casefold()
+        ]
+        if not attempts:
+            return self._result(
+                "warn", f"No complete installed {label} stack was available for the live run.",
+                selected=False, attempts=[],
+            )
+        passed = all(item.get("status") == "pass" for item in attempts)
+        return self._result(
+            "pass" if passed else "fail",
+            f"{label} deployed, loaded its expected modules, and produced fresh runtime evidence."
+            if passed else f"{label} failed deployment, module-load, scaling, or runtime evidence checks.",
+            selected=True, attempts=attempts,
+        )
+
+    def _proxy_reshade_behavior(self) -> Dict:
+        return self._proxy_runtime_behavior("reshade-proxy", "LosslessProxy + ReShade")
+
+    def _proxy_neural_render_behavior(self) -> Dict:
+        return self._proxy_runtime_behavior("lsp-neural-render", "LosslessProxy + NeuralRender")
+
     @staticmethod
     def _wait_until(predicate: Callable[[], bool], timeout: float, interval: float = 0.2) -> bool:
         deadline = time.monotonic() + timeout
@@ -529,6 +560,7 @@ class DiagnosticRunner:
             if proxy:
                 profile.graphics.lossless_proxy.enabled = True
                 profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+                profile.reshade = ReshadeConfig(enabled=True, menu_proxy_enabled=True)
             profiles.append(profile)
         if special_k:
             profile = base("special-k")
@@ -541,7 +573,7 @@ class DiagnosticRunner:
             profile.graphics.neural_render.package.enabled = True
             profile.graphics.neural_render.package.version = str(feeder.get("version") or "") or None
             profiles.append(profile)
-        if neural and proxy:
+        if neural and proxy and reshade:
             runtime = next(
                 (
                     item for item in self.server.asset_store.list_imports()
@@ -558,6 +590,8 @@ class DiagnosticRunner:
                 profile.graphics.neural_render.package.enabled = True
                 profile.graphics.neural_render.package.version = str(neural.get("version") or "") or None
                 profile.graphics.neural_render.runtime_asset_sha256 = str(runtime["sha256"])
+                profile.graphics.reshade.enabled = True
+                profile.graphics.reshade.version = str(reshade.get("version") or "") or None
                 profiles.append(profile)
         return profiles
 
@@ -612,10 +646,14 @@ class DiagnosticRunner:
                 runtime_delta: Dict[str, str] = {}
                 runtime_errors: List[str] = []
                 runtime_evidence = {
+                    "proxyStarted": False,
+                    "reshadeBridgeInitialized": False,
                     "neuralEngineReady": False,
                     "neuralModelPrepared": False,
                     "neuralTapObserved": False,
                 }
+                loaded_modules: List[str] = []
+                module_inspection_error: Optional[str] = None
                 try:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
                         if not self.server.process_watcher.stop_lossless_scaling():
@@ -688,6 +726,47 @@ class DiagnosticRunner:
                     active_observed = scaled and self._wait_until(
                         lambda: bool(log_inspector.inspect_current_scaling_target().is_active), 5.0
                     )
+
+                    # Add-ons can initialize several seconds after LS reports
+                    # scaling. Sample both the process module table and fresh
+                    # logs while the presentation is still alive.
+                    neural_render_selected = (
+                        profile.graphics.neural_render.implementation == "lsp_neural_render"
+                    )
+                    reshade_selected = profile.graphics.reshade.enabled
+                    proxy_selected = profile.graphics.lossless_proxy.enabled
+
+                    def addon_runtime_ready() -> bool:
+                        nonlocal loaded_modules, module_inspection_error, runtime_evidence
+                        loaded_modules, module_inspection_error = self._lossless_loaded_modules(executable)
+                        current_paths = self._runtime_log_paths(executable.parent)
+                        current_delta = self._log_delta(runtime_snapshot, current_paths)
+                        runtime_evidence = self._runtime_log_evidence(current_delta)
+                        module_names = {Path(item).name.casefold() for item in loaded_modules}
+                        if neural_render_selected:
+                            return (
+                                {"lsp_neuralrender.dll", "nvngx.dll_lspnr.dll", "nvngx_dlssnr.dll"}
+                                <= module_names
+                                and runtime_evidence["proxyStarted"]
+                                and runtime_evidence["neuralEngineReady"]
+                                and runtime_evidence["neuralModelPrepared"]
+                                and runtime_evidence["neuralTapObserved"]
+                            )
+                        if reshade_selected and proxy_selected:
+                            return (
+                                {"dxgi.dll", "lsc_reshadebridge.dll"} <= module_names
+                                and runtime_evidence["proxyStarted"]
+                                and runtime_evidence["reshadeBridgeInitialized"]
+                            )
+                        if reshade_selected:
+                            return "dxgi.dll" in module_names and bool(current_delta)
+                        if proxy_selected:
+                            return "lossless.dll" in module_names and runtime_evidence["proxyStarted"]
+                        return bool(current_delta)
+
+                    addon_ready = active_observed and self._wait_until(
+                        addon_runtime_ready, 12.0, interval=0.4
+                    )
                     stopped = self.server.automation.set_scaling(
                         False,
                         profile,
@@ -724,6 +803,9 @@ class DiagnosticRunner:
                         "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
                         "runtimeErrors": runtime_errors,
                         "runtimeEvidence": runtime_evidence,
+                        "loadedModules": [self._path(item) for item in loaded_modules],
+                        "moduleInspectionError": module_inspection_error,
+                        "addonRuntimeReady": addon_ready,
                         "activationAttempts": activation_attempts,
                         "expectedLosslessProxyVersion": expected_proxy_version,
                         "reportedLosslessProxyVersion": reported_proxy_version,
@@ -734,25 +816,18 @@ class DiagnosticRunner:
                             if proxy_version_matches is False else None
                         ),
                     })
-                    neural_render_selected = (
-                        profile.graphics.neural_render.implementation == "lsp_neural_render"
-                    )
-                    neural_render_exercised = (
-                        not neural_render_selected
-                        or runtime_evidence["neuralModelPrepared"]
-                        or runtime_evidence["neuralTapObserved"]
-                    )
                     runtime_confirmed = (
                         scaled and active_observed and stopped
                         and bool(runtime_delta) and not runtime_errors
-                        and neural_render_exercised
+                        and addon_ready and not module_inspection_error
                     )
                     if not runtime_confirmed:
                         raise RuntimeError(
                             "deployment verified, but the scaling cycle or add-on runtime health check failed; "
                             f"scaled={scaled}, activeObserved={active_observed}, stopped={stopped}, "
                             f"runtimeLog={bool(runtime_delta)}, runtimeErrors={runtime_errors}, "
-                            f"runtimeEvidence={runtime_evidence}"
+                            f"runtimeEvidence={runtime_evidence}, addonReady={addon_ready}, "
+                            f"moduleInspectionError={module_inspection_error}"
                         )
                     attempt["status"] = "pass"
                 except Exception as error:
@@ -871,10 +946,34 @@ class DiagnosticRunner:
     def _runtime_log_evidence(logs: Dict[str, str]) -> Dict[str, bool]:
         content = "\n".join(logs.values())
         return {
+            "proxyStarted": bool(re.search(r"\bLosslessProxy\s+v?[^\s]+\s+starting", content, re.IGNORECASE)),
+            "reshadeBridgeInitialized": "LS Companion ReShade Bridge initialized" in content,
             "neuralEngineReady": "NrEngine ready" in content,
             "neuralModelPrepared": "Prepare:" in content,
             "neuralTapObserved": bool(re.search(r"\btaps\s+[1-9]\d*\b", content)),
         }
+
+    @staticmethod
+    def _lossless_loaded_modules(executable: Path) -> tuple[List[str], Optional[str]]:
+        """Inspect the real LS process while scaling, before injected DLLs unload."""
+        expected = str(executable.resolve()).casefold()
+        errors: List[str] = []
+        for process in psutil.process_iter(["name", "exe"]):
+            try:
+                process_exe = str(process.info.get("exe") or "").casefold()
+                process_name = str(process.info.get("name") or "").casefold()
+                if process_exe != expected and process_name != executable.name.casefold():
+                    continue
+                modules = sorted({
+                    str(item.path) for item in process.memory_maps(grouped=False)
+                    if getattr(item, "path", None)
+                }, key=str.casefold)
+                return modules, None
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as error:
+                errors.append(f"{type(error).__name__}: {error}")
+        if errors:
+            return [], "; ".join(errors)
+        return [], "LosslessScaling.exe process was not found during module inspection"
 
     @staticmethod
     def _reported_lossless_proxy_version(logs: Dict[str, str]) -> Optional[str]:

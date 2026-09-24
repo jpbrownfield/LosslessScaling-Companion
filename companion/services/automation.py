@@ -82,12 +82,22 @@ class AutomationController:
             return None
         return str(Path(configured).parent)
 
-    def _minimize_other_windows(self, target_hwnd: Optional[int] = None) -> None:
+    def _minimize_other_windows(
+        self,
+        target_hwnd: Optional[int] = None,
+        target_pid: Optional[int] = None,
+    ) -> None:
+        verified_hwnd = target_hwnd or self.state.scaling_target_hwnd
+        verified_pid = target_pid or self.state.scaling_target_pid
+        if not verified_hwnd and not verified_pid:
+            logger.warning(
+                "Skipping peer minimization because no verified scaling target is available"
+            )
+            return
         try:
             self.window_manager.minimize_others_on_target_monitor(
-                target_hwnd
-                or self.state.scaling_target_hwnd
-                or self.state.current_foreground_hwnd
+                verified_hwnd,
+                target_pid=verified_pid,
             )
         except Exception:
             logger.exception("Scaling continued, but peer windows could not be minimized")
@@ -149,6 +159,30 @@ class AutomationController:
                 if self.process_watcher and changed and not self.process_watcher.launch_lossless_scaling(force=True):
                     self._set_control_status("error", "Could not restart Lossless Scaling with graphics add-ons")
                     return False
+            if (
+                active
+                and target_hwnd
+            ):
+                profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(selected)
+                if profile_gpu_id or profile_display_id:
+                    explicit_route = self.gpu_router.route_for_ls_ids(
+                        profile_gpu_id, profile_display_id
+                    )
+                    device_name = str(explicit_route.get("deviceName") or "")
+                    if device_name:
+                        try:
+                            if not self.window_manager.move_window_to_display(
+                                target_hwnd, device_name
+                            ):
+                                logger.warning(
+                                    "Could not move HWND %s to explicit profile display %s before scaling",
+                                    target_hwnd, device_name,
+                                )
+                        except Exception:
+                            logger.exception(
+                                "Scaling continued without moving HWND %s to explicit profile display %s",
+                                target_hwnd, device_name,
+                            )
             if (
                 active
                 and target_hwnd
@@ -341,7 +375,7 @@ class AutomationController:
                 self.state.scaling_target_pid = None
                 self.state.scaling_target_hwnd = None
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
-                self._minimize_other_windows(target_hwnd)
+                self._minimize_other_windows(target_hwnd, target_pid)
             elif not active:
                 if self.process_watcher:
                     self.process_watcher.invalidate_foreground_cache()
@@ -496,6 +530,16 @@ class AutomationController:
             previous = self.state.is_scaling_active
             self.state.is_scaling_active = active
             if active and target:
+                try:
+                    observed_pid = int(target.get("pid") or 0) or None
+                except (TypeError, ValueError):
+                    observed_pid = None
+                try:
+                    observed_hwnd = int(target.get("hwnd") or 0) or None
+                except (TypeError, ValueError):
+                    observed_hwnd = None
+                self.state.scaling_target_pid = observed_pid
+                self.state.scaling_target_hwnd = observed_hwnd
                 matched = self.profile_manager.match_target_profile(
                     process_name=target.get("processName"),
                     executable_path=target.get("exePath"),
@@ -510,6 +554,9 @@ class AutomationController:
                         matched.name,
                     )
                     self.state.current_active_profile = matched
+            elif not active:
+                self.state.scaling_target_pid = None
+                self.state.scaling_target_hwnd = None
             self._set_control_status(
                 "confirmed",
                 f"Observed Lossless Scaling {'active' if active else 'idle'}",
@@ -901,8 +948,7 @@ class AutomationController:
                 self.reshade_profiles.config_path(
                     reshade.managed_profile_id,
                     interactive=bool(
-                        profile.graphics.lossless_proxy.enabled
-                        and profile.graphics.reshade.enabled
+                        reshade.menu_proxy_enabled
                     ),
                 )
                 if reshade.managed_profile_id

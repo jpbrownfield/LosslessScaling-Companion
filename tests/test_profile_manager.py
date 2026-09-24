@@ -365,6 +365,52 @@ class ProfileManagerTests(unittest.TestCase):
         self.assertEqual(legacy.hotkey.activation_delay_ms, 999)
         self.assertNotIn("hotkey", legacy.model_dump())
 
+    def test_neural_render_without_an_explicit_proxy_choice_enables_proxy(self):
+        profile = Profile.model_validate({
+            "name": "Neural",
+            "graphics": {
+                "neural_render": {
+                    "implementation": "lsp_neural_render",
+                    "package": {"enabled": True},
+                },
+            },
+        })
+
+        self.assertTrue(profile.graphics.lossless_proxy.enabled)
+        self.assertTrue(profile.graphics.reshade.enabled)
+        self.assertEqual(
+            profile.graphics.neural_render.implementation, "lsp_neural_render"
+        )
+
+    def test_neural_render_overrides_an_explicitly_disabled_proxy(self):
+        profile = Profile.model_validate({
+            "name": "Neural",
+            "graphics": {
+                "lossless_proxy": {"enabled": False},
+                "neural_render": {
+                    "implementation": "lsp_neural_render",
+                    "package": {"enabled": True},
+                },
+            },
+        })
+
+        self.assertTrue(profile.graphics.lossless_proxy.enabled)
+        self.assertEqual(profile.graphics.neural_render.implementation, "lsp_neural_render")
+        self.assertTrue(profile.graphics.neural_render.package.enabled)
+
+    def test_reshade_menu_proxy_enables_its_hidden_dependencies(self):
+        profile = Profile.model_validate({
+            "name": "ReShade menu",
+            "reshade": {"enabled": True, "menu_proxy_enabled": True},
+            "graphics": {
+                "lossless_proxy": {"enabled": False},
+                "reshade": {"enabled": False},
+            },
+        })
+
+        self.assertTrue(profile.graphics.lossless_proxy.enabled)
+        self.assertTrue(profile.graphics.reshade.enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

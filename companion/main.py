@@ -35,6 +35,7 @@ from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
 from .services.single_instance import SingleInstanceGuard
 from .services.lossless_locator import find_lossless_scaling_executable
+from .services.proxy_menu import LosslessProxyMenuController
 from .ui.tray import CompanionTrayIcon
 from .services.simulation_adapters import (
     SimulationNvidiaProfileManager,
@@ -77,10 +78,12 @@ class CompanionApplication:
             settings_xml_path=self.profile_manager.config.lossless_settings_xml_path,
             lossless_exe_path=self.profile_manager.config.lossless_scaling_exe_path,
         )
+        self.proxy_menu = LosslessProxyMenuController(self.state)
         self.process_watcher = ProcessWatcher(
             self.profile_manager,
             self.state,
             lossless_settings=self.ls_settings,
+            proxy_menu=self.proxy_menu,
         )
         self.asset_store = AssetStore(self.profile_manager.config.asset_store_path)
         self.release_manager = ReleaseManager(
@@ -146,6 +149,7 @@ class CompanionApplication:
                 SimulationStartupTaskManager() if self.simulation_mode else None
             ),
             on_installer_launched=self.request_update_shutdown,
+            proxy_menu=self.proxy_menu,
         )
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -169,6 +173,7 @@ class CompanionApplication:
             startup_manager=self.server.startup_manager,
             on_check_updates_callback=self.check_for_updates,
             on_install_update_callback=self.install_update,
+            proxy_menu=self.proxy_menu,
         )
 
     def _start_shutdown_watchdog(self) -> None:
@@ -284,6 +289,7 @@ class CompanionApplication:
                     self.process_watcher.check_foreground_and_update()
                     self.process_lasso_monitor.poll()
                 lossless_running = self.process_watcher.check_is_lossless_scaling_running()
+                self.proxy_menu.enforce_hidden()
                 
                 # Check live scaling target via log / overlay
                 if not self.state.benchmark_mode_active:

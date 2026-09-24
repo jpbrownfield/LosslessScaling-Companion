@@ -48,6 +48,15 @@ class GpuRouterTests(unittest.TestCase):
         self.assertEqual(route["lsDisplayId"], 2)
         self.assertEqual(route["deviceName"], r"\\.\DISPLAY2")
 
+    def test_gpu_only_route_chooses_its_connected_display(self):
+        router = GpuRouter(lambda: self.displays, lambda hwnd: None)
+
+        route = router.route_for_ls_ids(2, 0)
+
+        self.assertEqual(route["lsGpuId"], 2)
+        self.assertEqual(route["lsDisplayId"], 2)
+        self.assertEqual(route["deviceName"], r"\\.\DISPLAY2")
+
     def test_window_geometry_selects_monitor_with_largest_overlap(self):
         monitors = [
             {

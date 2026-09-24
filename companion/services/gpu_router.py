@@ -363,6 +363,20 @@ class GpuRouter:
             ),
             None,
         )
+        if not selected_display and selected_gpu:
+            connected = [
+                item for item in inventory["displays"]
+                if str(item.get("gpuDeviceId") or "").casefold()
+                == str(selected_gpu.get("deviceId") or "").casefold()
+            ]
+            if connected:
+                selected_display = sorted(
+                    connected,
+                    key=lambda item: (
+                        not bool(item.get("primary")),
+                        int(item.get("lsDisplayId") or 0),
+                    ),
+                )[0]
         if selected_display and not selected_gpu:
             selected_gpu = next(
                 (

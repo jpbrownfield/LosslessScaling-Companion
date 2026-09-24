@@ -19,6 +19,7 @@ from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
 from ..services.startup_manager import StartupTaskManager
 from ..services.automation import AutomationController
+from ..services.proxy_menu import LosslessProxyMenuController
 from .dashboard_window import close_dashboard_window, open_dashboard_window
 from .icons import create_lightning_icon
 
@@ -37,6 +38,7 @@ class CompanionTrayIcon:
         startup_manager: Optional[StartupTaskManager] = None,
         on_check_updates_callback: Optional[Callable] = None,
         on_install_update_callback: Optional[Callable] = None,
+        proxy_menu: Optional[LosslessProxyMenuController] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -47,6 +49,7 @@ class CompanionTrayIcon:
         self.startup_manager = startup_manager
         self.on_check_updates_callback = on_check_updates_callback
         self.on_install_update_callback = on_install_update_callback
+        self.proxy_menu = proxy_menu or getattr(process_watcher, "proxy_menu", None)
         self._update_status: Optional[dict] = None
         self._startup_enabled = bool(profile_manager.config.run_at_startup)
         if self.startup_manager:
@@ -158,6 +161,14 @@ class CompanionTrayIcon:
     def _open_settings(self, icon, item):
         url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings"
         open_dashboard_window(url)
+
+    def _open_proxy_menu(self, icon, menu_item):
+        if not self.proxy_menu:
+            self._notify("LosslessProxy menu control is unavailable.")
+            return
+        result = self.proxy_menu.open()
+        if not result.get("opened"):
+            self._notify(str(result.get("reason") or "Could not open the LosslessProxy menu."))
 
     def _notify(self, message: str) -> None:
         try:
@@ -309,6 +320,10 @@ class CompanionTrayIcon:
             item("Open Dashboard", self._open_dashboard, default=True),
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
             item("Open Settings", self._open_settings),
+        ]
+        if self.proxy_menu and self.proxy_menu.active_profile_uses_proxy():
+            menu_items.append(item("Open Proxy Add-on Menu", self._open_proxy_menu))
+        menu_items.extend([
             Menu.SEPARATOR,
             item(
                 "Run at Windows Sign-In",
@@ -335,7 +350,7 @@ class CompanionTrayIcon:
             ),
             Menu.SEPARATOR,
             item("Exit", self._on_exit)
-        ]
+        ])
         return Menu(*menu_items)
 
     def run(self) -> None:

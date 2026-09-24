@@ -19,6 +19,8 @@ GW_OWNER = 4
 MONITOR_DEFAULTTONULL = 0
 MONITOR_DEFAULTTONEAREST = 2
 SW_MINIMIZE = 6
+SW_RESTORE = 9
+SW_MAXIMIZE = 3
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 WS_CAPTION = 0x00C00000
@@ -32,6 +34,16 @@ class _MonitorInfo(ctypes.Structure):
         ("rcMonitor", wintypes.RECT),
         ("rcWork", wintypes.RECT),
         ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class _MonitorInfoEx(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+        ("szDevice", wintypes.WCHAR * 32),
     ]
 
 SHELL_CLASSES = {
@@ -65,6 +77,114 @@ class MonitorWindowManager:
         if any(abs(delta) > tolerance_px for delta in deltas):
             return None
         return deltas
+
+    @staticmethod
+    def _translated_window_position(
+        window_bounds: tuple[int, int, int, int],
+        source_work: tuple[int, int, int, int],
+        target_work: tuple[int, int, int, int],
+    ) -> tuple[int, int]:
+        """Preserve a normal window's monitor-relative position and keep it reachable."""
+        left, top, right, bottom = window_bounds
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        offset_x = left - source_work[0]
+        offset_y = top - source_work[1]
+        target_width = target_work[2] - target_work[0]
+        target_height = target_work[3] - target_work[1]
+        max_x = max(0, target_width - min(width, target_width))
+        max_y = max(0, target_height - min(height, target_height))
+        return (
+            target_work[0] + min(max(0, offset_x), max_x),
+            target_work[1] + min(max(0, offset_y), max_y),
+        )
+
+    @staticmethod
+    def _monitor_details() -> list[dict]:
+        monitors: list[dict] = []
+        callback_type = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+            ctypes.POINTER(wintypes.RECT), wintypes.LPARAM,
+        )
+
+        def collect(handle, _dc, _rect, _data):
+            info = _MonitorInfoEx()
+            info.cbSize = ctypes.sizeof(_MonitorInfoEx)
+            if user32.GetMonitorInfoW(handle, ctypes.byref(info)):
+                monitors.append({
+                    "handle": int(handle),
+                    "deviceName": str(info.szDevice),
+                    "monitor": (
+                        int(info.rcMonitor.left), int(info.rcMonitor.top),
+                        int(info.rcMonitor.right), int(info.rcMonitor.bottom),
+                    ),
+                    "work": (
+                        int(info.rcWork.left), int(info.rcWork.top),
+                        int(info.rcWork.right), int(info.rcWork.bottom),
+                    ),
+                })
+            return True
+
+        callback = callback_type(collect)
+        if not user32.EnumDisplayMonitors(None, None, callback, 0):
+            return []
+        return monitors
+
+    def move_window_to_display(
+        self, target_hwnd: Optional[int], device_name: str
+    ) -> bool:
+        """Move a target application to an explicit Windows display without resizing it."""
+        with self._lock:
+            target = self._target_window(target_hwnd)
+            if not target or not device_name or user32.IsIconic(target):
+                return False
+            monitors = self._monitor_details()
+            destination = next(
+                (
+                    item for item in monitors
+                    if item["deviceName"].casefold() == device_name.casefold()
+                ),
+                None,
+            )
+            source_handle = user32.MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST)
+            source = next(
+                (item for item in monitors if item["handle"] == int(source_handle or 0)),
+                None,
+            )
+            if not destination or not source:
+                return False
+            if destination["handle"] == source["handle"]:
+                return True
+
+            was_maximized = bool(user32.IsZoomed(target))
+            if was_maximized:
+                user32.ShowWindow(target, SW_RESTORE)
+            bounds = wintypes.RECT()
+            if not user32.GetWindowRect(target, ctypes.byref(bounds)):
+                if was_maximized:
+                    user32.ShowWindow(target, SW_MAXIMIZE)
+                return False
+            window_bounds = (
+                int(bounds.left), int(bounds.top), int(bounds.right), int(bounds.bottom),
+            )
+            new_left, new_top = self._translated_window_position(
+                window_bounds, source["work"], destination["work"]
+            )
+            moved = bool(user32.SetWindowPos(
+                target, None, new_left, new_top,
+                window_bounds[2] - window_bounds[0],
+                window_bounds[3] - window_bounds[1],
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            ))
+            if was_maximized:
+                user32.ShowWindow(target, SW_MAXIMIZE)
+            if moved:
+                logger.info(
+                    "Moved HWND %s from %s to explicit profile display %s (%s)",
+                    target, source["deviceName"], destination["deviceName"],
+                    destination["monitor"],
+                )
+            return moved
 
     def snap_borderless_window_to_monitor(
         self, target_hwnd: Optional[int], *, tolerance_px: int = 8
@@ -163,33 +283,93 @@ class MonitorWindowManager:
         user32.GetClassNameW(hwnd, buffer, len(buffer))
         return buffer.value.casefold()
 
-    @staticmethod
-    def _target_window(preferred_hwnd: Optional[int]) -> Optional[int]:
-        if preferred_hwnd and user32.IsWindow(preferred_hwnd) and user32.IsWindowVisible(preferred_hwnd):
-            return int(preferred_hwnd)
-        foreground = user32.GetForegroundWindow()
-        return int(foreground) if foreground else None
+    @classmethod
+    def _replacement_window_for_pid(cls, expected_pid: int) -> Optional[int]:
+        """Resolve a recreated game window without ever borrowing another process."""
+        candidates: list[tuple[int, int]] = []
 
-    def minimize_others_on_target_monitor(self, target_hwnd: Optional[int] = None) -> int:
+        def callback(hwnd, _extra):
+            handle = int(hwnd)
+            if (
+                cls._window_pid(handle) != expected_pid
+                or not user32.IsWindowVisible(hwnd)
+                or user32.IsIconic(hwnd)
+                or user32.GetWindow(hwnd, GW_OWNER)
+                or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW
+                or cls._class_name(handle) in SHELL_CLASSES
+                or user32.GetWindowTextLengthW(hwnd) <= 0
+            ):
+                return True
+            bounds = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(bounds)):
+                area = max(0, int(bounds.right - bounds.left)) * max(
+                    0, int(bounds.bottom - bounds.top)
+                )
+                if area:
+                    candidates.append((area, handle))
+            return True
+
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(callback_type(callback), 0)
+        return max(candidates, default=(0, 0))[1] or None
+
+    @classmethod
+    def _target_window(
+        cls, preferred_hwnd: Optional[int], expected_pid: Optional[int] = None
+    ) -> Optional[int]:
+        """Return only a window proven to belong to the expected game process."""
+        if (
+            preferred_hwnd
+            and user32.IsWindow(preferred_hwnd)
+            and user32.IsWindowVisible(preferred_hwnd)
+        ):
+            owner_pid = cls._window_pid(int(preferred_hwnd))
+            if owner_pid and (not expected_pid or owner_pid == int(expected_pid)):
+                return int(preferred_hwnd)
+        if expected_pid:
+            replacement = cls._replacement_window_for_pid(int(expected_pid))
+            if replacement:
+                logger.info(
+                    "Resolved recreated scaling target HWND %s for PID %s",
+                    replacement,
+                    expected_pid,
+                )
+            return replacement
+        return None
+
+    def minimize_others_on_target_monitor(
+        self,
+        target_hwnd: Optional[int] = None,
+        *,
+        target_pid: Optional[int] = None,
+    ) -> int:
         """Minimize eligible peer windows and return the number newly minimized."""
         with self._lock:
-            target = self._target_window(target_hwnd)
+            target = self._target_window(target_hwnd, target_pid)
             if not target:
-                logger.warning("Could not identify the scaled application's target window")
+                logger.warning(
+                    "Skipping peer minimization: no verified target window for HWND %s / PID %s",
+                    target_hwnd,
+                    target_pid,
+                )
                 return 0
             target_monitor = user32.MonitorFromWindow(target, MONITOR_DEFAULTTONULL)
-            target_pid = self._window_pid(target)
-            if not target_monitor or not target_pid:
+            resolved_target_pid = self._window_pid(target)
+            if (
+                not target_monitor
+                or not resolved_target_pid
+                or (target_pid and resolved_target_pid != int(target_pid))
+            ):
                 logger.warning("Could not identify the scaled application's monitor")
                 return 0
             try:
-                if psutil.Process(target_pid).name().casefold() == "losslessscaling.exe":
+                if psutil.Process(resolved_target_pid).name().casefold() == "losslessscaling.exe":
                     logger.warning("Refusing to treat a Lossless Scaling window as the scaled target")
                     return 0
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 return 0
 
-            excluded_pids = {target_pid, os.getpid()}
+            excluded_pids = {resolved_target_pid, os.getpid()}
             for process in psutil.process_iter(["pid", "name"]):
                 try:
                     if (process.info.get("name") or "").casefold() == "losslessscaling.exe":
@@ -221,6 +401,14 @@ class MonitorWindowManager:
                     user32.ShowWindow(hwnd, SW_MINIMIZE)
                     if user32.IsIconic(hwnd):
                         minimized += 1
+                        logger.info(
+                            "Minimized peer HWND %s / PID %s on target monitor; "
+                            "protected target HWND %s / PID %s",
+                            handle,
+                            pid,
+                            target,
+                            resolved_target_pid,
+                        )
                 except OSError:
                     logger.debug("Could not minimize HWND %s", handle, exc_info=True)
                 return True
