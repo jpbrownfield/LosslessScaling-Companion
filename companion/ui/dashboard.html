@@ -400,7 +400,7 @@
         <section class="addon-card addon-card-wide">
           <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. When LosslessProxy is also selected, Companion automatically adds its bundled ReShade input bridge.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
           <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
-          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-primary" type="button" data-addon-import="reshade" hidden>Import downloaded runtime</button><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
+          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download and install Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
           <p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p>
           <div class="reshade-hdr-settings">
             <div class="form-group"><label for="reshadeHdrPeakNits">HDR Peak Brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
@@ -411,11 +411,11 @@
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
-        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download Special K</a><button class="btn btn-primary" type="button" data-addon-import="special-k" hidden>Import installed runtime</button><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and automatically imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
       <div class="addon-grid">
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons. Its manager stays hidden until opened here or from the tray.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" hidden>Open Add-on Menu</button></div><p id="proxyMenuStatus" class="addon-description" hidden></p></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs the add-on and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender + runtime</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons. Its manager stays hidden until opened here or from the tray.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button">Open LosslessProxy Configuration</button></div><p id="proxyMenuStatus" class="addon-description">Starts working after Lossless Scaling launches with LosslessProxy deployed.</p></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs LosslessProxy, the NeuralRender add-on, and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender bundle</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The 310.8.2 SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
       </div>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No add-on operation running.</div>
       </div>
@@ -764,6 +764,7 @@
     let generalSettingsSaveTimer = null;
     const addonDetectionTimers = {};
     const addonDetectionChecks = {};
+    const addonAutoImportInFlight = new Set();
     let visibleAddonUpdateKeys = [];
     let companionUpdateState = null;
     let companionUpdateBusy = false;
@@ -932,6 +933,7 @@
               document.getElementById('installCompanionUpdateBtn').disabled = false;
             }
             pendingProfileReshadeImport = false;
+            addonAutoImportInFlight.clear();
             profileSaveInFlight = false;
             reshadeSaveInFlight = false;
             if (document.getElementById('profileModal').classList.contains('active')) {
@@ -1021,6 +1023,7 @@
             updateAddonDownloadLinks();
             setGraphicsStatus(latest ? `${msg.provider}: ${latest.version} is the latest official version.` : `No release found for ${msg.provider}.`);
           } else if (msg.type === 'GRAPHICS_RELEASE_STAGED') {
+            addonAutoImportInFlight.delete(msg.package.provider);
             setGraphicsStatus(`Installed ${msg.package.provider} ${msg.package.version}; it is ready for profiles.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTED') {
@@ -1030,7 +1033,7 @@
             if (msg.runtime) {
               dlssnrRuntimes = [...dlssnrRuntimes.filter(item => item.sha256 !== msg.runtime.sha256), msg.runtime];
             }
-            setGraphicsStatus(`Installed LSP-NeuralRender ${msg.package.version} and verified DLSS 5 runtime ${msg.runtime.filename}.`);
+            setGraphicsStatus(`Installed LosslessProxy ${msg.proxyPackage.version}, LSP-NeuralRender ${msg.package.version}, and verified DLSS 5 runtime ${msg.runtime.filename}.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
@@ -1173,7 +1176,11 @@
 
     function renderProxyMenuAction() {
       const button = document.getElementById('openProxyMenuBtn');
-      if (button) button.hidden = !activeProfileUsesProxy();
+      if (!button) return;
+      button.hidden = false;
+      button.title = activeProfileUsesProxy()
+        ? 'Open the running LosslessProxy add-on manager.'
+        : 'The manager can be opened after a proxy-enabled profile is deployed and Lossless Scaling is running.';
     }
 
     function renderControlSettings() {
@@ -1429,10 +1436,22 @@
         if (!button.dataset.installLabel) button.dataset.installLabel = button.textContent.trim();
         const provider = button.dataset.addonInstall;
         const latestVersion = latestAddonVersions[provider];
-        const latestDownloaded = !!latestVersion && graphicsPackages.some(item =>
+        let latestDownloaded = !!latestVersion && graphicsPackages.some(item =>
           item.provider === provider
           && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestVersion)
         );
+        if (provider === 'lsp-neural-render') {
+          const latestProxyVersion = latestAddonVersions['lossless-proxy'];
+          const latestProxyDownloaded = !!latestProxyVersion && graphicsPackages.some(item =>
+            item.provider === 'lossless-proxy'
+            && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestProxyVersion)
+          );
+          // This is a bundle button. A cached NeuralRender archive alone is
+          // not an installed bundle and must never disable dependency repair.
+          latestDownloaded = latestDownloaded
+            && latestProxyDownloaded
+            && dlssnrRuntimes.length > 0;
+        }
         button.disabled = latestDownloaded;
         button.textContent = latestDownloaded
           ? 'Latest version already downloaded'
@@ -1469,19 +1488,35 @@
       if (!source) return;
       const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
       const status = document.querySelector(`[data-addon-status="${provider}"]`);
-      const importButton = document.querySelector(`[data-addon-import="${provider}"]`);
-      badge.textContent = source.detected ? (provider === 'reshade' ? 'Downloaded' : 'Installed') : (provider === 'reshade' ? 'Not downloaded' : 'Not installed');
-      badge.classList.toggle('ready', !!source.detected);
-      status.textContent = source.message || 'Status unavailable.';
+      const imported = graphicsPackages.some(item =>
+        item.provider === provider
+        && (!source.version || normalizedAddonVersion(item.version) === normalizedAddonVersion(source.version))
+      );
+      const installing = !!source.detected && !imported;
+      badge.textContent = imported ? 'Installed' : installing ? 'Installing' : (provider === 'reshade' ? 'Not downloaded' : 'Not installed');
+      badge.classList.toggle('ready', imported);
+      status.textContent = imported
+        ? `Installed version: ${graphicsPackages.filter(item => item.provider === provider).at(-1).version}`
+        : installing
+          ? `${source.message || 'Runtime detected.'} Installing automatically...`
+          : (source.message || 'Status unavailable.');
       status.title = source.path || '';
-      if (importButton) {
-        importButton.hidden = !source.detected;
-        importButton.disabled = false;
-      }
       if (source.detected && addonDetectionTimers[provider]) {
         clearInterval(addonDetectionTimers[provider]);
         delete addonDetectionTimers[provider];
-        setGraphicsStatus(`${provider === 'reshade' ? 'ReShade Full Add-On' : 'Special K'} source detected and ready to import.`);
+      }
+      if (
+        installing
+        && !addonAutoImportInFlight.has(provider)
+        && ws
+        && ws.readyState === WebSocket.OPEN
+      ) {
+        addonAutoImportInFlight.add(provider);
+        setGraphicsStatus(`${provider === 'reshade' ? 'ReShade Full Add-On' : 'Special K'} detected. Importing and installing automatically...`);
+        ws.send(JSON.stringify({
+          type: 'IMPORT_GRAPHICS_SOURCE', provider,
+          operationId: crypto.randomUUID().replaceAll('-', '')
+        }));
       }
     }
 
@@ -2664,7 +2699,7 @@
         const provider = button.dataset.addonInstall;
         const isNeuralRender = provider === 'lsp-neural-render';
         const warning = isNeuralRender
-          ? 'This installs LSP-NeuralRender and downloads the 310.8 SF-v2 DLSS neural-rendering runtime from RankFTW/rhi-repo. The runtime is a community-modified, unsigned NVIDIA-derived DLL, is not an official NVIDIA release, and may carry compatibility, security, copyright, or licensing risk. Continue only if you accept those risks.'
+          ? 'This installs LosslessProxy, LSP-NeuralRender, and the compatible 310.8.2 SF-v2 DLSS neural-rendering runtime from RankFTW/rhi-repo. The runtime is a community-modified, unsigned NVIDIA-derived DLL, is not an official NVIDIA release, and may carry compatibility, security, copyright, or licensing risk. Continue only if you accept those risks.'
           : `Install the latest verified ${provider} release?`;
         confirmDialog(warning, {
           title: isNeuralRender ? 'Community Runtime Warning' : 'Install Add-on',
@@ -2681,17 +2716,6 @@
             operationId: crypto.randomUUID().replaceAll('-', '')
           }));
         });
-      };
-    });
-    document.querySelectorAll('[data-addon-import]').forEach(button => {
-      button.onclick = () => {
-        const provider = button.dataset.addonImport;
-        button.disabled = true;
-        setGraphicsStatus(`Importing the detected ${provider} runtime without executing its installer...`);
-        ws.send(JSON.stringify({
-          type: 'IMPORT_GRAPHICS_SOURCE', provider,
-          operationId: crypto.randomUUID().replaceAll('-', '')
-        }));
       };
     });
     document.getElementById('profileForm').onsubmit = (e) => {

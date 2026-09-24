@@ -103,16 +103,11 @@ class LosslessProxyMenuController:
 
     def open(self) -> dict:
         """Restore and focus the existing LosslessProxy manager window."""
-        if not self.active_profile_uses_proxy():
-            return {
-                "opened": False,
-                "reason": "The active profile does not use NeuralRender or the ReShade Menu Proxy.",
-            }
         windows = self._find_windows()
         if not windows:
             return {
                 "opened": False,
-                "reason": "The LosslessProxy add-on manager is not running. Restart Lossless Scaling after deploying LosslessProxy.",
+                "reason": "The LosslessProxy configuration window is not running. Deploy a proxy-enabled profile, then restart Lossless Scaling.",
             }
 
         hwnd = windows[0]

@@ -273,7 +273,18 @@ class RhiDlssNrReleaseProvider(ReleaseProvider):
                 raise RuntimeError("RHI's DLSSNR manifest referenced an unapproved download")
             tag = urllib.parse.unquote(match.group(1))
             asset_name = urllib.parse.unquote(match.group(2))
-            if not version or "sf" not in version.casefold() or not asset_name.casefold().endswith(".zip"):
+            # RHI changed the human-readable SF-v2 version from
+            # ``310.8.SF-v2`` to ``310.8.2 (20/30/40/50)`` while retaining the
+            # stable release tag and asset name.  Those verified URL components
+            # are the compatibility identity; filtering on the display label
+            # made every current NeuralRender install report that no runtime
+            # was available.
+            compatibility_id = f"{tag}/{asset_name}".casefold()
+            if (
+                not version
+                or "sf-v2" not in compatibility_id
+                or not asset_name.casefold().endswith(".zip")
+            ):
                 continue
 
             metadata = _request_json(

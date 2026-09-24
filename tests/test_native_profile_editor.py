@@ -179,6 +179,13 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertIn('id="benchmarkAverageFps"', self.html)
         self.assertIn('id="benchmarkAverageLatency"', self.html)
 
+    def test_external_runtime_downloads_auto_import_without_a_second_button(self):
+        self.assertNotIn("data-addon-import=", self.html)
+        self.assertNotIn("Import downloaded runtime", self.html)
+        self.assertNotIn("Import installed runtime", self.html)
+        self.assertIn("const addonAutoImportInFlight = new Set()", self.html)
+        self.assertIn("Installing automatically", self.html)
+
     def test_collapsible_box_titles_match_addon_title_size_with_compact_divider_spacing(self):
         self.assertIn(
             ".settings-group > summary { display: flex; align-items: center; gap: 10px; "

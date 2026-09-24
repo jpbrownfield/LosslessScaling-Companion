@@ -53,30 +53,33 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
         user32.BringWindowToTop.assert_called_once_with(8123)
         user32.SetForegroundWindow.assert_called_once_with(8123)
 
-    def test_open_refuses_profiles_without_a_proxy_feature(self):
+    def test_open_can_show_configuration_without_an_active_profile(self):
         controller = LosslessProxyMenuController(AppState())
-        with patch.object(controller, "_find_windows") as find_windows:
+        user32 = SimpleNamespace(
+            ShowWindowAsync=Mock(), ShowWindow=Mock(), BringWindowToTop=Mock(),
+            SetForegroundWindow=Mock(return_value=1),
+        )
+        with (
+            patch.object(controller, "_find_windows", return_value=[8123]),
+            patch("companion.services.proxy_menu.ctypes.windll.user32", user32),
+        ):
             result = controller.open()
-        self.assertFalse(result["opened"])
-        find_windows.assert_not_called()
+        self.assertTrue(result["opened"])
 
 
 class ProxyTrayMenuTests(unittest.TestCase):
-    def test_proxy_menu_entry_is_conditional_on_active_profile(self):
+    def test_proxy_menu_entry_is_always_discoverable(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory))
             watcher = Mock()
             watcher.list_running_executables.return_value = []
             controller = Mock()
-            controller.active_profile_uses_proxy.side_effect = [False, True]
             tray = CompanionTrayIcon(
                 manager, AppState(), watcher, automation=Mock(), proxy_menu=controller
             )
 
             labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
-            self.assertNotIn("Open Proxy Add-on Menu", labels)
-            labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
-            self.assertIn("Open Proxy Add-on Menu", labels)
+            self.assertIn("Open LosslessProxy Configuration", labels)
 
 
 if __name__ == "__main__":

@@ -99,7 +99,7 @@ class RhiDlssNrReleaseProviderTests(unittest.TestCase):
         def metadata(url):
             if url == RhiDlssNrReleaseProvider.manifest_url:
                 return {"dlssnr": [
-                    {"version": "310.8.SF-v2", "url": download},
+                    {"version": "310.8.2 (20/30/40/50)", "url": download},
                     {
                         "version": "310.8.0",
                         "url": "https://github.com/RankFTW/rhi-repo/releases/download/"
@@ -123,7 +123,7 @@ class RhiDlssNrReleaseProviderTests(unittest.TestCase):
             releases = RhiDlssNrReleaseProvider().list_releases()
 
         self.assertEqual(len(releases), 1)
-        self.assertEqual(releases[0].version, "310.8.SF-v2")
+        self.assertEqual(releases[0].version, "310.8.2 (20/30/40/50)")
         self.assertEqual(releases[0].assets[0].digest, "sha256:" + "a" * 64)
         self.assertIn("unsigned", releases[0].notes)
 

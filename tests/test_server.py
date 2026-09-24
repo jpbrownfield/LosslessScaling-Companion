@@ -636,13 +636,22 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-addon-install="lsp-neural-render"', body)
             self.assertIn('Latest version already downloaded', body)
             self.assertIn('function updateAddonInstallButtons()', body)
+            self.assertIn("if (provider === 'lsp-neural-render')", body)
+            self.assertIn("&& latestProxyDownloaded", body)
+            self.assertIn("&& dlssnrRuntimes.length > 0", body)
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
-            self.assertIn("Install NeuralRender + runtime", body)
+            self.assertIn("Install NeuralRender bundle", body)
+            self.assertIn("Open LosslessProxy Configuration", body)
             self.assertIn("Community Runtime Warning", body)
-            self.assertIn("Download Full Add-On build", body)
+            self.assertIn("Download and install Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)
             self.assertIn('data-addon-download="special-k"', body)
+            self.assertNotIn('data-addon-import=', body)
+            self.assertNotIn('Import downloaded runtime', body)
+            self.assertNotIn('Import installed runtime', body)
+            self.assertIn('addonAutoImportInFlight', body)
+            self.assertIn("type: 'IMPORT_GRAPHICS_SOURCE', provider", body)
             self.assertIn('id="addonUpdateNotice"', body)
             self.assertIn("Ignore these versions", body)
             self.assertNotIn('id="graphicsProvider"', body)
@@ -843,6 +852,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         runtime.write_bytes(image)
         digest = self.server.asset_store.sha256(runtime)
         addon_package = {"provider": "lsp-neural-render", "version": "v2.0"}
+        proxy_package = {"provider": "lossless-proxy", "version": "v0.3.0"}
         runtime_package = {
             "provider": "dlssnr-community-runtime",
             "version": "310.8.SF-v2",
@@ -859,6 +869,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         def check(provider, **_kwargs):
             if provider == "lsp-neural-render":
                 return [{"version": "v2.0", "assets": [{"name": "NeuralRender.zip"}]}]
+            if provider == "lossless-proxy":
+                return [{"version": "v0.3.0", "assets": [{"name": "LosslessProxy.zip"}]}]
             return [{
                 "version": "310.8.SF-v2",
                 "assets": [{
@@ -868,9 +880,13 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             }]
 
         self.server.release_manager.check.side_effect = check
+        staged = {
+            "lsp-neural-render": addon_package,
+            "lossless-proxy": proxy_package,
+            "dlssnr-community-runtime": runtime_package,
+        }
         self.server.release_manager.stage_release.side_effect = (
-            lambda provider, *_args, **_kwargs:
-            addon_package if provider == "lsp-neural-render" else runtime_package
+            lambda provider, *_args, **_kwargs: staged[provider]
         )
 
         await self.server.process_message(websocket, json.dumps({
@@ -882,9 +898,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         response = json.loads(websocket.messages[-1])
         self.assertEqual(response["type"], "NEURAL_RENDER_BUNDLE_STAGED")
+        self.assertEqual(response["proxyPackage"], proxy_package)
         self.assertEqual(response["runtime"]["filename"], "nvngx_dlssnr.dll")
         self.assertEqual(response["runtime"]["source"]["kind"], "community-release")
-        self.assertEqual(self.server.release_manager.stage_release.call_count, 2)
+        self.assertEqual(self.server.release_manager.stage_release.call_count, 3)
 
     async def test_neural_render_install_requires_community_runtime_confirmation(self):
         websocket = self.FakeWebSocket()

@@ -321,8 +321,12 @@ class CompanionTrayIcon:
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
             item("Open Settings", self._open_settings),
         ]
-        if self.proxy_menu and self.proxy_menu.active_profile_uses_proxy():
-            menu_items.append(item("Open Proxy Add-on Menu", self._open_proxy_menu))
+        if self.proxy_menu:
+            # Keep configuration discoverable even when profile deployment has
+            # failed or focus has moved away from the proxy-enabled target.
+            # The controller provides a useful notification if the manager is
+            # not currently running.
+            menu_items.append(item("Open LosslessProxy Configuration", self._open_proxy_menu))
         menu_items.extend([
             Menu.SEPARATOR,
             item(

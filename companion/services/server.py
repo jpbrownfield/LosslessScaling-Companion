@@ -843,6 +843,43 @@ class CompanionWebSocketServer:
                     channel="stable",
                 )
                 if provider == "lsp-neural-render":
+                    # NeuralRender cannot run without LosslessProxy. Treat this
+                    # button as a complete dependency bundle instead of leaving
+                    # a successfully downloaded add-on undeployable until the
+                    # user discovers and installs a second package.
+                    proxy_releases = await asyncio.to_thread(
+                        self.release_manager.check,
+                        "lossless-proxy",
+                        channel="stable",
+                        force=True,
+                    )
+                    proxy_release = next(
+                        (item for item in proxy_releases if item.get("assets")), None
+                    )
+                    if proxy_release is None:
+                        raise ValueError("No downloadable stable LosslessProxy release is available")
+                    proxy_assets = list(proxy_release.get("assets") or [])
+                    proxy_asset = min(
+                        proxy_assets,
+                        key=lambda item: (
+                            any(
+                                word in str(item.get("name") or "").casefold()
+                                for word in ("source", "debug", "symbol", "pdb")
+                            ),
+                            0
+                            if str(item.get("name") or "").casefold().endswith(".zip")
+                            else 1,
+                            str(item.get("name") or "").casefold(),
+                        ),
+                    )
+                    proxy_package = await asyncio.to_thread(
+                        self.release_manager.stage_release,
+                        "lossless-proxy",
+                        str(proxy_release.get("version") or ""),
+                        str(proxy_asset.get("name") or ""),
+                        f"{str(msg.get('operationId') or '')}proxy",
+                        channel="stable",
+                    )
                     runtime_provider = "dlssnr-community-runtime"
                     runtime_releases = await asyncio.to_thread(
                         self.release_manager.check,
@@ -906,6 +943,7 @@ class CompanionWebSocketServer:
                     await websocket.send(json.dumps({
                         "type": "NEURAL_RENDER_BUNDLE_STAGED",
                         "package": result,
+                        "proxyPackage": proxy_package,
                         "runtime": runtime,
                     }))
                     return

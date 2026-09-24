@@ -434,7 +434,7 @@ class GraphicsResolver:
                 }
             )
             if not neural.runtime_asset_sha256:
-                raise GraphicsResolutionError("LSP-NeuralRender requires a manually imported DLSSNR runtime")
+                raise GraphicsResolutionError("LSP-NeuralRender requires an installed DLSSNR runtime")
             runtime = self._manual_runtime(neural.runtime_asset_sha256)
             files.append(
                 {
