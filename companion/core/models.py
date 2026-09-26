@@ -70,12 +70,34 @@ class NeuralRenderConfig(BaseModel):
     skin_structure: float = Field(default=-1.0, ge=-10.0, le=10.0)
     auto_skin_mask: bool = True
     use_lsfg_optical_flow: bool = True
+    sampling_resolution_preset: Literal[
+        "custom", "performance", "balanced", "quality", "full"
+    ] = "balanced"
     working_scale: float = Field(default=0.35, ge=0.1, le=1.0)
     prioritize_ls_gpu_work: bool = True
     apply_strength: float = Field(default=1.0, ge=0.0, le=4.0)
     max_delta: float = Field(default=0.5, ge=0.0, le=1.0)
     protect_highlights_above: float = Field(default=0.85, ge=0.0, le=1.0)
     watchdog_ms: int = Field(default=80, ge=10, le=5000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_sampling_resolution_preset(cls, value):
+        if not isinstance(value, dict) or "sampling_resolution_preset" in value:
+            return value
+        data = dict(value)
+        if "working_scale" not in data:
+            return data
+        try:
+            scale = float(data["working_scale"])
+        except (TypeError, ValueError):
+            return data
+        known = {0.25: "performance", 0.35: "balanced", 0.5: "quality", 1.0: "full"}
+        data["sampling_resolution_preset"] = next(
+            (preset for expected, preset in known.items() if abs(scale - expected) <= 0.0001),
+            "custom",
+        )
+        return data
 
 
 class GraphicsStackConfig(BaseModel):

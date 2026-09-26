@@ -17,6 +17,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check out official NVIDIA DLSS SDK build files
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/DLSS
+          ref: 374959484e79a640feaba44c93ac8cfb0a03f5b5
+          path: .deps/nvidia-dlss
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            include/nvsdk_ngx.h
+            include/nvsdk_ngx_defs.h
+            include/nvsdk_ngx_defs_dlssd.h
+            include/nvsdk_ngx_helpers.h
+            include/nvsdk_ngx_helpers_dlssd.h
+            include/nvsdk_ngx_params.h
+            lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
+            LICENSE.txt
+
       - name: Resolve embedded application version
         shell: pwsh
         env:
@@ -85,6 +103,59 @@ jobs:
             throw "Bundled ReShade bridge manifest was not produced"
           }
 
+      - name: Stage official NVIDIA NGX build dependency
+        shell: pwsh
+        run: |
+          $sdk = Resolve-Path -LiteralPath ".deps/nvidia-dlss" -ErrorAction Stop
+          $target = "native/lsp_neuralrender/external/ngx"
+          New-Item -ItemType Directory -Force "$target/include", "$target/lib" | Out-Null
+          $headers = @(
+            "nvsdk_ngx.h",
+            "nvsdk_ngx_defs.h",
+            "nvsdk_ngx_defs_dlssd.h",
+            "nvsdk_ngx_helpers.h",
+            "nvsdk_ngx_helpers_dlssd.h",
+            "nvsdk_ngx_params.h"
+          )
+          foreach ($header in $headers) {
+            Copy-Item -LiteralPath "$sdk/include/$header" -Destination "$target/include/$header"
+          }
+          Copy-Item -LiteralPath "$sdk/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" `
+            -Destination "$target/lib/nvsdk_ngx_s.lib"
+
+      - name: Build experimental NeuralRender add-on
+        shell: pwsh
+        run: |
+          cmake -S native/lsp_neuralrender -B build/lsp_neuralrender -A x64
+          cmake --build build/lsp_neuralrender --config Release
+          ctest --test-dir build/lsp_neuralrender -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "NeuralRender shader/policy tests failed" }
+          $release = "build/lsp_neuralrender/Release"
+          $required = @(
+            "LSP_NeuralRender.dll",
+            "nvngx.dll_lspnr.dll",
+            "lspnr_harness.exe",
+            "lspnr_hosttest.exe",
+            "lspnr_shader_policy_test.exe"
+          )
+          foreach ($file in $required) {
+            $path = Join-Path $release $file
+            if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
+              throw "NeuralRender build output is missing or empty: $path"
+            }
+          }
+          $bundle = "build/native/LSP-NeuralRender"
+          New-Item -ItemType Directory -Force $bundle, "$bundle/tools" | Out-Null
+          Copy-Item -LiteralPath "$release/LSP_NeuralRender.dll", "$release/nvngx.dll_lspnr.dll" `
+            -Destination $bundle
+          Copy-Item -LiteralPath "native/lsp_neuralrender/addon.json", `
+            "native/lsp_neuralrender/LICENSE", "native/lsp_neuralrender/UPSTREAM.md" `
+            -Destination $bundle
+          Copy-Item -LiteralPath "$release/lspnr_harness.exe", "$release/lspnr_hosttest.exe", `
+            "$release/lspnr_shader_policy_test.exe" `
+            -Destination "$bundle/tools"
+          Compress-Archive -LiteralPath $bundle -DestinationPath "build/native/LSP-NeuralRender.zip" -Force
+
       - name: Compile executable
         shell: pwsh
         run: python -m PyInstaller --clean --noconfirm LosslessCompanion.spec
@@ -106,6 +177,10 @@ jobs:
             throw "Embedded ReShade bridge is empty"
           }
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/LSP-ReShade/addon.json" -ErrorAction Stop | Out-Null
+          $neuralBundle = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/lsp-neural-render/LSP-NeuralRender.zip" -ErrorAction Stop
+          if ((Get-Item -LiteralPath $neuralBundle).Length -le 0) {
+            throw "Embedded NeuralRender bundle is empty"
+          }
           Write-Host "Built $executable ($size bytes)"
 
       - name: Publish SHA-256 manifest
@@ -127,6 +202,14 @@ jobs:
         with:
           name: LosslessCompanion-windows-x64-${{ github.sha }}
           path: dist/LosslessCompanion/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload experimental NeuralRender build
+        uses: actions/upload-artifact@v4
+        with:
+          name: LSP-NeuralRender-windows-x64-${{ github.sha }}
+          path: build/native/LSP-NeuralRender/
           if-no-files-found: error
           retention-days: 30
 

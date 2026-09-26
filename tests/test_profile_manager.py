@@ -19,6 +19,23 @@ class ProfileManagerTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_legacy_neural_working_scale_migrates_to_preset_or_custom(self):
+        quality = Profile.model_validate({
+            "name": "Quality",
+            "graphics": {"neural_render": {"working_scale": 0.5}},
+        })
+        manual = Profile.model_validate({
+            "name": "Manual",
+            "graphics": {"neural_render": {"working_scale": 0.42}},
+        })
+
+        self.assertEqual(
+            quality.graphics.neural_render.sampling_resolution_preset, "quality"
+        )
+        self.assertEqual(
+            manual.graphics.neural_render.sampling_resolution_preset, "custom"
+        )
+
     def test_domain_matching_respects_hostname_boundary(self):
         youtube = Profile(
             id="youtube-profile",

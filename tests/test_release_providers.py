@@ -1,11 +1,13 @@
 import tempfile
 import unittest
 import urllib.error
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from companion.services.asset_store import AssetStore
 from companion.services.release_providers import (
+    BundledArchiveReleaseProvider,
     ProviderRegistry,
     RhiDlssNrReleaseProvider,
     ReShadeReleaseProvider,
@@ -39,6 +41,40 @@ class CountingProvider(ReleaseProvider):
 
 
 class ReleaseManagerTests(unittest.TestCase):
+    def test_bundled_release_is_staged_without_a_network_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "LSP-NeuralRender.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr(
+                    "LSP-NeuralRender/addon.json",
+                    '{"name":"Neural Render (DLSS 5)","version":"0.3.0-lsc-hdr"}',
+                )
+                bundle.writestr("LSP-NeuralRender/LSP_NeuralRender.dll", b"native")
+
+            provider = BundledArchiveReleaseProvider(
+                "lsp-neural-render", "LSP-NeuralRender.zip"
+            )
+            registry = ProviderRegistry()
+            registry.providers = {"lsp-neural-render": provider}
+            store = AssetStore(str(root / "store"))
+            manager = ReleaseManager(store, registry)
+
+            with patch.object(provider, "archive_path", return_value=archive):
+                release = manager.check("lsp-neural-render", force=True)[0]
+                package = manager.stage_release(
+                    "lsp-neural-render",
+                    release["version"],
+                    release["assets"][0]["name"],
+                    "bundled-test",
+                )
+
+            self.assertEqual(package["version"], "0.3.0-lsc-hdr")
+            self.assertEqual(package["source"]["kind"], "bundled-native-component")
+            self.assertTrue(
+                (Path(package["payload_path"]) / "LSP-NeuralRender" / "addon.json").is_file()
+            )
+
     def test_private_github_token_is_added_only_when_configured(self):
         with patch.dict("os.environ", {}, clear=True):
             self.assertNotIn("Authorization", github_request_headers())

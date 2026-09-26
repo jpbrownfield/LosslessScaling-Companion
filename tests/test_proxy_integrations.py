@@ -170,6 +170,7 @@ class ProxyIntegrationTests(unittest.TestCase):
         self.assertEqual(neural["intensity"], "0.8")
         self.assertEqual(neural["autoMask"], "1")
         self.assertEqual(neural["useFlow"], "1")
+        self.assertEqual(neural["workingScale"], "0.35")
         baseline = (self.ls_root / "ReShade.ini").read_text(encoding="utf-8")
         self.assertIn("KeyOverlay=0,0,0,0", baseline)
         self.assertIn("TutorialProgress=4", baseline)

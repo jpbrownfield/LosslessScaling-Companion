@@ -25,6 +25,14 @@ class DeploymentManager:
         "lossless_proxy_config", "special_k_config", "neural_reshade_config",
     }
     RUNTIME_MUTATED_CONFIG_ROLES = {"neural_reshade_config"}
+    # Installing/updating our fork is an explicit takeover of these exact
+    # component files. Unknown files beside them are left alone, and the
+    # normal fail-closed rule still protects every unrelated managed binary.
+    REPLACEABLE_COMPONENT_PATHS = {
+        "addons/lsp-neuralrender/lsp_neuralrender.dll",
+        "addons/lsp-neuralrender/nvngx.dll_lspnr.dll",
+        "addons/lsp-neuralrender/addon.json",
+    }
 
     def __init__(self, store: AssetStore):
         self.store = store
@@ -290,6 +298,7 @@ class DeploymentManager:
                 mutable_config = entry.get("role") in self.MUTABLE_CONFIG_ROLES
                 if (
                     not mutable_config
+                    and folded not in self.REPLACEABLE_COMPONENT_PATHS
                     and destination.is_file()
                     and self._hash(destination) != entry.get("deployed_sha256")
                 ):
@@ -333,7 +342,12 @@ class DeploymentManager:
                         continue
                     destination = self._destination(root, old_entry["relative_path"])
                     original_path = old_entry.get("original_backup")
-                    if old_entry.get("original_existed") and original_path and Path(original_path).is_file():
+                    if (
+                        folded not in self.REPLACEABLE_COMPONENT_PATHS
+                        and old_entry.get("original_existed")
+                        and original_path
+                        and Path(original_path).is_file()
+                    ):
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         self._atomic_copy(Path(original_path), destination)
                     elif destination.exists():
@@ -343,9 +357,18 @@ class DeploymentManager:
                     folded = item["relative_path"].casefold()
                     destination = self._destination(root, item["relative_path"])
                     previous = active_by_path.get(folded)
-                    original_existed = bool(previous and previous.get("original_existed"))
-                    original_backup = previous.get("original_backup") if previous else None
-                    if previous is None and destination.is_file():
+                    component_takeover = folded in self.REPLACEABLE_COMPONENT_PATHS
+                    original_existed = bool(
+                        not component_takeover
+                        and previous
+                        and previous.get("original_existed")
+                    )
+                    original_backup = (
+                        previous.get("original_backup")
+                        if previous and not component_takeover
+                        else None
+                    )
+                    if previous is None and destination.is_file() and not component_takeover:
                         original_existed = True
                         original_backup_path = self.originals / Path(item["relative_path"])
                         original_backup_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,33 @@
+# build output and release packages
+build/
+out/
+dist/
+*.zip
+*.log
+*.dll
+*.exe
+*.pdb
+*.lib
+
+# IDE / local CMake state
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+CMakeSettings.json
+
+# captures / renders / test dumps (keep the addon icon)
+*.png
+!icon.png
+*.bmp
+*.bin
+captures/
+
+# NVIDIA DLSS SDK: not redistributable, download it yourself (see external/ngx/README.md)
+external/ngx/*
+!external/ngx/README.md
+
+# anything else dropped into external/ (SDK drops, snippets) stays out of the repo
+external/*
+!external/lsproxy-sdk/
+!external/ngx/

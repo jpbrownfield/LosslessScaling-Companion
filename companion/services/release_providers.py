@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -80,6 +81,51 @@ class ReleaseProvider:
             if release.version.casefold() == version.casefold():
                 return release
         raise ValueError(f"Unknown {self.provider_id} release: {version}")
+
+
+class BundledArchiveReleaseProvider(ReleaseProvider):
+    """Expose a native component built with this Companion as a local release."""
+
+    allowed_hosts = frozenset()
+
+    def __init__(self, provider_id: str, archive_name: str):
+        self.provider_id = provider_id
+        self.archive_name = archive_name
+
+    def archive_path(self) -> Path:
+        candidates = []
+        frozen_root = getattr(sys, "_MEIPASS", None)
+        if frozen_root:
+            candidates.append(Path(frozen_root) / "addons" / self.provider_id / self.archive_name)
+        candidates.append(
+            Path(__file__).resolve().parents[2] / "build" / "native" / self.archive_name
+        )
+        archive = next((path for path in candidates if path.is_file()), None)
+        if archive is None:
+            raise RuntimeError(
+                f"Bundled {self.provider_id} archive is missing; reinstall Companion or rebuild it"
+            )
+        return archive.resolve(strict=True)
+
+    def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
+        archive = self.archive_path()
+        # Keep this version aligned with native/lsp_neuralrender/addon.json.
+        version = "0.3.0-lsc-hdr"
+        return [ReleaseInfo(
+            provider=self.provider_id,
+            version=version,
+            name="LS Companion NeuralRender HDR fork",
+            published_at=None,
+            prerelease=False,
+            html_url="https://github.com/jpbrownfield/LosslessScaling-Companion",
+            notes="Companion-built NeuralRender fork with scRGB HDR-preserving composition.",
+            assets=[ReleaseAsset(
+                name=self.archive_name,
+                url=f"bundled://{self.archive_name}",
+                size=archive.stat().st_size,
+                digest=f"sha256:{AssetStore.sha256(archive)}",
+            )],
+        )]
 
 
 def _request_json(url: str) -> object:
@@ -341,8 +387,8 @@ class ProviderRegistry:
             "lossless-proxy": GitHubReleaseProvider(
                 "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
             ),
-            "lsp-neural-render": GitLabReleaseProvider(
-                "lsp-neural-render", "andreiday/LSP-NeuralRender", r"\.zip$"
+            "lsp-neural-render": BundledArchiveReleaseProvider(
+                "lsp-neural-render", "LSP-NeuralRender.zip"
             ),
             "dlss5-feeder": GitHubReleaseProvider(
                 "dlss5-feeder", "jlrouzies-fr/DLSS5-Feeder", r"\.zip$"
@@ -459,6 +505,35 @@ class ReleaseManager:
             or any(character in asset.name for character in ("/", "\\", ":", "\0"))
         ):
             raise UnsafeAssetError("Release asset has an unsafe filename")
+        if isinstance(provider, BundledArchiveReleaseProvider):
+            archive = provider.archive_path()
+            expected_digest = asset.digest if asset.digest and asset.digest.startswith("sha256:") else None
+            result = self.store.import_release_archive(
+                str(archive),
+                provider=provider_id,
+                version=version,
+                expected_sha256=expected_digest,
+                source_metadata={
+                    "kind": "bundled-native-component",
+                    "release": release.to_dict(),
+                    "verification": {
+                        "calculated_sha256": self.store.sha256(archive),
+                        "publisher_sha256": expected_digest.removeprefix("sha256:") if expected_digest else None,
+                        "publisher_digest_verified": bool(expected_digest),
+                        "downloaded_over_https": False,
+                        "host_allowlisted": True,
+                    },
+                },
+            )
+            self.store.audit(
+                "bundled_release_staged",
+                provider=provider_id,
+                version=version,
+                asset=asset.name,
+                archive_sha256=result.get("archive_sha256"),
+            )
+            return result
+
         parsed = urlparse(asset.url)
         if parsed.scheme != "https" or parsed.hostname not in provider.allowed_hosts:
             raise UnsafeAssetError("Release asset URL is outside the provider allowlist")

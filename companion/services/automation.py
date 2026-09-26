@@ -779,6 +779,10 @@ class AutomationController:
 
             try:
                 configured_exe = self.profile_manager.config.lossless_scaling_exe_path
+                neural_sampling_preset_before = (
+                    profile.graphics.neural_render.sampling_resolution_preset
+                    if profile else None
+                )
                 deployment_files = self.graphics_resolver.resolve(
                     profile,
                     lossless_scaling_exe=configured_exe,
@@ -786,6 +790,14 @@ class AutomationController:
                         self.profile_manager.config.reshade_overlay_hotkey
                     ),
                 )
+                if (
+                    profile
+                    and neural_sampling_preset_before !=
+                    profile.graphics.neural_render.sampling_resolution_preset
+                ):
+                    # The resolver detected that workingScale was changed later
+                    # in the add-on menu and relinquished ownership as Custom.
+                    self.profile_manager.save_config()
                 deployment_change = bool(
                     configured_exe
                     and self.deployment_manager.needs_change(

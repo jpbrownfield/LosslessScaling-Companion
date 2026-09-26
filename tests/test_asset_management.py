@@ -4,7 +4,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from companion.core.models import DllOverrideConfig, Profile, SpecialKConfig
+from companion.core.models import DllOverrideConfig, ManagedPackageConfig, Profile, SpecialKConfig
 from companion.services.asset_store import AssetStore, UnsafeAssetError
 from companion.services.deployment_manager import DeploymentConflictError, DeploymentManager
 from companion.services.graphics_resolver import GraphicsResolutionError, GraphicsResolver
@@ -90,6 +90,78 @@ class AssetStoreTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.TestCase):
+    def test_neural_render_update_replaces_modified_existing_component(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            old_source = root / "old-neural.dll"
+            new_source = root / "companion-neural.dll"
+            old_source.write_bytes(b"old-upstream")
+            new_source.write_bytes(b"companion-hdr-fork")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+            relative = "addons/LSP-NeuralRender/LSP_NeuralRender.dll"
+
+            manager.apply(
+                profile_id="neural",
+                lossless_scaling_exe=str(executable),
+                files=[{
+                    "relative_path": relative,
+                    "source_path": str(old_source),
+                    "role": "lossless_addon",
+                    "source_package": "lsp-neural-render/0.2.0/old",
+                }],
+            )
+            deployed = root / Path(relative)
+            deployed.write_bytes(b"another-existing-neural-build")
+
+            manager.apply(
+                profile_id="neural",
+                lossless_scaling_exe=str(executable),
+                files=[{
+                    "relative_path": relative,
+                    "source_path": str(new_source),
+                    "role": "lossless_addon",
+                    "source_package": "lsp-neural-render/0.3.0-lsc-hdr/new",
+                }],
+            )
+
+            self.assertEqual(deployed.read_bytes(), b"companion-hdr-fork")
+
+    def test_neural_render_takeover_does_not_restore_superseded_manual_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            relative = "addons/LSP-NeuralRender/LSP_NeuralRender.dll"
+            deployed = root / Path(relative)
+            deployed.parent.mkdir(parents=True)
+            deployed.write_bytes(b"manual-old-install")
+            companion_source = root / "companion-neural.dll"
+            companion_source.write_bytes(b"companion-hdr-fork")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+
+            manifest = manager.apply(
+                profile_id="neural",
+                lossless_scaling_exe=str(executable),
+                files=[{
+                    "relative_path": relative,
+                    "source_path": str(companion_source),
+                    "role": "lossless_addon",
+                    "source_package": "lsp-neural-render/0.3.0-lsc-hdr/new",
+                }],
+            )
+            self.assertEqual(deployed.read_bytes(), b"companion-hdr-fork")
+            self.assertFalse(manifest["files"][0]["original_existed"])
+            self.assertIsNone(manifest["files"][0]["original_backup"])
+
+            manager.apply(
+                profile_id="without-neural",
+                lossless_scaling_exe=str(executable),
+                files=[],
+            )
+            self.assertFalse(deployed.exists())
+
     def test_runtime_addon_dlls_are_parked_and_reactivated_in_place(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -241,6 +313,108 @@ class DeploymentManagerTests(unittest.TestCase):
 
 
 class GraphicsResolverTests(unittest.TestCase):
+    def test_bundled_neural_fork_overrides_legacy_profile_version_pin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            legacy = self._package(
+                store, root, "lsp-neural-render", "0.2.0",
+                {"LSP-NeuralRender/legacy.txt": "legacy"},
+            )
+            archive = root / "bundled-neural.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("LSP-NeuralRender/current.txt", "current")
+            bundled = store.import_release_archive(
+                str(archive),
+                provider="lsp-neural-render",
+                version="0.3.0-lsc-hdr",
+                source_metadata={"kind": "bundled-native-component"},
+            )
+
+            selected = GraphicsResolver(store)._neural_package(
+                ManagedPackageConfig(enabled=True, version=legacy["version"])
+            )
+
+            self.assertEqual(selected["archive_sha256"], bundled["archive_sha256"])
+            self.assertEqual(selected["version"], "0.3.0-lsc-hdr")
+
+    def test_manual_addon_sampling_change_converts_profile_to_custom(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            config_path = root / "addons" / "config.json"
+            config_path.parent.mkdir()
+            config_path.write_text(json.dumps({
+                "addons": {"LSP-NeuralRender": {
+                    "workingScale": "0.42",
+                    "lscManagedWorkingScale": "0.35",
+                    "lscSamplingPreset": "balanced",
+                }}
+            }), encoding="utf-8")
+            store = AssetStore(str(root / "store"))
+            resolver = GraphicsResolver(store)
+            profile = Profile.model_validate({
+                "id": "manual-nr-scale",
+                "name": "Manual NR",
+                "graphics": {"neural_render": {
+                    "implementation": "lsp_neural_render",
+                    "sampling_resolution_preset": "balanced",
+                    "working_scale": 0.35,
+                }},
+            })
+
+            generated = resolver._lossless_proxy_config(
+                profile,
+                str(executable),
+                neural_enabled=True,
+                reshade_bridge_enabled=False,
+                reshade_overlay_hotkey="end",
+            )
+            addon = json.loads(generated.read_text(encoding="utf-8"))["addons"]["LSP-NeuralRender"]
+
+            self.assertEqual(profile.graphics.neural_render.sampling_resolution_preset, "custom")
+            self.assertEqual(profile.graphics.neural_render.working_scale, 0.42)
+            self.assertEqual(addon["workingScale"], "0.42")
+            self.assertEqual(addon["lscSamplingPreset"], "custom")
+
+    def test_sampling_preset_can_replace_a_previous_companion_owned_preset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            config_path = root / "addons" / "config.json"
+            config_path.parent.mkdir()
+            config_path.write_text(json.dumps({
+                "addons": {"LSP-NeuralRender": {
+                    "workingScale": "0.25",
+                    "lscManagedWorkingScale": "0.25",
+                    "lscSamplingPreset": "performance",
+                }}
+            }), encoding="utf-8")
+            resolver = GraphicsResolver(AssetStore(str(root / "store")))
+            profile = Profile.model_validate({
+                "id": "quality-nr-scale",
+                "name": "Quality NR",
+                "graphics": {"neural_render": {
+                    "implementation": "lsp_neural_render",
+                    "sampling_resolution_preset": "quality",
+                }},
+            })
+
+            generated = resolver._lossless_proxy_config(
+                profile,
+                str(executable),
+                neural_enabled=True,
+                reshade_bridge_enabled=False,
+                reshade_overlay_hotkey="end",
+            )
+            addon = json.loads(generated.read_text(encoding="utf-8"))["addons"]["LSP-NeuralRender"]
+
+            self.assertEqual(addon["workingScale"], "0.5")
+            self.assertEqual(addon["lscManagedWorkingScale"], "0.5")
+            self.assertEqual(addon["lscSamplingPreset"], "quality")
+
     @staticmethod
     def _x64_pe(payload=b""):
         image = bytearray(0x86)
@@ -532,6 +706,38 @@ class GraphicsResolverTests(unittest.TestCase):
             })
 
             plan = GraphicsResolver(store).resolve(profile)
+            self.assertEqual([item["relative_path"] for item in plan], ["dxgi.dll"])
+
+    def test_selected_reshade_profile_replaces_installer_default_ini(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            self._package(
+                store, root, "reshade", "v2",
+                {
+                    "ReShade64.dll": self._x64_pe(b"reshade"),
+                    "ReShade.ini": "[GENERAL]\nPerformanceMode=0\n",
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [
+                            {"source": "ReShade64.dll", "destination": "dxgi.dll"},
+                            {"source": "ReShade.ini", "destination": "ReShade.ini"},
+                        ],
+                    }),
+                },
+            )
+            profile = Profile.model_validate({
+                "id": "managed-reshade",
+                "name": "Managed ReShade",
+                "reshade": {
+                    "enabled": True,
+                    "managed_profile_id": "my-preset",
+                },
+                "graphics": {"reshade": {"enabled": True, "version": "v2"}},
+            })
+
+            plan = GraphicsResolver(store).resolve(profile)
+
             self.assertEqual([item["relative_path"] for item in plan], ["dxgi.dll"])
 
     def test_proxy_without_reshade_does_not_deploy_bridge(self):

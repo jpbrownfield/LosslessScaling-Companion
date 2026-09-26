@@ -24,6 +24,10 @@ native_data = [
     ("native/vendor/losslessproxy-sdk/LICENSE", "licenses/LosslessProxy-SDK"),
     ("native/README.md", "licenses/native-components"),
 ]
+neural_render_bundle = Path("build/native/LSP-NeuralRender.zip")
+if not neural_render_bundle.is_file():
+    raise SystemExit("Build the bundled NeuralRender archive before packaging LS Companion")
+native_data.append((str(neural_render_bundle), "addons/lsp-neural-render"))
 version_metadata = Path("build/package/version.json")
 version_metadata.parent.mkdir(parents=True, exist_ok=True)
 version_metadata.write_text(

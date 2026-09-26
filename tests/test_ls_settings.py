@@ -89,6 +89,21 @@ class LosslessSettingsXmlTests(unittest.TestCase):
             self.assertEqual(profile["LSFG3Multiplier"], "2")
             self.assertTrue(target.with_suffix(".xml.bak").exists())
 
+    def test_detects_profile_value_changes_without_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "Settings.xml"
+            shutil.copy2(FIXTURE, target)
+            manager = LosslessSettingsXml(str(target))
+            original = target.read_bytes()
+
+            self.assertTrue(manager.profile_values_change_required(
+                "Fixture Default", {"HdrSupport": False}
+            ))
+            self.assertFalse(manager.profile_values_change_required(
+                "Fixture Default", {"HdrSupport": True}
+            ))
+            self.assertEqual(target.read_bytes(), original)
+
     def test_upsert_profile_clones_template_under_profile_name(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "Settings.xml"

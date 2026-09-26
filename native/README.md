@@ -23,3 +23,23 @@ cmake --build build/reshade_bridge --config Release
 The DLL and manifest are copied to `build/native/LSP-ReShade/`. Packaged builds
 embed both files; the graphics resolver deploys them only when a profile enables
 both LosslessProxy and ReShade.
+
+`lsp_neuralrender` is an imported snapshot of andreiday/LSP-NeuralRender at
+commit `750847223656d002e3a0f7090842defc2bae4077`. Its upstream MIT license and
+documentation are retained in that directory. The NVIDIA NGX headers and import
+library needed to build it are local-only dependencies excluded by the imported
+`.gitignore`; NVIDIA runtime DLLs are not part of the source import.
+
+Build it from an x64 MSVC developer shell after supplying the SDK files described
+in `native/lsp_neuralrender/external/ngx/README.md`:
+
+```powershell
+cmake -S native/lsp_neuralrender -B build/lsp_neuralrender -A x64
+cmake --build build/lsp_neuralrender --config Release
+```
+
+The Windows GitHub Actions build performs those steps without requiring a local
+Visual Studio installation. It sparsely checks out the required files from the
+official `NVIDIA/DLSS` repository at a pinned commit, keeps them outside release
+artifacts, and uploads a separate `LSP-NeuralRender-windows-x64-*` artifact. That
+artifact does not contain `nvngx_dlssnr.dll` or any neural model/runtime.

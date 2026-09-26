@@ -134,12 +134,28 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertIn('id="reshadeMenuProxyEnabled"', self.html)
         self.assertNotIn('id="losslessProxyEnabled"', self.html)
         self.assertIn("NeuralRender enables LosslessProxy", self.html)
-        self.assertIn("enabled: dlss5Enabled ||", self.html)
+        self.assertNotIn("values.HdrSupport = 'false'", self.html)
+        self.assertIn("HDR fork preserves Lossless Scaling's scRGB HDR output", self.html)
+        self.assertIn(
+            "enabled: reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value",
+            self.html,
+        )
+        self.assertNotIn("enabled: dlss5Enabled || reshadeMenuProxyEnabled", self.html)
+
+    def test_neural_sampling_resolution_is_profile_scoped_and_wired(self):
+        for preset in ("custom", "performance", "balanced", "quality", "full"):
+            self.assertIn(f'name="neuralSamplingPreset" value="{preset}"', self.html)
+        self.assertNotIn('id="neuralWorkingScale" type="range"', self.html)
+        self.assertIn("sampling_resolution_preset: neuralSamplingPreset", self.html)
+        self.assertIn("neuralSamplingScales[neuralSamplingPreset]", self.html)
+        self.assertIn("neural.sampling_resolution_preset || 'balanced'", self.html)
+        self.assertIn("percent * percent / 100", self.html)
+        self.assertIn("Companion will preserve it", self.html)
 
     def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
         proxy_heading = self.html.index("DLSS 5 NeuralRender")
         proxy_section_end = self.html.index("</div>", self.html.index(
-            "Install the Proxy, NeuralRender, and ReShade packages", proxy_heading
+            "Install the NeuralRender bundle", proxy_heading
         ))
         special_k = self.html.index('id="specialKSettings"', proxy_section_end)
         self.assertGreater(special_k, proxy_section_end)

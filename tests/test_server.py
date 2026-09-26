@@ -79,6 +79,37 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
+    def test_live_addon_sampling_change_is_persisted_as_custom(self):
+        executable = Path(self.temp_dir.name) / "LosslessScaling.exe"
+        executable.write_bytes(b"exe")
+        config_path = executable.parent / "addons" / "config.json"
+        config_path.parent.mkdir()
+        config_path.write_text(json.dumps({
+            "addons": {"LSP-NeuralRender": {
+                "workingScale": "0.44",
+                "lscManagedWorkingScale": "0.35",
+                "lscSamplingPreset": "balanced",
+            }}
+        }), encoding="utf-8")
+        profile = self.manager.config.profiles[0]
+        profile.graphics.neural_render.implementation = "lsp_neural_render"
+        profile.graphics.neural_render.sampling_resolution_preset = "balanced"
+        profile.graphics.neural_render.working_scale = 0.35
+        self.manager.config.lossless_scaling_exe_path = str(executable)
+        self.state.current_active_profile = profile
+
+        self.server._sync_active_neural_sampling_override()
+
+        self.assertEqual(
+            profile.graphics.neural_render.sampling_resolution_preset, "custom"
+        )
+        self.assertEqual(profile.graphics.neural_render.working_scale, 0.44)
+        saved = json.loads(self.manager.config_file.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["profiles"][0]["graphics"]["neural_render"]["sampling_resolution_preset"],
+            "custom",
+        )
+
     async def test_dashboard_can_open_proxy_menu(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
@@ -888,6 +919,20 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.release_manager.stage_release.side_effect = (
             lambda provider, *_args, **_kwargs: staged[provider]
         )
+        saved_profile = self.manager.config.profiles[0]
+        saved_profile.graphics.neural_render.implementation = "lsp_neural_render"
+        saved_profile.graphics.neural_render.package.enabled = True
+        saved_profile.graphics.neural_render.package.version = "v0.2.0"
+        saved_profile.graphics.lossless_proxy.enabled = True
+        saved_profile.graphics.lossless_proxy.version = "v0.2.0"
+        lossless_exe = Path(self.temp_dir.name) / "LosslessScaling.exe"
+        lossless_exe.write_bytes(b"exe")
+        self.manager.config.lossless_scaling_exe_path = str(lossless_exe)
+        self.state.current_active_profile = saved_profile
+        deployment_automation = Mock()
+        deployment_automation.graphics_resolver.resolve.return_value = []
+        deployment_automation.deployment_manager.needs_change.return_value = False
+        self.server.automation = deployment_automation
 
         await self.server.process_message(websocket, json.dumps({
             "type": "INSTALL_LATEST_GRAPHICS_ADDON",
@@ -901,6 +946,21 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["proxyPackage"], proxy_package)
         self.assertEqual(response["runtime"]["filename"], "nvngx_dlssnr.dll")
         self.assertEqual(response["runtime"]["source"]["kind"], "community-release")
+        self.assertTrue(response["profilesUpdated"])
+        self.assertTrue(response["activeProfileRedeployed"])
+        self.assertEqual(
+            saved_profile.graphics.neural_render.package.version, "v2.0"
+        )
+        self.assertEqual(
+            saved_profile.graphics.lossless_proxy.version, "v0.3.0"
+        )
+        self.assertEqual(
+            saved_profile.graphics.neural_render.runtime_asset_sha256,
+            response["runtime"]["sha256"],
+        )
+        deployment_automation.activate_profile.assert_called_once_with(
+            saved_profile, force=True, suppress_auto_scale=True
+        )
         self.assertEqual(self.server.release_manager.stage_release.call_count, 3)
 
     async def test_neural_render_install_requires_community_runtime_confirmation(self):

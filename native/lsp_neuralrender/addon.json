@@ -1,0 +1,9 @@
+{
+  "name": "Neural Render (DLSS 5)",
+  "version": "0.3.0-lsc-hdr",
+  "author": "andreiday; HDR fork by Lossless Scaling Companion",
+  "description": "Runs NVIDIA DLSS 5 Neural Rendering on Lossless Scaling's SDR or scRGB HDR frames and applies an HDR-preserving result to every presented frame without making Lossless Scaling wait.",
+  "min_host_version": "0.2.0",
+  "dependencies": [],
+  "tags": ["graphics", "dlss", "neural-rendering"]
+}

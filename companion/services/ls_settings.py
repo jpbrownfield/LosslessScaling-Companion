@@ -301,6 +301,26 @@ class LosslessSettingsXml:
         self._write_tree(tree, backup=backup)
         return True
 
+    def profile_values_change_required(
+        self, title: Optional[str], values: Dict[str, object]
+    ) -> Optional[bool]:
+        """Return whether scalar values differ without modifying Settings.xml."""
+        if not self.path.is_file():
+            return None
+        try:
+            root = ET.parse(self.path).getroot()
+        except (ET.ParseError, OSError) as error:
+            logger.error("Could not inspect Lossless Scaling profile settings: %s", error)
+            return None
+        profile = self._find_profile(root, title)
+        if profile is None:
+            return None
+        for key, value in values.items():
+            expected = str(value).lower() if isinstance(value, bool) else str(value)
+            if (self._text(profile, key) or "").strip().casefold() != expected.casefold():
+                return True
+        return False
+
     def upsert_profile(
         self,
         title: str,

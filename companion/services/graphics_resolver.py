@@ -18,6 +18,12 @@ class GraphicsResolutionError(RuntimeError):
 
 
 class GraphicsResolver:
+    NEURAL_SAMPLING_PRESETS = {
+        "performance": 0.25,
+        "balanced": 0.35,
+        "quality": 0.50,
+        "full": 1.0,
+    }
     def __init__(self, store: AssetStore, bundled_reshade_bridge_dir: Optional[str] = None):
         self.store = store
         self._reshade_bridge_dir = (
@@ -85,6 +91,29 @@ class GraphicsResolver:
             raise GraphicsResolutionError(f"{provider} requires {requested}; stage it before applying")
         candidates.sort(key=lambda item: str(item.get("version") or ""), reverse=True)
         return candidates[0]
+
+    def _neural_package(self, config: ManagedPackageConfig) -> Optional[Dict]:
+        """Prefer Companion's bundled fork over every legacy staged release.
+
+        Profiles created by older builds may still pin upstream 0.2.x. Once the
+        Companion fork has been staged, that stale pin must not keep deploying
+        the incompatible DLLs over the bundled HDR build.
+        """
+        if not config.enabled:
+            return None
+        candidates = [
+            item for item in self.store.list_packages()
+            if item.get("provider") == "lsp-neural-render"
+        ]
+        bundled = [
+            item for item in candidates
+            if isinstance(item.get("source"), dict)
+            and item["source"].get("kind") == "bundled-native-component"
+        ]
+        if bundled:
+            bundled.sort(key=lambda item: str(item.get("version") or ""), reverse=True)
+            return bundled[0]
+        return self._package("lsp-neural-render", config)
 
     @staticmethod
     def _require_x64(path: Path, label: str) -> Path:
@@ -274,8 +303,7 @@ class GraphicsResolver:
                 existing = {}
             # LosslessProxy owns the boolean `enabled` field. LSP-NR's other settings
             # use strings through IHost::GetConfig/SetConfig.
-            existing.update(
-                {
+            managed_settings = {
                     "enabled": True,
                     "style": str(styles[neural.style]),
                     "autoMask": "1" if neural.auto_skin_mask else "0",
@@ -284,7 +312,6 @@ class GraphicsResolver:
                     "localTone": f"{neural.local_tone:g}",
                     "skinStructure": f"{neural.skin_structure:g}",
                     "useFlow": "1" if neural.use_lsfg_optical_flow else "0",
-                    "workingScale": f"{neural.working_scale:g}",
                     "lsFirst": "1" if neural.prioritize_ls_gpu_work else "0",
                     "composeIntensity": f"{neural.apply_strength:g}",
                     "maxDelta": f"{neural.max_delta:g}",
@@ -292,7 +319,56 @@ class GraphicsResolver:
                     "watchdogMs": str(neural.watchdog_ms),
                     "snippetPath": "",
                 }
+
+            preset = neural.sampling_resolution_preset
+            current_scale = None
+            try:
+                current_scale = float(existing.get("workingScale"))
+            except (TypeError, ValueError):
+                pass
+            managed_scale = None
+            try:
+                managed_scale = float(existing.get("lscManagedWorkingScale"))
+            except (TypeError, ValueError):
+                pass
+
+            # If the add-on menu changed workingScale after Companion applied a
+            # preset, relinquish ownership. The profile becomes Custom and the
+            # live value is preserved on every later activation.
+            manually_changed = bool(
+                current_scale is not None
+                and (
+                    managed_scale is not None
+                    and abs(current_scale - managed_scale) > 0.0001
+                    or managed_scale is None
+                    and preset != "custom"
+                    and abs(
+                        current_scale
+                        - self.NEURAL_SAMPLING_PRESETS.get(preset, neural.working_scale)
+                    ) > 0.0001
+                )
             )
+            if manually_changed:
+                neural.sampling_resolution_preset = "custom"
+                neural.working_scale = current_scale
+                preset = "custom"
+
+            if preset == "custom":
+                if current_scale is not None:
+                    neural.working_scale = current_scale
+                    # Metadata only: workingScale itself remains owned by the
+                    # add-on menu. The marker lets a different profile safely
+                    # apply its own preset later.
+                    managed_settings["lscManagedWorkingScale"] = f"{current_scale:g}"
+                managed_settings["lscSamplingPreset"] = "custom"
+            else:
+                scale = self.NEURAL_SAMPLING_PRESETS[preset]
+                neural.working_scale = scale
+                managed_settings["workingScale"] = f"{scale:g}"
+                managed_settings["lscManagedWorkingScale"] = f"{scale:g}"
+                managed_settings["lscSamplingPreset"] = preset
+
+            existing.update(managed_settings)
             addons["LSP-NeuralRender"] = existing
 
         if reshade_bridge_enabled:
@@ -406,7 +482,7 @@ class GraphicsResolver:
         if neural.implementation == "lsp_neural_render":
             if not proxy_package:
                 raise GraphicsResolutionError("LSP-NeuralRender requires LosslessProxy")
-            neural_package = self._package("lsp-neural-render", neural.package)
+            neural_package = self._neural_package(neural.package)
             if neural_package is None:
                 raise GraphicsResolutionError("LSP-NeuralRender is selected but its package is disabled")
             for filename in ("LSP_NeuralRender.dll", "nvngx.dll_lspnr.dll"):
@@ -450,6 +526,11 @@ class GraphicsResolver:
                 raise GraphicsResolutionError("The LS ReShade/Feeder recipe package is disabled")
             files.extend(self._recipe_files(feeder_package))
 
+        has_selected_reshade_config = bool(
+            profile.reshade
+            and profile.reshade.enabled
+            and (profile.reshade.managed_profile_id or profile.reshade.preset_path)
+        )
         reshade_package = self._package("reshade", graphics.reshade)
         reshade_bridge_enabled = bool(
             proxy_package
@@ -458,7 +539,17 @@ class GraphicsResolver:
             and profile.reshade.menu_proxy_enabled
         )
         if reshade_package:
-            files.extend(self._recipe_files(reshade_package))
+            recipe_files = self._recipe_files(reshade_package)
+            if has_selected_reshade_config:
+                # Installer defaults are only a seed. The selected managed or
+                # user preset is applied atomically after deployment, so do not
+                # make the two valid sources collide in the deployment plan.
+                recipe_files = [
+                    item for item in recipe_files
+                    if item["relative_path"].replace("\\", "/").casefold()
+                    != "reshade.ini"
+                ]
+            files.extend(recipe_files)
             # This bridge is not a standalone add-on. ReShade supplies the
             # overlay and LosslessProxy supplies the host that loads the bridge.
             if reshade_bridge_enabled:
@@ -485,11 +576,6 @@ class GraphicsResolver:
                     "source_package": "generated/lossless-proxy-config",
                 }
             )
-        has_selected_reshade_config = bool(
-            profile.reshade
-            and profile.reshade.enabled
-            and (profile.reshade.managed_profile_id or profile.reshade.preset_path)
-        )
         if neural_enabled and not has_selected_reshade_config:
             blank_reshade = self._blank_neural_reshade_config(profile.id)
             files.append(
@@ -517,14 +603,6 @@ class GraphicsResolver:
                     "role": "special_k_config",
                     "source_package": "generated/special-k-config",
                 }
-            )
-        if (
-            profile.reshade
-            and profile.reshade.enabled
-            and any(item["relative_path"].replace("\\", "/").casefold() == "reshade.ini" for item in files)
-        ):
-            raise GraphicsResolutionError(
-                "A live ReShade preset cannot also modify a recipe-owned ReShade.ini"
             )
         if proxy_package:
             self._require_proxy_compatibility(proxy_package, files)

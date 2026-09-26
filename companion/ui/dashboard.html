@@ -221,6 +221,10 @@
     .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     .profile-addon-section { margin: 16px 0; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--surface-bg); }
     .profile-addon-section.disabled { opacity: 0.48; }
+    .neural-preset-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
+    .neural-preset-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 5px; border: 1px solid var(--card-border); border-radius: 7px; background: var(--input-bg); color: var(--text-muted); cursor: pointer; font-size: 11px; font-weight: 700; text-align: center; text-transform: none; }
+    .neural-preset-choice:has(input:checked) { border-color: var(--accent); background: rgba(56,189,248,.13); color: var(--text); }
+    .neural-preset-choice input { position: absolute; opacity: 0; pointer-events: none; }
     .native-settings { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); }
     .native-settings > h4 { margin-bottom: 4px; color: var(--accent); font-size: 13px; }
     .ls-settings-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--input-bg); }
@@ -415,7 +419,7 @@
       </div>
       <div class="addon-grid">
         <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons. Its manager stays hidden until opened here or from the tray.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button">Open LosslessProxy Configuration</button></div><p id="proxyMenuStatus" class="addon-description">Starts working after Lossless Scaling launches with LosslessProxy deployed.</p></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs LosslessProxy, the NeuralRender add-on, and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender bundle</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The 310.8.2 SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://gitlab.com/andreiday/LSP-NeuralRender/-/blob/main/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs LosslessProxy, Companion's HDR-compatible NeuralRender fork, and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender bundle</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The 310.8.2 SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://github.com/jpbrownfield/LosslessScaling-Companion/blob/main/native/lsp_neuralrender/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
       </div>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No add-on operation running.</div>
       </div>
@@ -678,8 +682,22 @@
         <div class="profile-addon-section">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">DLSS 5 NeuralRender</h4>
           <div class="form-group checkbox-group"><input id="dlss5Enabled" type="checkbox"><label for="dlss5Enabled" style="text-transform:none; font-size:13px; color:#fff">Enable DLSS 5 neural rendering</label></div>
-          <p class="item-sub" style="white-space:normal;margin-bottom:10px">NeuralRender enables LosslessProxy and the imported ReShade runtime automatically, using a safe baseline ReShade.ini until a named profile is selected.</p>
-          <p class="item-sub" style="white-space:normal">Install the Proxy, NeuralRender, and ReShade packages in Lossless Scaling Add-ons before selecting them here.</p>
+          <fieldset id="neuralRenderFields" disabled>
+            <div class="form-group">
+              <label>Sampling resolution preset</label>
+              <div class="neural-preset-grid" role="radiogroup" aria-label="NeuralRender sampling resolution preset">
+                <label class="neural-preset-choice" title="Preserves the resolution selected later in the NeuralRender add-on menu. Companion will not overwrite it."><input type="radio" name="neuralSamplingPreset" value="custom">Custom</label>
+                <label class="neural-preset-choice" title="25% per dimension. 4K: 960x540; 1440p: 640x360; 1080p: 480x270."><input type="radio" name="neuralSamplingPreset" value="performance">Performance</label>
+                <label class="neural-preset-choice" title="35% per dimension. 4K: about 1344x760; 1440p: 896x504; 1080p: 672x384."><input type="radio" name="neuralSamplingPreset" value="balanced" checked>Balanced</label>
+                <label class="neural-preset-choice" title="50% per dimension. 4K: 1920x1080; 1440p: 1280x720; 1080p: 960x540."><input type="radio" name="neuralSamplingPreset" value="quality">Quality</label>
+                <label class="neural-preset-choice" title="100% per dimension: the full Lossless Scaling capture resolution."><input type="radio" name="neuralSamplingPreset" value="full">Full</label>
+              </div>
+              <output id="neuralSamplingPresetDescription">Balanced - 35% per dimension - 12.3% of full-resolution pixels</output>
+              <p class="item-sub" style="white-space:normal;margin-top:6px">Controls the resolution sent to the neural model. Lower values substantially reduce GPU cost; the result is still composed at the full Lossless Scaling output resolution.</p>
+            </div>
+          </fieldset>
+          <p class="item-sub" style="white-space:normal;margin-bottom:10px">NeuralRender enables LosslessProxy automatically and deploys a safe baseline ReShade.ini. The Companion HDR fork preserves Lossless Scaling's scRGB HDR output while applying neural detail in the SDR range.</p>
+          <p class="item-sub" style="white-space:normal">Install the NeuralRender bundle in Lossless Scaling Add-ons before selecting it here. ReShade remains optional and is deployed only when a ReShade profile or menu proxy is selected.</p>
         </div>
 
         <div id="specialKSettings" class="profile-addon-section disabled">
@@ -1033,7 +1051,7 @@
             if (msg.runtime) {
               dlssnrRuntimes = [...dlssnrRuntimes.filter(item => item.sha256 !== msg.runtime.sha256), msg.runtime];
             }
-            setGraphicsStatus(`Installed LosslessProxy ${msg.proxyPackage.version}, LSP-NeuralRender ${msg.package.version}, and verified DLSS 5 runtime ${msg.runtime.filename}.`);
+            setGraphicsStatus(`Installed LosslessProxy ${msg.proxyPackage.version}, LSP-NeuralRender ${msg.package.version}, and verified DLSS 5 runtime ${msg.runtime.filename}.${msg.activeProfileRedeployed ? ' The active installation was replaced and Lossless Scaling was restarted.' : ' Existing NeuralRender profiles will deploy this version on their next activation.'}`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
@@ -1886,6 +1904,23 @@
       return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
     }
 
+    function renderNeuralRenderSettings() {
+      const enabled = document.getElementById('dlss5Enabled').checked;
+      document.getElementById('neuralRenderFields').disabled = !enabled;
+      const selected = document.querySelector('input[name="neuralSamplingPreset"]:checked');
+      const preset = selected ? selected.value : 'balanced';
+      const scales = { performance: 25, balanced: 35, quality: 50, full: 100 };
+      const percent = scales[preset];
+      document.getElementById('neuralSamplingPresetDescription').textContent = preset === 'custom'
+        ? 'Custom - controlled by the NeuralRender add-on menu; Companion will preserve it'
+        : `${preset[0].toUpperCase()}${preset.slice(1)} - ${percent}% per dimension - ${(percent * percent / 100).toFixed(1)}% of full-resolution pixels`;
+    }
+
+    function selectedNeuralSamplingPreset() {
+      const selected = document.querySelector('input[name="neuralSamplingPreset"]:checked');
+      return selected ? selected.value : 'balanced';
+    }
+
     function syncNativeControlDisplay(control) {
       const settingControl = control.closest('.ls-setting-control');
       if (!settingControl) return;
@@ -2142,6 +2177,9 @@
         const neural = graphics.neural_render || {};
         const neuralEnabled = neural.implementation === 'lsp_neural_render';
         document.getElementById('dlss5Enabled').checked = neuralEnabled;
+        const samplingPreset = neural.sampling_resolution_preset || 'balanced';
+        const samplingChoice = document.querySelector(`input[name="neuralSamplingPreset"][value="${samplingPreset}"]`);
+        if (samplingChoice) samplingChoice.checked = true;
         document.getElementById('reshadeMenuProxyEnabled').checked = !!(
           profile.reshade && profile.reshade.menu_proxy_enabled
         );
@@ -2165,6 +2203,7 @@
       updateRtssTargetHelper();
       renderRtssModeSettings();
       renderRtssProfileAvailability();
+      renderNeuralRenderSettings();
       renderSpecialKSettings();
       renderProfileTargetValidation();
       const autosaveStatus = document.getElementById('profileAutosaveStatus');
@@ -2497,6 +2536,10 @@
     };
     document.getElementById('specialKEnabled').onchange = renderSpecialKSettings;
     document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
+    document.getElementById('dlss5Enabled').onchange = renderNeuralRenderSettings;
+    document.querySelectorAll('input[name="neuralSamplingPreset"]').forEach(control => {
+      control.onchange = renderNeuralRenderSettings;
+    });
     document.getElementById('targetType').onchange = () => {
       document.getElementById('targetValue').value = '';
       renderTargetType();
@@ -2745,6 +2788,8 @@
         document.getElementById('profileName').value = profileName;
       }
       const dlss5Enabled = document.getElementById('dlss5Enabled').checked;
+      const neuralSamplingPreset = selectedNeuralSamplingPreset();
+      const neuralSamplingScales = { performance: 0.25, balanced: 0.35, quality: 0.5, full: 1.0 };
       const reshadeMenuProxyEnabled = document.getElementById('reshadeMenuProxyEnabled').checked;
       const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled;
       const existingNeural = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.neural_render || {};
@@ -2816,11 +2861,14 @@
                 version: existingNeuralPackage.version || (installedNeuralPackage && installedNeuralPackage.version) || null,
                 channel: existingNeuralPackage.channel || 'stable'
               },
-              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null
+              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null,
+              sampling_resolution_preset: neuralSamplingPreset,
+              working_scale: neuralSamplingScales[neuralSamplingPreset]
+                || existingNeural.working_scale || 0.35
             },
             reshade: {
               ...(editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade || {}),
-              enabled: dlss5Enabled || reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value,
+              enabled: reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value,
               version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
                 || (installedReshadePackage && installedReshadePackage.version) || null
             },

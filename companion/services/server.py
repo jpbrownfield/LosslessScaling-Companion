@@ -940,11 +940,64 @@ class CompanionWebSocketServer:
                             "warning": "Community-modified, unsigned NVIDIA-derived runtime",
                         },
                     )
+                    # Upgrade every existing NeuralRender profile away from a
+                    # stale upstream pin. This makes the bundled fork and the
+                    # just-verified dependencies authoritative immediately.
+                    profiles_updated = False
+                    for saved_profile in self.config.profiles:
+                        saved_neural = saved_profile.graphics.neural_render
+                        if saved_neural.implementation != "lsp_neural_render":
+                            continue
+                        saved_neural.package.enabled = True
+                        saved_neural.package.version = str(result.get("version") or "") or None
+                        saved_neural.runtime_asset_sha256 = runtime["sha256"]
+                        saved_profile.graphics.lossless_proxy.enabled = True
+                        saved_profile.graphics.lossless_proxy.version = (
+                            str(proxy_package.get("version") or "") or None
+                        )
+                        profiles_updated = True
+                    if profiles_updated:
+                        await asyncio.to_thread(self.profile_manager.save_config)
+
+                    # If NeuralRender is active, replace its deployed DLLs now
+                    # while Automation can safely stop and restart LS. Verify
+                    # the transaction rather than treating a caught activation
+                    # error as success.
+                    active_profile = self.state.current_active_profile
+                    active_redeployed = False
+                    if (
+                        active_profile
+                        and active_profile.graphics.neural_render.implementation
+                        == "lsp_neural_render"
+                        and self._lossless_scaling_found()
+                    ):
+                        await asyncio.to_thread(
+                            self.automation.activate_profile,
+                            active_profile,
+                            force=True,
+                            suppress_auto_scale=True,
+                        )
+                        desired = self.automation.graphics_resolver.resolve(
+                            active_profile,
+                            lossless_scaling_exe=self.config.lossless_scaling_exe_path,
+                            reshade_overlay_hotkey=self.config.reshade_overlay_hotkey,
+                        )
+                        if self.automation.deployment_manager.needs_change(
+                            active_profile.id,
+                            desired,
+                            lossless_scaling_exe=self.config.lossless_scaling_exe_path,
+                        ):
+                            raise RuntimeError(
+                                "NeuralRender was downloaded but the active installation could not be replaced"
+                            )
+                        active_redeployed = True
                     await websocket.send(json.dumps({
                         "type": "NEURAL_RENDER_BUNDLE_STAGED",
                         "package": result,
                         "proxyPackage": proxy_package,
                         "runtime": runtime,
+                        "profilesUpdated": profiles_updated,
+                        "activeProfileRedeployed": active_redeployed,
                     }))
                     return
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
@@ -2115,6 +2168,7 @@ class CompanionWebSocketServer:
         }
 
     async def send_full_data_update(self, websocket: WebSocketServerProtocol, visible_windows_only: bool = True) -> None:
+        self._sync_active_neural_sampling_override()
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
@@ -2136,6 +2190,7 @@ class CompanionWebSocketServer:
     async def broadcast_full_data_update(self, visible_windows_only: bool = True) -> None:
         if not self.clients:
             return
+        self._sync_active_neural_sampling_override()
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
@@ -2153,6 +2208,52 @@ class CompanionWebSocketServer:
             "scalingControl": self.state.scaling_control_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
+
+    def _sync_active_neural_sampling_override(self) -> None:
+        """Persist a later add-on-menu resolution change as Custom.
+
+        LosslessProxy retains Companion's last applied value in metadata beside
+        workingScale. A mismatch means the user changed the live add-on control,
+        so Companion relinquishes that setting before any future activation can
+        replace it.
+        """
+        profile = self.state.current_active_profile
+        configured_exe = self.config.lossless_scaling_exe_path
+        if (
+            not profile
+            or not configured_exe
+            or profile.graphics.neural_render.implementation != "lsp_neural_render"
+            or profile.graphics.neural_render.sampling_resolution_preset == "custom"
+        ):
+            return
+        try:
+            config_path = Path(configured_exe).resolve().parent / "addons" / "config.json"
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            addon = data.get("addons", {}).get("LSP-NeuralRender", {})
+            current = float(addon.get("workingScale"))
+            marker_raw = addon.get("lscManagedWorkingScale")
+            expected = self.automation.graphics_resolver.NEURAL_SAMPLING_PRESETS[
+                profile.graphics.neural_render.sampling_resolution_preset
+            ]
+            marker = float(marker_raw) if marker_raw is not None else expected
+            if abs(current - marker) <= 0.0001:
+                return
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return
+
+        changed = False
+        for candidate in self.config.profiles:
+            if candidate.id != profile.id:
+                continue
+            candidate.graphics.neural_render.sampling_resolution_preset = "custom"
+            candidate.graphics.neural_render.working_scale = current
+            changed = True
+            if candidate is not profile:
+                profile.graphics.neural_render.sampling_resolution_preset = "custom"
+                profile.graphics.neural_render.working_scale = current
+            break
+        if changed:
+            self.profile_manager.save_config()
 
     def _control_settings_payload(self) -> Dict:
         selected_process_lasso_log = ProcessLassoLogTailer.resolve_path(

@@ -31,6 +31,46 @@ class ProfileEffectsTests(unittest.TestCase):
             self.running = True
             return True
 
+    def test_neural_render_preserves_native_hdr_profile_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(executable)
+            settings = Mock()
+            settings.update_profile.return_value = True
+            deployment = Mock()
+            deployment.apply.return_value = {}
+            assets = Mock()
+            profile = Profile.model_validate({
+                "name": "Neural",
+                "lossless_profile_title": "Neural",
+                "native_scaling_settings": {"HdrSupport": "true"},
+                "graphics": {
+                    "lossless_proxy": {"enabled": True},
+                    "neural_render": {
+                        "implementation": "lsp_neural_render",
+                        "package": {"enabled": True},
+                    },
+                },
+            })
+            automation = AutomationController(
+                manager,
+                AppState(),
+                asset_store=assets,
+                deployment_manager=deployment,
+                lossless_settings=settings,
+            )
+
+            automation._apply_profile_transition(
+                None, profile, False, [], park_runtime=False,
+                trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                suppress_auto_scale=True,
+            )
+
+            settings.update_profile.assert_not_called()
+
     def test_override_hotkey_uses_default_profile_for_unmatched_foreground_window(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory) / "config")

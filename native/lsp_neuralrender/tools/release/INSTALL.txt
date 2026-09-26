@@ -1,0 +1,52 @@
+LSP-NeuralRender -- DLSS 5 Neural Rendering for Lossless Scaling (LosslessProxy addon)
+=====================================================================================
+
+What you need
+-------------
+* Lossless Scaling 3.x with LosslessProxy installed and working.
+* An NVIDIA RTX GPU running LSFG (on a dual-GPU rig: the display card).
+* nvngx_dlssnr.dll, the DLSSNR snippet. It is NOT included and this project does not
+  distribute it or point to it.
+
+Install
+-------
+1. Copy the "addons\LSP-NeuralRender" folder from this zip into your Lossless Scaling
+   folder, so you end up with:
+
+     <Lossless Scaling>\addons\LSP-NeuralRender\LSP_NeuralRender.dll
+     <Lossless Scaling>\addons\LSP-NeuralRender\nvngx.dll_lspnr.dll
+     <Lossless Scaling>\addons\LSP-NeuralRender\addon.json
+
+2. Put nvngx_dlssnr.dll next to LosslessScaling.exe (or set its path later under
+   Advanced > Snippet path in the addon's settings).
+
+3. Start Lossless Scaling, open the LosslessProxy addon manager, enable
+   "Neural Render (DLSS 5)" and open its settings.
+
+4. Start scaling a game with frame generation on. The status line goes
+   "waiting for LSFG dispatches" -> "engine: loading model..." -> "running".
+
+Tuning
+------
+* Working scale is the only cost lever. Raise it until the model time shown in the panel
+  approaches the frame interval and the "keeps up with" line stays near 100%.
+* Leave "LS's GPU work first" on: Lossless Scaling's own passes then pre-empt the model.
+* Style, Intensity, Local structure and Local tone shape the look; they apply instantly.
+* The model never makes Lossless Scaling wait. If it is too slow it skips frames and the
+  previous result is carried forward by LSFG's optical flow.
+
+Where things are
+----------------
+* Log:      <Lossless Scaling>\LSP_NeuralRender.log (rewritten on every start)
+* Settings: <Lossless Scaling>\addons\config.json, key "LSP-NeuralRender"
+* Guide:    GUIDE.md in this zip, or docs/user-guide.md in the repository
+
+Uninstall
+---------
+Close Lossless Scaling and delete <Lossless Scaling>\addons\LSP-NeuralRender.
+
+License
+-------
+MIT (LICENSE.txt). Dear ImGui (MIT) and MinHook (BSD-2) are compiled in. DLSSNR is an
+NVIDIA technology; this addon runs NVIDIA's model on hardware and in a way NVIDIA did not
+release it for. Use it at your own risk with respect to NVIDIA's terms.
