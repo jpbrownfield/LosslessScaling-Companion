@@ -35,7 +35,7 @@ from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
 from .services.single_instance import SingleInstanceGuard
 from .services.lossless_locator import find_lossless_scaling_executable
-from .services.proxy_menu import LosslessProxyMenuController
+from .services.proxy_menu import AddonManagerMenuController
 from .ui.tray import CompanionTrayIcon
 from .services.simulation_adapters import (
     SimulationNvidiaProfileManager,
@@ -78,7 +78,7 @@ class CompanionApplication:
             settings_xml_path=self.profile_manager.config.lossless_settings_xml_path,
             lossless_exe_path=self.profile_manager.config.lossless_scaling_exe_path,
         )
-        self.proxy_menu = LosslessProxyMenuController(self.state)
+        self.proxy_menu = AddonManagerMenuController(self.state)
         self.process_watcher = ProcessWatcher(
             self.profile_manager,
             self.state,

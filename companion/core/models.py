@@ -109,10 +109,11 @@ class GraphicsStackConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def enforce_neural_proxy_dependency(cls, value):
-        """Keep serialized profiles from representing an unloadable stack.
+        """Retain the hook for old settings without restoring retired dependencies.
 
-        LosslessProxy is an implementation dependency, not a profile feature.
-        Selecting NeuralRender always implies both Proxy and the ReShade runtime.
+        Echo bundles DLSS5NR01 itself, so these legacy package flags are no
+        longer deployment dependencies. They remain normalized for settings
+        compatibility and are ignored by the Echo deployment path.
         """
         if not isinstance(value, dict):
             return value
@@ -127,21 +128,14 @@ class GraphicsStackConfig(BaseModel):
         )
         if implementation != "lsp_neural_render":
             return data
-
-        proxy_value = data.get("lossless_proxy")
-        if isinstance(proxy_value, ManagedPackageConfig):
-            data["lossless_proxy"] = proxy_value.model_copy(update={"enabled": True})
-        else:
-            proxy = dict(proxy_value or {})
-            proxy["enabled"] = True
-            data["lossless_proxy"] = proxy
-        reshade_value = data.get("reshade")
-        if isinstance(reshade_value, ManagedPackageConfig):
-            data["reshade"] = reshade_value.model_copy(update={"enabled": True})
-        else:
-            reshade = dict(reshade_value or {})
-            reshade["enabled"] = True
-            data["reshade"] = reshade
+        for key in ("lossless_proxy", "reshade"):
+            current = data.get(key)
+            if isinstance(current, ManagedPackageConfig):
+                data[key] = current.model_copy(update={"enabled": True})
+            else:
+                package = dict(current or {})
+                package["enabled"] = True
+                data[key] = package
         return data
 
 
@@ -280,6 +274,10 @@ class Profile(BaseModel):
     graphics: GraphicsStackConfig = Field(default_factory=GraphicsStackConfig)
     rtss: RtssLimiterConfig = Field(default_factory=RtssLimiterConfig)
     reshade: Optional[ReshadeConfig] = None
+    # Echo LS Add-on Manager owns this document at runtime. Companion keeps a
+    # complete copy per profile so settings changed in Echo's UI follow that
+    # profile without discarding settings it does not understand.
+    addon_config: Dict[str, Any] = Field(default_factory=dict)
     dll_overrides: List[DllOverrideConfig] = Field(default_factory=list)
     custom_notes: Optional[str] = None
 
@@ -360,6 +358,11 @@ class AppConfig(BaseModel):
     nvidia_rtx_hdr_enabled: bool = False
     reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)
     reshade_overlay_hotkey: str = "end"
+    addon_manager_enabled: bool = True
+    addon_manager: ManagedPackageConfig = Field(
+        default_factory=lambda: ManagedPackageConfig(enabled=True)
+    )
+    default_addon_config: Dict[str, Any] = Field(default_factory=dict)
     snap_near_fullscreen_windows_to_monitor: bool = True
     minimize_other_windows_on_scale: bool = False
     override_lossless_hotkey: bool = False

@@ -19,7 +19,7 @@ from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
 from ..services.startup_manager import StartupTaskManager
 from ..services.automation import AutomationController
-from ..services.proxy_menu import LosslessProxyMenuController
+from ..services.proxy_menu import AddonManagerMenuController
 from .dashboard_window import close_dashboard_window, open_dashboard_window
 from .icons import create_lightning_icon
 
@@ -38,7 +38,7 @@ class CompanionTrayIcon:
         startup_manager: Optional[StartupTaskManager] = None,
         on_check_updates_callback: Optional[Callable] = None,
         on_install_update_callback: Optional[Callable] = None,
-        proxy_menu: Optional[LosslessProxyMenuController] = None,
+        proxy_menu: Optional[AddonManagerMenuController] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -164,11 +164,11 @@ class CompanionTrayIcon:
 
     def _open_proxy_menu(self, icon, menu_item):
         if not self.proxy_menu:
-            self._notify("LosslessProxy menu control is unavailable.")
+            self._notify("Add-on menu control is unavailable.")
             return
         result = self.proxy_menu.open()
         if not result.get("opened"):
-            self._notify(str(result.get("reason") or "Could not open the LosslessProxy menu."))
+            self._notify(str(result.get("reason") or "Could not open the add-on menu."))
 
     def _notify(self, message: str) -> None:
         try:
@@ -321,12 +321,12 @@ class CompanionTrayIcon:
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
             item("Open Settings", self._open_settings),
         ]
-        if self.proxy_menu:
-            # Keep configuration discoverable even when profile deployment has
-            # failed or focus has moved away from the proxy-enabled target.
-            # The controller provides a useful notification if the manager is
-            # not currently running.
-            menu_items.append(item("Open LosslessProxy Configuration", self._open_proxy_menu))
+        if (
+            self.proxy_menu
+            and self.profile_manager.config.addon_manager_enabled
+            and self.state.is_scaling_active
+        ):
+            menu_items.append(item("Show Add-on Menu", self._open_proxy_menu))
         menu_items.extend([
             Menu.SEPARATOR,
             item(

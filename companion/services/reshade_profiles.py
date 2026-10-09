@@ -56,6 +56,7 @@ BUILTIN_PROFILES = (
 
 class ReshadeProfileService:
     HDR_FALLBACK_NITS = 600
+    DEPLOYMENT_ROOT = Path("reshade-shaders") / "LSCompanion"
 
     def __init__(
         self,
@@ -178,6 +179,7 @@ class ReshadeProfileService:
                 preset.is_file()
                 and (folder / "ReShade.ini").is_file()
                 and (folder / "ReShade.Interactive.ini").is_file()
+                and not self._missing_selected_shaders(profile)
             ):
                 continue
             try:
@@ -185,6 +187,22 @@ class ReshadeProfileService:
                 self._write_files(profile)
             except (OSError, ValueError, zipfile.BadZipFile) as exc:
                 logger.warning("Could not provision built-in ReShade profile %s: %s", profile.id, exc)
+
+    def _missing_selected_shaders(self, profile: ManagedReshadeProfile) -> set[str]:
+        selected = {
+            filename.casefold()
+            for filenames in profile.shaders.values()
+            for filename in filenames
+        }
+        if not selected:
+            return set()
+        packages = self._folder(profile.id) / "packages"
+        installed = (
+            {path.name.casefold() for path in packages.rglob("*.fx")}
+            if packages.is_dir()
+            else set()
+        )
+        return selected - installed
 
     def _profile_payload(self, profile: ManagedReshadeProfile) -> Dict:
         folder = self._folder(profile.id)
@@ -426,6 +444,19 @@ class ReshadeProfileService:
 
     def _write_config(self, profile: ManagedReshadeProfile, preset: Path) -> None:
         folder = self._folder(profile.id)
+        # ReShade runs inside Lossless Scaling, so keep every path in the
+        # generated config relative to that installation. The corresponding
+        # preset/package files are added to the transactional deployment plan
+        # by ``deployment_files`` below. This avoids relying on ReShade being
+        # able to traverse back into the companion's LocalAppData directory.
+        deployed_folder = self.DEPLOYMENT_ROOT / profile.id
+        deployed_preset = deployed_folder / preset.name
+        deployed_packages = deployed_folder / "packages"
+
+        def reshade_path(path: Path, *, recursive: bool = False) -> str:
+            value = ".\\" + str(path).replace("/", "\\")
+            return value + ("\\**" if recursive else "")
+
         virtual_key = InputSimulator.vk_from_string(
             self.profile_manager.config.reshade_overlay_hotkey
         )
@@ -433,9 +464,9 @@ class ReshadeProfileService:
         def content(overlay_key: str) -> str:
             return (
                 "[GENERAL]\n"
-                f"CurrentPresetPath={preset.resolve()}\n"
-                f"EffectSearchPaths={(folder / 'packages').resolve()}\\**\n"
-                f"TextureSearchPaths={(folder / 'packages').resolve()}\\**\n"
+                f"CurrentPresetPath={reshade_path(deployed_preset)}\n"
+                f"EffectSearchPaths={reshade_path(deployed_packages, recursive=True)}\n"
+                f"TextureSearchPaths={reshade_path(deployed_packages, recursive=True)}\n"
                 "PerformanceMode=1\n\n"
                 "[INPUT]\n"
                 f"KeyOverlay={overlay_key}\n\n"
@@ -451,6 +482,44 @@ class ReshadeProfileService:
             folder / "ReShade.Interactive.ini",
             content(f"{virtual_key},0,0,0"),
         )
+
+    def deployment_files(self, profile_id: str) -> List[Dict]:
+        """Return the preset, shaders, includes and textures for LS deployment."""
+        profile = next(
+            (item for item in self.profile_manager.config.reshade_profiles if item.id == profile_id),
+            None,
+        )
+        if profile is None:
+            raise ValueError(f"Managed ReShade profile {profile_id!r} is missing")
+
+        # This also retries acquisition for a built-in whose first download
+        # attempt happened while offline and refreshes both generated configs.
+        if self.config_path(profile_id) is None:
+            raise ValueError(f"Managed ReShade profile {profile_id!r} is not provisioned")
+        missing = self._missing_selected_shaders(profile)
+        if missing:
+            raise ValueError(
+                f"Managed ReShade profile {profile_id!r} is missing shader {sorted(missing)[0]}"
+            )
+
+        folder = self._folder(profile.id)
+        preset = folder / self._preset_filename(profile.name)
+        sources = [preset]
+        packages = folder / "packages"
+        if packages.is_dir():
+            sources.extend(path for path in packages.rglob("*") if path.is_file())
+
+        deployed_folder = self.DEPLOYMENT_ROOT / profile.id
+        result = []
+        for source in sources:
+            relative = source.relative_to(folder)
+            result.append({
+                "relative_path": (deployed_folder / relative).as_posix(),
+                "source_path": str(source),
+                "role": "reshade_preset" if source == preset else "shader_bundle",
+                "source_package": f"managed-reshade-profile/{profile.id}",
+            })
+        return result
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

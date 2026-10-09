@@ -380,10 +380,14 @@ class CompanionWebSocketServer:
 
             if msg_type == "OPEN_PROXY_MENU":
                 if not self.proxy_menu:
-                    raise RuntimeError("LosslessProxy menu control is unavailable")
+                    raise RuntimeError("Add-on menu control is unavailable")
+                if not self.config.addon_manager_enabled:
+                    raise RuntimeError("Echo LS Add-on Manager is disabled in General Settings")
+                if not self.state.is_scaling_active:
+                    raise RuntimeError("The add-on menu is available only while scaling")
                 result = await asyncio.to_thread(self.proxy_menu.open)
                 if not result.get("opened"):
-                    raise RuntimeError(str(result.get("reason") or "Could not open the LosslessProxy menu"))
+                    raise RuntimeError(str(result.get("reason") or "Could not open the add-on menu"))
                 await websocket.send(json.dumps({"type": "PROXY_MENU_OPENED"}))
                 return
 
@@ -576,6 +580,10 @@ class CompanionWebSocketServer:
 
             if msg_type == "SAVE_GENERAL_SETTINGS":
                 run_at_startup = bool(msg.get("runAtStartup", False))
+                previous_addon_manager_enabled = self.config.addon_manager_enabled
+                requested_addon_manager_enabled = bool(
+                    msg.get("addonManagerEnabled", self.config.addon_manager_enabled)
+                )
                 smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
                 gpu_inventory = self.automation.gpu_router.detect()
                 requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
@@ -730,6 +738,8 @@ class CompanionWebSocketServer:
 
                 self._apply_hotkey_override_settings(msg)
                 self.config.run_at_startup = run_at_startup
+                self.config.addon_manager_enabled = requested_addon_manager_enabled
+                self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
@@ -761,6 +771,17 @@ class CompanionWebSocketServer:
                 self.config.rtss_default_gpu_target_percent = requested_gpu_target
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                if (
+                    previous_addon_manager_enabled != requested_addon_manager_enabled
+                    and self.state.current_active_profile
+                    and self._lossless_scaling_found()
+                ):
+                    await asyncio.to_thread(
+                        self.automation.activate_profile,
+                        self.state.current_active_profile,
+                        force=True,
+                        suppress_auto_scale=True,
+                    )
                 if reshade_peak_changed:
                     await asyncio.to_thread(self.reshade_profiles.refresh_hdr_peak_settings)
                 if reshade_hotkey_changed:
@@ -808,7 +829,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"lossless-proxy", "lsp-neural-render"}:
+                if provider not in {"ls-addon-manager", "lsp-neural-render"}:
                     raise ValueError("This add-on cannot be installed automatically")
                 if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
                     raise ValueError(
@@ -825,7 +846,7 @@ class CompanionWebSocketServer:
                 def asset_priority(asset: Dict) -> tuple:
                     name = str(asset.get("name") or "").casefold()
                     unwanted = any(word in name for word in ("source", "debug", "symbol", "pdb"))
-                    if provider == "lossless-proxy":
+                    if provider == "ls-addon-manager":
                         preferred = 0 if name.endswith(".zip") else 1
                     elif provider == "lsp-neural-render":
                         preferred = 0 if name.endswith(".zip") else 1
@@ -842,6 +863,42 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
+                if provider == "ls-addon-manager":
+                    active_profile = self.state.current_active_profile
+                    if active_profile:
+                        await asyncio.to_thread(
+                            self.automation.addon_configs.capture,
+                            active_profile,
+                            self.config.lossless_scaling_exe_path,
+                        )
+                    self.config.addon_manager.enabled = True
+                    self.config.addon_manager.version = str(result.get("version") or "") or None
+                    self.config.addon_manager_enabled = True
+                    await asyncio.to_thread(self.profile_manager.save_config)
+                    active_redeployed = False
+                    if active_profile and self._lossless_scaling_found():
+                        await asyncio.to_thread(
+                            self.automation.activate_profile,
+                            active_profile,
+                            force=True,
+                            suppress_auto_scale=True,
+                        )
+                        desired = self.automation.resolve_deployment_files(active_profile)
+                        if self.automation.deployment_manager.needs_change(
+                            active_profile.id,
+                            desired,
+                            lossless_scaling_exe=self.config.lossless_scaling_exe_path,
+                        ):
+                            raise RuntimeError(
+                                "Echo was downloaded but the active installation could not be updated"
+                            )
+                        active_redeployed = True
+                    await websocket.send(json.dumps({
+                        "type": "GRAPHICS_RELEASE_STAGED",
+                        "package": result,
+                        "activeProfileRedeployed": active_redeployed,
+                    }))
+                    return
                 if provider == "lsp-neural-render":
                     # NeuralRender cannot run without LosslessProxy. Treat this
                     # button as a complete dependency bundle instead of leaving
@@ -977,11 +1034,7 @@ class CompanionWebSocketServer:
                             force=True,
                             suppress_auto_scale=True,
                         )
-                        desired = self.automation.graphics_resolver.resolve(
-                            active_profile,
-                            lossless_scaling_exe=self.config.lossless_scaling_exe_path,
-                            reshade_overlay_hotkey=self.config.reshade_overlay_hotkey,
-                        )
+                        desired = self.automation.resolve_deployment_files(active_profile)
                         if self.automation.deployment_manager.needs_change(
                             active_profile.id,
                             desired,
@@ -1385,7 +1438,24 @@ class CompanionWebSocketServer:
                                         force=True,
                                     )
                         prof.last_imported_hash = None
+                    if prof.is_default:
+                        self.config.default_addon_config = json.loads(
+                            json.dumps(prof.addon_config)
+                        )
                     self.profile_manager.add_or_update_profile(prof)
+                    reshade_enabled = bool(
+                        prof.graphics.reshade.enabled
+                        or (prof.reshade and prof.reshade.enabled)
+                    )
+                    await asyncio.to_thread(
+                        self.automation.addon_configs.materialize,
+                        prof,
+                        reshade_enabled=reshade_enabled,
+                        hotkey_vk=self.automation._echo_hotkey_vk(
+                            self.config.reshade_overlay_hotkey
+                        ),
+                    )
+                    await asyncio.to_thread(self.profile_manager.save_config)
                     logger.info(f"Saved profile: {prof.name}")
                     if self.state.current_active_profile and self.state.current_active_profile.id == prof.id:
                         await asyncio.to_thread(
@@ -1742,7 +1812,7 @@ class CompanionWebSocketServer:
 
     async def _refresh_addon_updates(self, *, force: bool) -> Dict:
         async with self.addon_update_lock:
-            providers = ("lossless-proxy", "lsp-neural-render", "reshade", "special-k")
+            providers = ("ls-addon-manager", "lsp-neural-render", "reshade", "special-k")
 
             async def check(provider: str):
                 try:
@@ -1776,7 +1846,7 @@ class CompanionWebSocketServer:
             }
             updates = []
             labels = {
-                "lossless-proxy": "LosslessProxy",
+                "ls-addon-manager": "Echo LS Add-on Manager",
                 "lsp-neural-render": "LSP-NeuralRender",
                 "reshade": "ReShade Full Add-On",
                 "special-k": "Special K",
@@ -2294,6 +2364,7 @@ class CompanionWebSocketServer:
             "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
             "reshadeHdr": self.reshade_profiles.hdr_settings_payload(),
             "reshadeOverlayHotkey": self.config.reshade_overlay_hotkey,
+            "addonManagerEnabled": self.config.addon_manager_enabled,
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
             "overrideLosslessHotkey": self.config.override_lossless_hotkey,

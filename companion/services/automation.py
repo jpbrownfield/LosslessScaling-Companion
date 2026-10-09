@@ -12,6 +12,7 @@ from ..core.models import Profile
 from ..core.profile_manager import DEFAULT_BROWSER_EXECUTABLES, ProfileManager
 from ..core.state import AppState
 from .asset_store import AssetStore
+from .addon_config import AddonConfigService
 from .deployment_manager import DeploymentManager
 from .graphics_resolver import GraphicsResolutionError, GraphicsResolver
 from .gpu_router import GpuRouter
@@ -74,6 +75,90 @@ class AutomationController:
         # integrations can patch the Win32 sender after construction.
         self.hotkey_trigger = hotkey_trigger
         self.reshade_profiles = ReshadeProfileService(profile_manager)
+        self.addon_configs = AddonConfigService(profile_manager)
+
+    def resolve_deployment_files(self, profile: Optional[Profile]) -> List[Dict]:
+        """Resolve runtime binaries plus any selected managed ReShade assets."""
+        addon_manager_available = any(
+            item.get("provider") == "ls-addon-manager"
+            and any(
+                Path(str(file.get("relative_path") or "")).name
+                == "lossless-scaling-deployment.json"
+                for file in item.get("files", [])
+            )
+            for item in self.asset_store.list_packages()
+        )
+        use_addon_manager = bool(
+            self.profile_manager.config.addon_manager_enabled
+            and addon_manager_available
+        )
+        if (
+            use_addon_manager
+            and profile
+            and not profile.addon_config
+            and not self.profile_manager.config.default_addon_config
+            and self.state.current_active_profile is None
+        ):
+            # First-run migration: preserve an existing Echo/LosslessProxy
+            # document as the user's default before the managed host replaces
+            # anything in the Lossless Scaling folder.
+            self.addon_configs.capture(
+                profile,
+                self.profile_manager.config.lossless_scaling_exe_path,
+            )
+        files = self.graphics_resolver.resolve(
+            profile,
+            lossless_scaling_exe=self.profile_manager.config.lossless_scaling_exe_path,
+            reshade_overlay_hotkey=self.profile_manager.config.reshade_overlay_hotkey,
+            # Automation never deploys the retired host. Before Echo has been
+            # installed this is an ordinary host-disabled plan; direct resolver
+            # callers may still use ``None`` solely for legacy receipt tests.
+            addon_manager_enabled=True if use_addon_manager else False,
+            addon_manager_config=self.profile_manager.config.addon_manager,
+        )
+        if profile and use_addon_manager:
+            reshade_enabled = bool(
+                profile.graphics.reshade.enabled
+                or (profile.reshade and profile.reshade.enabled)
+            )
+            config_path = self.addon_configs.materialize(
+                profile,
+                reshade_enabled=reshade_enabled,
+                hotkey_vk=self._echo_hotkey_vk(
+                    self.profile_manager.config.reshade_overlay_hotkey
+                ),
+            )
+            files.append({
+                "relative_path": "addons/config.json",
+                "source_path": str(config_path),
+                "role": "addon_manager_config",
+                "source_package": f"generated/echo-addon-config/{profile.id}",
+            })
+        if (
+            profile
+            and profile.reshade
+            and profile.reshade.enabled
+            and profile.reshade.managed_profile_id
+        ):
+            files.extend(
+                self.reshade_profiles.deployment_files(profile.reshade.managed_profile_id)
+            )
+        return files
+
+    @staticmethod
+    def _echo_hotkey_vk(value: str) -> int:
+        keys = {
+            "insert": 45, "delete": 46, "home": 36, "end": 35,
+            "pageup": 33, "page up": 33, "pagedown": 34, "page down": 34,
+        }
+        text = str(value or "end").strip().casefold()
+        if text in keys:
+            return keys[text]
+        if len(text) == 1 and text.isalpha():
+            return ord(text.upper())
+        if text.startswith("f") and text[1:].isdigit() and 1 <= int(text[1:]) <= 12:
+            return 111 + int(text[1:])
+        return 35
 
     def _lossless_scaling_dir(self) -> Optional[str]:
         """Return the sole directory in which managed graphics files may be deployed."""
@@ -372,6 +457,8 @@ class AutomationController:
                 self.state.scaling_target_pid = target_pid
                 self.state.scaling_target_hwnd = target_hwnd
             else:
+                if self.profile_manager.config.addon_manager_enabled:
+                    self.addon_configs.capture(selected, configured_exe)
                 self.state.scaling_target_pid = None
                 self.state.scaling_target_hwnd = None
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
@@ -719,6 +806,15 @@ class AutomationController:
         with self._lock:
             previous = self.state.current_active_profile
             same_profile = bool(previous and profile and previous.id == profile.id)
+            if (
+                previous
+                and not same_profile
+                and self.profile_manager.config.addon_manager_enabled
+            ):
+                self.addon_configs.capture(
+                    previous,
+                    self.profile_manager.config.lossless_scaling_exe_path,
+                )
             if not force and same_profile:
                 # A different window can match the profile that is already
                 # active. Re-check its runtime monitor route without
@@ -783,13 +879,7 @@ class AutomationController:
                     profile.graphics.neural_render.sampling_resolution_preset
                     if profile else None
                 )
-                deployment_files = self.graphics_resolver.resolve(
-                    profile,
-                    lossless_scaling_exe=configured_exe,
-                    reshade_overlay_hotkey=(
-                        self.profile_manager.config.reshade_overlay_hotkey
-                    ),
-                )
+                deployment_files = self.resolve_deployment_files(profile)
                 if (
                     profile
                     and neural_sampling_preset_before !=

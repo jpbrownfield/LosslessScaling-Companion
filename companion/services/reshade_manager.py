@@ -133,7 +133,10 @@ class ReshadeManager:
         if not ReshadeManager._is_lossless_scaling_ini(ini_file):
             logger.error("ReShade.ini must be beside LosslessScaling.exe: %s", ini_file)
             return False
-        if not managed_file.is_file() or managed_file.name.casefold() != "reshade.ini":
+        if (
+            not managed_file.is_file()
+            or managed_file.name.casefold() not in {"reshade.ini", "reshade.interactive.ini"}
+        ):
             logger.error("Managed ReShade config does not exist: %s", managed_file)
             return False
         try:

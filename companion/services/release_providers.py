@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -387,6 +389,9 @@ class ProviderRegistry:
             "lossless-proxy": GitHubReleaseProvider(
                 "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
             ),
+            "ls-addon-manager": GitHubReleaseProvider(
+                "ls-addon-manager", "Echo-Storm/ls-addon-manager", r"\.zip$"
+            ),
             "lsp-neural-render": BundledArchiveReleaseProvider(
                 "lsp-neural-render", "LSP-NeuralRender.zip"
             ),
@@ -604,6 +609,8 @@ class ReleaseManager:
                     expected_sha256=expected_digest,
                     source_metadata=metadata,
                 )
+            if provider_id == "ls-addon-manager":
+                result = self._expand_ls_addon_manager(result, staging, metadata)
             self.store.audit(
                 "official_release_staged",
                 provider=provider_id,
@@ -624,6 +631,83 @@ class ReleaseManager:
             )
             raise
         finally:
-            import shutil
-
             shutil.rmtree(staging, ignore_errors=True)
+
+    def _expand_ls_addon_manager(
+        self, setup_package: Dict, staging: Path, source_metadata: Dict
+    ) -> Dict:
+        """Run Echo's verified self-extractor and stage its actual payload.
+
+        Echo intentionally ships the payload only inside Setup. ``--extract``
+        is its documented, non-installing mode; the result is then brought
+        back through AssetStore's normal archive quarantine and hashing path.
+        """
+        payload = Path(setup_package["payload_path"])
+        setups = [
+            payload / Path(str(item.get("relative_path") or ""))
+            for item in setup_package.get("files", [])
+            if Path(str(item.get("relative_path") or "")).name.casefold()
+            == "lsaddonmanagersetup.exe"
+        ]
+        if len(setups) != 1 or self.store.pe_architecture(setups[0]) != "x64":
+            raise UnsafeAssetError("Echo release must contain one x64 LSAddonManagerSetup.exe")
+        extracted = staging / "echo-payload"
+        log_path = staging / "echo-extract.log"
+        completed = subprocess.run(
+            [
+                str(setups[0]), "--extract", str(extracted), "--no-remember",
+                "--log", str(log_path),
+            ],
+            check=False,
+            timeout=180,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+            raise UnsafeAssetError(
+                f"Echo Setup could not extract its managed payload (exit {completed.returncode}): {detail[-500:]}"
+            )
+        host = extracted / "Lossless.dll"
+        addons = extracted / "addons"
+        if self.store.pe_architecture(host) != "x64" or not addons.is_dir():
+            raise UnsafeAssetError("Echo Setup extracted an invalid add-on-manager payload")
+
+        deployment = []
+        for item in sorted(path for path in extracted.rglob("*") if path.is_file()):
+            relative = item.relative_to(extracted).as_posix()
+            if relative.casefold() == "addons/config.json":
+                continue
+            if (
+                relative.casefold() == "lossless.dll"
+                or relative.casefold().startswith("addons/")
+                or relative.casefold() in {"manager-icon.ico", "manager-icon.png"}
+            ):
+                deployment.append({
+                    "source": relative,
+                    "destination": relative,
+                    "role": (
+                        "addon_manager_host"
+                        if relative.casefold() == "lossless.dll"
+                        else "lossless_addon"
+                        if relative.casefold().startswith("addons/")
+                        else "addon_manager_support"
+                    ),
+                })
+        recipe = extracted / "lossless-scaling-deployment.json"
+        recipe.write_text(
+            json.dumps({"schema_version": 1, "files": deployment}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        archive = staging / "echo-managed-payload.zip"
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for item in sorted(path for path in extracted.rglob("*") if path.is_file()):
+                bundle.write(item, item.relative_to(extracted).as_posix())
+        expanded_metadata = dict(source_metadata)
+        expanded_metadata["kind"] = "verified-setup-extraction"
+        expanded_metadata["setup_package_sha256"] = setup_package.get("archive_sha256")
+        return self.store.import_release_archive(
+            str(archive),
+            provider="ls-addon-manager",
+            version=str(setup_package.get("version") or ""),
+            source_metadata=expanded_metadata,
+        )

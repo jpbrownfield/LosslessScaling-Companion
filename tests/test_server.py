@@ -115,6 +115,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.client_authority[websocket] = "dashboard"
         self.server.proxy_menu = Mock()
         self.server.proxy_menu.open.return_value = {"opened": True, "focused": True}
+        self.state.is_scaling_active = True
 
         await self.server.process_message(
             websocket, json.dumps({"type": "OPEN_PROXY_MENU"})
@@ -663,8 +664,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("integration-status missing", body)
             self.assertIn("Revert All Lossless Scaling Settings and Remove Addon Files", body)
             self.assertIn("Lossless Scaling Add-ons", body)
-            self.assertIn('data-addon-install="lossless-proxy"', body)
-            self.assertIn('data-addon-install="lsp-neural-render"', body)
+            self.assertIn('data-addon-install="ls-addon-manager"', body)
             self.assertIn('Latest version already downloaded', body)
             self.assertIn('function updateAddonInstallButtons()', body)
             self.assertIn("if (provider === 'lsp-neural-render')", body)
@@ -672,8 +672,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("&& dlssnrRuntimes.length > 0", body)
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
-            self.assertIn("Install NeuralRender bundle", body)
-            self.assertIn("Open LosslessProxy Configuration", body)
+            self.assertIn("Echo Add-on Suite", body)
+            self.assertIn("Show Add-on Menu", body)
             self.assertIn("Community Runtime Warning", body)
             self.assertIn("Download and install Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)
@@ -848,21 +848,21 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "version": "v2.0",
             "assets": [
                 {"name": "Source.zip"},
-                {"name": "LosslessProxy-v2.0.zip"},
+                {"name": "LSAddonManager-v2.0-x64.zip"},
             ],
         }]
         self.server.release_manager.stage_release.return_value = {
-            "provider": "lossless-proxy", "version": "v2.0"
+            "provider": "ls-addon-manager", "version": "v2.0"
         }
 
         await self.server.process_message(websocket, json.dumps({
             "type": "INSTALL_LATEST_GRAPHICS_ADDON",
-            "provider": "lossless-proxy",
+            "provider": "ls-addon-manager",
             "operationId": "operation123",
         }))
 
         self.server.release_manager.stage_release.assert_called_once_with(
-            "lossless-proxy", "v2.0", "LosslessProxy-v2.0.zip", "operation123",
+            "ls-addon-manager", "v2.0", "LSAddonManager-v2.0-x64.zip", "operation123",
             channel="stable",
         )
         self.assertEqual(
@@ -980,7 +980,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_daily_update_status_compares_installed_and_detected_versions(self):
         self.server.release_manager = Mock()
         versions = {
-            "lossless-proxy": "v2.0.0",
+            "ls-addon-manager": "v2.0.0",
             "lsp-neural-render": "v1.0.0",
             "reshade": "6.8.0",
             "special-k": "SK_26_6_13_7",
@@ -990,7 +990,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.server.asset_store = Mock()
         self.server.asset_store.list_packages.return_value = [
-            {"provider": "lossless-proxy", "version": "v1.0.0"},
+            {"provider": "ls-addon-manager", "version": "v1.0.0"},
             {"provider": "lsp-neural-render", "version": "v1.0.0"},
         ]
         sources = {
@@ -1005,7 +1005,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [item["provider"] for item in status["updates"]],
-            ["lossless-proxy", "reshade"],
+            ["ls-addon-manager", "reshade"],
         )
 
     async def test_readonly_local_client_cannot_mutate_profiles(self):

@@ -1,4 +1,4 @@
-"""Visibility and foreground control for LosslessProxy's add-on manager."""
+"""Visibility and foreground control for Echo LS Add-on Manager."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from typing import List, Optional
 from ..core.state import AppState
 
 
-logger = logging.getLogger("LSCompanion.ProxyMenu")
+logger = logging.getLogger("LSCompanion.AddonMenu")
 
 
-class LosslessProxyMenuController:
-    """Keep LosslessProxy's manager hidden until the user explicitly requests it."""
+class AddonManagerMenuController:
+    """Keep Echo's manager hidden until the user explicitly requests it."""
 
-    WINDOW_CLASS = "LosslessProxyV2Class"
+    WINDOW_CLASS = "LSAddonManagerClass"
     SW_HIDE = 0
     SW_RESTORE = 9
 
@@ -82,7 +82,7 @@ class LosslessProxyMenuController:
             return len(windows)
 
     def suppress_startup_window(self, pid: int, timeout: float = 8.0) -> None:
-        """Watch for LosslessProxy's delayed manager without touching LS render windows."""
+        """Watch for Echo's delayed manager without touching LS render windows."""
         self._visible_requested = False
 
         def wait_for_manager() -> None:
@@ -97,17 +97,17 @@ class LosslessProxyMenuController:
 
         threading.Thread(
             target=wait_for_manager,
-            name=f"LosslessProxyMenuSuppressor-{pid}",
+            name=f"EchoAddonMenuSuppressor-{pid}",
             daemon=True,
         ).start()
 
     def open(self) -> dict:
-        """Restore and focus the existing LosslessProxy manager window."""
+        """Restore and focus the existing Echo manager window."""
         windows = self._find_windows()
         if not windows:
             return {
                 "opened": False,
-                "reason": "The LosslessProxy configuration window is not running. Deploy a proxy-enabled profile, then restart Lossless Scaling.",
+                "reason": "The Echo add-on menu is not running. Enable Add-on Manager, then restart Lossless Scaling.",
             }
 
         hwnd = windows[0]
@@ -118,5 +118,10 @@ class LosslessProxyMenuController:
         show_window(hwnd, self.SW_RESTORE)
         user32.BringWindowToTop(hwnd)
         focused = bool(user32.SetForegroundWindow(hwnd))
-        logger.info("Opened LosslessProxy add-on manager (HWND %s)", hwnd)
+        logger.info("Opened Echo LS Add-on Manager (HWND %s)", hwnd)
         return {"opened": True, "focused": focused, "hwnd": hwnd}
+
+
+# Import compatibility for extensions and older tests. Runtime code now uses
+# Echo's window class and behavior through this alias as well.
+LosslessProxyMenuController = AddonManagerMenuController

@@ -68,18 +68,20 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
 
 
 class ProxyTrayMenuTests(unittest.TestCase):
-    def test_proxy_menu_entry_is_always_discoverable(self):
+    def test_addon_menu_entry_is_available_only_while_scaling(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory))
             watcher = Mock()
             watcher.list_running_executables.return_value = []
             controller = Mock()
-            tray = CompanionTrayIcon(
-                manager, AppState(), watcher, automation=Mock(), proxy_menu=controller
-            )
+            state = AppState()
+            tray = CompanionTrayIcon(manager, state, watcher, automation=Mock(), proxy_menu=controller)
 
             labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
-            self.assertIn("Open LosslessProxy Configuration", labels)
+            self.assertNotIn("Show Add-on Menu", labels)
+            state.is_scaling_active = True
+            labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
+            self.assertIn("Show Add-on Menu", labels)
 
 
 if __name__ == "__main__":

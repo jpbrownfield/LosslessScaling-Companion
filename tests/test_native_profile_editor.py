@@ -129,13 +129,15 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             self.html,
         )
 
-    def test_neural_and_reshade_menu_controls_derive_hidden_proxy_dependency(self):
+    def test_echo_addon_and_reshade_passthrough_controls_are_wired(self):
         self.assertIn("const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled", self.html)
         self.assertIn('id="reshadeMenuProxyEnabled"', self.html)
         self.assertNotIn('id="losslessProxyEnabled"', self.html)
-        self.assertIn("NeuralRender enables LosslessProxy", self.html)
+        self.assertIn('id="echoDlssNrEnabled"', self.html)
+        self.assertIn('id="echoReshadePassthroughEnabled"', self.html)
+        self.assertIn("Echo's passthrough is enabled automatically", self.html)
         self.assertNotIn("values.HdrSupport = 'false'", self.html)
-        self.assertIn("HDR fork preserves Lossless Scaling's scRGB HDR output", self.html)
+        self.assertIn("Echo's bundled DLSS5NR01 add-on", self.html)
         self.assertIn(
             "enabled: reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value",
             self.html,
@@ -155,11 +157,11 @@ class NativeProfileEditorContractTests(unittest.TestCase):
     def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
         proxy_heading = self.html.index("DLSS 5 NeuralRender")
         proxy_section_end = self.html.index("</div>", self.html.index(
-            "Install the NeuralRender bundle", proxy_heading
+            "Install Echo LS Add-on Manager once", proxy_heading
         ))
         special_k = self.html.index('id="specialKSettings"', proxy_section_end)
         self.assertGreater(special_k, proxy_section_end)
-        self.assertIn("Special K is independent of LosslessProxy", self.html)
+        self.assertIn("Special K is independent of Echo LS Add-on Manager", self.html)
         self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 2)
         self.assertNotIn('id="nvidiaRtxHdrEnabled"', self.html)
         self.assertNotIn("NVIDIA RTX HDR for Lossless Scaling", self.html)

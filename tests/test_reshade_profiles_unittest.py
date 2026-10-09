@@ -85,7 +85,14 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertIn("KeyOverlay=0,0,0,0", config)
             self.assertIn("KeyOverlay=35,0,0,0", interactive)
             self.assertIn("TutorialProgress=4", config)
-            self.assertIn(f"CurrentPresetPath={preset.resolve()}", config)
+            self.assertIn(
+                "CurrentPresetPath=.\\reshade-shaders\\LSCompanion\\hdr-clean\\HDR Clean.ini",
+                config,
+            )
+            self.assertIn(
+                "EffectSearchPaths=.\\reshade-shaders\\LSCompanion\\hdr-clean\\packages\\**",
+                config,
+            )
             self.assertEqual(
                 config.replace("KeyOverlay=0,0,0,0", "KeyOverlay=35,0,0,0"),
                 interactive,
@@ -139,6 +146,50 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertTrue((package / "Textures" / "noise.png").is_file())
             preset = tmp_path / "config" / "reshade-profiles" / "filtered" / "Filtered.ini"
             self.assertIn("Techniques=WantedPass@Wanted.fx", preset.read_text(encoding="utf-8"))
+            deployed = {item["relative_path"] for item in service.deployment_files("filtered")}
+            self.assertIn(
+                "reshade-shaders/LSCompanion/filtered/packages/pack/Shaders/Wanted.fx",
+                deployed,
+            )
+            self.assertIn("reshade-shaders/LSCompanion/filtered/Filtered.ini", deployed)
+
+    def test_builtin_retries_acquisition_when_configs_exist_but_shaders_are_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            manager = ProfileManager(config_dir=tmp_path / "config")
+            profile = ManagedReshadeProfile(
+                id="lsc-basic-sharpening",
+                name="Basic Sharpening (Low Cost)",
+                shaders={"22": ["lilium__cas_hdr.fx"]},
+            )
+            manager.config.reshade_profiles = [profile]
+            service = ReshadeProfileService(manager)
+            service._catalog = [{
+                "id": "22",
+                "name": "Lilium",
+                "downloadUrl": "https://github.com/example/lilium/archive/master.zip",
+                "shaders": ["lilium__cas_hdr.fx"],
+            }]
+            folder = service._folder(profile.id)
+            folder.mkdir(parents=True)
+            preset = folder / "Basic Sharpening Low Cost.ini"
+            preset.write_text("Techniques=stale\n", encoding="utf-8")
+            (folder / "ReShade.ini").write_text("stale", encoding="utf-8")
+            (folder / "ReShade.Interactive.ini").write_text("stale", encoding="utf-8")
+
+            def install(candidate, _catalog):
+                shader_dir = service._folder(candidate.id) / "packages" / "22" / "Shaders"
+                shader_dir.mkdir(parents=True, exist_ok=True)
+                for filename in candidate.shaders["22"]:
+                    (shader_dir / filename).write_text(
+                        "technique TestEffect { pass {} }", encoding="utf-8"
+                    )
+
+            with patch.object(service, "_install_selected_shaders", side_effect=install) as mocked:
+                files = service.deployment_files(profile.id)
+
+            self.assertTrue(any(call.args[0].id == profile.id for call in mocked.call_args_list))
+            self.assertTrue(any(item["relative_path"].endswith("lilium__cas_hdr.fx") for item in files))
 
     def test_imported_ini_is_copied_into_named_profile_storage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -156,7 +207,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertTrue(imported.imported_preset)
             self.assertEqual(stored.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
             self.assertIn(
-                f"CurrentPresetPath={stored.resolve()}",
+                "CurrentPresetPath=.\\reshade-shaders\\LSCompanion\\",
                 Path(saved["configPath"]).read_text(encoding="utf-8"),
             )
 
@@ -213,6 +264,13 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertTrue(ReshadeManager.apply_managed_config(str(active), str(managed)))
             self.assertIn("KeyOverlay=0,0,0,0", active.read_text(encoding="utf-8"))
             self.assertEqual(active.with_suffix(".ini.bak").read_text(encoding="utf-8"), "original")
+
+            interactive = managed.with_name("ReShade.Interactive.ini")
+            interactive.write_text("[INPUT]\nKeyOverlay=35,0,0,0\n", encoding="utf-8")
+            self.assertTrue(
+                ReshadeManager.apply_managed_config(str(active), str(interactive), backup=False)
+            )
+            self.assertIn("KeyOverlay=35,0,0,0", active.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

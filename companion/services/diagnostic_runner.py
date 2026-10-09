@@ -1178,11 +1178,7 @@ class DiagnosticRunner:
                 settings_path.write_bytes(settings_bytes)
             try:
                 restored = next((item for item in config.profiles if previous and item.id == previous.id), None)
-                plan = self.server.automation.graphics_resolver.resolve(
-                    restored,
-                    lossless_scaling_exe=str(executable),
-                    reshade_overlay_hotkey=self.server.config.reshade_overlay_hotkey,
-                ) if restored else []
+                plan = self.server.automation.resolve_deployment_files(restored) if restored else []
                 self.server.automation.deployment_manager.apply(
                     profile_id=restored.id if restored else None,
                     lossless_scaling_exe=str(executable),
@@ -1249,11 +1245,7 @@ class DiagnosticRunner:
         exe = self.server.config.lossless_scaling_exe_path
         for profile in selected:
             try:
-                plan = self.server.automation.graphics_resolver.resolve(
-                    profile,
-                    lossless_scaling_exe=exe,
-                    reshade_overlay_hotkey=self.server.config.reshade_overlay_hotkey,
-                )
+                plan = self.server.automation.resolve_deployment_files(profile)
                 runtime_files = [item["relative_path"] for item in plan if str(item.get("source_package") or "").casefold().startswith("reshade/")]
                 managed_id = profile.reshade.managed_profile_id if profile.reshade else None
                 if managed_id and managed_id not in known:

@@ -345,6 +345,8 @@
         <details class="settings-group" open>
           <summary>Scaling Behavior <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
+            <div class="form-group checkbox-group section-primary-toggle"><input id="addonManagerEnabled" type="checkbox" checked><label for="addonManagerEnabled">Enable Echo LS Add-on Manager</label></div>
+            <p class="item-sub" style="white-space:normal;margin-bottom:10px">Enabled for every profile. Its own window starts hidden; use <strong>Show Add-on Menu</strong> from the Companion tray while scaling.</p>
             <div class="form-group checkbox-group smart-master-setting section-primary-toggle"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic Profile Scaling Enabled</label></div>
             <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize Other Windows on the Scaled Monitor (for Dual GPU PCIe Bandwidth Savings)</label></div>
             <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey</label></div>
@@ -354,7 +356,7 @@
             </div>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When overridden, Lossless Scaling is assigned a reserved hidden key. The companion listens for the hotkey above and activates the matching profile for the foreground window, or the Default profile when there is no match.</p>
             <div class="form-group" style="max-width:260px"><label for="reshadeOverlayHotkey">ReShade Menu Hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
-            <p class="item-sub" style="white-space:normal; margin-bottom:8px">Defaults to End. This shortcut requires the active application profile to use both LosslessProxy and ReShade. Companion keeps synchronized menu and no-menu INIs internally and deploys only the appropriate one.</p>
+            <p class="item-sub" style="white-space:normal; margin-bottom:8px">Defaults to End. Echo's ReShade input passthrough is enabled automatically whenever the active profile uses ReShade.</p>
             <p class="item-sub" style="white-space:normal; margin-bottom:8px">When enabled, the companion disables Lossless Scaling's native Auto Scale to prevent conflicts, verifies and restores focus to the exact target window, loads that application's ReShade preset and managed custom DLLs into Lossless Scaling, then sends Lossless Scaling's own configured activation hotkey.</p>
             <p class="item-sub" style="white-space:normal">Only profiles with “Auto-Scale” enabled are started automatically. Windows minimized by the monitor option remain minimized until you restore them manually.</p>
           </div>
@@ -402,7 +404,7 @@
       </details>
       <div class="addon-primary-stack">
         <section class="addon-card addon-card-wide">
-          <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. When LosslessProxy is also selected, Companion automatically adds its bundled ReShade input bridge.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
+          <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. Echo supplies the ReShade input passthrough.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
           <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
           <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download and install Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
           <p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p>
@@ -411,15 +413,15 @@
             <div id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</div>
           </div>
           <div class="reshade-library">
-            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay is disabled by default. If a game profile selects both LosslessProxy and one of these ReShade profiles, Companion deploys its input bridge and enables the menu hotkey configured in General Settings (End by default).</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
+            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay is disabled by default. Echo enables its passthrough and the menu hotkey configured in General Settings whenever a profile selects ReShade.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
         <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">The installed 64-bit payload is discovered from Special K's registry and automatically imported for direct LS injection.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
       <div class="addon-grid">
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LosslessProxy</h3><p class="addon-description">Add-on loader and compatibility layer for managed Lossless Scaling graphics add-ons. Its manager stays hidden until opened here or from the tray.</p></div><span class="addon-badge" data-addon-badge="lossless-proxy">Not installed</span></div><div class="addon-status" data-addon-status="lossless-proxy">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lossless-proxy">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="lossless-proxy">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button">Open LosslessProxy Configuration</button></div><p id="proxyMenuStatus" class="addon-description">Starts working after Lossless Scaling launches with LosslessProxy deployed.</p></section>
-        <section class="addon-card"><div class="addon-card-header"><div><h3>LSP-NeuralRender</h3><p class="addon-description">Installs LosslessProxy, Companion's HDR-compatible NeuralRender fork, and its required DLSS 5 runtime together.</p></div><span class="addon-badge" data-addon-badge="lsp-neural-render">Not installed</span></div><div class="addon-status" data-addon-status="lsp-neural-render">Checking status...</div><div id="dlssnrRuntimeStatus" class="addon-status">DLSS 5 runtime not installed.</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="lsp-neural-render">Install NeuralRender bundle</button><button class="btn btn-secondary" type="button" data-addon-check="lsp-neural-render">Check version</button></div><p class="addon-description"><strong>Warning:</strong> The 310.8.2 SF-v2 runtime is a community-modified, unsigned NVIDIA-derived DLL obtained from RankFTW/rhi-repo. It is not an official NVIDIA release. Installation requires accepting this warning. <a href="https://github.com/jpbrownfield/LosslessScaling-Companion/blob/main/native/lsp_neuralrender/docs/user-guide.md" target="_blank" rel="noopener noreferrer">Open the setup guide</a>.</p></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>Echo LS Add-on Manager</h3><p class="addon-description">Installation-wide add-on host. Companion manages updates and swaps Echo's complete configuration with each active profile.</p></div><span class="addon-badge" data-addon-badge="ls-addon-manager">Not installed</span></div><div class="addon-status" data-addon-status="ls-addon-manager">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" hidden>Show Add-on Menu</button></div><p id="proxyMenuStatus" class="addon-description">The menu is available here and in the tray only while scaling.</p></section>
+        <section class="addon-card"><div class="addon-card-header"><div><h3>Echo Add-on Suite</h3><p class="addon-description">DLSS 5 Neural Render, DLSS 4 DLAA, FSR 3 and XeSS upscalers are bundled with Echo and selected independently in each profile.</p></div><span class="addon-badge ready">Included</span></div><p class="addon-description">Install or update Echo LS Add-on Manager to update the host and its bundled add-ons together.</p></section>
       </div>
       <div id="graphicsStatus" class="item-sub" style="margin-top:12px; white-space:normal">No add-on operation running.</div>
       </div>
@@ -539,8 +541,8 @@
           </div>
         </div>
 
-        <section class="native-settings">
-          <h4>Lossless Scaling Profile Settings</h4>
+        <details class="native-settings native-settings-group" open>
+          <summary>Lossless Scaling Profile Settings</summary>
           <p class="item-sub" style="white-space:normal">These values map directly to fields present in the selected Lossless Scaling profile. Unsupported fields are not written. Native Auto Scale is kept off while Companion automatic scaling is enabled.</p>
           <div class="ls-settings-board">
             <div class="ls-settings-column">
@@ -625,14 +627,27 @@
             <summary>Additional Imported Settings</summary>
             <div id="nativeAdditionalSettings" class="native-extra-settings"></div>
           </details>
-        </section>
+        </details>
+
+        <details class="native-settings native-settings-group" open>
+          <summary>Add-on Manager Configuration</summary>
+          <div class="native-settings-grid" style="padding-top:4px">
+            <div class="form-group checkbox-group"><input id="echoDlssNrEnabled" type="checkbox"><label for="echoDlssNrEnabled">DLSS 5 Neural Render</label></div>
+            <div class="form-group checkbox-group"><input id="echoDlaaEnabled" type="checkbox"><label for="echoDlaaEnabled">DLSS 4 DLAA</label></div>
+            <div class="form-group checkbox-group"><input id="echoFsrEnabled" type="checkbox"><label for="echoFsrEnabled">FSR 3 Upscaler</label></div>
+            <div class="form-group checkbox-group"><input id="echoXessEnabled" type="checkbox"><label for="echoXessEnabled">XeSS Upscaler</label></div>
+            <div class="form-group checkbox-group"><input id="echoReshadePassthroughEnabled" type="checkbox"><label for="echoReshadePassthroughEnabled">ReShade Input Passthrough</label></div>
+            <div class="form-group checkbox-group"><input id="echoWindowedEnabled" type="checkbox"><label for="echoWindowedEnabled">Windowed / Second Monitor</label></div>
+          </div>
+          <p class="item-sub" style="white-space:normal;padding:0 12px 12px">Every Echo setting is preserved in this profile. These switches cover its primary components; use Show Add-on Menu while scaling for advanced settings.</p>
+        </details>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Profile (Optional)</h4>
           <p class="profile-reshade-help">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
           <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
-          <div class="form-group checkbox-group" style="margin-top:9px"><input id="reshadeMenuProxyEnabled" type="checkbox"><label for="reshadeMenuProxyEnabled">Enable ReShade Menu Proxy</label></div>
-          <p class="item-sub" style="white-space:normal;margin-top:5px">Provides the configured ReShade menu hotkey through LosslessProxy. Proxy is enabled automatically.</p>
+          <div class="form-group checkbox-group" style="margin-top:9px"><input id="reshadeMenuProxyEnabled" type="checkbox" checked><label for="reshadeMenuProxyEnabled">Enable ReShade Input Passthrough</label></div>
+          <p class="item-sub" style="white-space:normal;margin-top:5px">Echo's passthrough is enabled automatically whenever this profile enables ReShade.</p>
         </div>
 
         <div id="rtssProfileSection" class="integration-section">
@@ -696,8 +711,8 @@
               <p class="item-sub" style="white-space:normal;margin-top:6px">Controls the resolution sent to the neural model. Lower values substantially reduce GPU cost; the result is still composed at the full Lossless Scaling output resolution.</p>
             </div>
           </fieldset>
-          <p class="item-sub" style="white-space:normal;margin-bottom:10px">NeuralRender enables LosslessProxy automatically and deploys a safe baseline ReShade.ini. The Companion HDR fork preserves Lossless Scaling's scRGB HDR output while applying neural detail in the SDR range.</p>
-          <p class="item-sub" style="white-space:normal">Install the NeuralRender bundle in Lossless Scaling Add-ons before selecting it here. ReShade remains optional and is deployed only when a ReShade profile or menu proxy is selected.</p>
+          <p class="item-sub" style="white-space:normal;margin-bottom:10px">This selects Echo's bundled DLSS5NR01 add-on. Its full advanced configuration remains available in Show Add-on Menu while scaling.</p>
+          <p class="item-sub" style="white-space:normal">Install Echo LS Add-on Manager once; Companion then applies this choice per profile.</p>
         </div>
 
         <div id="specialKSettings" class="profile-addon-section disabled">
@@ -719,7 +734,7 @@
               <p class="item-sub" style="white-space:normal;margin:-6px 0 0 24px">Creates or updates an NVIDIA application profile for LosslessScaling.exe only, and enables Special K's required flip-metering path. Global NVIDIA settings are not changed.</p>
               <p id="specialKSmoothMotionAvailability" class="item-sub" style="white-space:normal;margin:5px 0 0 24px"></p>
             </fieldset>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of LosslessProxy. Import it once in Lossless Scaling Add-ons, then enable it per profile.</p>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of Echo LS Add-on Manager. Import it once, then enable it per profile.</p>
         </div>
 
       </form>
@@ -732,7 +747,7 @@
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
-        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. The menu shortcut configured in General Settings is available only when the application profile uses both LosslessProxy and ReShade.</p>
+        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. Echo's input passthrough uses the shortcut configured in General Settings.</p>
         <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
       </form>
@@ -787,6 +802,7 @@
     let companionUpdateState = null;
     let companionUpdateBusy = false;
     let runtimeActiveProfile = null;
+    let runtimeScalingActive = false;
 
     let wsReconnectTimer = null;
     let wsIntentionalClose = false;
@@ -937,7 +953,7 @@
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'PROXY_MENU_OPENED') {
             const status = document.getElementById('proxyMenuStatus');
-            status.textContent = 'LosslessProxy add-on manager opened.';
+            status.textContent = 'Echo add-on menu opened.';
             status.hidden = false;
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
@@ -1167,6 +1183,10 @@
     }
 
     function renderRuntime(msg) {
+      if (Object.prototype.hasOwnProperty.call(msg, 'isScalingActive')) {
+        runtimeScalingActive = !!msg.isScalingActive;
+        renderProxyMenuAction();
+      }
       if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
@@ -1195,10 +1215,8 @@
     function renderProxyMenuAction() {
       const button = document.getElementById('openProxyMenuBtn');
       if (!button) return;
-      button.hidden = false;
-      button.title = activeProfileUsesProxy()
-        ? 'Open the running LosslessProxy add-on manager.'
-        : 'The manager can be opened after a proxy-enabled profile is deployed and Lossless Scaling is running.';
+      button.hidden = !(runtimeScalingActive && (!controlSettings || controlSettings.addonManagerEnabled !== false));
+      button.title = 'Show the running Echo LS Add-on Manager.';
     }
 
     function renderControlSettings() {
@@ -1213,6 +1231,8 @@
       document.getElementById('overrideHotkeyShift').checked = overrideModifiers.includes('shift');
       document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
       document.getElementById('reshadeOverlayHotkey').value = controlSettings.reshadeOverlayHotkey || 'end';
+      document.getElementById('addonManagerEnabled').checked = controlSettings.addonManagerEnabled !== false;
+      renderProxyMenuAction();
       renderOverrideHotkeySettings();
       document.getElementById('snapNearFullscreenWindowsToMonitor').checked = controlSettings.snapNearFullscreenWindowsToMonitor !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
@@ -1424,7 +1444,7 @@
       graphicsPackages = msg.packages || [];
       graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
-      ['lossless-proxy', 'lsp-neural-render'].forEach(provider => {
+      ['ls-addon-manager'].forEach(provider => {
         const packages = graphicsPackages.filter(item => item.provider === provider);
         const latest = packages[packages.length - 1];
         const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
@@ -1434,7 +1454,7 @@
         status.textContent = latest ? `Installed version: ${latest.version}` : 'Not installed for any profile yet.';
       });
       const runtimeStatus = document.getElementById('dlssnrRuntimeStatus');
-      runtimeStatus.textContent = dlssnrRuntimes.length
+      if (runtimeStatus) runtimeStatus.textContent = dlssnrRuntimes.length
         ? `${dlssnrRuntimes.length} validated x64 DLSS 5 runtime${dlssnrRuntimes.length === 1 ? '' : 's'} available.`
         : 'DLSS 5 runtime not installed.';
       renderExternalSourceStatus('reshade', msg.externalSources && msg.externalSources.reshade);
@@ -2183,6 +2203,13 @@
         document.getElementById('reshadeMenuProxyEnabled').checked = !!(
           profile.reshade && profile.reshade.menu_proxy_enabled
         );
+        const echoAddons = profile.addon_config && profile.addon_config.addons || {};
+        document.getElementById('echoDlssNrEnabled').checked = !!(echoAddons.DLSS5NR01 && echoAddons.DLSS5NR01._enabled) || neuralEnabled;
+        document.getElementById('echoDlaaEnabled').checked = !!(echoAddons.DLSS4DLAA && echoAddons.DLSS4DLAA._enabled);
+        document.getElementById('echoFsrEnabled').checked = !!(echoAddons.FSR3UPSC && echoAddons.FSR3UPSC._enabled);
+        document.getElementById('echoXessEnabled').checked = !!(echoAddons.XESSUPSC && echoAddons.XESSUPSC._enabled);
+        document.getElementById('echoReshadePassthroughEnabled').checked = !!(echoAddons.ReShadePassthrough && echoAddons.ReShadePassthrough._enabled) || !!(profile.reshade && profile.reshade.enabled);
+        document.getElementById('echoWindowedEnabled').checked = !!(echoAddons.Windowed && echoAddons.Windowed._enabled);
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
@@ -2198,6 +2225,9 @@
         document.getElementById('autoScale').checked = !controlSettings || controlSettings.smartAutoScaleEnabled !== false;
         document.getElementById('targetType').value = 'program';
         renderTargetType();
+        ['echoDlssNrEnabled', 'echoDlaaEnabled', 'echoFsrEnabled', 'echoXessEnabled', 'echoReshadePassthroughEnabled', 'echoWindowedEnabled'].forEach(id => {
+          document.getElementById(id).checked = false;
+        });
       }
 
       updateRtssTargetHelper();
@@ -2536,7 +2566,14 @@
     };
     document.getElementById('specialKEnabled').onchange = renderSpecialKSettings;
     document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
-    document.getElementById('dlss5Enabled').onchange = renderNeuralRenderSettings;
+    document.getElementById('dlss5Enabled').onchange = () => {
+      document.getElementById('echoDlssNrEnabled').checked = document.getElementById('dlss5Enabled').checked;
+      renderNeuralRenderSettings();
+    };
+    document.getElementById('echoDlssNrEnabled').onchange = () => {
+      document.getElementById('dlss5Enabled').checked = document.getElementById('echoDlssNrEnabled').checked;
+      renderNeuralRenderSettings();
+    };
     document.querySelectorAll('input[name="neuralSamplingPreset"]').forEach(control => {
       control.onchange = renderNeuralRenderSettings;
     });
@@ -2597,6 +2634,7 @@
             ? null
             : Number(document.getElementById('reshadeHdrPeakNits').value),
           reshadeOverlayHotkey: document.getElementById('reshadeOverlayHotkey').value.trim().toLowerCase(),
+          addonManagerEnabled: document.getElementById('addonManagerEnabled').checked,
           snapNearFullscreenWindowsToMonitor: document.getElementById('snapNearFullscreenWindowsToMonitor').checked,
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
@@ -2636,7 +2674,7 @@
     }
 
     [
-      'runAtStartup', 'smartAutoScaleEnabled',
+      'runAtStartup', 'smartAutoScaleEnabled', 'addonManagerEnabled',
       'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
       'overrideHotkeyShift', 'overrideHotkeyWin',
       'preferredScalingGpu',
@@ -2675,7 +2713,7 @@
     document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
     document.getElementById('openProxyMenuBtn').onclick = () => {
       const status = document.getElementById('proxyMenuStatus');
-      status.textContent = 'Opening LosslessProxy add-on manager...';
+      status.textContent = 'Opening Echo add-on menu...';
       status.hidden = false;
       ws.send(JSON.stringify({ type: 'OPEN_PROXY_MENU' }));
     };
@@ -2806,6 +2844,24 @@
         ? ''
         : (editingOriginalProfile && editingOriginalProfile.reshade && editingOriginalProfile.reshade.preset_path || '');
       const requestId = crypto.randomUUID().replaceAll('-', '');
+      const addonConfig = JSON.parse(JSON.stringify(
+        editingOriginalProfile && editingOriginalProfile.addon_config || { global: {}, addons: {} }
+      ));
+      addonConfig.global = addonConfig.global && typeof addonConfig.global === 'object' ? addonConfig.global : {};
+      addonConfig.addons = addonConfig.addons && typeof addonConfig.addons === 'object' ? addonConfig.addons : {};
+      [
+        ['DLSS5NR01', 'echoDlssNrEnabled'], ['DLSS4DLAA', 'echoDlaaEnabled'],
+        ['FSR3UPSC', 'echoFsrEnabled'], ['XESSUPSC', 'echoXessEnabled'],
+        ['ReShadePassthrough', 'echoReshadePassthroughEnabled'],
+        ['Windowed', 'echoWindowedEnabled']
+      ].forEach(([addonId, controlId]) => {
+        const current = addonConfig.addons[addonId];
+        addonConfig.addons[addonId] = current && typeof current === 'object' ? current : {};
+        addonConfig.addons[addonId]._enabled = document.getElementById(controlId).checked;
+      });
+      if (managedReshadeProfile || legacyReshadePresetPath) {
+        addonConfig.addons.ReShadePassthrough._enabled = true;
+      }
       const payload = {
         type: 'SAVE_PROFILE',
         requestId,
@@ -2824,6 +2880,7 @@
           lossless_profile_path: editingOriginalProfile && editingOriginalProfile.lossless_profile_path || null,
           last_imported_hash: editingOriginalProfile && editingOriginalProfile.last_imported_hash || null,
           native_scaling_settings: nativeSettingsPayload(),
+          addon_config: addonConfig,
           custom_notes: editingOriginalProfile && editingOriginalProfile.custom_notes || null,
           auto_scale: !!(editingOriginalProfile && editingOriginalProfile.is_default)
             ? false

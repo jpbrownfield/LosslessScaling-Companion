@@ -17,7 +17,7 @@ from ..core.profile_manager import ProfileManager
 from ..core.models import HotkeyConfig
 from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
-from .proxy_menu import LosslessProxyMenuController
+from .proxy_menu import AddonManagerMenuController
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -50,7 +50,7 @@ class ProcessWatcher:
         state: AppState,
         on_profile_changed: Optional[Callable] = None,
         lossless_settings: Optional[LosslessSettingsXml] = None,
-        proxy_menu: Optional[LosslessProxyMenuController] = None,
+        proxy_menu: Optional[AddonManagerMenuController] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -58,7 +58,7 @@ class ProcessWatcher:
         self._last_foreground_hwnd: Optional[int] = None
         self.on_profile_changed = on_profile_changed
         self.lossless_settings = lossless_settings
-        self.proxy_menu = proxy_menu or LosslessProxyMenuController(state)
+        self.proxy_menu = proxy_menu or AddonManagerMenuController(state)
 
     @staticmethod
     def get_foreground_window_info() -> Optional[ProcessInfo]:
@@ -467,7 +467,7 @@ class ProcessWatcher:
             user32.GetClassNameW(hwnd, class_name, len(class_name))
             if (
                 owner_pid.value == pid
-                and class_name.value != LosslessProxyMenuController.WINDOW_CLASS
+                and class_name.value != AddonManagerMenuController.WINDOW_CLASS
                 and user32.IsWindowVisible(hwnd)
             ):
                 show_window = getattr(user32, "ShowWindowAsync", user32.ShowWindow)

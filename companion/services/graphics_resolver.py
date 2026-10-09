@@ -84,6 +84,15 @@ class GraphicsResolver:
         if not config.enabled:
             return None
         candidates = [item for item in self.store.list_packages() if item.get("provider") == provider]
+        if provider == "ls-addon-manager":
+            candidates = [
+                item for item in candidates
+                if any(
+                    Path(str(file.get("relative_path") or "")).name
+                    == "lossless-scaling-deployment.json"
+                    for file in item.get("files", [])
+                )
+            ]
         if config.version:
             candidates = [item for item in candidates if item.get("version") == config.version]
         if not candidates:
@@ -436,6 +445,8 @@ class GraphicsResolver:
         *,
         lossless_scaling_exe: Optional[str] = None,
         reshade_overlay_hotkey: str = "end",
+        addon_manager_enabled: Optional[bool] = None,
+        addon_manager_config: Optional[ManagedPackageConfig] = None,
     ) -> List[Dict]:
         if profile is None:
             return []
@@ -455,7 +466,70 @@ class GraphicsResolver:
             )
 
         graphics = profile.graphics
-        proxy_package = self._package("lossless-proxy", graphics.lossless_proxy)
+        if addon_manager_enabled is True:
+            manager_package = self._package(
+                "ls-addon-manager",
+                addon_manager_config or ManagedPackageConfig(enabled=True),
+            )
+            manager_files = self._recipe_files(manager_package)
+            if not any(
+                item["relative_path"].replace("\\", "/").casefold() == "lossless.dll"
+                for item in manager_files
+            ):
+                raise GraphicsResolutionError(
+                    "Echo LS Add-on Manager package has no Lossless.dll deployment entry"
+                )
+            files.extend(manager_files)
+            files.append(
+                {
+                    "relative_path": "Lossless_original.dll",
+                    "source_path": str(self._lossless_original(lossless_scaling_exe)),
+                    "role": "lossless_original_engine",
+                    "source_package": "lossless-scaling/original-engine",
+                }
+            )
+
+            # Echo includes its maintained DLSS 5 Neural Render add-on and its
+            # ReShade passthrough as first-class components. Do not deploy the
+            # retired LosslessProxy folders or Companion's old input bridge.
+            reshade_selected = bool(profile.reshade and profile.reshade.enabled)
+            reshade_package = self._package(
+                "reshade",
+                graphics.reshade.model_copy(update={"enabled": reshade_selected}),
+            )
+            if reshade_package:
+                has_selected_reshade_config = bool(
+                    profile.reshade
+                    and profile.reshade.enabled
+                    and (profile.reshade.managed_profile_id or profile.reshade.preset_path)
+                )
+                recipe_files = self._recipe_files(reshade_package)
+                if has_selected_reshade_config:
+                    recipe_files = [
+                        item for item in recipe_files
+                        if item["relative_path"].replace("\\", "/").casefold() != "reshade.ini"
+                    ]
+                files.extend(recipe_files)
+
+            special_k_package = self._package("special-k", graphics.special_k)
+            if special_k_package:
+                files.extend(
+                    item for item in self._recipe_files(special_k_package)
+                    if item["relative_path"].replace("\\", "/").casefold() != "dxgi.ini"
+                )
+                generated_special_k = self._special_k_config(profile.id, graphics.special_k)
+                files.append({
+                    "relative_path": "dxgi.ini",
+                    "source_path": str(generated_special_k),
+                    "role": "special_k_config",
+                    "source_package": "generated/special-k-config",
+                })
+            return files
+
+        proxy_package = (
+            self._package("lossless-proxy", graphics.lossless_proxy)
+            if addon_manager_enabled is None else None
+        )
         if proxy_package:
             proxy = self._require_x64(
                 self._find_payload_file(proxy_package, "Lossless.dll"), "LosslessProxy"
@@ -479,7 +553,7 @@ class GraphicsResolver:
             )
 
         neural = graphics.neural_render
-        if neural.implementation == "lsp_neural_render":
+        if neural.implementation == "lsp_neural_render" and addon_manager_enabled is not False:
             if not proxy_package:
                 raise GraphicsResolutionError("LSP-NeuralRender requires LosslessProxy")
             neural_package = self._neural_package(neural.package)
@@ -555,7 +629,10 @@ class GraphicsResolver:
             if reshade_bridge_enabled:
                 files.extend(self._bundled_reshade_bridge_files())
 
-        neural_enabled = neural.implementation == "lsp_neural_render"
+        neural_enabled = (
+            neural.implementation == "lsp_neural_render"
+            and addon_manager_enabled is not False
+        )
         if neural_enabled or reshade_bridge_enabled:
             if not lossless_scaling_exe:
                 raise GraphicsResolutionError(
