@@ -390,7 +390,9 @@ class ProviderRegistry:
                 "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
             ),
             "ls-addon-manager": GitHubReleaseProvider(
-                "ls-addon-manager", "Echo-Storm/ls-addon-manager", r"\.zip$"
+                "ls-addon-manager",
+                "Echo-Storm/ls-addon-manager",
+                r"^LSAddonManager-.*-x64\.zip$",
             ),
             "lsp-neural-render": BundledArchiveReleaseProvider(
                 "lsp-neural-render", "LSP-NeuralRender.zip"
@@ -593,7 +595,11 @@ class ReleaseManager:
                 publisher_digest_verified=bool(expected_digest),
                 size=destination.stat().st_size,
             )
-            if zipfile.is_zipfile(destination):
+            if provider_id == "ls-addon-manager":
+                result = self._expand_ls_addon_manager(
+                    destination, staging, version, metadata
+                )
+            elif zipfile.is_zipfile(destination):
                 result = self.store.import_release_archive(
                     str(destination),
                     provider=provider_id,
@@ -609,8 +615,6 @@ class ReleaseManager:
                     expected_sha256=expected_digest,
                     source_metadata=metadata,
                 )
-            if provider_id == "ls-addon-manager":
-                result = self._expand_ls_addon_manager(result, staging, metadata)
             self.store.audit(
                 "official_release_staged",
                 provider=provider_id,
@@ -634,7 +638,11 @@ class ReleaseManager:
             shutil.rmtree(staging, ignore_errors=True)
 
     def _expand_ls_addon_manager(
-        self, setup_package: Dict, staging: Path, source_metadata: Dict
+        self,
+        release_archive: Path,
+        staging: Path,
+        version: str,
+        source_metadata: Dict,
     ) -> Dict:
         """Run Echo's verified self-extractor and stage its actual payload.
 
@@ -642,13 +650,39 @@ class ReleaseManager:
         is its documented, non-installing mode; the result is then brought
         back through AssetStore's normal archive quarantine and hashing path.
         """
-        payload = Path(setup_package["payload_path"])
-        setups = [
-            payload / Path(str(item.get("relative_path") or ""))
-            for item in setup_package.get("files", [])
-            if Path(str(item.get("relative_path") or "")).name.casefold()
-            == "lsaddonmanagersetup.exe"
-        ]
+        if not zipfile.is_zipfile(release_archive):
+            raise UnsafeAssetError("Echo's official x64 release asset must be a ZIP archive")
+        setup_dir = staging / "echo-setup"
+        setup_dir.mkdir()
+        with zipfile.ZipFile(release_archive) as bundle:
+            members = bundle.infolist()
+            if (
+                len(members) > 256
+                or sum(item.file_size for item in members) > 1024 * 1024 * 1024
+            ):
+                raise UnsafeAssetError("Echo release archive exceeds the extraction limits")
+            safe_members = [(item, self.store._safe_zip_member(item)) for item in members]
+            setup_members = [
+                (item, relative)
+                for item, relative in safe_members
+                if relative.name.casefold() == "lsaddonmanagersetup.exe" and not item.is_dir()
+            ]
+            if len(setup_members) != 1:
+                raise UnsafeAssetError("Echo release must contain one LSAddonManagerSetup.exe")
+            documentation = {
+                relative.name.casefold(): (relative.name, item.filename)
+                for item, relative in safe_members
+                if len(relative.parts) == 1
+                and relative.name.casefold() in {"license.txt", "notice.md"}
+                and not item.is_dir()
+            }
+            if set(documentation) != {"license.txt", "notice.md"}:
+                raise UnsafeAssetError("Echo release must include its LICENSE.txt and NOTICE.md")
+            member, relative = setup_members[0]
+            setup = setup_dir / relative.name
+            with bundle.open(member) as source, setup.open("wb") as output:
+                shutil.copyfileobj(source, output)
+        setups = [setup]
         if len(setups) != 1 or self.store.pe_architecture(setups[0]) != "x64":
             raise UnsafeAssetError("Echo release must contain one x64 LSAddonManagerSetup.exe")
         extracted = staging / "echo-payload"
@@ -672,6 +706,27 @@ class ReleaseManager:
         if self.store.pe_architecture(host) != "x64" or not addons.is_dir():
             raise UnsafeAssetError("Echo Setup extracted an invalid add-on-manager payload")
 
+        license_dir = extracted / "licenses" / "LSAddonManager"
+        license_dir.mkdir(parents=True)
+        with zipfile.ZipFile(release_archive) as bundle:
+            for output_name, member_name in documentation.values():
+                destination = license_dir / output_name
+                with bundle.open(member_name) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+
+        manifests = list(addons.glob("*/addon.json"))
+        if not manifests:
+            raise UnsafeAssetError("Echo Setup did not extract any add-on manifests")
+        for manifest in manifests:
+            try:
+                addon = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise UnsafeAssetError(
+                    f"Echo extracted an invalid {manifest.name}: {error}"
+                ) from error
+            if not isinstance(addon, dict) or not (addon.get("id") or addon.get("name")):
+                raise UnsafeAssetError(f"Echo extracted an incomplete manifest: {manifest.parent.name}")
+
         deployment = []
         for item in sorted(path for path in extracted.rglob("*") if path.is_file()):
             relative = item.relative_to(extracted).as_posix()
@@ -680,6 +735,7 @@ class ReleaseManager:
             if (
                 relative.casefold() == "lossless.dll"
                 or relative.casefold().startswith("addons/")
+                or relative.casefold().startswith("licenses/lsaddonmanager/")
                 or relative.casefold() in {"manager-icon.ico", "manager-icon.png"}
             ):
                 deployment.append({
@@ -704,10 +760,11 @@ class ReleaseManager:
                 bundle.write(item, item.relative_to(extracted).as_posix())
         expanded_metadata = dict(source_metadata)
         expanded_metadata["kind"] = "verified-setup-extraction"
-        expanded_metadata["setup_package_sha256"] = setup_package.get("archive_sha256")
+        expanded_metadata["release_archive_sha256"] = self.store.sha256(release_archive)
+        expanded_metadata["setup_executable_sha256"] = self.store.sha256(setups[0])
         return self.store.import_release_archive(
             str(archive),
             provider="ls-addon-manager",
-            version=str(setup_package.get("version") or ""),
+            version=version,
             source_metadata=expanded_metadata,
         )

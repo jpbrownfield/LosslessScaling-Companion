@@ -33,6 +33,13 @@ class DeploymentManager:
         "addons/lsp-neuralrender/nvngx.dll_lspnr.dll",
         "addons/lsp-neuralrender/addon.json",
     }
+    LEGACY_ADDON_IDS = {
+        "lsp-neuralrender": {
+            "lsp-neuralrender", "lspneuralrender", "neural render (dlss 5)",
+        },
+        "lsp-reshade": {"lsp-reshade", "lspreshade", "reshade"},
+        "lsp-windowed": {"lsp-windowed", "lspwindowed", "windowed"},
+    }
 
     def __init__(self, store: AssetStore):
         self.store = store
@@ -135,6 +142,53 @@ class DeploymentManager:
             ):
                 return False
         return True
+
+    @classmethod
+    def _recognized_legacy_addon_dirs(cls, root: Path, active: Dict) -> List[Path]:
+        """Return only old Companion/Echo predecessors we can identify safely."""
+        tracked = {
+            str(item.get("relative_path") or "").replace("\\", "/").casefold()
+            for item in active.get("files", [])
+        }
+        found = []
+        addons = root / "addons"
+        for folder_name, accepted_ids in cls.LEGACY_ADDON_IDS.items():
+            directory = addons / folder_name
+            if not directory.is_dir():
+                # Windows paths are case-insensitive, but temporary test hosts may not be.
+                directory = next(
+                    (
+                        item
+                        for item in addons.iterdir()
+                        if item.is_dir() and item.name.casefold() == folder_name
+                    ),
+                    directory,
+                ) if addons.is_dir() else directory
+            if not directory.is_dir():
+                continue
+            prefix = f"addons/{folder_name}/"
+            companion_owned = any(item.startswith(prefix) for item in tracked)
+            manifest_id = ""
+            manifest = directory / "addon.json"
+            if manifest.is_file():
+                try:
+                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    manifest_id = str(data.get("id") or data.get("name") or "").casefold()
+                except (OSError, json.JSONDecodeError, AttributeError):
+                    manifest_id = ""
+            if companion_owned or manifest_id in accepted_ids:
+                found.append(directory)
+        return found
+
+    @classmethod
+    def _recognized_legacy_paths(cls, root: Path, active: Dict) -> List[Path]:
+        paths = cls._recognized_legacy_addon_dirs(root, active)
+        paths.extend(
+            candidate
+            for name in ("LP-icon.ico", "LP-icon.png")
+            if (candidate := root / name).is_file()
+        )
+        return paths
 
     @staticmethod
     def _runtime_provider(entry: Dict) -> Optional[str]:
@@ -272,14 +326,30 @@ class DeploymentManager:
             fingerprint = self._fingerprint(profile_id, desired)
             active = self._read_manifest()
             root = None
-            if active.get("fingerprint") == fingerprint and not active.get("files"):
+            installs_echo = any(
+                str(item.get("source_package") or "").casefold().startswith("ls-addon-manager/")
+                for item in desired
+            )
+            legacy_pending = False
+            if installs_echo:
+                root = self._lossless_root(lossless_scaling_exe)
+                legacy_pending = bool(self._recognized_legacy_paths(root, active))
+            if (
+                active.get("fingerprint") == fingerprint
+                and not active.get("files")
+                and not legacy_pending
+            ):
                 if active.get("profile_id") != profile_id:
                     active["profile_id"] = profile_id
                     AssetStore._atomic_json(self.manifest_path, active)
                 return active
             if active.get("fingerprint") == fingerprint:
                 root = self._lossless_root(lossless_scaling_exe)
-            if active.get("fingerprint") == fingerprint and self._active_matches_disk(root, active):
+            if (
+                active.get("fingerprint") == fingerprint
+                and not legacy_pending
+                and self._active_matches_disk(root, active)
+            ):
                 if active.get("profile_id") != profile_id:
                     active["profile_id"] = profile_id
                     AssetStore._atomic_json(self.manifest_path, active)
@@ -319,6 +389,11 @@ class DeploymentManager:
                     shutil.copy2(destination, snapshot)
                 rollback_state.append((destination, snapshot, existed))
 
+            legacy_paths = (
+                self._recognized_legacy_paths(root, active) if installs_echo else []
+            )
+            migrated_legacy = []
+
             self.store.audit(
                 "deployment_requested",
                 target=str(root),
@@ -337,6 +412,32 @@ class DeploymentManager:
 
             new_entries = []
             try:
+                if installs_echo:
+                    original_engine = next(
+                        (
+                            Path(item["source_path"])
+                            for item in desired
+                            if item.get("role") == "lossless_original_engine"
+                        ),
+                        None,
+                    )
+                    original_backup = self.originals / "Lossless.dll"
+                    if original_engine and not original_backup.exists():
+                        original_backup.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(original_engine, original_backup)
+                for legacy_path in legacy_paths:
+                    backup = rollback_root / "legacy-addons" / legacy_path.name
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(legacy_path, backup)
+                    migrated_legacy.append((legacy_path, backup))
+                if migrated_legacy:
+                    self.store.audit(
+                        "legacy_addon_structure_archived",
+                        target=str(root),
+                        transaction_id=transaction_id,
+                        paths=[item.name for item, _backup in migrated_legacy],
+                        backup=str(rollback_root / "legacy-addons"),
+                    )
                 for folded, old_entry in active_by_path.items():
                     if folded in desired_by_path:
                         continue
@@ -395,6 +496,9 @@ class DeploymentManager:
                     "fingerprint": fingerprint,
                     "transaction_id": transaction_id,
                     "files": new_entries,
+                    "legacy_addon_backup": (
+                        str(rollback_root / "legacy-addons") if migrated_legacy else None
+                    ),
                 }
                 AssetStore._atomic_json(self.manifest_path, manifest)
                 self.store.audit(
@@ -406,6 +510,17 @@ class DeploymentManager:
                 )
                 return manifest
             except Exception as error:
+                for destination, backup in reversed(migrated_legacy):
+                    try:
+                        if destination.exists():
+                            if destination.is_dir():
+                                shutil.rmtree(destination)
+                            else:
+                                destination.unlink()
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(backup, destination)
+                    except OSError:
+                        pass
                 for destination, snapshot, existed in reversed(rollback_state):
                     try:
                         if existed and snapshot.is_file():

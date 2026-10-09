@@ -9,6 +9,16 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_echo_attribution_is_shipped_and_visible(self):
+        root = Path(__file__).resolve().parents[1]
+        notice = (root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        dashboard = (root / "companion" / "ui" / "dashboard.html").read_text(encoding="utf-8")
+        spec = (root / "LosslessCompanion.spec").read_text(encoding="utf-8")
+        self.assertIn("Copyright (c) 2026 Echo-Storm", notice)
+        self.assertIn("FrankBarretta", notice)
+        self.assertIn("Echo-Storm/ls-addon-manager/blob/main/NOTICE.md", dashboard)
+        self.assertIn('("THIRD_PARTY_NOTICES.md", ".")', spec)
+
     def service(self):
         manager = SimpleNamespace(
             config_dir=".",

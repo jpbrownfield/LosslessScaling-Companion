@@ -27,11 +27,13 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Programmatically swaps `CurrentPresetPath` in the `ReShade.ini` beside Lossless Scaling.
    - Triggers ReShade reload hotkeys on profile activation.
 
-5. **Lossless Scaling Add-ons & Proxy Swapping:**
+5. **Lossless Scaling Add-ons:**
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Keeps transaction-owned backups and restores original files when assets are unmanaged.
    - Game executable paths are used only for foreground profile detection.
-   - Automatically deploys the bundled LS Companion ReShade bridge when a profile selects both ReShade and LosslessProxy; no separate LSP-ReShade download is used.
+   - Downloads Echo LS Add-on Manager only from its official release feed, expands its verified x64 Setup payload, and deploys it transactionally.
+   - Saves a default Echo configuration plus one complete configuration per profile, with the menu available on demand while scaling.
+   - Archives recognized LosslessProxy-era add-on folders before the first Echo deployment and leaves unknown third-party folders untouched.
 
 6. **Windows System Tray UI:**
    - Opens the Profiles dashboard or jumps directly to its Settings view.
@@ -270,7 +272,7 @@ Use `--benchmark-exe` to substitute another windowed workload; the visual marker
 measurement is unavailable for generic executables.
 
 The **Lossless Scaling Add-ons** settings panel stages verified packages for
-LosslessProxy, LSP-NeuralRender, DLSS5 Feeder, ReShade, and Special K.
+Echo LS Add-on Manager, its bundled add-on suite, ReShade, and Special K.
 Staged packages are loaded only when selected in a profile's LS Graphics Stack.
 The source and MIT notices for Companion's maintained ReShade bridge are under
 `native/`; release builds compile and embed it rather than downloading the
@@ -368,6 +370,16 @@ Release versions are immutable through this shortcut, so reusing an existing
 
 ---
 
+## Third-party attribution
+
+Echo LS Add-on Manager is maintained by Echo-Storm and began as LosslessProxy
+by FrankBarretta. It is downloaded as a separate MIT-licensed component, and
+its bundled runtimes remain subject to their included licenses. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and Echo's
+[upstream notice](https://github.com/Echo-Storm/ls-addon-manager/blob/main/NOTICE.md).
+
+---
+
 ## Tests
 
 ```powershell
@@ -387,8 +399,7 @@ restart on Chrome extension JavaScript/CSS/HTML changes as well. Press Ctrl+C in
 the watcher terminal to stop both the watcher and its companion child.
 
 The implementation plan for hotkey ownership, native profile imports, the profile
-editor, verified LosslessProxy/LSP-NeuralRender/DLSS5-Feeder/ReShade/Special K
-acquisition and updates, asset
+editor, verified Echo/ReShade/Special K acquisition and updates, asset
 storage, and transactional deployment is documented in
 [`docs/managed-profile-and-assets-roadmap.md`](docs/managed-profile-and-assets-roadmap.md).
 

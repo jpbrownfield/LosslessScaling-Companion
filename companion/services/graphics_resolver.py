@@ -268,7 +268,17 @@ class GraphicsResolver:
         managed_backup = (
             self.store.backups / "lossless-scaling" / "originals" / "Lossless.dll"
         )
-        source = managed_backup if managed_backup.is_file() else executable.parent / "Lossless.dll"
+        legacy_original = executable.parent / "Lossless_original.dll"
+        # LosslessProxy and early Echo installs already moved the genuine engine
+        # here. Prefer it over a live Lossless.dll that may itself be a proxy host.
+        source = next(
+            (
+                candidate
+                for candidate in (managed_backup, legacy_original, executable.parent / "Lossless.dll")
+                if candidate.is_file()
+            ),
+            executable.parent / "Lossless.dll",
+        )
         if not source.is_file():
             raise GraphicsResolutionError("The original Lossless.dll could not be found")
         # Never leave the plan pointing at the live DLL: the transaction replaces

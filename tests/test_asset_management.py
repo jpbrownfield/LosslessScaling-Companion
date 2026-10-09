@@ -90,6 +90,49 @@ class AssetStoreTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.TestCase):
+    def test_echo_install_archives_recognized_legacy_addons_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            legacy = root / "addons" / "LSP-NeuralRender"
+            legacy.mkdir(parents=True)
+            (legacy / "addon.json").write_text(
+                json.dumps({"id": "LSP-NeuralRender"}), encoding="utf-8"
+            )
+            (legacy / "old.dll").write_bytes(b"old")
+            unknown = root / "addons" / "My-Custom-Addon"
+            unknown.mkdir()
+            (unknown / "addon.json").write_text(
+                json.dumps({"id": "My-Custom-Addon"}), encoding="utf-8"
+            )
+            legacy_icon = root / "LP-icon.ico"
+            legacy_icon.write_bytes(b"old icon")
+            source = root / "echo-host.dll"
+            source.write_bytes(b"echo")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+
+            manifest = manager.apply(
+                profile_id="game",
+                lossless_scaling_exe=str(executable),
+                files=[{
+                    "relative_path": "Lossless.dll",
+                    "source_path": str(source),
+                    "role": "addon_manager_host",
+                    "source_package": "ls-addon-manager/v1/hash",
+                }],
+            )
+
+            self.assertFalse(legacy.exists())
+            self.assertTrue(unknown.is_dir())
+            self.assertFalse(legacy_icon.exists())
+            backup = Path(manifest["legacy_addon_backup"])
+            self.assertEqual((backup / "LSP-NeuralRender" / "old.dll").read_bytes(), b"old")
+            self.assertEqual((backup / "LP-icon.ico").read_bytes(), b"old icon")
+            self.assertIn("legacy_addon_structure_archived", (
+                manager.store.logs / "security-audit.jsonl"
+            ).read_text(encoding="utf-8"))
+
     def test_neural_render_update_replaces_modified_existing_component(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
