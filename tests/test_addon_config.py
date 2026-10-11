@@ -62,6 +62,29 @@ class AddonConfigServiceTests(unittest.TestCase):
         self.assertTrue(neural["_enabled"])
         self.assertEqual(neural["workingScale"], "0.5")
 
+    def test_existing_echo_neural_settings_are_authoritative(self):
+        profile = Profile(
+            name="Game",
+            addon_config={
+                "global": {},
+                "addons": {"DLSS5NR01": {
+                    "_enabled": False,
+                    "workingScale": "0.73",
+                    "futureSetting": "preserved",
+                }},
+            },
+        )
+        profile.graphics.neural_render.implementation = "lsp_neural_render"
+        profile.graphics.neural_render.sampling_resolution_preset = "quality"
+
+        neural = self.service().effective(
+            profile, reshade_enabled=False
+        )["addons"]["DLSS5NR01"]
+
+        self.assertFalse(neural["_enabled"])
+        self.assertEqual(neural["workingScale"], "0.73")
+        self.assertEqual(neural["futureSetting"], "preserved")
+
     def test_echo_host_and_dashboard_contract(self):
         self.assertEqual(AddonManagerMenuController.WINDOW_CLASS, "LSAddonManagerClass")
         self.assertIn("ls-addon-manager", ProviderRegistry().list_provider_ids())
@@ -70,7 +93,9 @@ class AddonConfigServiceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('id="addonManagerEnabled"', dashboard)
         self.assertIn("Show Add-on Menu", dashboard)
-        self.assertIn("Add-on Manager Configuration", dashboard)
+        self.assertIn("Echo Add-on Manager Configuration", dashboard)
+        self.assertIn('id="echoAddonPanelHost"', dashboard)
+        self.assertNotIn('id="echoConfigJson"', dashboard)
 
 
 if __name__ == "__main__":

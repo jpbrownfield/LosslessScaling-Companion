@@ -32,7 +32,7 @@
     .dashboard-nav-btn:hover { border-color: var(--card-border); background: var(--surface-raised); color: var(--text); }
     .dashboard-nav-btn.active { border-color: rgba(56,189,248,.55); background: rgba(56,189,248,.13); color: var(--accent); }
     .dashboard-nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .status-pill { position: relative; isolation: isolate; max-width: min(440px, 38vw); padding: 7px 14px; border: 1px solid rgba(239,68,68,.42); border-radius: 9999px; background: rgba(239,68,68,.12); color: var(--danger); font-size: 12px; font-weight: 700; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .2s ease, border-color .2s ease, background .2s ease; }
+    .status-pill { position: relative; isolation: isolate; max-width: min(440px, 38vw); padding: 7px 14px; border: 1px solid rgba(239,68,68,.42); border-radius: 9999px; background: rgba(239,68,68,.12); color: var(--danger); font-size: 12px; font-weight: 700; line-height: 1.25; overflow: hidden; overflow-wrap: anywhere; white-space: pre-line; transition: color .2s ease, border-color .2s ease, background .2s ease; }
     .status-pill.active { border-color: rgba(16,185,129,.4); background: rgba(16,185,129,.13); color: var(--success); }
     .status-pill.inactive { border-color: rgba(148,163,184,.38); background: rgba(100,116,139,.12); color: var(--text-muted); }
     .status-pill.not-found { border-color: rgba(239,68,68,.42); background: rgba(239,68,68,.12); color: var(--danger); }
@@ -176,6 +176,9 @@
     #profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }
     body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
+    .echo-native-host { position:relative; height:620px; margin:12px 14px 14px; overflow:hidden; border:1px solid var(--card-border); border-radius:8px; background:#101216; }
+    .echo-native-host-status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; color:var(--text-muted); font-size:12px; line-height:1.5; text-align:center; }
+    .echo-native-host.embedded .echo-native-host-status { display:none; }
     .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
     .profile-basics-grid.native-default-profile { grid-template-areas: "name name name name" "type path path path"; }
     .profile-basics-grid > .form-group { min-width: 0; margin: 0; }
@@ -221,10 +224,6 @@
     .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     .profile-addon-section { margin: 16px 0; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--surface-bg); }
     .profile-addon-section.disabled { opacity: 0.48; }
-    .neural-preset-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin: 8px 0; }
-    .neural-preset-choice { position: relative; display: flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 5px; border: 1px solid var(--card-border); border-radius: 7px; background: var(--input-bg); color: var(--text-muted); cursor: pointer; font-size: 11px; font-weight: 700; text-align: center; text-transform: none; }
-    .neural-preset-choice:has(input:checked) { border-color: var(--accent); background: rgba(56,189,248,.13); color: var(--text); }
-    .neural-preset-choice input { position: absolute; opacity: 0; pointer-events: none; }
     .native-settings { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); }
     .native-settings > h4 { margin-bottom: 4px; color: var(--accent); font-size: 13px; }
     .ls-settings-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--input-bg); }
@@ -251,8 +250,14 @@
     .ls-crop-control::after { content: ""; grid-area: center; width: 31px; height: 24px; justify-self: center; border: 1px solid #64748b; }
     .ls-crop-control input { width: 46px; padding: 5px 3px; border: 1px solid rgba(148,163,184,.24); border-radius: 3px; background: var(--input-bg); color: #f8fafc; font-size: 11px; text-align: center; }
     .ls-crop-top { grid-area: top; } .ls-crop-left { grid-area: left; } .ls-crop-right { grid-area: right; } .ls-crop-bottom { grid-area: bottom; }
-    .native-settings-group { margin-top: 8px; border: 1px solid var(--card-border); border-radius: 8px; background: var(--surface-bg); }
-    .native-settings-group > summary { padding: 10px 12px; cursor: pointer; color: var(--text); font-size: 12px; font-weight: 750; }
+    .native-settings-group { margin-top: 8px; overflow: hidden; border: 1px solid rgba(56,189,248,.72); border-radius: 8px; background: var(--surface-bg); }
+    .native-settings-group > summary { position: relative; display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 44px; padding: 10px 42px; cursor: pointer; list-style: none; color: #38bdf8; background: #05080c; font-size: 13px; font-weight: 750; line-height: 1.25; text-align: center; transition: background .16s ease, color .16s ease; }
+    .native-settings-group > summary::-webkit-details-marker { display: none; }
+    .native-settings-group > summary::before { content: "\203A"; position: absolute; left: 14px; top: 50%; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: #38bdf8; font-size: 22px; font-weight: 500; line-height: 1; transform: translateY(-50%); transition: transform .16s ease; }
+    .native-settings-group[open] > summary::before { transform: translateY(-50%) rotate(90deg); }
+    .native-settings-group > summary:hover { color: #7dd3fc; background: #08121b; }
+    .native-settings-group > summary:focus-visible { outline: 2px solid #38bdf8; outline-offset: -3px; }
+    .native-settings-group[open] > summary { border-bottom: 1px solid rgba(56,189,248,.5); }
     .native-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; padding: 0 12px 12px; }
     .native-settings-grid > .form-group { margin: 0; }
     .native-extra-settings { display: grid; gap: 8px; padding: 0 12px 12px; }
@@ -630,23 +635,15 @@
         </details>
 
         <details class="native-settings native-settings-group" open>
-          <summary>Add-on Manager Configuration</summary>
-          <div class="native-settings-grid" style="padding-top:4px">
-            <div class="form-group checkbox-group"><input id="echoDlssNrEnabled" type="checkbox"><label for="echoDlssNrEnabled">DLSS 5 Neural Render</label></div>
-            <div class="form-group checkbox-group"><input id="echoDlaaEnabled" type="checkbox"><label for="echoDlaaEnabled">DLSS 4 DLAA</label></div>
-            <div class="form-group checkbox-group"><input id="echoFsrEnabled" type="checkbox"><label for="echoFsrEnabled">FSR 3 Upscaler</label></div>
-            <div class="form-group checkbox-group"><input id="echoXessEnabled" type="checkbox"><label for="echoXessEnabled">XeSS Upscaler</label></div>
-            <div class="form-group checkbox-group"><input id="echoReshadePassthroughEnabled" type="checkbox"><label for="echoReshadePassthroughEnabled">ReShade Input Passthrough</label></div>
-            <div class="form-group checkbox-group"><input id="echoWindowedEnabled" type="checkbox"><label for="echoWindowedEnabled">Windowed / Second Monitor</label></div>
-          </div>
-          <p class="item-sub" style="white-space:normal;padding:0 12px 12px">Every Echo setting is preserved in this profile. These switches cover its primary components; use Show Add-on Menu while scaling for advanced settings.</p>
+          <summary>Echo Add-on Manager Configuration</summary>
+          <p class="item-sub" style="white-space:normal;padding:10px 14px 0">This is Echo's actual running control panel. It becomes available for the active profile after Lossless Scaling starts; changes are captured into that profile automatically.</p>
+          <div id="echoAddonPanelHost" class="echo-native-host"><div id="echoAddonPanelStatus" class="echo-native-host-status">Start Lossless Scaling with this profile to load Echo's control panel here.</div></div>
         </details>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Profile (Optional)</h4>
           <p class="profile-reshade-help">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
           <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
-          <div class="form-group checkbox-group" style="margin-top:9px"><input id="reshadeMenuProxyEnabled" type="checkbox" checked><label for="reshadeMenuProxyEnabled">Enable ReShade Input Passthrough</label></div>
           <p class="item-sub" style="white-space:normal;margin-top:5px">Echo's passthrough is enabled automatically whenever this profile enables ReShade.</p>
         </div>
 
@@ -692,27 +689,6 @@
               </div>
             </div>
           </fieldset>
-        </div>
-
-        <div class="profile-addon-section">
-          <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">DLSS 5 NeuralRender</h4>
-          <div class="form-group checkbox-group"><input id="dlss5Enabled" type="checkbox"><label for="dlss5Enabled" style="text-transform:none; font-size:13px; color:#fff">Enable DLSS 5 neural rendering</label></div>
-          <fieldset id="neuralRenderFields" disabled>
-            <div class="form-group">
-              <label>Sampling resolution preset</label>
-              <div class="neural-preset-grid" role="radiogroup" aria-label="NeuralRender sampling resolution preset">
-                <label class="neural-preset-choice" title="Preserves the resolution selected later in the NeuralRender add-on menu. Companion will not overwrite it."><input type="radio" name="neuralSamplingPreset" value="custom">Custom</label>
-                <label class="neural-preset-choice" title="25% per dimension. 4K: 960x540; 1440p: 640x360; 1080p: 480x270."><input type="radio" name="neuralSamplingPreset" value="performance">Performance</label>
-                <label class="neural-preset-choice" title="35% per dimension. 4K: about 1344x760; 1440p: 896x504; 1080p: 672x384."><input type="radio" name="neuralSamplingPreset" value="balanced" checked>Balanced</label>
-                <label class="neural-preset-choice" title="50% per dimension. 4K: 1920x1080; 1440p: 1280x720; 1080p: 960x540."><input type="radio" name="neuralSamplingPreset" value="quality">Quality</label>
-                <label class="neural-preset-choice" title="100% per dimension: the full Lossless Scaling capture resolution."><input type="radio" name="neuralSamplingPreset" value="full">Full</label>
-              </div>
-              <output id="neuralSamplingPresetDescription">Balanced - 35% per dimension - 12.3% of full-resolution pixels</output>
-              <p class="item-sub" style="white-space:normal;margin-top:6px">Controls the resolution sent to the neural model. Lower values substantially reduce GPU cost; the result is still composed at the full Lossless Scaling output resolution.</p>
-            </div>
-          </fieldset>
-          <p class="item-sub" style="white-space:normal;margin-bottom:10px">This selects Echo's bundled DLSS5NR01 add-on. Its full advanced configuration remains available in Show Add-on Menu while scaling.</p>
-          <p class="item-sub" style="white-space:normal">Install Echo LS Add-on Manager once; Companion then applies this choice per profile.</p>
         </div>
 
         <div id="specialKSettings" class="profile-addon-section disabled">
@@ -771,6 +747,11 @@
     let ws = null;
     let runningProcesses = [];
     let profiles = [];
+    let profileDetails = new Map();
+    let profileDetailsGeneration = 0;
+    let profileDetailsPreloadTimer = null;
+    let defaultTemplateProfile = null;
+    let pendingNewProfile = null;
     let activeProfileId = null;
     let graphicsPackages = [];
     let latestAddonVersions = {};
@@ -791,6 +772,9 @@
     let reshadeSaveQueued = false;
     let controlSettings = null;
     let editingOriginalProfile = null;
+    let echoEmbedTimer = null;
+    let lastEchoEmbedRect = '';
+    let echoEmbedAttached = false;
     let rtssDetectionTimer = null;
     let rtssDetectionChecks = 0;
     let generalSettingsReady = false;
@@ -907,7 +891,7 @@
       ws.onopen = () => {
         // INITIAL_STATE will replace this neutral state with authoritative LS status.
         setRuntimeStatus('LS Inactive', 'inactive');
-        requestProcesses();
+        ws.send(JSON.stringify({ type: 'GET_PROFILE_SUMMARIES' }));
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
         ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
@@ -923,9 +907,39 @@
           if (Object.prototype.hasOwnProperty.call(msg, 'simulationMode')) {
             document.getElementById('simulationBadge').hidden = !msg.simulationMode;
           }
-          if (msg.type === 'FULL_DATA_UPDATE' || msg.type === 'PROCESSES_AND_PROFILES') {
+          if (msg.type === 'PROFILE_SUMMARIES') {
+            profiles = msg.profiles || [];
+            invalidateProfileDetails();
+            renderProfiles();
+            setTimeout(requestProcesses, 0);
+          } else if (msg.type === 'PROFILE_DETAILS') {
+            if (msg.generation === profileDetailsGeneration) {
+              profileDetails = new Map((msg.profiles || []).map(profile => [profile.id, profile]));
+              const defaultSummary = profiles.find(profile => profile.is_default);
+              defaultTemplateProfile = defaultSummary && profileDetails.get(defaultSummary.id) || null;
+              if (defaultTemplateProfile && pendingNewProfile) {
+                const pending = pendingNewProfile;
+                pendingNewProfile = null;
+                openModal(pending.profile, pending.autosave);
+              }
+            }
+          } else if (msg.type === 'PROFILE_DETAIL') {
+            profileDetails.set(msg.profile.id, msg.profile);
+            if (msg.action === 'clone') openClonedProfile(msg.profile);
+            else if (msg.action === 'template') {
+              defaultTemplateProfile = msg.profile;
+              if (pendingNewProfile) {
+                const pending = pendingNewProfile;
+                pendingNewProfile = null;
+                openModal(pending.profile);
+                if (pending.autosave) scheduleProfileAutosave(0);
+              }
+            }
+            else openModal(msg.profile);
+          } else if (msg.type === 'FULL_DATA_UPDATE' || msg.type === 'PROCESSES_AND_PROFILES') {
             runningProcesses = msg.processes || [];
             profiles = msg.profiles || [];
+            invalidateProfileDetails();
             activeProfileId = msg.activeProfileId;
             controlSettings = msg.controlSettings || controlSettings;
             renderProcesses();
@@ -938,7 +952,10 @@
               profileSaveInFlight = false;
               activeProfileSaveRequestId = null;
               editingOriginalProfile = JSON.parse(JSON.stringify(msg.profile));
+              profileDetails.set(msg.profile.id, msg.profile);
+              if (msg.profile.is_default) defaultTemplateProfile = msg.profile;
               document.getElementById('profileId').value = msg.profile.id;
+              updateEchoEmbed(true);
               if (!document.getElementById('profileName').value.trim()) document.getElementById('profileName').value = msg.profile.name;
               const status = document.getElementById('profileAutosaveStatus');
               status.textContent = 'Saved automatically.';
@@ -955,6 +972,12 @@
             const status = document.getElementById('proxyMenuStatus');
             status.textContent = 'Echo add-on menu opened.';
             status.hidden = false;
+          } else if (msg.type === 'ADDON_MENU_EMBED_STATUS') {
+            const host = document.getElementById('echoAddonPanelHost');
+            const status = document.getElementById('echoAddonPanelStatus');
+            echoEmbedAttached = !!msg.embedded;
+            host.classList.toggle('embedded', !!msg.embedded);
+            if (!msg.embedded && msg.reason) status.textContent = msg.reason;
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
             const updateWasBusy = companionUpdateBusy;
@@ -1190,6 +1213,7 @@
       if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
+        if (document.getElementById('profileModal').classList.contains('active')) updateEchoEmbed(true);
       }
       if (msg.losslessScalingFound === false) {
         setRuntimeStatus('LS Not Found', 'not-found');
@@ -1197,6 +1221,13 @@
       }
       if (!msg.losslessScalingRunning) {
         setRuntimeStatus('LS Inactive', 'inactive');
+        return;
+      }
+      if (runtimeScalingActive) {
+        const target = msg.scalingTarget || {};
+        const executable = target.processName || (target.exePath || '').split(/[\\/]/).pop() || 'Unknown application';
+        const profile = runtimeActiveProfile && runtimeActiveProfile.name || 'Unknown profile';
+        setRuntimeStatus(`Scaling: ${executable}\nProfile: ${profile}`, 'active');
         return;
       }
       setRuntimeStatus('LS Active', 'active');
@@ -1683,6 +1714,20 @@
       }
     }
 
+    function invalidateProfileDetails() {
+      profileDetails.clear();
+      defaultTemplateProfile = null;
+      profileDetailsGeneration += 1;
+      if (profileDetailsPreloadTimer) clearTimeout(profileDetailsPreloadTimer);
+      const generation = profileDetailsGeneration;
+      profileDetailsPreloadTimer = setTimeout(() => {
+        profileDetailsPreloadTimer = null;
+        if (ws && ws.readyState === WebSocket.OPEN && profiles.length) {
+          ws.send(JSON.stringify({ type: 'GET_PROFILE_DETAILS', generation }));
+        }
+      }, 0);
+    }
+
     function renderProcesses() {
       const query = document.getElementById('procSearch').value.toLowerCase();
       const listEl = document.getElementById('processList');
@@ -1924,21 +1969,50 @@
       return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
     }
 
-    function renderNeuralRenderSettings() {
-      const enabled = document.getElementById('dlss5Enabled').checked;
-      document.getElementById('neuralRenderFields').disabled = !enabled;
-      const selected = document.querySelector('input[name="neuralSamplingPreset"]:checked');
-      const preset = selected ? selected.value : 'balanced';
-      const scales = { performance: 25, balanced: 35, quality: 50, full: 100 };
-      const percent = scales[preset];
-      document.getElementById('neuralSamplingPresetDescription').textContent = preset === 'custom'
-        ? 'Custom - controlled by the NeuralRender add-on menu; Companion will preserve it'
-        : `${preset[0].toUpperCase()}${preset.slice(1)} - ${percent}% per dimension - ${(percent * percent / 100).toFixed(1)}% of full-resolution pixels`;
+    function updateEchoEmbed(force = false) {
+      const host = document.getElementById('echoAddonPanelHost');
+      const modalOpen = document.getElementById('profileModal').classList.contains('active');
+      const profileId = document.getElementById('profileId').value;
+      if (!host || !modalOpen || !profileId || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const rect = host.getBoundingClientRect();
+      const fullyVisible = rect.top >= 0 && rect.left >= 0
+        && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+      if (!fullyVisible) {
+        if (echoEmbedAttached) ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
+        echoEmbedAttached = false;
+        host.classList.remove('embedded');
+        document.getElementById('echoAddonPanelStatus').textContent =
+          'Scroll the complete panel area into view to attach Echo\'s control panel.';
+        lastEchoEmbedRect = '';
+        return;
+      }
+      const payloadRect = {
+        left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight
+      };
+      const signature = JSON.stringify(payloadRect);
+      if (!force && signature === lastEchoEmbedRect) return;
+      lastEchoEmbedRect = signature;
+      ws.send(JSON.stringify({ type: 'EMBED_ADDON_MENU', profileId, rect: payloadRect }));
     }
 
-    function selectedNeuralSamplingPreset() {
-      const selected = document.querySelector('input[name="neuralSamplingPreset"]:checked');
-      return selected ? selected.value : 'balanced';
+    function startEchoEmbed() {
+      lastEchoEmbedRect = '';
+      updateEchoEmbed(true);
+      if (echoEmbedTimer) clearInterval(echoEmbedTimer);
+      echoEmbedTimer = setInterval(updateEchoEmbed, 250);
+    }
+
+    function stopEchoEmbed() {
+      if (echoEmbedTimer) clearInterval(echoEmbedTimer);
+      echoEmbedTimer = null;
+      lastEchoEmbedRect = '';
+      echoEmbedAttached = false;
+      const host = document.getElementById('echoAddonPanelHost');
+      if (host) host.classList.remove('embedded');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
+      }
     }
 
     function syncNativeControlDisplay(control) {
@@ -2119,14 +2193,23 @@
     }
 
     function setProfileEditorOpen(open) {
+      if (!open) stopEchoEmbed();
       document.getElementById('profileModal').classList.toggle('active', open);
       document.body.classList.toggle('profile-editor-open', open);
+      if (open) setTimeout(startEchoEmbed, 0);
     }
 
-    function openModal(profile = null) {
-      document.getElementById('profileForm').reset();
+    function openModal(profile = null, autosave = false) {
       const creating = !profile || !profile.id;
-      const defaultTemplate = profiles.find(item => item.is_default);
+      const defaultSummary = profiles.find(item => item.is_default);
+      if (creating && defaultSummary && !defaultTemplateProfile) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        pendingNewProfile = { profile, autosave };
+        ws.send(JSON.stringify({ type: 'GET_PROFILE_DETAIL', profileId: defaultSummary.id, action: 'template' }));
+        return;
+      }
+      document.getElementById('profileForm').reset();
+      const defaultTemplate = defaultTemplateProfile;
       if (creating && defaultTemplate) {
         const identity = profile || {};
         profile = {
@@ -2194,22 +2277,6 @@
           : 'No dynamic calibration data.';
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
         const graphics = profile.graphics || {};
-        const neural = graphics.neural_render || {};
-        const neuralEnabled = neural.implementation === 'lsp_neural_render';
-        document.getElementById('dlss5Enabled').checked = neuralEnabled;
-        const samplingPreset = neural.sampling_resolution_preset || 'balanced';
-        const samplingChoice = document.querySelector(`input[name="neuralSamplingPreset"][value="${samplingPreset}"]`);
-        if (samplingChoice) samplingChoice.checked = true;
-        document.getElementById('reshadeMenuProxyEnabled').checked = !!(
-          profile.reshade && profile.reshade.menu_proxy_enabled
-        );
-        const echoAddons = profile.addon_config && profile.addon_config.addons || {};
-        document.getElementById('echoDlssNrEnabled').checked = !!(echoAddons.DLSS5NR01 && echoAddons.DLSS5NR01._enabled) || neuralEnabled;
-        document.getElementById('echoDlaaEnabled').checked = !!(echoAddons.DLSS4DLAA && echoAddons.DLSS4DLAA._enabled);
-        document.getElementById('echoFsrEnabled').checked = !!(echoAddons.FSR3UPSC && echoAddons.FSR3UPSC._enabled);
-        document.getElementById('echoXessEnabled').checked = !!(echoAddons.XESSUPSC && echoAddons.XESSUPSC._enabled);
-        document.getElementById('echoReshadePassthroughEnabled').checked = !!(echoAddons.ReShadePassthrough && echoAddons.ReShadePassthrough._enabled) || !!(profile.reshade && profile.reshade.enabled);
-        document.getElementById('echoWindowedEnabled').checked = !!(echoAddons.Windowed && echoAddons.Windowed._enabled);
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
@@ -2225,15 +2292,11 @@
         document.getElementById('autoScale').checked = !controlSettings || controlSettings.smartAutoScaleEnabled !== false;
         document.getElementById('targetType').value = 'program';
         renderTargetType();
-        ['echoDlssNrEnabled', 'echoDlaaEnabled', 'echoFsrEnabled', 'echoXessEnabled', 'echoReshadePassthroughEnabled', 'echoWindowedEnabled'].forEach(id => {
-          document.getElementById(id).checked = false;
-        });
       }
 
       updateRtssTargetHelper();
       renderRtssModeSettings();
       renderRtssProfileAvailability();
-      renderNeuralRenderSettings();
       renderSpecialKSettings();
       renderProfileTargetValidation();
       const autosaveStatus = document.getElementById('profileAutosaveStatus');
@@ -2242,6 +2305,7 @@
         : 'Changes save automatically.';
       autosaveStatus.classList.remove('error');
       setProfileEditorOpen(true);
+      if (autosave) scheduleProfileAutosave(0);
     }
 
     function renderTargetType() {
@@ -2282,18 +2346,18 @@
         target_executable_path: exePath,
         target_domain: '',
         auto_scale: !controlSettings || controlSettings.smartAutoScaleEnabled !== false
-      });
-      scheduleProfileAutosave(0);
+      }, true);
     };
 
     window.editProfile = function(profileId) {
-      const p = profiles.find(item => item.id === profileId);
-      if (p) openModal(p);
+      const cached = profileDetails.get(profileId);
+      if (cached) { openModal(cached); return; }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'GET_PROFILE_DETAIL', profileId, action: 'edit' }));
+      }
     };
 
-    window.cloneProfile = function(profileId) {
-      const source = profiles.find(item => item.id === profileId);
-      if (!source) return;
+    function openClonedProfile(source) {
       const clone = JSON.parse(JSON.stringify(source));
       Object.assign(clone, {
         id: '', name: '', is_default: false,
@@ -2303,6 +2367,14 @@
       });
       openModal(clone);
       scheduleProfileAutosave(0);
+    }
+
+    window.cloneProfile = function(profileId) {
+      const cached = profileDetails.get(profileId);
+      if (cached) { openClonedProfile(cached); return; }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'GET_PROFILE_DETAIL', profileId, action: 'clone' }));
+      }
     };
 
     window.deleteProfile = function(profileId) {
@@ -2566,17 +2638,6 @@
     };
     document.getElementById('specialKEnabled').onchange = renderSpecialKSettings;
     document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
-    document.getElementById('dlss5Enabled').onchange = () => {
-      document.getElementById('echoDlssNrEnabled').checked = document.getElementById('dlss5Enabled').checked;
-      renderNeuralRenderSettings();
-    };
-    document.getElementById('echoDlssNrEnabled').onchange = () => {
-      document.getElementById('dlss5Enabled').checked = document.getElementById('echoDlssNrEnabled').checked;
-      renderNeuralRenderSettings();
-    };
-    document.querySelectorAll('input[name="neuralSamplingPreset"]').forEach(control => {
-      control.onchange = renderNeuralRenderSettings;
-    });
     document.getElementById('targetType').onchange = () => {
       document.getElementById('targetValue').value = '';
       renderTargetType();
@@ -2825,17 +2886,10 @@
               : (targetValue || 'Untitled Profile'));
         document.getElementById('profileName').value = profileName;
       }
-      const dlss5Enabled = document.getElementById('dlss5Enabled').checked;
-      const neuralSamplingPreset = selectedNeuralSamplingPreset();
-      const neuralSamplingScales = { performance: 0.25, balanced: 0.35, quality: 0.5, full: 1.0 };
-      const reshadeMenuProxyEnabled = document.getElementById('reshadeMenuProxyEnabled').checked;
-      const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled;
       const existingNeural = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.neural_render || {};
       const existingNeuralPackage = existingNeural.package || {};
       const existingLosslessProxy = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.lossless_proxy || {};
       const existingSpecialK = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.special_k || {};
-      const installedNeuralPackages = graphicsPackages.filter(item => item.provider === 'lsp-neural-render');
-      const installedNeuralPackage = installedNeuralPackages[installedNeuralPackages.length - 1];
       const installedReshadePackages = graphicsPackages.filter(item => item.provider === 'reshade');
       const installedReshadePackage = installedReshadePackages[installedReshadePackages.length - 1];
       const availableRuntime = dlssnrRuntimes[dlssnrRuntimes.length - 1];
@@ -2849,19 +2903,12 @@
       ));
       addonConfig.global = addonConfig.global && typeof addonConfig.global === 'object' ? addonConfig.global : {};
       addonConfig.addons = addonConfig.addons && typeof addonConfig.addons === 'object' ? addonConfig.addons : {};
-      [
-        ['DLSS5NR01', 'echoDlssNrEnabled'], ['DLSS4DLAA', 'echoDlaaEnabled'],
-        ['FSR3UPSC', 'echoFsrEnabled'], ['XESSUPSC', 'echoXessEnabled'],
-        ['ReShadePassthrough', 'echoReshadePassthroughEnabled'],
-        ['Windowed', 'echoWindowedEnabled']
-      ].forEach(([addonId, controlId]) => {
-        const current = addonConfig.addons[addonId];
-        addonConfig.addons[addonId] = current && typeof current === 'object' ? current : {};
-        addonConfig.addons[addonId]._enabled = document.getElementById(controlId).checked;
-      });
       if (managedReshadeProfile || legacyReshadePresetPath) {
+        addonConfig.addons.ReShadePassthrough = addonConfig.addons.ReShadePassthrough || {};
         addonConfig.addons.ReShadePassthrough._enabled = true;
       }
+      const dlss5Enabled = !!(addonConfig.addons.DLSS5NR01 && addonConfig.addons.DLSS5NR01._enabled);
+      const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath);
       const payload = {
         type: 'SAVE_PROFILE',
         requestId,
@@ -2894,17 +2941,17 @@
             maximum_framerate_limit: Number(document.getElementById('rtssMaximumFramerate').value),
             limit_method: document.getElementById('rtssLimitMethod').value
           },
-          reshade: managedReshadeProfile || legacyReshadePresetPath || reshadeMenuProxyEnabled ? {
+          reshade: reshadeEnabled ? {
             enabled: true,
             managed_profile_id: managedReshadeProfile || null,
-            menu_proxy_enabled: reshadeMenuProxyEnabled,
+            menu_proxy_enabled: true,
             reshade_ini_path: null,
             preset_path: legacyReshadePresetPath || null,
             reload_hotkey: null
           } : null,
           graphics: {
             lossless_proxy: {
-              enabled: losslessProxyEnabled,
+              enabled: true,
               version: existingLosslessProxy.version || null,
               channel: existingLosslessProxy.channel || 'stable',
               update_policy: existingLosslessProxy.update_policy || 'notify'
@@ -2915,17 +2962,14 @@
               package: {
                 ...existingNeuralPackage,
                 enabled: dlss5Enabled,
-                version: existingNeuralPackage.version || (installedNeuralPackage && installedNeuralPackage.version) || null,
+                version: existingNeuralPackage.version || null,
                 channel: existingNeuralPackage.channel || 'stable'
               },
-              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null,
-              sampling_resolution_preset: neuralSamplingPreset,
-              working_scale: neuralSamplingScales[neuralSamplingPreset]
-                || existingNeural.working_scale || 0.35
+              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null
             },
             reshade: {
               ...(editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade || {}),
-              enabled: reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value,
+              enabled: reshadeEnabled,
               version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
                 || (installedReshadePackage && installedReshadePackage.version) || null
             },
@@ -3006,6 +3050,7 @@
       openMajorDashboardPanel(target, true);
     }
 
+    window.addEventListener('beforeunload', stopEchoEmbed);
     connectWS();
   </script>
 </body>

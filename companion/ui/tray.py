@@ -78,6 +78,18 @@ class CompanionTrayIcon:
             return "LS Not Found"
         return "LS Disconnected"
 
+    def _scaling_labels(self) -> tuple[str, str]:
+        target = self.state.current_scaled_target or {}
+        executable = target.get("processName") or Path(target.get("exePath") or "").name
+        profile = self.state.current_active_profile
+        return (
+            f"Scaling: {executable or 'Unknown application'}",
+            f"Profile: {profile.name if profile else 'Unknown profile'}",
+        )
+
+    def _tray_title(self) -> str:
+        return "\n".join(self._scaling_labels()) if self.state.is_scaling_active else "LS Companion"
+
     @staticmethod
     def _pin_tray_menu_above_taskbar(native_icon) -> None:
         """Promote pystray's hidden popup owners before its menu is rendered."""
@@ -313,9 +325,14 @@ class CompanionTrayIcon:
                 item(f"Add: {label}", self._on_add_profile_from_process(proc['name']))
             )
 
+        status_items = (
+            [item(label, None, enabled=False) for label in self._scaling_labels()]
+            if self.state.is_scaling_active
+            else [item(self._runtime_status_label(), None, enabled=False)]
+        )
         menu_items = [
             item("LS Companion", None, enabled=False),
-            item(self._runtime_status_label(), None, enabled=False),
+            *status_items,
             Menu.SEPARATOR,
             item("Open Dashboard", self._open_dashboard, default=True),
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
@@ -363,7 +380,7 @@ class CompanionTrayIcon:
         self.icon = pystray.Icon(
             "lossless_companion",
             img,
-            "LS Companion",
+            self._tray_title(),
             menu=self._build_menu()
         )
         self._install_topmost_menu_hook(self.icon)
@@ -385,5 +402,6 @@ class CompanionTrayIcon:
             # Reflect state changes immediately instead of waiting for the next
             # animation frame.
             self.icon.icon = self._create_icon_image()
+            self.icon.title = self._tray_title()
             self.icon.menu = self._build_menu()
             self.icon.update_menu()

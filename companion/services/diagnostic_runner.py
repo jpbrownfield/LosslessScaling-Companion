@@ -103,8 +103,8 @@ class DiagnosticRunner:
             ("assets", "Managed asset store and package manifests", self._assets),
             ("reshade", "ReShade selection and injection plan", self._reshade),
             ("reshade_runtime", "Live ReShade deployment and load confirmation", self._reshade_runtime_behavior),
-            ("proxy_reshade", "LosslessProxy + ReShade end-to-end runtime", self._proxy_reshade_behavior),
-            ("proxy_neural_render", "LosslessProxy + NeuralRender end-to-end runtime", self._proxy_neural_render_behavior),
+            ("proxy_reshade", "Echo Add-on Manager + ReShade runtime", self._proxy_reshade_behavior),
+            ("proxy_neural_render", "Echo Add-on Manager + Neural Rendering runtime", self._proxy_neural_render_behavior),
             ("deployment", "Active add-on deployment integrity", self._deployment),
             ("deployment_behavior", "Live add-on and proxy deployment behavior", self._live_addon_deployment_behavior),
             ("benchmark", "Benchmark workload and PresentMon command", self._benchmark),
@@ -505,10 +505,10 @@ class DiagnosticRunner:
         )
 
     def _proxy_reshade_behavior(self) -> Dict:
-        return self._proxy_runtime_behavior("reshade-proxy", "LosslessProxy + ReShade")
+        return self._proxy_runtime_behavior("echo-reshade", "Echo Add-on Manager + ReShade")
 
     def _proxy_neural_render_behavior(self) -> Dict:
-        return self._proxy_runtime_behavior("lsp-neural-render", "LosslessProxy + NeuralRender")
+        return self._proxy_runtime_behavior("echo-neural", "Echo Add-on Manager + Neural Rendering")
 
     @staticmethod
     def _wait_until(predicate: Callable[[], bool], timeout: float, interval: float = 0.2) -> bool:
@@ -542,38 +542,25 @@ class DiagnosticRunner:
             )
 
         profiles: list[Profile] = []
-        proxy = packages.get("lossless-proxy")
+        manager = packages.get("ls-addon-manager")
         reshade = packages.get("reshade")
         special_k = packages.get("special-k")
-        feeder = packages.get("dlss5-feeder")
-        neural = packages.get("lsp-neural-render")
 
-        if proxy:
-            profile = base("lossless-proxy")
-            profile.graphics.lossless_proxy.enabled = True
-            profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+        if manager:
+            profile = base("echo-manager")
             profiles.append(profile)
-        if reshade:
-            profile = base("reshade-proxy" if proxy else "reshade")
+        if manager and reshade:
+            profile = base("echo-reshade")
             profile.graphics.reshade.enabled = True
             profile.graphics.reshade.version = str(reshade.get("version") or "") or None
-            if proxy:
-                profile.graphics.lossless_proxy.enabled = True
-                profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
-                profile.reshade = ReshadeConfig(enabled=True, menu_proxy_enabled=True)
+            profile.reshade = ReshadeConfig(enabled=True, menu_proxy_enabled=True)
             profiles.append(profile)
         if special_k:
             profile = base("special-k")
             profile.graphics.special_k.enabled = True
             profile.graphics.special_k.version = str(special_k.get("version") or "") or None
             profiles.append(profile)
-        if feeder:
-            profile = base("dlss5-feeder")
-            profile.graphics.neural_render.implementation = "ls_reshade_feeder"
-            profile.graphics.neural_render.package.enabled = True
-            profile.graphics.neural_render.package.version = str(feeder.get("version") or "") or None
-            profiles.append(profile)
-        if neural and proxy and reshade:
+        if manager:
             runtime = next(
                 (
                     item for item in self.server.asset_store.list_imports()
@@ -583,15 +570,9 @@ class DiagnosticRunner:
                 None,
             )
             if runtime:
-                profile = base("lsp-neural-render")
-                profile.graphics.lossless_proxy.enabled = True
-                profile.graphics.lossless_proxy.version = str(proxy.get("version") or "") or None
+                profile = base("echo-neural")
                 profile.graphics.neural_render.implementation = "lsp_neural_render"
-                profile.graphics.neural_render.package.enabled = True
-                profile.graphics.neural_render.package.version = str(neural.get("version") or "") or None
                 profile.graphics.neural_render.runtime_asset_sha256 = str(runtime["sha256"])
-                profile.graphics.reshade.enabled = True
-                profile.graphics.reshade.version = str(reshade.get("version") or "") or None
                 profiles.append(profile)
         return profiles
 
@@ -610,7 +591,6 @@ class DiagnosticRunner:
             return self._result("warn", "No installed add-on packages were available for live deployment.")
 
         manager = self.server.automation.deployment_manager
-        resolver = self.server.automation.graphics_resolver
         previous = self.server.state.current_active_profile
         auto_scale_was_enabled = self.server.state.auto_scale_enabled
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
@@ -647,6 +627,7 @@ class DiagnosticRunner:
                 runtime_errors: List[str] = []
                 runtime_evidence = {
                     "proxyStarted": False,
+                    "addonManagerStarted": False,
                     "reshadeBridgeInitialized": False,
                     "neuralEngineReady": False,
                     "neuralModelPrepared": False,
@@ -658,7 +639,7 @@ class DiagnosticRunner:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
                         if not self.server.process_watcher.stop_lossless_scaling():
                             raise RuntimeError("Lossless Scaling could not be stopped between add-on tests")
-                    plan = resolver.resolve(profile, lossless_scaling_exe=str(executable))
+                    plan = self.server.automation.resolve_deployment_files(profile)
                     manifest = manager.apply(
                         profile_id=profile.id,
                         lossless_scaling_exe=str(executable),
@@ -707,22 +688,6 @@ class DiagnosticRunner:
                         target_hwnd=hwnd,
                         park_runtime_on_stop=False,
                     )
-                    if not scaled:
-                        # The first hotkey can still race a slow injected
-                        # runtime. It was observed idle, so retrying cannot turn
-                        # a confirmed scaling session back off.
-                        time.sleep(1.5)
-                        focus_window(hwnd)
-                        activation_attempts += 1
-                        scaled = self.server.automation.set_scaling(
-                            True,
-                            profile,
-                            reason=f"experimental_addon_test_retry:{profile.id}",
-                            force=True,
-                            target_pid=workload_process.pid,
-                            target_hwnd=hwnd,
-                            park_runtime_on_stop=False,
-                        )
                     active_observed = scaled and self._wait_until(
                         lambda: bool(log_inspector.inspect_current_scaling_target().is_active), 5.0
                     )
@@ -733,8 +698,11 @@ class DiagnosticRunner:
                     neural_render_selected = (
                         profile.graphics.neural_render.implementation == "lsp_neural_render"
                     )
-                    reshade_selected = profile.graphics.reshade.enabled
-                    proxy_selected = profile.graphics.lossless_proxy.enabled
+                    reshade_selected = bool(
+                        profile.graphics.reshade.enabled
+                        or (profile.reshade and profile.reshade.enabled)
+                    )
+                    echo_selected = True
 
                     def addon_runtime_ready() -> bool:
                         nonlocal loaded_modules, module_inspection_error, runtime_evidence
@@ -745,23 +713,20 @@ class DiagnosticRunner:
                         module_names = {Path(item).name.casefold() for item in loaded_modules}
                         if neural_render_selected:
                             return (
-                                {"lsp_neuralrender.dll", "nvngx.dll_lspnr.dll", "nvngx_dlssnr.dll"}
+                                {"dlss5nr01.dll", "nvngx.dll_dlss5nr01.dll", "nvngx_dlssnr.dll"}
                                 <= module_names
-                                and runtime_evidence["proxyStarted"]
+                                and runtime_evidence["addonManagerStarted"]
                                 and runtime_evidence["neuralEngineReady"]
                                 and runtime_evidence["neuralModelPrepared"]
                                 and runtime_evidence["neuralTapObserved"]
                             )
-                        if reshade_selected and proxy_selected:
-                            return (
-                                {"dxgi.dll", "lsc_reshadebridge.dll"} <= module_names
-                                and runtime_evidence["proxyStarted"]
-                                and runtime_evidence["reshadeBridgeInitialized"]
-                            )
                         if reshade_selected:
-                            return "dxgi.dll" in module_names and bool(current_delta)
-                        if proxy_selected:
-                            return "lossless.dll" in module_names and runtime_evidence["proxyStarted"]
+                            return (
+                                "dxgi.dll" in module_names
+                                and runtime_evidence["addonManagerStarted"]
+                            )
+                        if echo_selected:
+                            return runtime_evidence["addonManagerStarted"]
                         return bool(current_delta)
 
                     addon_ready = active_observed and self._wait_until(
@@ -784,10 +749,7 @@ class DiagnosticRunner:
                     runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
                     runtime_errors = self._runtime_log_errors(runtime_delta)
                     runtime_evidence = self._runtime_log_evidence(runtime_delta)
-                    expected_proxy_version = (
-                        str(profile.graphics.lossless_proxy.version or "").removeprefix("v")
-                        if profile.graphics.lossless_proxy.enabled else None
-                    )
+                    expected_proxy_version = None
                     reported_proxy_version = self._reported_lossless_proxy_version(runtime_delta)
                     proxy_version_matches = (
                         None
@@ -854,7 +816,10 @@ class DiagnosticRunner:
             except Exception:
                 pass
             try:
-                restore_plan = resolver.resolve(previous, lossless_scaling_exe=str(executable)) if previous else []
+                restore_plan = (
+                    self.server.automation.resolve_deployment_files(previous)
+                    if previous else []
+                )
                 manager.apply(
                     profile_id=previous.id if previous else None,
                     lossless_scaling_exe=str(executable),
@@ -947,10 +912,17 @@ class DiagnosticRunner:
         content = "\n".join(logs.values())
         return {
             "proxyStarted": bool(re.search(r"\bLosslessProxy\s+v?[^\s]+\s+starting", content, re.IGNORECASE)),
+            "addonManagerStarted": bool(re.search(
+                r"\bAddon Manager for Lossless Scaling\s+[^\s]+.*\sstarting",
+                content,
+                re.IGNORECASE,
+            )),
             "reshadeBridgeInitialized": "LS Companion ReShade Bridge initialized" in content,
             "neuralEngineReady": "NrEngine ready" in content,
             "neuralModelPrepared": "Prepare:" in content,
-            "neuralTapObserved": bool(re.search(r"\btaps\s+[1-9]\d*\b", content)),
+            "neuralTapObserved": bool(re.search(
+                r"(?:\btaps\s+[1-9]\d*\b|\btap\s+#[1-9]\d*\b)", content
+            )),
         }
 
     @staticmethod

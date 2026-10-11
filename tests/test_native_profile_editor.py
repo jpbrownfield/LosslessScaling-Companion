@@ -129,40 +129,58 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             self.html,
         )
 
-    def test_echo_addon_and_reshade_passthrough_controls_are_wired(self):
-        self.assertIn("const losslessProxyEnabled = dlss5Enabled || reshadeMenuProxyEnabled", self.html)
-        self.assertIn('id="reshadeMenuProxyEnabled"', self.html)
+    def test_native_echo_panel_and_reshade_passthrough_are_wired(self):
+        self.assertIn('id="echoAddonPanelHost"', self.html)
+        self.assertIn("function updateEchoEmbed(force = false)", self.html)
+        self.assertIn("type: 'EMBED_ADDON_MENU'", self.html)
+        self.assertIn("type: 'DETACH_ADDON_MENU'", self.html)
+        self.assertIn("msg.type === 'ADDON_MENU_EMBED_STATUS'", self.html)
+        self.assertNotIn('id="echoConfigJson"', self.html)
+        self.assertNotIn("function renderAddonConfigEditor()", self.html)
+        self.assertIn("addonConfig.addons.ReShadePassthrough._enabled = true", self.html)
+        self.assertNotIn('id="reshadeMenuProxyEnabled"', self.html)
         self.assertNotIn('id="losslessProxyEnabled"', self.html)
-        self.assertIn('id="echoDlssNrEnabled"', self.html)
-        self.assertIn('id="echoReshadePassthroughEnabled"', self.html)
+        self.assertNotIn('id="echoDlssNrEnabled"', self.html)
+        self.assertNotIn('id="echoReshadePassthroughEnabled"', self.html)
         self.assertIn("Echo's passthrough is enabled automatically", self.html)
         self.assertNotIn("values.HdrSupport = 'false'", self.html)
-        self.assertIn("Echo's bundled DLSS5NR01 add-on", self.html)
         self.assertIn(
-            "enabled: reshadeMenuProxyEnabled || !!document.getElementById('reshadeManagedProfile').value",
+            "enabled: reshadeEnabled",
             self.html,
         )
-        self.assertNotIn("enabled: dlss5Enabled || reshadeMenuProxyEnabled", self.html)
+        self.assertIn("implementation: dlss5Enabled ? 'lsp_neural_render' : 'disabled'", self.html)
 
-    def test_neural_sampling_resolution_is_profile_scoped_and_wired(self):
-        for preset in ("custom", "performance", "balanced", "quality", "full"):
-            self.assertIn(f'name="neuralSamplingPreset" value="{preset}"', self.html)
-        self.assertNotIn('id="neuralWorkingScale" type="range"', self.html)
-        self.assertIn("sampling_resolution_preset: neuralSamplingPreset", self.html)
-        self.assertIn("neuralSamplingScales[neuralSamplingPreset]", self.html)
-        self.assertIn("neural.sampling_resolution_preset || 'balanced'", self.html)
-        self.assertIn("percent * percent / 100", self.html)
-        self.assertIn("Companion will preserve it", self.html)
+    def test_collapsible_profile_headers_are_centered_and_blue_on_black(self):
+        self.assertIn(
+            ".native-settings-group > summary { position: relative; display: flex; "
+            "align-items: center; justify-content: center;",
+            self.html,
+        )
+        self.assertIn("color: #38bdf8; background: #05080c;", self.html)
+        self.assertIn(
+            ".native-settings-group { margin-top: 8px; overflow: hidden; "
+            "border: 1px solid rgba(56,189,248,.72);",
+            self.html,
+        )
+        self.assertIn(
+            ".native-settings-group > summary::-webkit-details-marker { display: none; }",
+            self.html,
+        )
+        self.assertIn(".native-settings-group[open] > summary::before", self.html)
+
+    def test_legacy_neural_render_profile_controls_are_removed(self):
+        self.assertNotIn('id="dlss5Enabled"', self.html)
+        self.assertNotIn('id="neuralRenderFields"', self.html)
+        self.assertNotIn('name="neuralSamplingPreset"', self.html)
+        self.assertNotIn("function renderNeuralRenderSettings()", self.html)
+        self.assertNotIn("selectedNeuralSamplingPreset", self.html)
 
     def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
-        proxy_heading = self.html.index("DLSS 5 NeuralRender")
-        proxy_section_end = self.html.index("</div>", self.html.index(
-            "Install Echo LS Add-on Manager once", proxy_heading
-        ))
-        special_k = self.html.index('id="specialKSettings"', proxy_section_end)
-        self.assertGreater(special_k, proxy_section_end)
+        echo_editor = self.html.index('id="echoAddonPanelHost"')
+        special_k = self.html.index('id="specialKSettings"', echo_editor)
+        self.assertGreater(special_k, echo_editor)
         self.assertIn("Special K is independent of Echo LS Add-on Manager", self.html)
-        self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 2)
+        self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 1)
         self.assertNotIn('id="nvidiaRtxHdrEnabled"', self.html)
         self.assertNotIn("NVIDIA RTX HDR for Lossless Scaling", self.html)
         self.assertIn("nvidiaRtxHdrEnabled: false", self.html)

@@ -534,6 +534,18 @@ class GraphicsResolver:
                     "role": "special_k_config",
                     "source_package": "generated/special-k-config",
                 })
+            neural = graphics.neural_render
+            if (
+                neural.implementation == "lsp_neural_render"
+                and neural.runtime_asset_sha256
+            ):
+                runtime = self._manual_runtime(neural.runtime_asset_sha256)
+                files.append({
+                    "relative_path": "nvngx_dlssnr.dll",
+                    "source_path": str(runtime),
+                    "role": "neural_runtime",
+                    "source_package": f"manual-import/{neural.runtime_asset_sha256}",
+                })
             return files
 
         proxy_package = (

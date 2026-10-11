@@ -41,6 +41,21 @@ class LosslessScalingInspectorTests(unittest.TestCase):
             self.assertEqual(target.source, "log_file")
             self.assertTrue(inspector._overlay_stable_present)
 
+    def test_scaling_transition_is_written_to_companion_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "LosslessScaling.log"
+            log_path.write_text("", encoding="utf-8")
+            inspector = LosslessScalingInspector(custom_log_path=str(log_path))
+
+            with log_path.open("a", encoding="utf-8") as stream:
+                stream.write("Scaling session: active; PID=42; Proc=game.exe\n")
+
+            with self.assertLogs("LSCompanion.LSInspector", level="INFO") as logs:
+                inspector.parse_log_updates()
+
+            self.assertTrue(any("state=active" in message for message in logs.output))
+            self.assertTrue(any("LosslessScaling.log" in message for message in logs.output))
+
     def test_confirmation_requires_a_new_event_when_event_log_exists(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "LosslessScaling.log"

@@ -66,6 +66,38 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
             result = controller.open()
         self.assertTrue(result["opened"])
 
+    def test_embed_reparents_echo_and_detach_restores_it(self):
+        controller = LosslessProxyMenuController(AppState())
+        user32 = SimpleNamespace(
+            IsWindow=Mock(return_value=True),
+            GetWindowRect=Mock(return_value=1),
+            GetParent=Mock(return_value=0),
+            SetParent=Mock(return_value=0),
+            ShowWindow=Mock(),
+            SetWindowPos=Mock(return_value=1),
+        )
+        kernel32 = SimpleNamespace(SetLastError=Mock(), GetLastError=Mock(return_value=0))
+        with (
+            patch.object(controller, "_find_windows", return_value=[8123]),
+            patch.object(controller, "_window_long", side_effect=[0x80C40000, 0]),
+            patch.object(controller, "_set_window_long") as set_long,
+            patch("companion.services.proxy_menu.ctypes.windll.user32", user32),
+            patch("companion.services.proxy_menu.ctypes.windll.kernel32", kernel32),
+        ):
+            result = controller.embed(
+                9001, left=10, top=20, width=800, height=600
+            )
+            detached = controller.detach()
+
+        self.assertTrue(result["embedded"])
+        self.assertTrue(detached)
+        self.assertEqual(
+            user32.SetParent.call_args_list,
+            [unittest.mock.call(8123, 9001), unittest.mock.call(8123, 0)],
+        )
+        self.assertEqual(set_long.call_count, 3)
+        self.assertEqual(user32.SetWindowPos.call_args_list[0].args[2:6], (10, 20, 800, 600))
+
 
 class ProxyTrayMenuTests(unittest.TestCase):
     def test_addon_menu_entry_is_available_only_while_scaling(self):

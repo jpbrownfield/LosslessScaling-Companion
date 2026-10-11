@@ -391,6 +391,12 @@ class CompanionApplication:
             logger.info("Shutting down LS Companion...")
             self.running = False
             try:
+                from .ui.dashboard_window import close_dashboard_window
+
+                close_dashboard_window()
+            except Exception:
+                logger.exception("Could not close the dashboard during shutdown")
+            try:
                 self.hotkey_listener.stop()
             except Exception:
                 logger.exception("Could not stop the global hotkey listener")

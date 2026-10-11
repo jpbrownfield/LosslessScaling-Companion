@@ -433,7 +433,7 @@ class ProcessWatcher:
             startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startup_info.wShowWindow = 0  # SW_HIDE
             process = subprocess.Popen(
-                [str(executable), "-StartMinimized"],
+                [str(executable)],
                 cwd=str(executable.parent),
                 close_fds=True,
                 startupinfo=startup_info,
@@ -456,23 +456,28 @@ class ProcessWatcher:
 
     @staticmethod
     def _hide_process_windows(pid: int) -> int:
-        """Hide any top-level configuration window created during a background launch."""
+        """Hide captioned LS configuration windows, never its borderless scaling overlay."""
         hidden = 0
 
         def callback(hwnd, _extra):
             nonlocal hidden
             owner_pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value != pid or not user32.IsWindowVisible(hwnd):
+                return True
             class_name = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, class_name, len(class_name))
+            style = user32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
             if (
-                owner_pid.value == pid
-                and class_name.value != AddonManagerMenuController.WINDOW_CLASS
-                and user32.IsWindowVisible(hwnd)
+                class_name.value != AddonManagerMenuController.WINDOW_CLASS
+                and (style & 0x00C00000) == 0x00C00000  # WS_CAPTION
+                and not (style & 0x40000000)  # WS_CHILD
             ):
                 show_window = getattr(user32, "ShowWindowAsync", user32.ShowWindow)
-                show_window(hwnd, 0)  # SW_HIDE
-                hidden += 1
+                if show_window(hwnd, 0):  # SW_HIDE
+                    hidden += 1
+                else:
+                    logger.debug("Lossless Scaling rejected the startup hide request for HWND %s", hwnd)
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
@@ -480,17 +485,15 @@ class ProcessWatcher:
         return hidden
 
     def _suppress_startup_window(self, pid: int, timeout: float = 6.0) -> None:
-        """Hide LS's delayed main window without watching long enough to catch its overlay."""
-        if self._hide_process_windows(pid):
-            return
+        """Keep suppressing delayed LS configuration windows during startup."""
+        self._hide_process_windows(pid)
 
         def wait_for_window() -> None:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if not psutil.pid_exists(pid):
                     return
-                if self._hide_process_windows(pid):
-                    return
+                self._hide_process_windows(pid)
                 # Poll faster than a typical display frame during startup so
                 # the fallback has the best chance of hiding a window before
                 # Desktop Window Manager presents it.

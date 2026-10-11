@@ -43,6 +43,16 @@ class CompanionTrayIconTests(unittest.TestCase):
             state.lossless_scaling_running = True
             self.assertEqual(tray._build_menu().items[1].text, "LS Active")
 
+            profile = manager.create_profile_from_process("game.exe", "Game Profile")
+            state.current_active_profile = profile
+            state.current_scaled_target = {"processName": "game.exe"}
+            state.is_scaling_active = True
+            scaling_menu = tray._build_menu()
+            self.assertEqual(scaling_menu.items[1].text, "Scaling: game.exe")
+            self.assertEqual(scaling_menu.items[2].text, "Profile: Game Profile")
+            self.assertEqual(tray._tray_title(), "Scaling: game.exe\nProfile: Game Profile")
+
+            state.is_scaling_active = False
             state.lossless_scaling_running = False
             executable.unlink()
             self.assertEqual(tray._build_menu().items[1].text, "LS Not Found")
@@ -233,7 +243,8 @@ class CompanionApplicationShutdownTests(unittest.TestCase):
         app.loop.call_soon_threadsafe.assert_called_once()
         app.automation.shutdown.assert_not_called()
 
-    def test_graceful_shutdown_is_idempotent_and_releases_instance(self):
+    @patch("companion.ui.dashboard_window.close_dashboard_window")
+    def test_graceful_shutdown_is_idempotent_and_releases_instance(self, close_dashboard):
         app = self.application_stub()
         app._start_shutdown_watchdog = Mock()
         instance_guard = app._instance_guard
@@ -246,6 +257,7 @@ class CompanionApplicationShutdownTests(unittest.TestCase):
         app.dynamic_limiter.close.assert_called_once_with()
         app.server_thread.join.assert_called_once_with(timeout=3)
         instance_guard.release.assert_called_once_with()
+        close_dashboard.assert_called_once_with()
         self.assertTrue(app._shutdown_complete.is_set())
 
     @patch("companion.ui.dashboard_window.close_dashboard_window")

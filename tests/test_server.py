@@ -79,36 +79,36 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
-    def test_live_addon_sampling_change_is_persisted_as_custom(self):
-        executable = Path(self.temp_dir.name) / "LosslessScaling.exe"
-        executable.write_bytes(b"exe")
-        config_path = executable.parent / "addons" / "config.json"
-        config_path.parent.mkdir()
-        config_path.write_text(json.dumps({
-            "addons": {"LSP-NeuralRender": {
-                "workingScale": "0.44",
-                "lscManagedWorkingScale": "0.35",
-                "lscSamplingPreset": "balanced",
-            }}
-        }), encoding="utf-8")
-        profile = self.manager.config.profiles[0]
-        profile.graphics.neural_render.implementation = "lsp_neural_render"
-        profile.graphics.neural_render.sampling_resolution_preset = "balanced"
-        profile.graphics.neural_render.working_scale = 0.35
-        self.manager.config.lossless_scaling_exe_path = str(executable)
-        self.state.current_active_profile = profile
+    async def test_profile_list_is_lightweight_and_detail_is_loaded_on_request(self):
+        profile = self.manager.create_profile_from_process("game.exe")
+        profile.addon_config = {"addons": {"Example": {"setting": "private detail"}}}
+        websocket = self.FakeWebSocket()
 
-        self.server._sync_active_neural_sampling_override()
+        await self.server.process_message(websocket, '{"type":"GET_PROFILE_SUMMARIES"}')
+        summaries = json.loads(websocket.messages[-1])
+        self.assertEqual(summaries["type"], "PROFILE_SUMMARIES")
+        listed = next(item for item in summaries["profiles"] if item["id"] == profile.id)
+        self.assertEqual(listed["name"], profile.name)
+        self.assertNotIn("addon_config", listed)
 
+        await self.server.process_message(websocket, json.dumps({
+            "type": "GET_PROFILE_DETAILS", "generation": 2,
+        }))
+        preload = json.loads(websocket.messages[-1])
+        self.assertEqual(preload["type"], "PROFILE_DETAILS")
+        self.assertEqual(preload["generation"], 2)
         self.assertEqual(
-            profile.graphics.neural_render.sampling_resolution_preset, "custom"
+            next(item for item in preload["profiles"] if item["id"] == profile.id)["addon_config"],
+            profile.addon_config,
         )
-        self.assertEqual(profile.graphics.neural_render.working_scale, 0.44)
-        saved = json.loads(self.manager.config_file.read_text(encoding="utf-8"))
-        self.assertEqual(
-            saved["profiles"][0]["graphics"]["neural_render"]["sampling_resolution_preset"],
-            "custom",
-        )
+
+        await self.server.process_message(websocket, json.dumps({
+            "type": "GET_PROFILE_DETAIL", "profileId": profile.id, "action": "edit",
+        }))
+        detail = json.loads(websocket.messages[-1])
+        self.assertEqual(detail["type"], "PROFILE_DETAIL")
+        self.assertEqual(detail["action"], "edit")
+        self.assertEqual(detail["profile"]["addon_config"], profile.addon_config)
 
     async def test_dashboard_can_open_proxy_menu(self):
         websocket = self.FakeWebSocket()
@@ -656,7 +656,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("pendingProfileReshadeImport = true", body)
             self.assertIn('id="importReshadePresetBtn"', body)
             self.assertNotIn('class="addon-badge ready">HDR Installer</span>', body)
-            self.assertIn('id="dlss5Enabled"', body)
+            self.assertNotIn('id="dlss5Enabled"', body)
+            self.assertIn('id="echoAddonPanelHost"', body)
+            self.assertNotIn('id="echoConfigJson"', body)
             self.assertNotIn('id="neuralUpdatePolicy"', body)
             self.assertNotIn('id="neuralRuntimeHash"', body)
             self.assertIn("smart-master-setting", body)

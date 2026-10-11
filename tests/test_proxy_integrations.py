@@ -280,6 +280,7 @@ class ProxyIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(evidence, {
             "proxyStarted": True,
+            "addonManagerStarted": False,
             "reshadeBridgeInitialized": True,
             "neuralEngineReady": True,
             "neuralModelPrepared": True,

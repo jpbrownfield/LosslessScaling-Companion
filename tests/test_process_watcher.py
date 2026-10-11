@@ -118,11 +118,69 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
                 self.assertTrue(watcher.launch_lossless_scaling(force=True))
 
             kwargs = popen.call_args.kwargs
-            self.assertEqual(popen.call_args.args[0], [str(executable), "-StartMinimized"])
+            self.assertEqual(popen.call_args.args[0], [str(executable)])
             self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
             suppress.assert_called_once_with(4242)
             self.assertEqual(launch_events, ["popen", "suppress", "sleep"])
+
+    def test_startup_suppression_keeps_watching_after_first_window(self):
+        watcher, _settings = self.make_watcher()
+        hidden = []
+
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with (
+            patch.object(watcher, "_hide_process_windows", side_effect=lambda _pid: hidden.append(1)),
+            patch("companion.services.process_watcher.threading.Thread", ImmediateThread),
+            patch("companion.services.process_watcher.psutil.pid_exists", side_effect=[True, True, False]),
+            patch("companion.services.process_watcher.time.sleep"),
+        ):
+            watcher._suppress_startup_window(4242)
+
+        self.assertEqual(len(hidden), 3)
+
+    def test_startup_suppression_skips_overlay_and_echo_windows(self):
+        watcher, _settings = self.make_watcher()
+        visible = {10: True, 20: True, 30: True, 40: True}
+        classes = {10: "HwndWrapper[LosslessScaling]", 20: "LSOverlay", 30: "LSAddonManagerClass", 40: "HwndWrapper[OtherProcess]"}
+        styles = {10: 0x00C00000, 20: 0x80000000, 30: 0x00C00000, 40: 0x00C00000}
+        user32 = Mock()
+
+        def enum_windows(callback, _extra):
+            for hwnd in visible:
+                callback(hwnd, 0)
+            return True
+
+        def set_pid(hwnd, pointer):
+            pointer._obj.value = 9999 if hwnd == 40 else 4242
+            return 1
+
+        def set_class(hwnd, buffer, _length):
+            buffer.value = classes[hwnd]
+            return len(classes[hwnd])
+
+        def hide(hwnd, _command):
+            visible[hwnd] = False
+            return 1
+
+        user32.EnumWindows.side_effect = enum_windows
+        user32.GetWindowThreadProcessId.side_effect = set_pid
+        user32.IsWindowVisible.side_effect = lambda hwnd: visible[hwnd]
+        user32.GetClassNameW.side_effect = set_class
+        user32.GetWindowLongW.side_effect = lambda hwnd, _index: styles[hwnd]
+        user32.ShowWindowAsync.side_effect = hide
+        with patch("companion.services.process_watcher.user32", user32):
+            self.assertEqual(watcher._hide_process_windows(4242), 1)
+
+        user32.ShowWindowAsync.assert_called_once_with(10, 0)
+        self.assertTrue(visible[20])
+        self.assertTrue(visible[30])
 
     def test_running_check_ignores_a_different_simulation_executable(self):
         watcher, _settings = self.make_watcher()

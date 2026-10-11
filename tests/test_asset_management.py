@@ -90,6 +90,39 @@ class AssetStoreTests(unittest.TestCase):
 
 
 class DeploymentManagerTests(unittest.TestCase):
+    def test_old_transaction_backups_are_consolidated_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+            old_transaction = (
+                manager.backup_root
+                / ("a" * 32)
+                / "prechange"
+                / "legacy-addons"
+                / "LSP-ReShade"
+            )
+            old_transaction.mkdir(parents=True)
+            (old_transaction / "old.dll").write_bytes(b"legacy")
+
+            manager.apply(
+                profile_id=None,
+                lossless_scaling_exe=str(executable),
+                files=[],
+            )
+
+            self.assertFalse((manager.backup_root / ("a" * 32)).exists())
+            self.assertEqual(
+                (
+                    manager.preinsert
+                    / "legacy-addons"
+                    / "LSP-ReShade"
+                    / "old.dll"
+                ).read_bytes(),
+                b"legacy",
+            )
+
     def test_echo_install_archives_recognized_legacy_addons_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -129,6 +162,14 @@ class DeploymentManagerTests(unittest.TestCase):
             backup = Path(manifest["legacy_addon_backup"])
             self.assertEqual((backup / "LSP-NeuralRender" / "old.dll").read_bytes(), b"old")
             self.assertEqual((backup / "LP-icon.ico").read_bytes(), b"old icon")
+            persistent_backup_folders = {
+                item.name for item in manager.backup_root.iterdir() if item.is_dir()
+            }
+            self.assertEqual(persistent_backup_folders, {"preinsert"})
+            self.assertFalse(any(
+                item.name.startswith("deployment-rollback-")
+                for item in manager.store.staging.iterdir()
+            ))
             self.assertIn("legacy_addon_structure_archived", (
                 manager.store.logs / "security-audit.jsonl"
             ).read_text(encoding="utf-8"))
@@ -476,6 +517,51 @@ class GraphicsResolverTests(unittest.TestCase):
         return store.import_release_archive(
             str(archive), provider=provider, version=version, source_metadata={}
         )
+
+    def test_echo_neural_plan_deploys_the_selected_model_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            (root / "Lossless.dll").write_bytes(self._x64_pe(b"original"))
+            self._package(
+                store,
+                root,
+                "ls-addon-manager",
+                "v1",
+                {
+                    "Lossless.dll": self._x64_pe(b"echo"),
+                    "lossless-scaling-deployment.json": json.dumps({
+                        "schema_version": 1,
+                        "files": [{
+                            "source": "Lossless.dll",
+                            "destination": "Lossless.dll",
+                            "role": "addon_manager_host",
+                        }],
+                    }),
+                },
+            )
+            runtime_source = root / "runtime-source" / "nvngx_dlssnr.dll"
+            runtime_source.parent.mkdir()
+            runtime_source.write_bytes(self._x64_pe(b"model"))
+            runtime = store.import_file(str(runtime_source), allowed_suffixes=(".dll",))
+            profile = Profile(name="Echo Neural")
+            profile.graphics.neural_render.implementation = "lsp_neural_render"
+            profile.graphics.neural_render.runtime_asset_sha256 = runtime["sha256"]
+
+            plan = GraphicsResolver(store).resolve(
+                profile,
+                lossless_scaling_exe=str(executable),
+                addon_manager_enabled=True,
+                addon_manager_config=ManagedPackageConfig(enabled=True, version="v1"),
+            )
+
+            model = next(item for item in plan if item["role"] == "neural_runtime")
+            self.assertEqual(model["relative_path"], "nvngx_dlssnr.dll")
+            self.assertEqual(
+                Path(model["source_path"]).read_bytes(), runtime_source.read_bytes()
+            )
 
     def test_lsp_neural_render_plan_preserves_proxy_config_and_original_engine(self):
         with tempfile.TemporaryDirectory() as directory:

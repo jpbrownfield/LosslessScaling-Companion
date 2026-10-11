@@ -333,7 +333,6 @@ class AutomationController:
             )
             confirmed = False
             for attempt in range(1, max_attempts + 1):
-                attempt_started = time.monotonic()
                 if attempt > 1 and target_pid and target_hwnd and self.process_watcher:
                     if not self.process_watcher.target_is_foreground(
                         target_pid, target_hwnd
@@ -390,6 +389,18 @@ class AutomationController:
                 if confirmed:
                     break
                 wrong_target_pid = self._last_confirmation_wrong_target_pid
+                if wrong_target_pid is None:
+                    # The activation hotkey is a toggle. If add-on injection
+                    # prevents the observer from confirming the new state, a
+                    # second press may turn a successfully scaled session off.
+                    # Retry only after positively observing and stopping the
+                    # wrong target below.
+                    logger.warning(
+                        "Lossless Scaling activation remained ambiguous after %s; "
+                        "the toggle will not be resent",
+                        reason,
+                    )
+                    break
                 if wrong_target_pid is not None:
                     logger.warning(
                         "Lossless Scaling activated PID %s instead of requested PID %s; "
@@ -422,19 +433,11 @@ class AutomationController:
                             self.process_watcher.invalidate_foreground_cache()
                             return False
                     logger.warning(
-                        "Lossless Scaling did not confirm %s after %s attempt %d/%d; retrying",
-                        "activation" if active else "deactivation",
+                        "Retrying %s only because PID %s was positively identified "
+                        "and stopped",
                         reason,
-                        attempt,
-                        max_attempts,
+                        wrong_target_pid,
                     )
-                    # Confirmation normally consumes this entire interval. If
-                    # a probe errors early, preserve the requested five-second
-                    # cadence instead of firing toggle hotkeys back-to-back.
-                    retry_at = attempt_started + self.AUTO_SCALE_CONFIRMATION_SECONDS
-                    remaining = retry_at - time.monotonic()
-                    if remaining > 0:
-                        time.sleep(remaining)
             if not confirmed:
                 self._set_control_status(
                     "error",
@@ -875,19 +878,7 @@ class AutomationController:
 
             try:
                 configured_exe = self.profile_manager.config.lossless_scaling_exe_path
-                neural_sampling_preset_before = (
-                    profile.graphics.neural_render.sampling_resolution_preset
-                    if profile else None
-                )
                 deployment_files = self.resolve_deployment_files(profile)
-                if (
-                    profile
-                    and neural_sampling_preset_before !=
-                    profile.graphics.neural_render.sampling_resolution_preset
-                ):
-                    # The resolver detected that workingScale was changed later
-                    # in the add-on menu and relinquished ownership as Custom.
-                    self.profile_manager.save_config()
                 deployment_change = bool(
                     configured_exe
                     and self.deployment_manager.needs_change(

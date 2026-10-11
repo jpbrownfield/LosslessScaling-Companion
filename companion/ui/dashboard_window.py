@@ -84,6 +84,41 @@ def _focus_existing_dashboard() -> bool:
     return True
 
 
+def dashboard_window_handle() -> Optional[int]:
+    """Return the dedicated app window that can host native child controls."""
+    handles = _dashboard_window_handles()
+    if not handles:
+        return None
+    if os.name == "nt":
+        foreground = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        if foreground in handles:
+            return foreground
+    return handles[0]
+
+
+def dashboard_css_rect_to_client_pixels(rect: dict) -> Optional[tuple[int, int, int, int, int]]:
+    """Map a browser viewport CSS rectangle into its native client pixels."""
+    hwnd = dashboard_window_handle()
+    if not hwnd or os.name != "nt":
+        return None
+    viewport_width = float(rect.get("viewportWidth") or 0)
+    viewport_height = float(rect.get("viewportHeight") or 0)
+    if viewport_width <= 0 or viewport_height <= 0:
+        return None
+    client = wintypes.RECT()
+    if not ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(client)):
+        return None
+    scale_x = max(1, client.right - client.left) / viewport_width
+    scale_y = max(1, client.bottom - client.top) / viewport_height
+    return (
+        hwnd,
+        round(float(rect.get("left") or 0) * scale_x),
+        round(float(rect.get("top") or 0) * scale_y),
+        max(1, round(float(rect.get("width") or 0) * scale_x)),
+        max(1, round(float(rect.get("height") or 0) * scale_y)),
+    )
+
+
 def close_dashboard_window() -> bool:
     """Request that every dedicated dashboard app window close normally."""
     if os.name != "nt":

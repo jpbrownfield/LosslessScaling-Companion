@@ -583,7 +583,7 @@ class ProfileEffectsTests(unittest.TestCase):
 
     @patch("companion.services.automation.time.sleep")
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
-    def test_auto_scale_retries_six_times_at_five_second_cadence(
+    def test_auto_scale_does_not_resend_an_ambiguous_toggle(
         self, trigger_hotkey, sleep
     ):
         with tempfile.TemporaryDirectory() as directory:
@@ -594,11 +594,9 @@ class ProfileEffectsTests(unittest.TestCase):
             watcher.maintain_scaling_target_foreground.return_value = True
             watcher.target_is_foreground.return_value = True
             automation = AutomationController(manager, state, watcher)
-            automation._confirm_scaling_state = Mock(
-                side_effect=[False, False, False, False, False, True]
-            )
+            automation._confirm_scaling_state = Mock(return_value=False)
 
-            self.assertTrue(
+            self.assertFalse(
                 automation.set_scaling(
                     True,
                     Profile(name="Game", target_process="Game.exe"),
@@ -608,15 +606,14 @@ class ProfileEffectsTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(trigger_hotkey.call_count, 6)
-        self.assertEqual(automation._confirm_scaling_state.call_count, 6)
-        self.assertEqual(sleep.call_count, 5)
-        self.assertTrue(all(call.args[0] <= 5.0 for call in sleep.call_args_list))
-        self.assertTrue(state.is_scaling_active)
+        trigger_hotkey.assert_called_once()
+        automation._confirm_scaling_state.assert_called_once()
+        sleep.assert_not_called()
+        self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.time.sleep")
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
-    def test_auto_scale_retry_stops_when_target_loses_focus(
+    def test_ambiguous_auto_scale_does_not_toggle_again_after_focus_moves(
         self, trigger_hotkey, sleep
     ):
         with tempfile.TemporaryDirectory() as directory:
@@ -641,7 +638,7 @@ class ProfileEffectsTests(unittest.TestCase):
 
         trigger_hotkey.assert_called_once()
         sleep.assert_not_called()
-        watcher.invalidate_foreground_cache.assert_called_once()
+        watcher.invalidate_foreground_cache.assert_not_called()
         self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.time.sleep")

@@ -45,7 +45,9 @@ class DeploymentManager:
         self.store = store
         self._lock = threading.RLock()
         self.manifest_path = store.deployments / self.TARGET_ID / "active-manifest.json"
-        self.originals = store.backups / self.TARGET_ID / "originals"
+        self.backup_root = store.backups / self.TARGET_ID
+        self.originals = self.backup_root / "originals"
+        self.preinsert = self.backup_root / "preinsert"
 
     @staticmethod
     def _hash(path: Path) -> str:
@@ -93,6 +95,57 @@ class DeploymentManager:
             return json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise DeploymentConflictError(f"Active deployment manifest is unreadable: {error}") from error
+
+    @staticmethod
+    def _copy_tree_or_file_once(source: Path, destination: Path) -> None:
+        if destination.exists():
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            if source.is_dir():
+                shutil.copytree(source, temporary)
+            else:
+                shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            if temporary.is_dir():
+                shutil.rmtree(temporary, ignore_errors=True)
+            elif temporary.exists():
+                temporary.unlink(missing_ok=True)
+
+    def _consolidate_transaction_backups(self) -> None:
+        """Fold old UUID rollback folders into one preinsert backup and remove them."""
+        if not self.backup_root.is_dir():
+            return
+        removed = []
+        for directory in self.backup_root.iterdir():
+            if (
+                not directory.is_dir()
+                or len(directory.name) != 32
+                or any(character not in "0123456789abcdefABCDEF" for character in directory.name)
+            ):
+                continue
+            try:
+                legacy = directory / "prechange" / "legacy-addons"
+                if legacy.is_dir():
+                    for item in legacy.iterdir():
+                        self._copy_tree_or_file_once(
+                            item, self.preinsert / "legacy-addons" / item.name
+                        )
+                shutil.rmtree(directory)
+                removed.append(directory.name)
+            except OSError:
+                # Keep the old folder intact if consolidation cannot complete.
+                continue
+        if removed:
+            self.store.audit(
+                "deployment_backups_consolidated",
+                target=self.TARGET_ID,
+                removed_transaction_folders=removed,
+                preinsert=str(self.preinsert),
+                originals=str(self.originals),
+            )
 
     @staticmethod
     def _normalize_desired(files: Iterable[Dict]) -> List[Dict]:
@@ -322,6 +375,7 @@ class DeploymentManager:
     ) -> Dict:
         """Apply one complete desired LS file set, rolling back on every failure."""
         with self._lock:
+            self._consolidate_transaction_backups()
             desired = self._normalize_desired(files)
             fingerprint = self._fingerprint(profile_id, desired)
             active = self._read_manifest()
@@ -377,7 +431,7 @@ class DeploymentManager:
                     )
 
             transaction_id = uuid.uuid4().hex
-            rollback_root = self.store.backups / self.TARGET_ID / transaction_id / "prechange"
+            rollback_root = self.store.staging / f"deployment-rollback-{transaction_id}"
             rollback_state = []
             for folded in affected:
                 relative = (desired_by_path.get(folded) or active_by_path[folded])["relative_path"]
@@ -430,13 +484,16 @@ class DeploymentManager:
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(legacy_path, backup)
                     migrated_legacy.append((legacy_path, backup))
+                    self._copy_tree_or_file_once(
+                        backup, self.preinsert / "legacy-addons" / legacy_path.name
+                    )
                 if migrated_legacy:
                     self.store.audit(
                         "legacy_addon_structure_archived",
                         target=str(root),
                         transaction_id=transaction_id,
                         paths=[item.name for item, _backup in migrated_legacy],
-                        backup=str(rollback_root / "legacy-addons"),
+                        backup=str(self.preinsert / "legacy-addons"),
                     )
                 for folded, old_entry in active_by_path.items():
                     if folded in desired_by_path:
@@ -497,7 +554,9 @@ class DeploymentManager:
                     "transaction_id": transaction_id,
                     "files": new_entries,
                     "legacy_addon_backup": (
-                        str(rollback_root / "legacy-addons") if migrated_legacy else None
+                        str(self.preinsert / "legacy-addons")
+                        if migrated_legacy
+                        else active.get("legacy_addon_backup")
                     ),
                 }
                 AssetStore._atomic_json(self.manifest_path, manifest)
@@ -540,6 +599,8 @@ class DeploymentManager:
                     message=str(error),
                 )
                 raise
+            finally:
+                shutil.rmtree(rollback_root, ignore_errors=True)
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:

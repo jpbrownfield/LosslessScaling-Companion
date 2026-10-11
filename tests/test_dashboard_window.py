@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import patch
 
-from companion.ui.dashboard_window import close_dashboard_window, open_dashboard_window
+from companion.ui.dashboard_window import (
+    close_dashboard_window,
+    dashboard_css_rect_to_client_pixels,
+    open_dashboard_window,
+)
 
 
 class DashboardWindowTests(unittest.TestCase):
@@ -49,6 +53,23 @@ class DashboardWindowTests(unittest.TestCase):
     @patch("companion.ui.dashboard_window.os.name", "nt")
     def test_close_returns_false_when_dashboard_is_not_open(self, _handles):
         self.assertFalse(close_dashboard_window())
+
+    @patch("companion.ui.dashboard_window.dashboard_window_handle", return_value=101)
+    @patch("companion.ui.dashboard_window.os.name", "nt")
+    @patch("companion.ui.dashboard_window.ctypes.windll.user32")
+    def test_maps_browser_css_rect_to_native_client_pixels(self, user32, _handle):
+        def fill_client_rect(_hwnd, pointer):
+            pointer._obj.right = 1200
+            pointer._obj.bottom = 900
+            return 1
+
+        user32.GetClientRect.side_effect = fill_client_rect
+        result = dashboard_css_rect_to_client_pixels({
+            "left": 100, "top": 50, "width": 400, "height": 300,
+            "viewportWidth": 1000, "viewportHeight": 750,
+        })
+
+        self.assertEqual(result, (101, 120, 60, 480, 360))
 
 
 if __name__ == "__main__":

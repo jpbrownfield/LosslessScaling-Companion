@@ -29,7 +29,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
 
 5. **Lossless Scaling Add-ons:**
    - Copies configured DLLs only into the Lossless Scaling directory.
-   - Keeps transaction-owned backups and restores original files when assets are unmanaged.
+   - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
    - Game executable paths are used only for foreground profile detection.
    - Downloads Echo LS Add-on Manager only from its official release feed, expands its verified x64 Setup payload, and deploys it transactionally.
    - Saves a default Echo configuration plus one complete configuration per profile, with the menu available on demand while scaling.
@@ -193,14 +193,13 @@ on the scaled target's monitor and restores only those windows when scaling stop
 Lossless Scaling, the target application's other windows, the companion, shell
 windows, tool windows, and windows already minimized by the user are excluded.
 
-There is currently no standalone official NVIDIA download for
-`nvngx_dlssnr.dll`. The dashboard's single **Install NeuralRender + runtime**
-action first requires an explicit warning acknowledgement, then obtains
-LSP-NeuralRender from its publisher and the community-modified, unsigned SF-v2
-runtime through RHI's public manifest and `RankFTW/rhi-repo`. Companion requires
-the manifest URL to match that GitHub release, requires GitHub's SHA-256 release
-digest, validates the archive and x64 DLL, and stores both immutably. The runtime
-is downloaded on demand and is never bundled in an LS Companion release.
+Echo LS Add-on Manager supplies and updates its Neural Rendering add-on, but it
+does not distribute NVIDIA's `nvngx_dlssnr.dll` model runtime. Companion keeps a
+user-selected, validated x64 copy of that runtime and deploys it beside
+`LosslessScaling.exe` whenever the profile's Echo configuration enables
+`DLSS5NR01`. For the active profile, the profile editor hosts Echo's actual
+native control-panel window and captures its live configuration back into that
+profile when the panel detaches or scaling stops.
 
 ### Graphics stack compatibility evaluation
 

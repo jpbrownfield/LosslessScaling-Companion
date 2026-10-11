@@ -67,7 +67,13 @@ class AddonConfigService:
         return True
 
     def effective(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35) -> Dict[str, Any]:
-        """Return user state plus the small set of Companion-owned invariants."""
+        """Return Echo-owned profile state plus Companion's host invariants.
+
+        ``addon_config`` is authoritative.  The NeuralRender model remains in
+        the profile schema only to read older Companion profiles and select a
+        user-supplied runtime; it must not overwrite settings subsequently
+        edited in Echo or in the complete profile editor.
+        """
         configured = profile.addon_config or self.profile_manager.config.default_addon_config
         data = self._clean(configured)
         global_settings = data["global"]
@@ -81,6 +87,23 @@ class AddonConfigService:
         updates["check"] = False
         global_settings["auto_load"] = True
 
+        # One-way migration for profiles saved before Echo's full config was
+        # exposed. Once an Echo section exists, every value in it belongs to
+        # Echo and is preserved verbatim.
+        if (
+            "DLSS5NR01" not in data["addons"]
+            and profile.graphics.neural_render.implementation == "lsp_neural_render"
+        ):
+            neural = profile.graphics.neural_render
+            scales = {
+                "performance": 0.25, "balanced": 0.35,
+                "quality": 0.5, "full": 1.0,
+            }
+            migrated = {"_enabled": True}
+            if neural.sampling_resolution_preset != "custom":
+                migrated["workingScale"] = f"{scales[neural.sampling_resolution_preset]:g}"
+            data["addons"]["DLSS5NR01"] = migrated
+
         if reshade_enabled:
             passthrough = data["addons"].setdefault("ReShadePassthrough", {})
             if not isinstance(passthrough, dict):
@@ -91,35 +114,6 @@ class AddonConfigService:
             passthrough.setdefault("hotkey_alt", "0")
             passthrough.setdefault("hotkey_shift", "0")
             passthrough.setdefault("auto_click_repress", "1")
-
-        neural = profile.graphics.neural_render
-        neural_addon = data["addons"].setdefault("DLSS5NR01", {})
-        if not isinstance(neural_addon, dict):
-            neural_addon = data["addons"]["DLSS5NR01"] = {}
-        if neural.implementation == "lsp_neural_render":
-            styles = {"standard": 0, "natural": 1, "cinematic": 2}
-            neural_addon.update({
-                "_enabled": True,
-                "style": str(styles[neural.style]),
-                "intensity": f"{neural.intensity:g}",
-                "localStructure": f"{neural.local_structure:g}",
-                "localTone": f"{neural.local_tone:g}",
-                "skinStructure": f"{neural.skin_structure:g}",
-                "useFlow": "1" if neural.use_lsfg_optical_flow else "0",
-                "lsFirst": "1" if neural.prioritize_ls_gpu_work else "0",
-                "composeIntensity": f"{neural.apply_strength:g}",
-                "maxDelta": f"{neural.max_delta:g}",
-                "hiProtect": f"{neural.protect_highlights_above:g}",
-                "watchdogMs": str(neural.watchdog_ms),
-            })
-            if neural.sampling_resolution_preset != "custom":
-                scales = {
-                    "performance": 0.25, "balanced": 0.35,
-                    "quality": 0.5, "full": 1.0,
-                }
-                neural_addon["workingScale"] = f"{scales[neural.sampling_resolution_preset]:g}"
-            else:
-                neural_addon.setdefault("workingScale", f"{neural.working_scale:g}")
         return data
 
     def materialize(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35) -> Path:

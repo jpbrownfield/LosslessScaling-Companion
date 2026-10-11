@@ -46,6 +46,7 @@ from .input_simulator import InputSimulator
 from .self_update import CompanionUpdateService
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
+from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels
 from ..version import current_version
 from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
 
@@ -217,7 +218,7 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
-            "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
+            "activeProfile": self._active_profile_status(),
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
@@ -229,6 +230,15 @@ class CompanionWebSocketServer:
         except ConnectionClosed:
             pass
         finally:
+            if self.client_authority.get(websocket) == "dashboard" and self.proxy_menu:
+                active = self.state.current_active_profile
+                if active and self.config.addon_manager_enabled:
+                    await asyncio.to_thread(
+                        self.automation.addon_configs.capture,
+                        active,
+                        self.config.lossless_scaling_exe_path,
+                    )
+                await asyncio.to_thread(self.proxy_menu.detach, hide=True)
             self.clients.remove(websocket)
             self.client_authority.pop(websocket, None)
             self.state.connected_clients = len(self.clients)
@@ -259,6 +269,8 @@ class CompanionWebSocketServer:
                 "REVERT_ALL_CHANGES",
                 "OPEN_CONFIG_FOLDER",
                 "OPEN_PROXY_MENU",
+                "EMBED_ADDON_MENU",
+                "DETACH_ADDON_MENU",
                 "BROWSE_GENERAL_PATH",
                 "GET_RESHADE_PROFILES",
                 "SAVE_RESHADE_PROFILE",
@@ -331,6 +343,32 @@ class CompanionWebSocketServer:
                 await self.send_full_data_update(websocket, visible_windows_only=visible_only)
                 return
 
+            if msg_type == "GET_PROFILE_SUMMARIES":
+                await websocket.send(json.dumps({
+                    "type": "PROFILE_SUMMARIES",
+                    "profiles": self._profile_summaries(),
+                }))
+                return
+
+            if msg_type == "GET_PROFILE_DETAILS":
+                await websocket.send(json.dumps({
+                    "type": "PROFILE_DETAILS",
+                    "generation": msg.get("generation"),
+                    "profiles": [profile.model_dump(mode="json") for profile in self.profile_manager.config.profiles],
+                }))
+                return
+
+            if msg_type == "GET_PROFILE_DETAIL":
+                profile = self.profile_manager.get_profile_by_id(str(msg.get("profileId") or ""))
+                if profile is None:
+                    raise ValueError("Unknown profile")
+                await websocket.send(json.dumps({
+                    "type": "PROFILE_DETAIL",
+                    "profile": profile.model_dump(mode="json"),
+                    "action": msg.get("action"),
+                }))
+                return
+
             if msg_type == "GET_LOSSLESS_SETTINGS":
                 await websocket.send(json.dumps({
                     "type": "LOSSLESS_SETTINGS",
@@ -389,6 +427,58 @@ class CompanionWebSocketServer:
                 if not result.get("opened"):
                     raise RuntimeError(str(result.get("reason") or "Could not open the add-on menu"))
                 await websocket.send(json.dumps({"type": "PROXY_MENU_OPENED"}))
+                return
+
+            if msg_type == "EMBED_ADDON_MENU":
+                if not self.proxy_menu:
+                    raise RuntimeError("Add-on menu control is unavailable")
+                if not self.config.addon_manager_enabled:
+                    raise RuntimeError("Echo LS Add-on Manager is disabled in General Settings")
+                profile_id = str(msg.get("profileId") or "")
+                active = self.state.current_active_profile
+                if not active or active.id != profile_id:
+                    await websocket.send(json.dumps({
+                        "type": "ADDON_MENU_EMBED_STATUS",
+                        "embedded": False,
+                        "reason": "Echo can edit only the active profile. Activate and scale this profile first.",
+                    }))
+                    return
+                placement = dashboard_css_rect_to_client_pixels(msg.get("rect") or {})
+                if not placement:
+                    await websocket.send(json.dumps({
+                        "type": "ADDON_MENU_EMBED_STATUS",
+                        "embedded": False,
+                        "reason": "Native embedding is available in Companion's app window only.",
+                    }))
+                    return
+                parent, left, top, width, height = placement
+                result = await asyncio.to_thread(
+                    self.proxy_menu.embed,
+                    parent,
+                    left=left,
+                    top=top,
+                    width=width,
+                    height=height,
+                )
+                await websocket.send(json.dumps({
+                    "type": "ADDON_MENU_EMBED_STATUS",
+                    **result,
+                }))
+                return
+
+            if msg_type == "DETACH_ADDON_MENU":
+                active = self.state.current_active_profile
+                if active and self.config.addon_manager_enabled:
+                    await asyncio.to_thread(
+                        self.automation.addon_configs.capture,
+                        active,
+                        self.config.lossless_scaling_exe_path,
+                    )
+                if self.proxy_menu:
+                    await asyncio.to_thread(self.proxy_menu.detach, hide=True)
+                await websocket.send(json.dumps({
+                    "type": "ADDON_MENU_EMBED_STATUS", "embedded": False,
+                }))
                 return
 
             if msg_type == "IMPORT_GRAPHICS_SOURCE":
@@ -1252,6 +1342,39 @@ class CompanionWebSocketServer:
                 if prof_data:
                     prof_data = dict(prof_data)
                     requested_id = str(prof_data.get("id") or "")
+                    active_profile = self.state.current_active_profile
+                    if (
+                        requested_id
+                        and active_profile
+                        and active_profile.id == requested_id
+                        and self.config.addon_manager_enabled
+                    ):
+                        # The embedded Echo panel writes the live config. Pull
+                        # it before validating the browser's autosave payload
+                        # so a stale page copy can never overwrite native edits.
+                        await asyncio.to_thread(
+                            self.automation.addon_configs.capture,
+                            active_profile,
+                            self.config.lossless_scaling_exe_path,
+                        )
+                        prof_data["addon_config"] = json.loads(
+                            json.dumps(active_profile.addon_config)
+                        )
+                        addons = active_profile.addon_config.get("addons", {})
+                        neural_enabled = bool(
+                            isinstance(addons.get("DLSS5NR01"), dict)
+                            and addons["DLSS5NR01"].get("_enabled")
+                        )
+                        graphics = dict(prof_data.get("graphics") or {})
+                        neural = dict(graphics.get("neural_render") or {})
+                        package = dict(neural.get("package") or {})
+                        package["enabled"] = neural_enabled
+                        neural["package"] = package
+                        neural["implementation"] = (
+                            "lsp_neural_render" if neural_enabled else "disabled"
+                        )
+                        graphics["neural_render"] = neural
+                        prof_data["graphics"] = graphics
                     existing_requested = (
                         self.profile_manager.get_profile_by_id(requested_id)
                         if requested_id else None
@@ -2237,16 +2360,46 @@ class CompanionWebSocketServer:
             },
         }
 
+    def _profile_summaries(self) -> list[Dict]:
+        return [{
+            "id": profile.id,
+            "name": profile.name,
+            "is_default": profile.is_default,
+            "target_domain": profile.target_domain,
+            "target_process": profile.target_process,
+            "target_executable_path": profile.target_executable_path,
+            "target_processes": profile.target_processes,
+            "target_executable_paths": profile.target_executable_paths,
+            "rtss": {
+                "enabled": profile.rtss.enabled,
+                "framerate_limit": profile.rtss.framerate_limit,
+                "learned_framerate_limit": profile.rtss.learned_framerate_limit,
+            },
+        } for profile in self.profile_manager.config.profiles]
+
+    def _active_profile_status(self) -> Optional[Dict]:
+        profile = self.state.current_active_profile
+        if profile is None:
+            return None
+        return {
+            "id": profile.id,
+            "name": profile.name,
+            "graphics": {"neural_render": {
+                "implementation": profile.graphics.neural_render.implementation,
+            }},
+            "reshade": {"menu_proxy_enabled": profile.reshade.menu_proxy_enabled}
+            if profile.reshade else None,
+        }
+
     async def send_full_data_update(self, websocket: WebSocketServerProtocol, visible_windows_only: bool = True) -> None:
-        self._sync_active_neural_sampling_override()
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
             "simulationMode": self.state.simulation_mode,
             "processes": procs,
-            "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
+            "profiles": self._profile_summaries(),
             "activeProfileId": self.profile_manager.config.active_profile_id,
-            "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
+            "activeProfile": self._active_profile_status(),
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
@@ -2260,15 +2413,14 @@ class CompanionWebSocketServer:
     async def broadcast_full_data_update(self, visible_windows_only: bool = True) -> None:
         if not self.clients:
             return
-        self._sync_active_neural_sampling_override()
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
             "simulationMode": self.state.simulation_mode,
             "processes": procs,
-            "profiles": [p.model_dump() for p in self.profile_manager.config.profiles],
+            "profiles": self._profile_summaries(),
             "activeProfileId": self.profile_manager.config.active_profile_id,
-            "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
+            "activeProfile": self._active_profile_status(),
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
@@ -2278,52 +2430,6 @@ class CompanionWebSocketServer:
             "scalingControl": self.state.scaling_control_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
-
-    def _sync_active_neural_sampling_override(self) -> None:
-        """Persist a later add-on-menu resolution change as Custom.
-
-        LosslessProxy retains Companion's last applied value in metadata beside
-        workingScale. A mismatch means the user changed the live add-on control,
-        so Companion relinquishes that setting before any future activation can
-        replace it.
-        """
-        profile = self.state.current_active_profile
-        configured_exe = self.config.lossless_scaling_exe_path
-        if (
-            not profile
-            or not configured_exe
-            or profile.graphics.neural_render.implementation != "lsp_neural_render"
-            or profile.graphics.neural_render.sampling_resolution_preset == "custom"
-        ):
-            return
-        try:
-            config_path = Path(configured_exe).resolve().parent / "addons" / "config.json"
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            addon = data.get("addons", {}).get("LSP-NeuralRender", {})
-            current = float(addon.get("workingScale"))
-            marker_raw = addon.get("lscManagedWorkingScale")
-            expected = self.automation.graphics_resolver.NEURAL_SAMPLING_PRESETS[
-                profile.graphics.neural_render.sampling_resolution_preset
-            ]
-            marker = float(marker_raw) if marker_raw is not None else expected
-            if abs(current - marker) <= 0.0001:
-                return
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            return
-
-        changed = False
-        for candidate in self.config.profiles:
-            if candidate.id != profile.id:
-                continue
-            candidate.graphics.neural_render.sampling_resolution_preset = "custom"
-            candidate.graphics.neural_render.working_scale = current
-            changed = True
-            if candidate is not profile:
-                profile.graphics.neural_render.sampling_resolution_preset = "custom"
-                profile.graphics.neural_render.working_scale = current
-            break
-        if changed:
-            self.profile_manager.save_config()
 
     def _control_settings_payload(self) -> Dict:
         selected_process_lasso_log = ProcessLassoLogTailer.resolve_path(
@@ -2422,7 +2528,7 @@ class CompanionWebSocketServer:
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingFound": self._lossless_scaling_found(),
             "losslessScalingRunning": self.state.lossless_scaling_running,
-            "activeProfile": self.state.current_active_profile.model_dump() if self.state.current_active_profile else None,
+            "activeProfile": self._active_profile_status(),
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
