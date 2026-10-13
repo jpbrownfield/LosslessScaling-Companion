@@ -105,7 +105,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
 
     def test_advanced_and_package_maintenance_controls_are_not_shown(self):
         self.assertIn(
-            'id="nativeAdvancedSettingsGroup" class="native-settings-group" hidden',
+            'id="nativeAdvancedSettingsGroup" class="settings-group profile-settings-nested" hidden',
             self.html,
         )
         self.assertNotIn("Special K Version</label>", self.html)
@@ -132,6 +132,11 @@ class NativeProfileEditorContractTests(unittest.TestCase):
     def test_native_echo_panel_and_reshade_passthrough_are_wired(self):
         self.assertIn('id="echoAddonPanelHost"', self.html)
         self.assertIn("function updateEchoEmbed(force = false)", self.html)
+        self.assertIn('.echo-native-host { position:relative; height:76px;', self.html)
+        self.assertIn('.echo-native-host.available { height:620px; }', self.html)
+        self.assertIn("runtimeActiveProfile.id === profileId", self.html)
+        self.assertIn("host.classList.toggle('available', !!available)", self.html)
+        self.assertIn("host.classList.remove('embedded', 'available')", self.html)
         self.assertIn("type: 'EMBED_ADDON_MENU'", self.html)
         self.assertIn("type: 'DETACH_ADDON_MENU'", self.html)
         self.assertIn("msg.type === 'ADDON_MENU_EMBED_STATUS'", self.html)
@@ -150,23 +155,19 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
         self.assertIn("implementation: dlss5Enabled ? 'lsp_neural_render' : 'disabled'", self.html)
 
-    def test_collapsible_profile_headers_are_centered_and_blue_on_black(self):
+    def test_collapsible_profile_headers_match_other_settings_groups(self):
+        self.assertEqual(self.html.count('class="settings-group profile-settings-group" open>'), 2)
         self.assertIn(
-            ".native-settings-group > summary { position: relative; display: flex; "
-            "align-items: center; justify-content: center;",
-            self.html,
-        )
-        self.assertIn("color: #38bdf8; background: #05080c;", self.html)
-        self.assertIn(
-            ".native-settings-group { margin-top: 8px; overflow: hidden; "
-            "border: 1px solid rgba(56,189,248,.72);",
+            '<summary>Lossless Scaling Profile Settings <span class="chevron" aria-hidden="true">&#8250;</span></summary>',
             self.html,
         )
         self.assertIn(
-            ".native-settings-group > summary::-webkit-details-marker { display: none; }",
+            '<summary>Echo Add-on Manager Configuration <span class="chevron" aria-hidden="true">&#8250;</span></summary>',
             self.html,
         )
-        self.assertIn(".native-settings-group[open] > summary::before", self.html)
+        self.assertIn('.settings-group > summary { display: flex; align-items: center;', self.html)
+        self.assertIn('details[open] > summary .chevron { transform: rotate(90deg); }', self.html)
+        self.assertNotIn('.native-settings-group > summary', self.html)
 
     def test_legacy_neural_render_profile_controls_are_removed(self):
         self.assertNotIn('id="dlss5Enabled"', self.html)

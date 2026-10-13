@@ -176,8 +176,9 @@
     #profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }
     body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
-    .echo-native-host { position:relative; height:620px; margin:12px 14px 14px; overflow:hidden; border:1px solid var(--card-border); border-radius:8px; background:#101216; }
-    .echo-native-host-status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:24px; color:var(--text-muted); font-size:12px; line-height:1.5; text-align:center; }
+    .echo-native-host { position:relative; height:76px; margin-top:12px; overflow:hidden; border:1px solid var(--card-border); border-radius:8px; background:#101216; }
+    .echo-native-host.available { height:620px; }
+    .echo-native-host-status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:12px 20px; color:var(--text-muted); font-size:12px; line-height:1.5; text-align:center; }
     .echo-native-host.embedded .echo-native-host-status { display:none; }
     .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
     .profile-basics-grid.native-default-profile { grid-template-areas: "name name name name" "type path path path"; }
@@ -224,8 +225,9 @@
     .integration-section fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     .profile-addon-section { margin: 16px 0; padding: 14px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--surface-bg); }
     .profile-addon-section.disabled { opacity: 0.48; }
-    .native-settings { margin: 16px 0; padding-top: 12px; border-top: 1px solid var(--card-border); }
-    .native-settings > h4 { margin-bottom: 4px; color: var(--accent); font-size: 13px; }
+    .profile-settings-group { margin: 16px 0; overflow: hidden; }
+    .profile-settings-group > summary:hover, .profile-settings-nested > summary:hover { background: rgba(56, 189, 248, 0.04); }
+    .profile-settings-nested { margin: 10px 0 0; overflow: hidden; }
     .ls-settings-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; margin-top: 10px; padding: 8px; border: 1px solid var(--card-border); border-radius: 9px; background: var(--input-bg); }
     .ls-settings-column { display: grid; align-content: start; gap: 8px; }
     .ls-settings-card { padding: 11px 12px; border: 1px solid rgba(148,163,184,.12); border-radius: 5px; background: rgba(255,255,255,.045); box-shadow: 0 1px 3px rgba(0,0,0,.24); }
@@ -250,17 +252,9 @@
     .ls-crop-control::after { content: ""; grid-area: center; width: 31px; height: 24px; justify-self: center; border: 1px solid #64748b; }
     .ls-crop-control input { width: 46px; padding: 5px 3px; border: 1px solid rgba(148,163,184,.24); border-radius: 3px; background: var(--input-bg); color: #f8fafc; font-size: 11px; text-align: center; }
     .ls-crop-top { grid-area: top; } .ls-crop-left { grid-area: left; } .ls-crop-right { grid-area: right; } .ls-crop-bottom { grid-area: bottom; }
-    .native-settings-group { margin-top: 8px; overflow: hidden; border: 1px solid rgba(56,189,248,.72); border-radius: 8px; background: var(--surface-bg); }
-    .native-settings-group > summary { position: relative; display: flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 44px; padding: 10px 42px; cursor: pointer; list-style: none; color: #38bdf8; background: #05080c; font-size: 13px; font-weight: 750; line-height: 1.25; text-align: center; transition: background .16s ease, color .16s ease; }
-    .native-settings-group > summary::-webkit-details-marker { display: none; }
-    .native-settings-group > summary::before { content: "\203A"; position: absolute; left: 14px; top: 50%; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: #38bdf8; font-size: 22px; font-weight: 500; line-height: 1; transform: translateY(-50%); transition: transform .16s ease; }
-    .native-settings-group[open] > summary::before { transform: translateY(-50%) rotate(90deg); }
-    .native-settings-group > summary:hover { color: #7dd3fc; background: #08121b; }
-    .native-settings-group > summary:focus-visible { outline: 2px solid #38bdf8; outline-offset: -3px; }
-    .native-settings-group[open] > summary { border-bottom: 1px solid rgba(56,189,248,.5); }
-    .native-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; padding: 0 12px 12px; }
+    .native-settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; }
     .native-settings-grid > .form-group { margin: 0; }
-    .native-extra-settings { display: grid; gap: 8px; padding: 0 12px 12px; }
+    .native-extra-settings { display: grid; gap: 8px; }
     .native-extra-row { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(0, 1.3fr); align-items: center; gap: 10px; }
     .native-extra-row code { color: var(--text-muted); overflow-wrap: anywhere; }
     .native-extra-row input { width: 100%; padding: 8px 10px; background: var(--input-bg); border: 1px solid var(--card-border); border-radius: 6px; color: #fff; }
@@ -546,8 +540,9 @@
           </div>
         </div>
 
-        <details class="native-settings native-settings-group" open>
-          <summary>Lossless Scaling Profile Settings</summary>
+        <details class="settings-group profile-settings-group" open>
+          <summary>Lossless Scaling Profile Settings <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+          <div class="settings-group-content">
           <p class="item-sub" style="white-space:normal">These values map directly to fields present in the selected Lossless Scaling profile. Unsupported fields are not written. Native Auto Scale is kept off while Companion automatic scaling is enabled.</p>
           <div class="ls-settings-board">
             <div class="ls-settings-column">
@@ -613,8 +608,9 @@
               </section>
             </div>
           </div>
-          <details id="nativeAdvancedSettingsGroup" class="native-settings-group" hidden>
-            <summary>Advanced Lossless Scaling Settings</summary>
+          <details id="nativeAdvancedSettingsGroup" class="settings-group profile-settings-nested" hidden>
+            <summary>Advanced Lossless Scaling Settings <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+            <div class="settings-group-content">
             <div class="native-settings-grid">
               <div class="form-group"><label>Scale Factor</label><input data-native-key="ScaleFactor" data-native-default="1" type="number" min="0.1" step="0.1"></div>
               <div class="form-group"><label>Auto Scale Delay (seconds)</label><input data-native-key="AutoScaleDelay" data-native-default="0" type="number" min="0" step="0.1"></div>
@@ -627,17 +623,23 @@
               <div class="form-group checkbox-group"><input data-native-key="DoubleBuffering" type="checkbox"><label>Double buffering</label></div>
               <div class="form-group checkbox-group"><input data-native-key="VRS" type="checkbox"><label>Variable rate scaling</label></div>
             </div>
+            </div>
           </details>
-          <details id="nativeAdditionalSettingsGroup" class="native-settings-group" hidden>
-            <summary>Additional Imported Settings</summary>
+          <details id="nativeAdditionalSettingsGroup" class="settings-group profile-settings-nested" hidden>
+            <summary>Additional Imported Settings <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+            <div class="settings-group-content">
             <div id="nativeAdditionalSettings" class="native-extra-settings"></div>
+            </div>
           </details>
+          </div>
         </details>
 
-        <details class="native-settings native-settings-group" open>
-          <summary>Echo Add-on Manager Configuration</summary>
-          <p class="item-sub" style="white-space:normal;padding:10px 14px 0">This is Echo's actual running control panel. It becomes available for the active profile after Lossless Scaling starts; changes are captured into that profile automatically.</p>
+        <details class="settings-group profile-settings-group" open>
+          <summary>Echo Add-on Manager Configuration <span class="chevron" aria-hidden="true">&#8250;</span></summary>
+          <div class="settings-group-content">
+          <p class="item-sub" style="white-space:normal">This is Echo's actual running control panel. It becomes available for the active profile after Lossless Scaling starts; changes are captured into that profile automatically.</p>
           <div id="echoAddonPanelHost" class="echo-native-host"><div id="echoAddonPanelStatus" class="echo-native-host-status">Start Lossless Scaling with this profile to load Echo's control panel here.</div></div>
+          </div>
         </details>
 
         <div style="margin: 16px 0; border-top: 1px solid var(--card-border); padding-top: 12px;">
@@ -1213,8 +1215,10 @@
       if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
-        if (document.getElementById('profileModal').classList.contains('active')) updateEchoEmbed(true);
       }
+      if (document.getElementById('profileModal').classList.contains('active')
+          && (Object.prototype.hasOwnProperty.call(msg, 'isScalingActive')
+              || Object.prototype.hasOwnProperty.call(msg, 'activeProfile'))) updateEchoEmbed(true);
       if (msg.losslessScalingFound === false) {
         setRuntimeStatus('LS Not Found', 'not-found');
         return;
@@ -1953,8 +1957,11 @@
       const names = new Map(diagnosticCatalog.map(test => [test.id, test.name]));
       document.getElementById('diagnosticTestActions').innerHTML = diagnosticCatalog.map(test => {
         const dependencies = (test.dependencies || []).map(id => names.get(id) || id);
+        const description = test.id === 'reshade_lilium'
+          ? 'After reproducing the Lilium error, capture ReShade compiler logs and deployed shader files without restarting scaling.'
+          : dependencies.length ? `Runs prerequisites: ${dependencies.join(', ')}` : 'No prerequisites.';
         return `<div class="diagnostic-test-action">
-          <div><strong>${escapeHtml(test.name)}</strong><div class="item-sub" style="white-space:normal">${dependencies.length ? `Runs prerequisites: ${escapeHtml(dependencies.join(', '))}` : 'No prerequisites.'}</div></div>
+          <div><strong>${escapeHtml(test.name)}</strong><div class="item-sub" style="white-space:normal">${escapeHtml(description)}</div></div>
           <button class="btn btn-secondary" type="button" data-run-diagnostic="${escapeHtml(test.id)}" ${msg.running ? 'disabled' : ''}>Run</button>
         </div>`;
       }).join('');
@@ -1973,21 +1980,52 @@
       const host = document.getElementById('echoAddonPanelHost');
       const modalOpen = document.getElementById('profileModal').classList.contains('active');
       const profileId = document.getElementById('profileId').value;
-      if (!host || !modalOpen || !profileId || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!host || !modalOpen || !profileId) return;
+      const available = runtimeScalingActive
+        && runtimeActiveProfile && runtimeActiveProfile.id === profileId
+        && (!controlSettings || controlSettings.addonManagerEnabled !== false);
+      const wasAvailable = host.classList.contains('available');
+      host.classList.toggle('available', !!available);
+      const status = document.getElementById('echoAddonPanelStatus');
+      if (!available) {
+        if (echoEmbedAttached && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
+        }
+        echoEmbedAttached = false;
+        host.classList.remove('embedded');
+        status.textContent = !runtimeScalingActive
+          ? 'Start scaling with this profile to load Echo\'s control panel here.'
+          : !runtimeActiveProfile || runtimeActiveProfile.id !== profileId
+            ? 'Echo can edit only the active profile. Activate and scale this profile first.'
+            : 'Enable Echo LS Add-on Manager in General Settings to use this panel.';
+        lastEchoEmbedRect = '';
+        return;
+      }
+      if (!wasAvailable) status.textContent = 'Connecting to Echo\'s control panel...';
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const rect = host.getBoundingClientRect();
-      const fullyVisible = rect.top >= 0 && rect.left >= 0
-        && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
-      if (!fullyVisible) {
+      const scrollRect = host.closest('.profile-editor-content').getBoundingClientRect();
+      const visible = {
+        left: Math.max(rect.left, scrollRect.left, 0),
+        top: Math.max(rect.top, scrollRect.top, 0),
+        right: Math.min(rect.right, scrollRect.right, window.innerWidth),
+        bottom: Math.min(rect.bottom, scrollRect.bottom, window.innerHeight)
+      };
+      if (rect.width <= 0 || rect.height <= 0 || visible.right <= visible.left || visible.bottom <= visible.top) {
         if (echoEmbedAttached) ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
         echoEmbedAttached = false;
         host.classList.remove('embedded');
         document.getElementById('echoAddonPanelStatus').textContent =
-          'Scroll the complete panel area into view to attach Echo\'s control panel.';
+          'Scroll the add-on panel into view to attach Echo\'s control panel.';
         lastEchoEmbedRect = '';
         return;
       }
       const payloadRect = {
         left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+        clip: {
+          left: visible.left - rect.left, top: visible.top - rect.top,
+          width: visible.right - visible.left, height: visible.bottom - visible.top
+        },
         viewportWidth: window.innerWidth, viewportHeight: window.innerHeight
       };
       const signature = JSON.stringify(payloadRect);
@@ -2009,7 +2047,7 @@
       lastEchoEmbedRect = '';
       echoEmbedAttached = false;
       const host = document.getElementById('echoAddonPanelHost');
-      if (host) host.classList.remove('embedded');
+      if (host) host.classList.remove('embedded', 'available');
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
       }

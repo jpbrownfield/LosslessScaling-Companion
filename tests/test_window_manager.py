@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from companion.services.window_manager import MonitorWindowManager
@@ -52,6 +53,35 @@ class MonitorBoundarySnapTests(unittest.TestCase):
 
 
 class MonitorTargetIdentityTests(unittest.TestCase):
+    def test_minimizer_preserves_other_windows_with_target_process_name(self):
+        manager = MonitorWindowManager()
+        minimized = set()
+        def process(pid):
+            return SimpleNamespace(name=lambda: "Game.exe" if pid in (42, 43) else "Browser.exe")
+
+        def enumerate_windows(callback, _extra):
+            for hwnd in (101, 102, 103):
+                callback(hwnd, 0)
+
+        with (
+            patch.object(MonitorWindowManager, "_target_window", return_value=101),
+            patch.object(MonitorWindowManager, "_window_pid", side_effect=lambda hwnd: {101: 42, 102: 43, 103: 44}[hwnd]),
+            patch.object(MonitorWindowManager, "_class_name", return_value="game_window"),
+            patch("companion.services.window_manager.psutil.Process", side_effect=process),
+            patch("companion.services.window_manager.user32.MonitorFromWindow", return_value=1),
+            patch("companion.services.window_manager.user32.IsWindowVisible", return_value=1),
+            patch("companion.services.window_manager.user32.IsIconic", side_effect=lambda hwnd: hwnd in minimized),
+            patch("companion.services.window_manager.user32.GetWindow", return_value=0),
+            patch("companion.services.window_manager.user32.GetWindowLongW", return_value=0),
+            patch("companion.services.window_manager.user32.GetWindowTextLengthW", return_value=4),
+            patch("companion.services.window_manager.user32.EnumWindows", side_effect=enumerate_windows),
+            patch("companion.services.window_manager.user32.ShowWindow", side_effect=lambda hwnd, _mode: minimized.add(hwnd)),
+        ):
+            count = manager.minimize_others_on_target_monitor(101, target_pid=42)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(minimized, {103})
+
     def test_verified_preferred_window_is_kept(self):
         with (
             patch("companion.services.window_manager.user32.IsWindow", return_value=1),

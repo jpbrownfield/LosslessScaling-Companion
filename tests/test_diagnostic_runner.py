@@ -158,6 +158,64 @@ class DiagnosticRunnerTests(unittest.TestCase):
             "configuration", "profile_integrity", "profile_matching",
         ])
 
+    def test_run_all_includes_lilium_diagnostic(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+
+        catalog_ids = {item["id"] for item in runner.catalog()}
+        run_all_ids = [item[0] for item in runner._execution_plan(None)]
+
+        self.assertIn("reshade_lilium", catalog_ids)
+        self.assertIn("reshade_lilium", run_all_ids)
+        self.assertLess(run_all_ids.index("reshade"), run_all_ids.index("reshade_lilium"))
+
+    def test_lilium_diagnostic_captures_relevant_compiler_error_and_shader_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / "lossless"
+            install.mkdir()
+            executable = install / "LosslessScaling.bin"
+            executable.write_bytes(b"test")
+            source = root / "config" / "reshade-profiles" / "hdr" / "packages" / "22"
+            deployed = install / "reshade-shaders" / "LSCompanion" / "hdr" / "packages" / "22"
+            source.mkdir(parents=True)
+            deployed.mkdir(parents=True)
+            (source / "lilium__cas_hdr.fx").write_text("shader", encoding="utf-8")
+            (deployed / "lilium__cas_hdr.fx").write_text("shader", encoding="utf-8")
+            (install / "ReShade.log").write_text(
+                'Loading effect "lilium__cas_hdr.fx"\nerror X3004: undeclared identifier\n',
+                encoding="utf-8",
+            )
+            managed = SimpleNamespace(id="hdr", name="HDR", shaders={"22": ["lilium__cas_hdr.fx"]})
+            active = SimpleNamespace(reshade=SimpleNamespace(enabled=True, managed_profile_id="hdr"))
+            server = SimpleNamespace(
+                config=SimpleNamespace(lossless_scaling_exe_path=str(executable), reshade_profiles=[managed]),
+                state=SimpleNamespace(current_active_profile=active),
+                profile_manager=SimpleNamespace(config_dir=root / "config"),
+            )
+
+            result = DiagnosticRunner(server)._reshade_lilium()
+
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(len(result["details"]["compilationErrors"]), 1)
+            shader = result["details"]["profiles"][0]["shaders"][0]
+            self.assertEqual(shader["managedSha256"], shader["deployedSha256"])
+
+    def test_selected_lilium_diagnostic_does_not_reset_lossless_scaling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            server = SimpleNamespace(
+                profile_manager=SimpleNamespace(config_dir=Path(directory)),
+                state=SimpleNamespace(simulation_mode=False),
+                process_watcher=Mock(),
+            )
+            runner = DiagnosticRunner(server)
+            runner._tests = lambda: (("reshade_lilium", "Lilium", lambda: runner._result("warn", "inspect")),)
+            runner._reset_lossless_folder = Mock()
+
+            result = runner.run("reshade_lilium")
+
+            runner._reset_lossless_folder.assert_not_called()
+            self.assertIn("not reset", result["results"][-1]["summary"])
+
     def test_log_delta_reads_restarted_truncated_log_from_the_beginning(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "LosslessProxy.log"

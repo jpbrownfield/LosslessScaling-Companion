@@ -233,6 +233,33 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             target_hwnd=82,
         )
 
+    def test_manual_scaling_target_survives_lossless_scaling_taking_focus(self):
+        watcher, _settings = self.make_watcher()
+        watcher.profile_manager.match_target_profile = Mock(return_value=None)
+        game = ProcessInfo(42, "Game.exe", r"C:\Games\Game.exe", "Game", 81)
+        lossless = ProcessInfo(99, "LosslessScaling.exe", "", "Lossless", 82)
+        user32 = Mock()
+        user32.IsWindow.return_value = 1
+        user32.IsWindowVisible.return_value = 1
+        user32.GetWindowThreadProcessId.side_effect = lambda _hwnd, pointer: setattr(pointer._obj, "value", 42)
+
+        with (
+            patch.object(watcher, "get_foreground_window_info", side_effect=[game, lossless]),
+            patch.object(watcher, "foreground_window_identity", return_value=(99, 82)),
+            patch("companion.services.process_watcher.user32", user32),
+            patch("companion.services.process_watcher.psutil.Process", side_effect=lambda pid: SimpleNamespace(name=lambda: {42: "Game.exe", 99: "LosslessScaling.exe"}.get(pid, "Other.exe"))),
+        ):
+            watcher.check_foreground_and_update()
+            watcher.check_foreground_and_update()
+            self.assertIs(watcher.recent_unscaled_foreground_target("Game.exe"), game)
+            self.assertIsNone(watcher.recent_unscaled_foreground_target("Other.exe"))
+
+            with patch.object(watcher, "foreground_window_identity", return_value=(77, 83)):
+                self.assertIsNone(watcher.recent_unscaled_foreground_target("Game.exe"))
+
+            watcher._recent_unscaled_foreground = (0.0, game)
+            self.assertIsNone(watcher.recent_unscaled_foreground_target("Game.exe"))
+
 
 if __name__ == "__main__":
     unittest.main()

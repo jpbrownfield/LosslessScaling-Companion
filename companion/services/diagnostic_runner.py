@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -102,6 +103,7 @@ class DiagnosticRunner:
             ("hotkeys", "Hotkey configuration and listener", self._hotkeys),
             ("assets", "Managed asset store and package manifests", self._assets),
             ("reshade", "ReShade selection and injection plan", self._reshade),
+            ("reshade_lilium", "Lilium ReShade compilation evidence", self._reshade_lilium),
             ("reshade_runtime", "Live ReShade deployment and load confirmation", self._reshade_runtime_behavior),
             ("proxy_reshade", "Echo Add-on Manager + ReShade runtime", self._proxy_reshade_behavior),
             ("proxy_neural_render", "Echo Add-on Manager + Neural Rendering runtime", self._proxy_neural_render_behavior),
@@ -210,7 +212,11 @@ class DiagnosticRunner:
                 json.dumps(result, indent=2, default=str), encoding="utf-8"
             )
 
-        reset_result = self._reset_lossless_folder(initial_ls_running)
+        reset_result = (
+            self._result("pass", "Read-only Lilium diagnostic; Lossless Scaling was not reset.")
+            if selected_test == "reshade_lilium"
+            else self._reset_lossless_folder(initial_ls_running)
+        )
         reset_result.update({"id": "environment_reset", "name": "Lossless Scaling folder reset"})
         results.append(reset_result)
         (session / "environment_reset.log").write_text(
@@ -1235,6 +1241,115 @@ class DiagnosticRunner:
             stagedPackage=(staged or {}).get("version"),
             checks=checks,
             failures=failures,
+        )
+
+    def _reshade_lilium(self) -> Dict:
+        """Collect Lilium source/deployment state and ReShade's actual compiler log."""
+        exe_value = self.server.config.lossless_scaling_exe_path
+        executable = Path(exe_value) if exe_value else None
+        if not executable or not executable.is_file():
+            return self._result("warn", "Lossless Scaling installation is unavailable.")
+        root = executable.parent
+        active = self.server.state.current_active_profile
+        active_reshade_id = (
+            active.reshade.managed_profile_id
+            if active and active.reshade and active.reshade.enabled else None
+        )
+        managed = [
+            profile for profile in self.server.config.reshade_profiles
+            if profile.shaders.get("22")
+        ]
+        profiles = []
+        missing = []
+        for profile in managed:
+            source_root = self.server.profile_manager.config_dir / "reshade-profiles" / profile.id / "packages" / "22"
+            deployed_root = root / "reshade-shaders" / "LSCompanion" / profile.id / "packages" / "22"
+            managed_files = {
+                path.relative_to(source_root).as_posix(): path
+                for path in source_root.rglob("*") if path.is_file()
+            } if source_root.is_dir() else {}
+            deployed_files = {
+                path.relative_to(deployed_root).as_posix(): path
+                for path in deployed_root.rglob("*") if path.is_file()
+            } if deployed_root.is_dir() else {}
+            missing_support = sorted(set(managed_files) - set(deployed_files)) if profile.id == active_reshade_id else []
+            missing.extend(f"{profile.name}: support file {name}" for name in missing_support)
+            shaders = []
+            for name in profile.shaders["22"]:
+                source = next(source_root.rglob(name), None) if source_root.is_dir() else None
+                deployed = next(deployed_root.rglob(name), None) if deployed_root.is_dir() else None
+                item = {
+                    "shader": name,
+                    "managedPresent": bool(source and source.is_file()),
+                    "deployedPresent": bool(deployed and deployed.is_file()),
+                }
+                if source and source.is_file():
+                    item["managedSha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+                if deployed and deployed.is_file():
+                    item["deployedSha256"] = hashlib.sha256(deployed.read_bytes()).hexdigest()
+                if not item["managedPresent"] or (profile.id == active_reshade_id and not item["deployedPresent"]):
+                    missing.append(f"{profile.name}: {name}")
+                elif profile.id == active_reshade_id and item["managedSha256"] != item["deployedSha256"]:
+                    missing.append(f"{profile.name}: deployed {name} differs from managed source")
+                shaders.append(item)
+            profiles.append({
+                "id": profile.id,
+                "name": profile.name,
+                "active": profile.id == active_reshade_id,
+                "shaders": shaders,
+                "managedPackageFiles": sorted(managed_files)[:200],
+                "deployedPackageFiles": sorted(deployed_files)[:200],
+                "missingSupportFiles": missing_support[:200],
+            })
+
+        logs = []
+        for folder in (root, root / "logs"):
+            if not folder.is_dir():
+                continue
+            for candidate in folder.iterdir():
+                if candidate.is_file() and "reshade" in candidate.name.casefold() and candidate.suffix.casefold() == ".log":
+                    logs.append(candidate)
+        logs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        log_evidence = []
+        compile_errors = []
+        lilium_mentions = 0
+        for log in logs[:3]:
+            with log.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - 128 * 1024))
+                content = stream.read().decode("utf-8", errors="replace")
+            content = self._path(content)
+            lines = content.splitlines()
+            lilium_lines = [index for index, line in enumerate(lines) if "lilium" in line.casefold()]
+            lilium_mentions += len(lilium_lines)
+            for index in lilium_lines:
+                context = lines[index:min(len(lines), index + 12)]
+                if any(re.search(r"failed to compile|\berror\b|\berror [xX]\d+", line, re.IGNORECASE) for line in context):
+                    compile_errors.append({"log": log.name, "context": context})
+            log_evidence.append({
+                "file": self._path(log),
+                "modifiedUtc": datetime.fromtimestamp(log.stat().st_mtime, timezone.utc).isoformat(),
+                "tail": content,
+            })
+
+        ini = root / "ReShade.ini"
+        ini_text = self._path(ini.read_text(encoding="utf-8", errors="replace")[:16000]) if ini.is_file() else None
+        status = "fail" if missing or compile_errors else "pass" if lilium_mentions else "warn"
+        summary = (
+            "Lilium shader files or ReShade compilation errors were found."
+            if status == "fail" else
+            "Lilium appears in the ReShade runtime log with no nearby compile error."
+            if status == "pass" else
+            "No Lilium compilation evidence was found; reproduce the error before rerunning this test."
+        )
+        return self._result(
+            status, summary,
+            activeManagedReshadeProfile=active_reshade_id,
+            profiles=profiles,
+            missingShaders=missing,
+            compilationErrors=compile_errors[-20:],
+            reshadeIni=ini_text,
+            logs=log_evidence,
         )
 
     def _reshade_move_behavior(self) -> Dict:

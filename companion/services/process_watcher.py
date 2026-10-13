@@ -6,6 +6,7 @@ Monitors foreground window transitions and enumerates running applications for p
 import ctypes
 from ctypes import wintypes
 import logging
+import os
 import threading
 import time
 from typing import Callable, List, Dict, Optional, Tuple
@@ -56,6 +57,7 @@ class ProcessWatcher:
         self.state = state
         self._last_foreground_pid: Optional[int] = None
         self._last_foreground_hwnd: Optional[int] = None
+        self._recent_unscaled_foreground: Optional[Tuple[float, ProcessInfo]] = None
         self.on_profile_changed = on_profile_changed
         self.lossless_settings = lossless_settings
         self.proxy_menu = proxy_menu or AddonManagerMenuController(state)
@@ -230,6 +232,35 @@ class ProcessWatcher:
 
     def target_is_foreground(self, pid: int, hwnd: int) -> bool:
         return self.foreground_window_identity() == (int(pid), int(hwnd))
+
+    def recent_unscaled_foreground_target(
+        self, expected_process_name: Optional[str] = None
+    ) -> Optional[ProcessInfo]:
+        """Return a recent pre-scaling foreground window only if its identity still holds."""
+        recent = self._recent_unscaled_foreground
+        if not recent or time.monotonic() - recent[0] > 5.0:
+            return None
+        info = recent[1]
+        if expected_process_name and info.name.casefold() != expected_process_name.casefold():
+            return None
+        if not user32.IsWindow(info.hwnd) or not user32.IsWindowVisible(info.hwnd):
+            return None
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(info.hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value != info.pid:
+            return None
+        try:
+            if psutil.Process(info.pid).name().casefold() != info.name.casefold():
+                return None
+            foreground_pid, _foreground_hwnd = self.foreground_window_identity()
+            if foreground_pid != info.pid and (
+                not foreground_pid
+                or psutil.Process(foreground_pid).name().casefold() != "losslessscaling.exe"
+            ):
+                return None
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return None
+        return info
 
     def maintain_scaling_target_foreground(self, pid: int, hwnd: int) -> bool:
         """Refocus after LS steals focus, but never override a user app switch."""
@@ -588,6 +619,14 @@ class ProcessWatcher:
         info = self.get_foreground_window_info()
         if not info:
             return None
+
+        if (
+            not self.state.is_scaling_active
+            and info.hwnd
+            and info.pid != os.getpid()
+            and info.name.casefold() != "losslessscaling.exe"
+        ):
+            self._recent_unscaled_foreground = (time.monotonic(), info)
 
         if info.pid != self._last_foreground_pid or info.hwnd != self._last_foreground_hwnd:
             self._last_foreground_pid = info.pid

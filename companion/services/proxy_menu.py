@@ -160,10 +160,13 @@ class AddonManagerMenuController:
         top: int,
         width: int,
         height: int,
+        clip: Optional[tuple[int, int, int, int]] = None,
     ) -> dict:
         """Host Echo's existing native window inside Companion's dashboard."""
         if min(width, height) <= 0 or not parent_hwnd:
             return {"embedded": False, "reason": "The add-on panel has no usable host area."}
+        if clip is not None and (clip[2] <= clip[0] or clip[3] <= clip[1]):
+            return {"embedded": False, "reason": "The add-on panel is outside the visible editor area."}
         embedded_hwnd = int(self._embedded.get("hwnd") or 0) if self._embedded else 0
         windows = (
             [embedded_hwnd]
@@ -208,6 +211,18 @@ class AddonManagerMenuController:
                 hwnd, 0, int(left), int(top), int(width), int(height),
                 self.SWP_FRAMECHANGED | self.SWP_SHOWWINDOW,
             )
+            if clip is not None:
+                clip_left, clip_top, clip_right, clip_bottom = clip
+                region = ctypes.windll.gdi32.CreateRectRgn(
+                    clip_left, clip_top, clip_right, clip_bottom
+                )
+                if region and user32.SetWindowRgn(hwnd, region, True):
+                    self._embedded["clipped"] = True
+                else:
+                    if region:
+                        ctypes.windll.gdi32.DeleteObject(region)
+                    user32.ShowWindow(hwnd, self.SW_HIDE)
+                    return {"embedded": False, "reason": "Windows could not clip Echo's panel to the editor."}
         return {"embedded": True, "hwnd": hwnd}
 
     def detach(self, *, hide: bool = True) -> bool:
@@ -220,6 +235,8 @@ class AddonManagerMenuController:
                 return False
             hwnd = int(saved["hwnd"])
             user32.ShowWindow(hwnd, self.SW_HIDE)
+            if saved.get("clipped"):
+                user32.SetWindowRgn(hwnd, 0, True)
             user32.SetParent(hwnd, int(saved["parent"]))
             self._set_window_long(hwnd, self.GWL_STYLE, int(saved["style"]))
             self._set_window_long(hwnd, self.GWL_EXSTYLE, int(saved["exstyle"]))

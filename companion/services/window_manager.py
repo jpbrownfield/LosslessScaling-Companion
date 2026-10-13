@@ -363,19 +363,14 @@ class MonitorWindowManager:
                 logger.warning("Could not identify the scaled application's monitor")
                 return 0
             try:
-                if psutil.Process(resolved_target_pid).name().casefold() == "losslessscaling.exe":
+                target_process_name = psutil.Process(resolved_target_pid).name().casefold()
+                if target_process_name == "losslessscaling.exe":
                     logger.warning("Refusing to treat a Lossless Scaling window as the scaled target")
                     return 0
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 return 0
 
             excluded_pids = {resolved_target_pid, os.getpid()}
-            for process in psutil.process_iter(["pid", "name"]):
-                try:
-                    if (process.info.get("name") or "").casefold() == "losslessscaling.exe":
-                        excluded_pids.add(int(process.info["pid"]))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
 
             minimized = 0
 
@@ -388,6 +383,12 @@ class MonitorWindowManager:
                     return True
                 pid = self._window_pid(handle)
                 if not pid or pid in excluded_pids:
+                    return True
+                try:
+                    peer_process_name = psutil.Process(pid).name().casefold()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    return True
+                if peer_process_name in {"losslessscaling.exe", target_process_name}:
                     return True
                 if user32.GetWindow(hwnd, GW_OWNER):
                     return True

@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+from ctypes import wintypes
 from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -65,6 +66,57 @@ class CompanionTrayIconTests(unittest.TestCase):
         self.assertEqual(set_position.call_count, 2)
         self.assertEqual(set_position.call_args_list[0].args, (101, -1, 0, 0, 0, 0, 3))
         self.assertEqual(set_position.call_args_list[1].args, (202, -1, 0, 0, 0, 0, 3))
+
+    def test_tray_menu_anchors_above_bottom_taskbar_on_secondary_monitor(self):
+        work = wintypes.RECT(-1920, 0, 0, 1040)
+
+        placement = CompanionTrayIcon._tray_menu_placement(-8, 1078, work)
+
+        self.assertEqual(placement, (-8, 1036, True, True, 1032))
+
+    def test_tray_menu_anchors_below_top_taskbar(self):
+        work = wintypes.RECT(0, 48, 1920, 1080)
+
+        placement = CompanionTrayIcon._tray_menu_placement(20, 12, work)
+
+        self.assertEqual(placement, (20, 52, False, False, 1024))
+
+    def test_tray_menu_uses_work_area_height_cap_and_dispatches_selection(self):
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        selected = Mock()
+        native_icon = Mock(_hwnd=101, _menu_hwnd=202, _menu_handle=(303, [selected]))
+        win32 = Mock(TPM_RETURNCMD=0x100, TPM_RIGHTALIGN=8, TPM_LEFTALIGN=0,
+                     TPM_BOTTOMALIGN=0x20, TPM_TOPALIGN=0)
+        win32.GetCursorPos.side_effect = lambda pointer: (
+            setattr(pointer._obj, "x", 1910), setattr(pointer._obj, "y", 1080)
+        )
+        win32.TrackPopupMenuEx.return_value = 1
+        with (
+            patch.object(tray, "_work_area_at_cursor", return_value=wintypes.RECT(0, 0, 1920, 1040)),
+            patch("companion.ui.tray.ctypes.windll.user32.SetMenuInfo", return_value=1) as set_info,
+        ):
+            self.assertTrue(tray._show_tray_menu_in_work_area(native_icon, win32))
+
+        self.assertEqual(win32.TrackPopupMenuEx.call_args.args, (303, 0x128, 1910, 1036, 202, None))
+        self.assertEqual(set_info.call_args.args[1]._obj.cyMax, 1032)
+        selected.assert_called_once_with(native_icon)
+
+    def test_right_click_uses_work_area_menu_instead_of_default_popup(self):
+        from pystray._util import win32
+
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        original = Mock(return_value="default")
+        native_icon = Mock(_message_handlers={win32.WM_NOTIFY: original})
+        with (
+            patch.object(tray, "_pin_tray_menu_above_taskbar"),
+            patch.object(tray, "_show_tray_menu_in_work_area", return_value=True) as show,
+        ):
+            tray._install_topmost_menu_hook(native_icon)
+            result = native_icon._message_handlers[win32.WM_NOTIFY](0, win32.WM_RBUTTONUP)
+
+        self.assertIsNone(result)
+        show.assert_called_once_with(native_icon, win32)
+        original.assert_not_called()
 
     def test_run_passes_a_built_menu_to_pystray(self):
         with tempfile.TemporaryDirectory() as directory:

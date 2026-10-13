@@ -172,6 +172,9 @@ class AutomationController:
         target_hwnd: Optional[int] = None,
         target_pid: Optional[int] = None,
     ) -> None:
+        if not self.state.scaling_target_verified_for_minimization:
+            logger.warning("Skipping peer minimization because the scaling target identity is unverified")
+            return
         verified_hwnd = target_hwnd or self.state.scaling_target_hwnd
         verified_pid = target_pid or self.state.scaling_target_pid
         if not verified_hwnd and not verified_pid:
@@ -459,11 +462,13 @@ class AutomationController:
             if active:
                 self.state.scaling_target_pid = target_pid
                 self.state.scaling_target_hwnd = target_hwnd
+                self.state.scaling_target_verified_for_minimization = bool(target_pid and target_hwnd)
             else:
                 if self.profile_manager.config.addon_manager_enabled:
                     self.addon_configs.capture(selected, configured_exe)
                 self.state.scaling_target_pid = None
                 self.state.scaling_target_hwnd = None
+                self.state.scaling_target_verified_for_minimization = False
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
                 self._minimize_other_windows(target_hwnd, target_pid)
             elif not active:
@@ -628,8 +633,28 @@ class AutomationController:
                     observed_hwnd = int(target.get("hwnd") or 0) or None
                 except (TypeError, ValueError):
                     observed_hwnd = None
+                verified_target = bool(
+                    observed_pid and target.get("detectionSource") == "log_file"
+                )
+                if not verified_target and self.process_watcher:
+                    expected_name = target.get("processName")
+                    if str(expected_name or "").casefold() == "losslessscaling.exe":
+                        expected_name = None
+                    recent = self.process_watcher.recent_unscaled_foreground_target(
+                        expected_name
+                    )
+                    if recent:
+                        observed_pid = recent.pid
+                        observed_hwnd = recent.hwnd
+                        verified_target = True
+                        logger.info(
+                            "Using recent pre-scaling foreground HWND %s / PID %s for peer minimization",
+                            observed_hwnd,
+                            observed_pid,
+                        )
                 self.state.scaling_target_pid = observed_pid
                 self.state.scaling_target_hwnd = observed_hwnd
+                self.state.scaling_target_verified_for_minimization = verified_target
                 matched = self.profile_manager.match_target_profile(
                     process_name=target.get("processName"),
                     executable_path=target.get("exePath"),
@@ -647,6 +672,7 @@ class AutomationController:
             elif not active:
                 self.state.scaling_target_pid = None
                 self.state.scaling_target_hwnd = None
+                self.state.scaling_target_verified_for_minimization = False
             self._set_control_status(
                 "confirmed",
                 f"Observed Lossless Scaling {'active' if active else 'idle'}",

@@ -3,6 +3,7 @@ System Tray interface for LS Companion using pystray and Pillow.
 """
 
 import ctypes
+from ctypes import wintypes
 import logging
 import math
 import threading
@@ -24,6 +25,27 @@ from .dashboard_window import close_dashboard_window, open_dashboard_window
 from .icons import create_lightning_icon
 
 logger = logging.getLogger("LSCompanion.Tray")
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class _MenuInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("fMask", wintypes.DWORD),
+        ("dwStyle", wintypes.DWORD),
+        ("cyMax", wintypes.UINT),
+        ("hbrBack", wintypes.HBRUSH),
+        ("dwContextHelpID", wintypes.DWORD),
+        ("dwMenuData", ctypes.c_size_t),
+    ]
 
 
 class CompanionTrayIcon:
@@ -110,6 +132,74 @@ class CompanionTrayIcon:
                     swp_nomove | swp_nosize,
                 )
 
+    @staticmethod
+    def _tray_menu_placement(
+        x: int, y: int, work: wintypes.RECT
+    ) -> tuple[int, int, bool, bool, int]:
+        """Choose an anchor and height wholly inside the monitor work area."""
+        margin = 4
+        left = int(work.left) + margin
+        right = int(work.right) - margin
+        top = int(work.top) + margin
+        bottom = int(work.bottom) - margin
+        if left >= right or top >= bottom:
+            raise ValueError("Monitor work area is too small for a tray menu")
+        x = max(left, min(int(x), right))
+        y = max(top, min(int(y), bottom))
+        align_right = x - left >= right - x
+        align_bottom = y - top >= bottom - y
+        available_height = (y - top) if align_bottom else (bottom - y)
+        return x, y, align_right, align_bottom, max(1, available_height)
+
+    @staticmethod
+    def _work_area_at_cursor(point: wintypes.POINT) -> Optional[wintypes.RECT]:
+        user32 = ctypes.windll.user32
+        monitor_from_point = user32.MonitorFromPoint
+        monitor_from_point.argtypes = (wintypes.POINT, wintypes.DWORD)
+        monitor_from_point.restype = wintypes.HMONITOR
+        monitor = monitor_from_point(point, 2)  # MONITOR_DEFAULTTONEAREST
+        if not monitor:
+            return None
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(info)
+        get_monitor_info = user32.GetMonitorInfoW
+        get_monitor_info.argtypes = (wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo))
+        get_monitor_info.restype = wintypes.BOOL
+        return info.rcWork if get_monitor_info(monitor, ctypes.byref(info)) else None
+
+    def _show_tray_menu_in_work_area(self, native_icon, win32) -> bool:
+        menu_handle = getattr(native_icon, "_menu_handle", None)
+        if not menu_handle:
+            return False
+        point = wintypes.POINT()
+        win32.GetCursorPos(ctypes.byref(point))
+        work = self._work_area_at_cursor(point)
+        if work is None:
+            return False
+        x, y, align_right, align_bottom, max_height = self._tray_menu_placement(
+            point.x, point.y, work
+        )
+        hmenu, descriptors = menu_handle
+        menu_info = _MenuInfo()
+        menu_info.cbSize = ctypes.sizeof(menu_info)
+        menu_info.fMask = 0x00000001  # MIM_MAXHEIGHT
+        menu_info.cyMax = max_height
+        set_menu_info = ctypes.windll.user32.SetMenuInfo
+        set_menu_info.argtypes = (wintypes.HMENU, ctypes.POINTER(_MenuInfo))
+        set_menu_info.restype = wintypes.BOOL
+        if not set_menu_info(hmenu, ctypes.byref(menu_info)):
+            return False
+        win32.SetForegroundWindow(native_icon._hwnd)
+        flags = win32.TPM_RETURNCMD
+        flags |= win32.TPM_RIGHTALIGN if align_right else win32.TPM_LEFTALIGN
+        flags |= win32.TPM_BOTTOMALIGN if align_bottom else win32.TPM_TOPALIGN
+        index = win32.TrackPopupMenuEx(
+            hmenu, flags, x, y, native_icon._menu_hwnd, None
+        )
+        if 0 < index <= len(descriptors):
+            descriptors[index - 1](native_icon)
+        return True
+
     def _install_topmost_menu_hook(self, native_icon) -> None:
         """Pin the native Windows tray popup above the taskbar on right-click."""
         handlers = getattr(native_icon, "_message_handlers", None)
@@ -125,6 +215,11 @@ class CompanionTrayIcon:
             def notify(wparam, lparam):
                 if lparam == win32.WM_RBUTTONUP:
                     self._pin_tray_menu_above_taskbar(native_icon)
+                    try:
+                        if self._show_tray_menu_in_work_area(native_icon, win32):
+                            return None
+                    except Exception:
+                        logger.exception("Could not place the tray menu within the monitor work area")
                 return original(wparam, lparam)
 
             handlers[win32.WM_NOTIFY] = notify

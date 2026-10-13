@@ -26,6 +26,7 @@ class AppState:
         self.current_foreground_hwnd: Optional[int] = None
         self.scaling_target_hwnd: Optional[int] = None
         self.scaling_target_pid: Optional[int] = None
+        self.scaling_target_verified_for_minimization: bool = False
         self.current_gpu_route_key: Optional[str] = None
         self.benchmark_mode_active: bool = False
         self.dynamic_limiter_status: Dict[str, Any] = {

@@ -794,6 +794,7 @@ class ProfileEffectsTests(unittest.TestCase):
                     "processName": "Game.exe",
                     "exePath": r"C:\Games\Game.exe",
                     "pid": 42,
+                    "detectionSource": "log_file",
                 },
             )
 
@@ -802,6 +803,52 @@ class ProfileEffectsTests(unittest.TestCase):
             )
             self.assertEqual(state.scaling_target_pid, 42)
             self.assertIsNone(state.scaling_target_hwnd)
+
+    def test_observed_scaling_does_not_minimize_with_foreground_guessed_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+
+            automation.reconcile_observed_scaling_state(
+                True,
+                {
+                    "processName": "Other.exe",
+                    "pid": 42,
+                    "detectionSource": "win32_window_hook",
+                },
+            )
+            automation.reconcile_window_management_setting()
+
+            windows.minimize_others_on_target_monitor.assert_not_called()
+            self.assertFalse(state.scaling_target_verified_for_minimization)
+
+    def test_manual_scaling_uses_verified_recent_foreground_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            windows = Mock()
+            watcher = Mock()
+            watcher.recent_unscaled_foreground_target.return_value = ProcessInfo(
+                42, "Game.exe", r"C:\Games\Game.exe", "Game", 456
+            )
+            automation = AutomationController(
+                manager, state, process_watcher=watcher, window_manager=windows
+            )
+
+            automation.reconcile_observed_scaling_state(
+                True,
+                {"processName": "LosslessScaling.exe", "pid": 99, "detectionSource": "win32_window_hook"},
+            )
+
+            watcher.recent_unscaled_foreground_target.assert_called_once_with(None)
+            windows.minimize_others_on_target_monitor.assert_called_once_with(
+                456, target_pid=42
+            )
+            self.assertTrue(state.scaling_target_verified_for_minimization)
 
     def test_observed_scaling_ignores_unmatched_window(self):
         with tempfile.TemporaryDirectory() as directory:

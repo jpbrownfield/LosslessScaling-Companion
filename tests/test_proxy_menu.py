@@ -98,6 +98,38 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
         self.assertEqual(set_long.call_count, 3)
         self.assertEqual(user32.SetWindowPos.call_args_list[0].args[2:6], (10, 20, 800, 600))
 
+    def test_partial_embed_clips_native_window_and_detach_clears_clip(self):
+        controller = LosslessProxyMenuController(AppState())
+        user32 = SimpleNamespace(
+            IsWindow=Mock(return_value=True), GetWindowRect=Mock(return_value=1),
+            GetParent=Mock(return_value=0), SetParent=Mock(return_value=0),
+            ShowWindow=Mock(), SetWindowPos=Mock(return_value=1),
+            SetWindowRgn=Mock(return_value=1),
+        )
+        gdi32 = SimpleNamespace(CreateRectRgn=Mock(return_value=55), DeleteObject=Mock())
+        kernel32 = SimpleNamespace(SetLastError=Mock(), GetLastError=Mock(return_value=0))
+        with (
+            patch.object(controller, "_find_windows", return_value=[8123]),
+            patch.object(controller, "_window_long", side_effect=[0x80C40000, 0]),
+            patch.object(controller, "_set_window_long"),
+            patch("companion.services.proxy_menu.ctypes.windll.user32", user32),
+            patch("companion.services.proxy_menu.ctypes.windll.gdi32", gdi32),
+            patch("companion.services.proxy_menu.ctypes.windll.kernel32", kernel32),
+        ):
+            result = controller.embed(
+                9001, left=10, top=-100, width=800, height=600,
+                clip=(0, 100, 800, 500),
+            )
+            detached = controller.detach()
+
+        self.assertTrue(result["embedded"])
+        self.assertTrue(detached)
+        gdi32.CreateRectRgn.assert_called_once_with(0, 100, 800, 500)
+        self.assertEqual(user32.SetWindowRgn.call_args_list, [
+            unittest.mock.call(8123, 55, True),
+            unittest.mock.call(8123, 0, True),
+        ])
+
 
 class ProxyTrayMenuTests(unittest.TestCase):
     def test_addon_menu_entry_is_available_only_while_scaling(self):

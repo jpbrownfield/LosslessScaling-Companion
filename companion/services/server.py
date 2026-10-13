@@ -443,7 +443,8 @@ class CompanionWebSocketServer:
                         "reason": "Echo can edit only the active profile. Activate and scale this profile first.",
                     }))
                     return
-                placement = dashboard_css_rect_to_client_pixels(msg.get("rect") or {})
+                rect = msg.get("rect") or {}
+                placement = dashboard_css_rect_to_client_pixels(rect)
                 if not placement:
                     await websocket.send(json.dumps({
                         "type": "ADDON_MENU_EMBED_STATUS",
@@ -452,6 +453,21 @@ class CompanionWebSocketServer:
                     }))
                     return
                 parent, left, top, width, height = placement
+                clip = rect.get("clip") or {}
+                css_width = float(rect.get("width") or 0)
+                css_height = float(rect.get("height") or 0)
+                if css_width <= 0 or css_height <= 0:
+                    raise ValueError("The add-on panel has no usable host area")
+                clip_left = max(0, min(width, round(float(clip.get("left") or 0) * width / css_width)))
+                clip_top = max(0, min(height, round(float(clip.get("top") or 0) * height / css_height)))
+                clip_right = max(clip_left, min(width, round(
+                    (float(clip.get("left") or 0) + float(clip.get("width") or css_width))
+                    * width / css_width
+                )))
+                clip_bottom = max(clip_top, min(height, round(
+                    (float(clip.get("top") or 0) + float(clip.get("height") or css_height))
+                    * height / css_height
+                )))
                 result = await asyncio.to_thread(
                     self.proxy_menu.embed,
                     parent,
@@ -459,6 +475,7 @@ class CompanionWebSocketServer:
                     top=top,
                     width=width,
                     height=height,
+                    clip=(clip_left, clip_top, clip_right, clip_bottom),
                 )
                 await websocket.send(json.dumps({
                     "type": "ADDON_MENU_EMBED_STATUS",
