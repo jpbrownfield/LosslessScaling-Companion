@@ -361,8 +361,16 @@ class ProcessLassoScalingMonitor:
             executable_path=window.exe_path,
         )
         if not profile:
+            profile = next(
+                (
+                    item for item in getattr(self.profile_manager.config, "profiles", ())
+                    if item.is_default
+                ),
+                None,
+            )
+        if not profile:
             logger.info(
-                "Ignored Process Lasso Performance Mode event for %s: no explicit helper profile",
+                "Ignored Process Lasso Performance Mode event for %s: no default helper profile",
                 event.process_name,
             )
             return True
@@ -372,15 +380,18 @@ class ProcessLassoScalingMonitor:
             if self.state.current_active_profile else None
         )
         if self.state.is_scaling_active:
-            if active_profile_id == profile.id:
+            target_pid = self.state.scaling_target_pid or (
+                self.state.current_scaled_target or {}
+            ).get("pid")
+            if active_profile_id == profile.id and target_pid == window.pid:
                 logger.info(
-                    "Process Lasso event for %s needs no action; profile '%s' is already scaling",
+                    "Process Lasso event for %s needs no action; its window is already scaling with profile '%s'",
                     event.process_name,
                     profile.name,
                 )
                 return True
             logger.info(
-                "Deferred Process Lasso event for %s while another profile is scaling",
+                "Deferred Process Lasso event for %s while another window is scaling",
                 event.process_name,
             )
             return False

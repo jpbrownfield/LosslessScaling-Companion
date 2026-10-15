@@ -102,11 +102,13 @@ class ProcessLassoScalingTests(unittest.TestCase):
             f'"Game.exe","{pid}","Performance Mode {verb}"'
         )
 
-    def test_scales_only_a_profiled_visible_window(self):
+    def test_explicit_profile_takes_priority_over_default(self):
         profile = Profile(id="game", name="Game", target_process="Game.exe")
+        default = Profile(id="default-game", name="Game Default", is_default=True, auto_scale=False)
         config = SimpleNamespace(
             process_lasso_performance_mode_scaling=True,
             process_lasso_log_path=None,
+            profiles=[default, profile],
         )
         manager = SimpleNamespace(
             config=config,
@@ -137,6 +139,48 @@ class ProcessLassoScalingTests(unittest.TestCase):
             target_pid=4312,
             target_hwnd=99,
         )
+        self.assertFalse(default.auto_scale)
+
+    def test_unprofiled_performance_mode_process_uses_default_without_changing_auto_scale(self):
+        default = Profile(id="default-game", name="Game Default", is_default=True, auto_scale=False)
+        specific = Profile(id="other", name="Other", target_process="Other.exe", auto_scale=True)
+        manager = SimpleNamespace(
+            config=SimpleNamespace(
+                process_lasso_performance_mode_scaling=True,
+                process_lasso_log_path=None,
+                profiles=[default, specific],
+            ),
+            match_target_profile=Mock(return_value=None),
+        )
+        state = AppState()
+        watcher = Mock()
+        window = ProcessInfo(4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99)
+        watcher.find_visible_window_for_process.return_value = window
+        watcher.focus_window.return_value = True
+        automation = Mock()
+        automation.activate_profile.side_effect = (
+            lambda selected, _path, **_kwargs: setattr(state, "current_active_profile", selected)
+        )
+        monitor = ProcessLassoScalingMonitor(manager, state, watcher, automation)
+
+        monitor._handle_event(self.make_event())
+
+        automation.activate_profile.assert_called_once_with(
+            default,
+            window.exe_path,
+            target_pid=4312,
+            target_hwnd=99,
+            suppress_auto_scale=True,
+        )
+        automation.set_scaling.assert_called_once_with(
+            True,
+            default,
+            reason="process_lasso_performance_mode:4312",
+            target_pid=4312,
+            target_hwnd=99,
+        )
+        self.assertFalse(default.auto_scale)
+        self.assertTrue(specific.auto_scale)
 
     def test_performance_mode_exit_does_not_unscale(self):
         config = SimpleNamespace(
@@ -175,6 +219,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         state.current_active_profile = profile
         state.is_scaling_active = True
         state.scaling_trigger = "focus"
+        state.scaling_target_pid = 4312
         watcher = Mock()
         watcher.find_visible_window_for_process.return_value = ProcessInfo(
             4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
@@ -189,6 +234,33 @@ class ProcessLassoScalingTests(unittest.TestCase):
         watcher.focus_window.assert_not_called()
         self.assertFalse(monitor._pending_events)
         self.assertEqual(state.scaling_trigger, "focus")
+
+    def test_default_profile_does_not_consume_another_games_performance_mode_event(self):
+        default = Profile(id="default-game", name="Game Default", is_default=True)
+        manager = SimpleNamespace(
+            config=SimpleNamespace(
+                process_lasso_performance_mode_scaling=True,
+                process_lasso_log_path=None,
+                profiles=[default],
+            ),
+            match_target_profile=Mock(return_value=None),
+        )
+        state = AppState()
+        state.current_active_profile = default
+        state.is_scaling_active = True
+        state.scaling_target_pid = 9999
+        watcher = Mock()
+        watcher.find_visible_window_for_process.return_value = ProcessInfo(
+            4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
+        )
+        automation = Mock()
+        monitor = ProcessLassoScalingMonitor(manager, state, watcher, automation)
+
+        monitor._handle_event(self.make_event())
+
+        self.assertIn("4312", monitor._pending_events)
+        automation.activate_profile.assert_not_called()
+        automation.set_scaling.assert_not_called()
 
     def test_event_before_visible_window_is_retried_instead_of_lost(self):
         profile = Profile(id="game", name="Game", target_process="Game.exe")
