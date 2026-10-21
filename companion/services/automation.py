@@ -79,6 +79,7 @@ class AutomationController:
 
     def resolve_deployment_files(self, profile: Optional[Profile]) -> List[Dict]:
         """Resolve runtime binaries plus any selected managed ReShade assets."""
+        packages = self.asset_store.list_packages()
         addon_manager_available = any(
             item.get("provider") == "ls-addon-manager"
             and any(
@@ -86,25 +87,19 @@ class AutomationController:
                 == "lossless-scaling-deployment.json"
                 for file in item.get("files", [])
             )
-            for item in self.asset_store.list_packages()
+            for item in packages
         )
         use_addon_manager = bool(
             self.profile_manager.config.addon_manager_enabled
             and addon_manager_available
         )
-        if (
-            use_addon_manager
-            and profile
-            and not profile.addon_config
-            and not self.profile_manager.config.default_addon_config
-            and self.state.current_active_profile is None
-        ):
-            # First-run migration: preserve an existing Echo/LosslessProxy
-            # document as the user's default before the managed host replaces
-            # anything in the Lossless Scaling folder.
-            self.addon_configs.capture(
+        config_path = None
+        if use_addon_manager and profile:
+            self.addon_configs.catalog(packages)
+            config_path = self.addon_configs.materialize(
                 profile,
-                self.profile_manager.config.lossless_scaling_exe_path,
+                reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
+                hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
             )
         files = self.graphics_resolver.resolve(
             profile,
@@ -116,18 +111,7 @@ class AutomationController:
             addon_manager_enabled=True if use_addon_manager else False,
             addon_manager_config=self.profile_manager.config.addon_manager,
         )
-        if profile and use_addon_manager:
-            reshade_enabled = bool(
-                profile.graphics.reshade.enabled
-                or (profile.reshade and profile.reshade.enabled)
-            )
-            config_path = self.addon_configs.materialize(
-                profile,
-                reshade_enabled=reshade_enabled,
-                hotkey_vk=self._echo_hotkey_vk(
-                    self.profile_manager.config.reshade_overlay_hotkey
-                ),
-            )
+        if profile and config_path:
             files.append({
                 "relative_path": "addons/config.json",
                 "source_path": str(config_path),
@@ -217,6 +201,14 @@ class AutomationController:
                 logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             selected = profile or self.state.current_active_profile
+            if active and selected and self.addon_configs.has_pending(selected):
+                self.activate_profile(
+                    selected, force=True, suppress_auto_scale=True,
+                    target_pid=target_pid, target_hwnd=target_hwnd,
+                )
+                if self.addon_configs.has_pending(selected):
+                    self._set_control_status("error", "Could not apply saved add-on settings before scaling")
+                    return False
             runtime_providers = self._runtime_providers(selected)
             configured_exe = self.profile_manager.config.lossless_scaling_exe_path
             if (
@@ -704,6 +696,37 @@ class AutomationController:
             display_id = 0
         return max(0, gpu_id), max(0, display_id)
 
+    def reconcile_pending_addon_settings(self) -> None:
+        """Deploy editor changes once a manually or automatically scaled session stops."""
+        with self._lock:
+            profile = self.state.current_active_profile
+            if not self.state.is_scaling_active and profile and self.addon_configs.has_pending(profile):
+                self.activate_profile(profile, force=True, suppress_auto_scale=True)
+
+    def save_addon_config(self, profile_id: str, data: Dict) -> Profile:
+        """Serialize profile edits with deployment and scaling transitions."""
+        with self._lock:
+            existing = self.profile_manager.get_profile_by_id(profile_id)
+            if existing is None:
+                raise ValueError("Save the profile before editing its add-ons")
+            profile = existing.model_copy(deep=True)
+            profile.addon_config = data
+            self.addon_configs.mark_edited(profile)
+            self.addon_configs.catalog(self.asset_store.list_packages())
+            self.addon_configs.materialize(
+                profile,
+                reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
+                hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
+            )
+            self.profile_manager.add_or_update_profile(profile)
+            active = self.state.current_active_profile
+            if active and active.id == profile.id:
+                if self.state.is_scaling_active:
+                    self.state.current_active_profile = profile
+                else:
+                    self.activate_profile(profile, force=True, suppress_auto_scale=True)
+            return profile
+
     def _desired_gpu_route(
         self, profile: Optional[Profile], target_hwnd: Optional[int]
     ) -> Dict:
@@ -1047,6 +1070,7 @@ class AutomationController:
                 files=deployment_files,
             )
             if profile:
+                self.addon_configs.mark_applied(profile)
                 self.asset_store.write_profile_manifest(profile.id, manifest)
                 if park_runtime:
                     self.deployment_manager.set_runtime_packages_active(

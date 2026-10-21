@@ -103,6 +103,17 @@ jobs:
             throw "Bundled ReShade bridge manifest was not produced"
           }
 
+      - name: Build and test startup window guard
+        shell: pwsh
+        run: |
+          cmake -S native/startup_guard -B build/startup_guard -A x64
+          if ($LASTEXITCODE -ne 0) { throw "Startup guard configure failed" }
+          cmake --build build/startup_guard --config Release
+          if ($LASTEXITCODE -ne 0) { throw "Startup guard build failed" }
+          $env:LSC_TEST_NATIVE_STARTUP_GUARD = "1"
+          python -m unittest tests.test_startup_guard
+          if ($LASTEXITCODE -ne 0) { throw "Startup guard tests failed" }
+
       - name: Stage official NVIDIA NGX build dependency
         shell: pwsh
         run: |
@@ -169,6 +180,7 @@ jobs:
             throw "Compiled executable is empty"
           }
           $benchmark = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSBenchmark.exe" -ErrorAction Stop
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_StartupGuard.dll" -ErrorAction Stop | Out-Null
           if ((Get-Item -LiteralPath $benchmark).Length -le 0) {
             throw "Embedded benchmark executable is empty"
           }

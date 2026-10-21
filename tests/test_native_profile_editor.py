@@ -130,16 +130,10 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
 
     def test_native_echo_panel_and_reshade_passthrough_are_wired(self):
-        self.assertIn('id="echoAddonPanelHost"', self.html)
-        self.assertIn("function updateEchoEmbed(force = false)", self.html)
-        self.assertIn('.echo-native-host { position:relative; height:76px;', self.html)
-        self.assertIn('.echo-native-host.available { height:620px; }', self.html)
-        self.assertIn("runtimeActiveProfile.id === profileId", self.html)
-        self.assertIn("host.classList.toggle('available', !!available)", self.html)
-        self.assertIn("host.classList.remove('embedded', 'available')", self.html)
-        self.assertIn("type: 'EMBED_ADDON_MENU'", self.html)
-        self.assertIn("type: 'DETACH_ADDON_MENU'", self.html)
-        self.assertIn("msg.type === 'ADDON_MENU_EMBED_STATUS'", self.html)
+        self.assertIn('id="addonEditorCards"', self.html)
+        self.assertIn("function renderAddonEditor()", self.html)
+        self.assertIn("type: 'SAVE_ADDON_CONFIG'", self.html)
+        self.assertNotIn("type: 'EMBED_ADDON_MENU'", self.html)
         self.assertNotIn('id="echoConfigJson"', self.html)
         self.assertNotIn("function renderAddonConfigEditor()", self.html)
         self.assertIn("addonConfig.addons.ReShadePassthrough._enabled = true", self.html)
@@ -177,7 +171,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertNotIn("selectedNeuralSamplingPreset", self.html)
 
     def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
-        echo_editor = self.html.index('id="echoAddonPanelHost"')
+        echo_editor = self.html.index('id="addonEditorCards"')
         special_k = self.html.index('id="specialKSettings"', echo_editor)
         self.assertGreater(special_k, echo_editor)
         self.assertIn("Special K is independent of Echo LS Add-on Manager", self.html)

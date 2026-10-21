@@ -271,6 +271,8 @@ class CompanionWebSocketServer:
                 "OPEN_PROXY_MENU",
                 "EMBED_ADDON_MENU",
                 "DETACH_ADDON_MENU",
+                "GET_ADDON_EDITOR_CATALOG",
+                "SAVE_ADDON_CONFIG",
                 "BROWSE_GENERAL_PATH",
                 "GET_RESHADE_PROFILES",
                 "SAVE_RESHADE_PROFILE",
@@ -354,7 +356,7 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({
                     "type": "PROFILE_DETAILS",
                     "generation": msg.get("generation"),
-                    "profiles": [profile.model_dump(mode="json") for profile in self.profile_manager.config.profiles],
+                    "profiles": [self._profile_editor_data(profile) for profile in self.profile_manager.config.profiles],
                 }))
                 return
 
@@ -364,9 +366,33 @@ class CompanionWebSocketServer:
                     raise ValueError("Unknown profile")
                 await websocket.send(json.dumps({
                     "type": "PROFILE_DETAIL",
-                    "profile": profile.model_dump(mode="json"),
+                    "profile": self._profile_editor_data(profile),
                     "action": msg.get("action"),
                 }))
+                return
+
+            if msg_type == "GET_ADDON_EDITOR_CATALOG":
+                catalog = await asyncio.to_thread(
+                    self.automation.addon_configs.catalog, self.asset_store.list_packages()
+                )
+                await websocket.send(json.dumps({"type": "ADDON_EDITOR_CATALOG", "addons": catalog}))
+                return
+
+            if msg_type == "SAVE_ADDON_CONFIG":
+                profile = self.profile_manager.get_profile_by_id(str(msg.get("profileId") or ""))
+                if profile is None:
+                    raise ValueError("Save the profile before editing its add-ons")
+                data = msg.get("config")
+                if not isinstance(data, dict) or not isinstance(data.get("addons"), dict) or not isinstance(data.get("global"), dict):
+                    raise ValueError("Add-on configuration must contain global and addons objects")
+                configs = self.automation.addon_configs
+                profile = await asyncio.to_thread(self.automation.save_addon_config, profile.id, data)
+                await websocket.send(json.dumps({
+                    "type": "ADDON_CONFIG_SAVED", "profileId": profile.id,
+                    "generation": msg.get("generation"), "config": profile.addon_config,
+                    "pending": configs.has_pending(profile),
+                }))
+                await self.broadcast_full_data_update()
                 return
 
             if msg_type == "GET_LOSSLESS_SETTINGS":
@@ -1365,6 +1391,7 @@ class CompanionWebSocketServer:
                         and active_profile
                         and active_profile.id == requested_id
                         and self.config.addon_manager_enabled
+                        and "addon_config" not in prof_data
                     ):
                         # The embedded Echo panel writes the live config. Pull
                         # it before validating the browser's autosave payload
@@ -2376,6 +2403,15 @@ class CompanionWebSocketServer:
                 },
             },
         }
+
+    def _profile_editor_data(self, profile: Profile) -> Dict:
+        data = profile.model_dump(mode="json")
+        data["addon_config"] = self.automation.addon_configs.effective(
+            profile,
+            reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
+            hotkey_vk=self.automation._echo_hotkey_vk(self.config.reshade_overlay_hotkey),
+        )
+        return data
 
     def _profile_summaries(self) -> list[Dict]:
         return [{

@@ -79,6 +79,46 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
+    async def test_addon_editor_saves_inactive_profile_without_switching_or_enabling_defaults(self):
+        profile = self.manager.create_profile_from_process("game.exe")
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.automation.activate_profile = Mock()
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_ADDON_CONFIG", "profileId": profile.id, "generation": 7,
+            "config": {"global": {"future": 12}, "addons": {"FutureAddon": {"gain": "0.5"}}},
+        }))
+        result = next(json.loads(message) for message in websocket.messages if json.loads(message)["type"] == "ADDON_CONFIG_SAVED")
+        saved = self.manager.get_profile_by_id(profile.id)
+        self.assertEqual(result["generation"], 7)
+        self.assertTrue(result["pending"])
+        self.assertEqual(saved.addon_config["addons"]["FutureAddon"]["gain"], "0.5")
+        self.assertFalse(saved.addon_config["addons"]["DLSS5NR01"]["_enabled"])
+        self.assertEqual(saved.graphics.neural_render.implementation, "disabled")
+        self.assertEqual(saved.auto_scale, profile.auto_scale)
+        self.automation.activate_profile.assert_not_called()
+
+    async def test_addon_editor_queues_active_profile_changes_and_protects_them_from_live_config(self):
+        profile = self.manager.create_profile_from_process("game.exe")
+        self.state.current_active_profile = profile
+        self.state.is_scaling_active = True
+        self.automation.activate_profile = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_ADDON_CONFIG", "profileId": profile.id,
+            "config": {"global": {}, "addons": {"DLSS5NR01": {"_enabled": False}}},
+        }))
+        self.automation.activate_profile.assert_not_called()
+        self.assertTrue(self.automation.addon_configs.has_pending(self.state.current_active_profile))
+        self.automation.reconcile_pending_addon_settings()
+        self.automation.activate_profile.assert_not_called()
+        self.state.is_scaling_active = False
+        self.automation.reconcile_pending_addon_settings()
+        self.automation.activate_profile.assert_called_once_with(
+            self.state.current_active_profile, force=True, suppress_auto_scale=True,
+        )
+
     async def test_profile_list_is_lightweight_and_detail_is_loaded_on_request(self):
         profile = self.manager.create_profile_from_process("game.exe")
         profile.addon_config = {"addons": {"Example": {"setting": "private detail"}}}
@@ -99,7 +139,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preload["generation"], 2)
         self.assertEqual(
             next(item for item in preload["profiles"] if item["id"] == profile.id)["addon_config"],
-            profile.addon_config,
+            self.automation.addon_configs.effective(profile, reshade_enabled=False),
         )
 
         await self.server.process_message(websocket, json.dumps({
@@ -108,7 +148,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         detail = json.loads(websocket.messages[-1])
         self.assertEqual(detail["type"], "PROFILE_DETAIL")
         self.assertEqual(detail["action"], "edit")
-        self.assertEqual(detail["profile"]["addon_config"], profile.addon_config)
+        self.assertEqual(detail["profile"]["addon_config"], self.automation.addon_configs.effective(profile, reshade_enabled=False))
 
     async def test_dashboard_can_open_proxy_menu(self):
         websocket = self.FakeWebSocket()
@@ -657,7 +697,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('id="importReshadePresetBtn"', body)
             self.assertNotIn('class="addon-badge ready">HDR Installer</span>', body)
             self.assertNotIn('id="dlss5Enabled"', body)
-            self.assertIn('id="echoAddonPanelHost"', body)
+            self.assertIn('id="addonEditorCards"', body)
             self.assertNotIn('id="echoConfigJson"', body)
             self.assertNotIn('id="neuralUpdatePolicy"', body)
             self.assertNotIn('id="neuralRuntimeHash"', body)

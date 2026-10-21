@@ -11,6 +11,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Carries the selected PID and HWND through profile activation, refocuses that exact window after any Lossless Scaling restart, and refuses the hotkey if identity verification fails.
    - Confirms the resulting scaling state from Lossless Scaling's overlay instead of treating successful keyboard input as proof of activation.
    - Keeps an application scaled when focus changes. A configured game can explicitly take precedence over an actively scaled browser profile.
+   - Starts LS with a bundled, process-specific startup-window guard to suppress dashboard flashes without hiding its scaling overlay. The guard expires after startup so the dashboard can still be opened manually.
 
 2. **Native Win32 Input Injection (`ctypes` + `SendInput`):**
    - Synthesizes scan-code keyboard input through the Windows input API.
@@ -32,7 +33,10 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
    - Game executable paths are used only for foreground profile detection.
    - Downloads Echo LS Add-on Manager only from its official release feed, expands its verified x64 Setup payload, and deploys it transactionally.
-   - Saves a default Echo configuration plus one complete configuration per profile, with the menu available on demand while scaling.
+   - Saves a default Echo configuration plus one complete configuration per profile. Built-in profile controls edit these files without loading Echo's native window, including for inactive profiles.
+   - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; ReShade input passthrough is enabled automatically when needed.
+   - Add-on edits made during scaling are saved immediately and deployed after scaling stops. Unknown saved settings remain available in the editor and are preserved.
+   - Keeps bounded runtime logs in `%LOCALAPPDATA%\LosslessScalingHelper\logs\companion.log` and includes the recent log tail in diagnostic downloads.
    - Archives recognized LosslessProxy-era add-on folders before the first Echo deployment and leaves unknown third-party folders untouched.
 
 6. **Windows System Tray UI:**

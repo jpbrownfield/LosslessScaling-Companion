@@ -13,6 +13,10 @@ benchmark = Path("build/native/LSBenchmark.exe")
 if not benchmark.is_file():
     raise SystemExit("Build build/native/LSBenchmark.exe before packaging LS Companion")
 benchmark_binaries = [(str(benchmark), "tools")]
+startup_guard = Path("build/native/LSC_StartupGuard.dll")
+if not startup_guard.is_file():
+    raise SystemExit("Build the native startup guard before packaging LS Companion")
+benchmark_binaries.append((str(startup_guard), "tools"))
 reshade_bridge = Path("build/native/LSP-ReShade/LSC_ReShadeBridge.dll")
 reshade_bridge_manifest = Path("build/native/LSP-ReShade/addon.json")
 if not reshade_bridge.is_file() or not reshade_bridge_manifest.is_file():

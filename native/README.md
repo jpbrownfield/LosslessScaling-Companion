@@ -1,5 +1,41 @@
 # Bundled native components
 
+`startup_guard` is Companion's own small Windows x64 DLL. Companion registers a
+PID-filtered, in-context `SetWinEventHook` before resuming a new LS process. On
+creation/show of LS's unowned, captioned WPF dashboard it installs a temporary
+subclass that prevents subsequent show requests, and DWM-cloaks the window as a
+second layer against first-paint flashes. It does not patch code, attach a
+debugger, replace a proxy DLL, or install desktop-wide hooks. All UI threads of
+that one new LS PID are covered. Borderless scaling overlays, Echo's panel,
+owned dialogs, and non-WPF errors are excluded.
+
+The window is temporarily non-activating as well. After six seconds the dashboard
+is hidden, uncloaked and unsubclassed, with its activation style restored; later
+manual opens work normally. The DLL is pinned in LS until that process exits
+to keep queued callbacks safe. The hook-installing worker unhooks itself and
+exits after startup. Existing running LS instances and manual Steam launches
+are not modified. Restricted security policies can prevent in-process hook
+delivery; Companion retains its old post-show hide watcher as a fallback.
+
+Build and run the off-screen native integration fixture (not the installed LS):
+
+```powershell
+cmake -S native/startup_guard -B build/startup_guard -A x64
+cmake --build build/startup_guard --config Release
+$env:LSC_TEST_NATIVE_STARTUP_GUARD = "1"
+python -m unittest tests.test_startup_guard -v
+```
+
+The tests include both an off-screen Win32 fixture and a real .NET Framework
+WPF window/dispatcher. They check repeated show requests, overlay/Echo/dialog
+exclusions, expiry and later manual opening. The WPF fixture uses the framework
+compiler shipped with Windows; neither test executable is packaged.
+
+The result is `build/native/LSC_StartupGuard.dll`, bundled under Companion's
+`tools` directory. Windows maps that exact DLL into LS; no copy into the LS
+installation or additional add-on load ordering is necessary. Simply dropping
+the DLL beside LS does **not** activate it; Companion's guarded launch does.
+
 `reshade_bridge` is LS Companion's maintained fork of the MIT-licensed
 LSP-ReShade input-passthrough add-on. It targets the LosslessProxy 0.3.x add-on
 ABI vendored under `vendor/losslessproxy-sdk`.

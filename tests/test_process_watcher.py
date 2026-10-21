@@ -101,6 +101,7 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             launch_events = []
             with (
                 patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
+                patch("companion.services.process_watcher.launch_hidden", return_value=None),
                 patch(
                     "companion.services.process_watcher.subprocess.Popen",
                     side_effect=lambda *args, **kwargs: (launch_events.append("popen"), process)[1],
@@ -144,6 +145,41 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             watcher._suppress_startup_window(4242)
 
         self.assertEqual(len(hidden), 3)
+
+    def test_native_guard_launch_does_not_also_popen(self):
+        watcher, settings = self.make_watcher()
+        settings.native_auto_scale_enabled.return_value = False
+        with (
+            patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
+            patch("companion.services.process_watcher.Path.is_file", return_value=True),
+            patch("companion.services.process_watcher.launch_hidden", return_value=4242) as guard,
+            patch("companion.services.process_watcher.subprocess.Popen") as popen,
+            patch("companion.services.process_watcher.time.sleep"),
+            patch.object(watcher, "_suppress_startup_window") as fallback,
+        ):
+            self.assertTrue(watcher.launch_lossless_scaling(force=True))
+        guard.assert_called_once()
+        popen.assert_not_called()
+        fallback.assert_called_once_with(4242)
+        self.assertTrue(watcher.state.lossless_scaling_running)
+
+    def test_lossless_focus_does_not_switch_profile_or_restart_for_default(self):
+        profile = SimpleNamespace(id="game")
+        manager = SimpleNamespace(config=SimpleNamespace(), match_target_profile=Mock())
+        state = AppState()
+        state.current_active_profile = profile
+        callback = Mock()
+        watcher = ProcessWatcher(manager, state, on_profile_changed=callback)
+        watcher._last_foreground_pid = 41
+        watcher._last_foreground_hwnd = 81
+        window = ProcessInfo(99, "LOSSLESSSCALING.EXE", r"C:\LS\LosslessScaling.exe", "LS", 82)
+        with patch.object(watcher, "get_foreground_window_info", return_value=window):
+            self.assertIs(watcher.check_foreground_and_update(), window)
+        manager.match_target_profile.assert_not_called()
+        callback.assert_not_called()
+        self.assertIs(state.current_active_profile, profile)
+        self.assertEqual(watcher._last_foreground_pid, 41)
+        self.assertEqual(watcher._last_foreground_hwnd, 81)
 
     def test_startup_suppression_skips_overlay_and_echo_windows(self):
         watcher, _settings = self.make_watcher()

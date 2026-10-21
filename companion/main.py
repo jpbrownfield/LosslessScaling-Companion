@@ -21,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("LSCompanion")
 
 from .core.profile_manager import ProfileManager
+from .services.runtime_logging import configure_runtime_logging
 from .core.state import AppState
 from .services.server import CompanionWebSocketServer
 from .services.process_watcher import ProcessWatcher
@@ -315,6 +316,7 @@ class CompanionApplication:
                             target_info.is_active,
                             self.state.current_scaled_target,
                         )
+                    self.automation.reconcile_pending_addon_settings()
                     self.automation.reconcile_gpu_route()
                     self.dynamic_limiter.poll()
                 snapshot = (
@@ -333,10 +335,14 @@ class CompanionApplication:
                     if self.loop and self.loop.is_running():
                         asyncio.run_coroutine_threadsafe(self.server.broadcast_state(), self.loop)
             except Exception as e:
-                logger.debug(f"Process monitor tick error: {e}")
+                logger.exception("Process monitor tick failed")
             time.sleep(1.0)
 
     def start(self):
+        try:
+            configure_runtime_logging(self.profile_manager.config_dir)
+        except OSError:
+            logger.exception("Could not open the persistent Companion log")
         logger.info("Initializing LS Companion...")
         self._instance_guard = SingleInstanceGuard(
             "simulation" if self.simulation_mode else "companion"

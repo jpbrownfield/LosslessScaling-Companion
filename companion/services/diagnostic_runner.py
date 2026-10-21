@@ -256,6 +256,16 @@ class DiagnosticRunner:
             for item in results
         )
         (session / "README.md").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+        runtime_log = self.server.profile_manager.config_dir / "logs" / "companion.log"
+        if runtime_log.is_file():
+            try:
+                with runtime_log.open("rb") as stream:
+                    stream.seek(0, os.SEEK_END)
+                    stream.seek(max(0, stream.tell() - 256 * 1024))
+                    tail = self._path(stream.read().decode("utf-8", errors="replace"))
+                (session / "companion-runtime.log").write_text(tail, encoding="utf-8")
+            except OSError as error:
+                (session / "runtime-log-unavailable.txt").write_text(type(error).__name__, encoding="utf-8")
         archive = self.root / f"ls-companion-diagnostics-{session.name}.zip"
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             for path in sorted(session.iterdir()):
@@ -545,6 +555,7 @@ class DiagnosticRunner:
                 id=f"experimental-live-{label}-{uuid.uuid4().hex}",
                 name=f"Experimental Live {label}",
                 lossless_profile_title=native_title,
+                addon_config={"global": {}, "addons": {}},
             )
 
         profiles: list[Profile] = []
@@ -579,6 +590,7 @@ class DiagnosticRunner:
                 profile = base("echo-neural")
                 profile.graphics.neural_render.implementation = "lsp_neural_render"
                 profile.graphics.neural_render.runtime_asset_sha256 = str(runtime["sha256"])
+                profile.addon_config["addons"]["DLSS5NR01"] = {"_enabled": True, "workingScale": "0.5"}
                 profiles.append(profile)
         return profiles
 
@@ -599,6 +611,7 @@ class DiagnosticRunner:
         manager = self.server.automation.deployment_manager
         previous = self.server.state.current_active_profile
         auto_scale_was_enabled = self.server.state.auto_scale_enabled
+        benchmark_was_active = self.server.state.benchmark_mode_active
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         checks = []
         failures = []
@@ -613,6 +626,7 @@ class DiagnosticRunner:
             # Keep the foreground watcher from racing this explicitly controlled
             # start/stop cycle and immediately reactivating scaling after stop.
             self.server.state.auto_scale_enabled = False
+            self.server.state.benchmark_mode_active = True
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(
                     False, reason="experimental_addon_test_setup", force=True,
@@ -735,9 +749,11 @@ class DiagnosticRunner:
                             return runtime_evidence["addonManagerStarted"]
                         return bool(current_delta)
 
-                    addon_ready = active_observed and self._wait_until(
-                        addon_runtime_ready, 12.0, interval=0.4
+                    addon_ready = self._wait_until(
+                        addon_runtime_ready, 12.0 if active_observed else 2.0, interval=0.4
                     )
+                    activation_control = dict(self.server.state.scaling_control_status)
+                    activation_observation = log_inspector.inspect_current_scaling_target().to_dict()
                     stopped = self.server.automation.set_scaling(
                         False,
                         profile,
@@ -764,6 +780,9 @@ class DiagnosticRunner:
                     )
                     attempt.update({
                         "scalingConfirmed": scaled and active_observed,
+                        "scalingControl": activation_control,
+                        "scalingObservation": activation_observation,
+                        "moduleInspectionPerformed": True,
                         "deactivationConfirmed": stopped,
                         "losslessLogFiles": [self._path(item) for item in lossless_delta],
                         "losslessLogTail": self._path("\n".join(lossless_delta.values())[-8000:]),
@@ -836,6 +855,7 @@ class DiagnosticRunner:
             if was_running:
                 self.server.process_watcher.launch_lossless_scaling(force=True)
             self.server.state.auto_scale_enabled = auto_scale_was_enabled
+            self.server.state.benchmark_mode_active = benchmark_was_active
 
         passed = bool(checks) and not failures
         return self._result(
@@ -1324,8 +1344,19 @@ class DiagnosticRunner:
             lilium_mentions += len(lilium_lines)
             for index in lilium_lines:
                 context = lines[index:min(len(lines), index + 12)]
-                if any(re.search(r"failed to compile|\berror\b|\berror [xX]\d+", line, re.IGNORECASE) for line in context):
-                    compile_errors.append({"log": log.name, "context": context})
+                if "successfully compiled" in lines[index].casefold():
+                    continue
+                if any(re.search(r"failed to compile|\berror\b|\berror [xX]\d+", line, re.IGNORECASE) for line in context[:2]):
+                    shader = re.search(r"['\"]([^'\"]*lilium[^'\"]*\.fx)['\"]", lines[index], re.IGNORECASE)
+                    shader_name = shader.group(1).replace("\\", "/").rsplit("/", 1)[-1].casefold() if shader else None
+                    later_success = bool(shader_name and any(
+                        "successfully compiled" in line.casefold() and shader_name in line.casefold()
+                        for line in lines[index + 1:]
+                    ))
+                    owner = re.search(r"LSCompanion[/\\]([^/\\]+)[/\\]", lines[index], re.IGNORECASE)
+                    compile_errors.append({"log": log.name, "shader": shader_name,
+                                           "managedProfile": owner.group(1) if owner else None,
+                                           "laterSuccessfulCompilation": later_success, "context": context})
             log_evidence.append({
                 "file": self._path(log),
                 "modifiedUtc": datetime.fromtimestamp(log.stat().st_mtime, timezone.utc).isoformat(),
@@ -1334,12 +1365,20 @@ class DiagnosticRunner:
 
         ini = root / "ReShade.ini"
         ini_text = self._path(ini.read_text(encoding="utf-8", errors="replace")[:16000]) if ini.is_file() else None
-        status = "fail" if missing or compile_errors else "pass" if lilium_mentions else "warn"
+        unresolved = [item for item in compile_errors if not item["laterSuccessfulCompilation"]]
+        current_errors = [item for item in unresolved if item["managedProfile"] in (None, active_reshade_id)]
+        status = "fail" if missing or (active_reshade_id and current_errors) else "warn" if compile_errors or not active_reshade_id or not lilium_mentions else "pass"
         summary = (
             "Lilium shader files or ReShade compilation errors were found."
             if status == "fail" else
             "Lilium appears in the ReShade runtime log with no nearby compile error."
             if status == "pass" else
+            "Lilium has compiler errors on another or earlier runtime; later successful compilation was also recorded."
+            if compile_errors and not unresolved else
+            "Historical Lilium evidence was captured; no Lilium profile is active for a current compilation check."
+            if not active_reshade_id and lilium_mentions else
+            "Historical compiler errors were captured for another managed Lilium profile."
+            if compile_errors and not current_errors else
             "No Lilium compilation evidence was found; reproduce the error before rerunning this test."
         )
         return self._result(
@@ -1348,6 +1387,7 @@ class DiagnosticRunner:
             profiles=profiles,
             missingShaders=missing,
             compilationErrors=compile_errors[-20:],
+            evidenceScope="active_profile" if active_reshade_id else "historical",
             reshadeIni=ini_text,
             logs=log_evidence,
         )

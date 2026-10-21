@@ -16,3 +16,4 @@ jobs:
       - run: python -m pip install -r companion/requirements.txt pytest
       - run: python -m pytest -v
       - run: node tests/check_javascript.js
+      - run: node tests/test_addon_editor.js

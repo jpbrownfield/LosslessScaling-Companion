@@ -216,6 +216,33 @@ class DiagnosticRunnerTests(unittest.TestCase):
             runner._reset_lossless_folder.assert_not_called()
             self.assertIn("not reset", result["results"][-1]["summary"])
 
+    def test_lilium_failure_on_earlier_runtime_with_later_success_is_reported_as_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"test")
+            source = root / "config" / "reshade-profiles" / "hdr" / "packages" / "22"
+            source.mkdir(parents=True)
+            (source / "lilium__inverse_tone_mapping.fx").write_text("shader", encoding="utf-8")
+            (root / "ReShade.log").write_text(
+                "Failed to compile 'lilium__inverse_tone_mapping.fx':\n"
+                "error X4530: pixel shader must minimally write all four components of COLOR0\n"
+                "Successfully compiled 'lilium__inverse_tone_mapping.fx' in 0.036 seconds.\n",
+                encoding="utf-8",
+            )
+            managed = SimpleNamespace(id="hdr", name="HDR", shaders={"22": ["lilium__inverse_tone_mapping.fx"]})
+            server = SimpleNamespace(
+                config=SimpleNamespace(lossless_scaling_exe_path=str(executable), reshade_profiles=[managed]),
+                state=SimpleNamespace(current_active_profile=None),
+                profile_manager=SimpleNamespace(config_dir=root / "config"),
+            )
+
+            result = DiagnosticRunner(server)._reshade_lilium()
+
+            self.assertEqual(result["status"], "warn")
+            self.assertEqual(result["details"]["evidenceScope"], "historical")
+            self.assertTrue(result["details"]["compilationErrors"][0]["laterSuccessfulCompilation"])
+
     def test_log_delta_reads_restarted_truncated_log_from_the_beginning(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "LosslessProxy.log"

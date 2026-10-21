@@ -96,6 +96,8 @@ class LosslessScalingInspector:
         "nvngx",
         "presentmon",
         "rtss",
+        "lsaddonmanager",
+        "addonmanager",
     )
     _SCALING_STARTED_RE = re.compile(
         r"(?:\bscaling(?:\s+session)?\s*[:=_-]?\s*"

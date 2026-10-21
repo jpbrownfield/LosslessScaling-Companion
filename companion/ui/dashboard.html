@@ -176,10 +176,13 @@
     #profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }
     body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
-    .echo-native-host { position:relative; height:76px; margin-top:12px; overflow:hidden; border:1px solid var(--card-border); border-radius:8px; background:#101216; }
-    .echo-native-host.available { height:620px; }
-    .echo-native-host-status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:12px 20px; color:var(--text-muted); font-size:12px; line-height:1.5; text-align:center; }
-    .echo-native-host.embedded .echo-native-host-status { display:none; }
+    .addon-editor-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:12px; margin-top:12px; }
+    .addon-editor-heading { display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    .addon-editor-heading h5 { margin:0; color:var(--accent); font-size:14px; }
+    .addon-editor-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; padding-top:12px; }
+    .addon-editor-fields .form-group { margin:0; min-width:0; }
+    .addon-editor-fields fieldset { grid-column:1/-1; border:1px solid var(--card-border); border-radius:6px; padding:12px; }
+    .addon-editor-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
     .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
     .profile-basics-grid.native-default-profile { grid-template-areas: "name name name name" "type path path path"; }
     .profile-basics-grid > .form-group { min-width: 0; margin: 0; }
@@ -637,8 +640,10 @@
         <details class="settings-group profile-settings-group" open>
           <summary>Echo Add-on Manager Configuration <span class="chevron" aria-hidden="true">&#8250;</span></summary>
           <div class="settings-group-content">
-          <p class="item-sub" style="white-space:normal">This is Echo's actual running control panel. It becomes available for the active profile after Lossless Scaling starts; changes are captured into that profile automatically.</p>
-          <div id="echoAddonPanelHost" class="echo-native-host"><div id="echoAddonPanelStatus" class="echo-native-host-status">Start Lossless Scaling with this profile to load Echo's control panel here.</div></div>
+          <p class="item-sub" style="white-space:normal">Configure add-ons for this profile, including while another profile is active. Optional processors start off. Changes made during scaling apply the next time scaling starts.</p>
+          <div class="addon-editor-actions"><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable all processing</button><span id="addonEditorStatus" class="item-sub" role="status">Loading add-on settings...</span></div>
+          <div id="addonEditorCards" class="addon-editor-grid"></div>
+          <details class="settings-group profile-settings-nested"><summary>Other saved manager settings <span class="chevron" aria-hidden="true">&#8250;</span></summary><div id="addonManagerFields" class="addon-editor-fields settings-group-content"></div></details>
           </div>
         </details>
 
@@ -774,9 +779,11 @@
     let reshadeSaveQueued = false;
     let controlSettings = null;
     let editingOriginalProfile = null;
-    let echoEmbedTimer = null;
-    let lastEchoEmbedRect = '';
-    let echoEmbedAttached = false;
+    let addonEditorCatalog = [];
+    let addonEditorDraft = { global: {}, addons: {} };
+    let addonEditorTimer = null;
+    let addonEditorGeneration = 0;
+    let addonEditorUnsaved = false;
     let rtssDetectionTimer = null;
     let rtssDetectionChecks = 0;
     let generalSettingsReady = false;
@@ -901,6 +908,8 @@
         ws.send(JSON.stringify({ type: 'GET_COMPANION_UPDATE' }));
         ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_DIAGNOSTICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_EDITOR_CATALOG' }));
+        if (addonEditorUnsaved && document.getElementById('profileModal').classList.contains('active')) saveAddonEditor();
       };
 
       ws.onmessage = (event) => {
@@ -954,10 +963,10 @@
               profileSaveInFlight = false;
               activeProfileSaveRequestId = null;
               editingOriginalProfile = JSON.parse(JSON.stringify(msg.profile));
+              editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
               profileDetails.set(msg.profile.id, msg.profile);
               if (msg.profile.is_default) defaultTemplateProfile = msg.profile;
               document.getElementById('profileId').value = msg.profile.id;
-              updateEchoEmbed(true);
               if (!document.getElementById('profileName').value.trim()) document.getElementById('profileName').value = msg.profile.name;
               const status = document.getElementById('profileAutosaveStatus');
               status.textContent = 'Saved automatically.';
@@ -974,12 +983,16 @@
             const status = document.getElementById('proxyMenuStatus');
             status.textContent = 'Echo add-on menu opened.';
             status.hidden = false;
-          } else if (msg.type === 'ADDON_MENU_EMBED_STATUS') {
-            const host = document.getElementById('echoAddonPanelHost');
-            const status = document.getElementById('echoAddonPanelStatus');
-            echoEmbedAttached = !!msg.embedded;
-            host.classList.toggle('embedded', !!msg.embedded);
-            if (!msg.embedded && msg.reason) status.textContent = msg.reason;
+          } else if (msg.type === 'ADDON_EDITOR_CATALOG') {
+            addonEditorCatalog = msg.addons || [];
+            renderAddonEditor();
+          } else if (msg.type === 'ADDON_CONFIG_SAVED') {
+            if (msg.profileId === document.getElementById('profileId').value && msg.generation === addonEditorGeneration) {
+              addonEditorUnsaved = false;
+              if (editingOriginalProfile) editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
+              document.getElementById('addonEditorStatus').textContent = msg.pending
+                ? 'Saved. Applies the next time scaling starts.' : 'Saved and applied.';
+            }
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
             const updateWasBusy = companionUpdateBusy;
@@ -1216,9 +1229,6 @@
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
       }
-      if (document.getElementById('profileModal').classList.contains('active')
-          && (Object.prototype.hasOwnProperty.call(msg, 'isScalingActive')
-              || Object.prototype.hasOwnProperty.call(msg, 'activeProfile'))) updateEchoEmbed(true);
       if (msg.losslessScalingFound === false) {
         setRuntimeStatus('LS Not Found', 'not-found');
         return;
@@ -1976,81 +1986,150 @@
       return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
     }
 
-    function updateEchoEmbed(force = false) {
-      const host = document.getElementById('echoAddonPanelHost');
-      const modalOpen = document.getElementById('profileModal').classList.contains('active');
+    function addonEditorChanged() {
+      addonEditorGeneration++;
+      addonEditorUnsaved = true;
+      if (editingOriginalProfile) editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
+      clearTimeout(addonEditorTimer);
+      document.getElementById('addonEditorStatus').textContent = 'Saving add-on settings...';
+      addonEditorTimer = setTimeout(saveAddonEditor, 500);
+    }
+
+    function saveAddonEditor() {
+      clearTimeout(addonEditorTimer);
+      addonEditorTimer = null;
       const profileId = document.getElementById('profileId').value;
-      if (!host || !modalOpen || !profileId) return;
-      const available = runtimeScalingActive
-        && runtimeActiveProfile && runtimeActiveProfile.id === profileId
-        && (!controlSettings || controlSettings.addonManagerEnabled !== false);
-      const wasAvailable = host.classList.contains('available');
-      host.classList.toggle('available', !!available);
-      const status = document.getElementById('echoAddonPanelStatus');
-      if (!available) {
-        if (echoEmbedAttached && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
-        }
-        echoEmbedAttached = false;
-        host.classList.remove('embedded');
-        status.textContent = !runtimeScalingActive
-          ? 'Start scaling with this profile to load Echo\'s control panel here.'
-          : !runtimeActiveProfile || runtimeActiveProfile.id !== profileId
-            ? 'Echo can edit only the active profile. Activate and scale this profile first.'
-            : 'Enable Echo LS Add-on Manager in General Settings to use this panel.';
-        lastEchoEmbedRect = '';
+      if (!profileId) { scheduleProfileAutosave(0); return; }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        document.getElementById('addonEditorStatus').textContent = 'Disconnected. Reconnect to save these changes.';
         return;
       }
-      if (!wasAvailable) status.textContent = 'Connecting to Echo\'s control panel...';
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const rect = host.getBoundingClientRect();
-      const scrollRect = host.closest('.profile-editor-content').getBoundingClientRect();
-      const visible = {
-        left: Math.max(rect.left, scrollRect.left, 0),
-        top: Math.max(rect.top, scrollRect.top, 0),
-        right: Math.min(rect.right, scrollRect.right, window.innerWidth),
-        bottom: Math.min(rect.bottom, scrollRect.bottom, window.innerHeight)
-      };
-      if (rect.width <= 0 || rect.height <= 0 || visible.right <= visible.left || visible.bottom <= visible.top) {
-        if (echoEmbedAttached) ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
-        echoEmbedAttached = false;
-        host.classList.remove('embedded');
-        document.getElementById('echoAddonPanelStatus').textContent =
-          'Scroll the add-on panel into view to attach Echo\'s control panel.';
-        lastEchoEmbedRect = '';
-        return;
-      }
-      const payloadRect = {
-        left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-        clip: {
-          left: visible.left - rect.left, top: visible.top - rect.top,
-          width: visible.right - visible.left, height: visible.bottom - visible.top
-        },
-        viewportWidth: window.innerWidth, viewportHeight: window.innerHeight
-      };
-      const signature = JSON.stringify(payloadRect);
-      if (!force && signature === lastEchoEmbedRect) return;
-      lastEchoEmbedRect = signature;
-      ws.send(JSON.stringify({ type: 'EMBED_ADDON_MENU', profileId, rect: payloadRect }));
+      ws.send(JSON.stringify({ type: 'SAVE_ADDON_CONFIG', profileId,
+        config: addonEditorDraft, generation: addonEditorGeneration }));
     }
 
-    function startEchoEmbed() {
-      lastEchoEmbedRect = '';
-      updateEchoEmbed(true);
-      if (echoEmbedTimer) clearInterval(echoEmbedTimer);
-      echoEmbedTimer = setInterval(updateEchoEmbed, 250);
+    function addonSettingField(container, object, key, spec = {}, path = '') {
+      if (['__proto__', 'constructor', 'prototype'].includes(key)) return;
+      const current = object[key];
+      const group = document.createElement('div');
+      group.className = 'form-group';
+      const label = document.createElement('label');
+      label.textContent = spec.label || key.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
+      const kind = spec.type || (typeof current === 'boolean' ? 'checkbox' : typeof current === 'number' ? 'number' : 'text');
+      const input = document.createElement(kind === 'select' ? 'select' : 'input');
+      if (kind !== 'select') input.type = kind;
+      if (kind === 'select') {
+        const options = [['', 'Use add-on default'], ...(spec.options || [])];
+        if (current != null && !options.some(([value]) => value === String(current))) options.push([String(current), `Saved value: ${current}`]);
+        options.forEach(([value, text]) => {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          input.appendChild(option);
+        });
+      }
+      input.setAttribute('aria-label', label.textContent);
+      if (kind === 'checkbox') input.checked = current === undefined ? spec.default === '1' : current === true || current === 1 || current === '1';
+      else {
+        input.value = current == null ? '' : current;
+        if (spec.default !== undefined) input.placeholder = `Default: ${spec.default}`;
+        ['min', 'max', 'step'].forEach(name => { if (spec[name] !== undefined) input[name] = spec[name]; });
+        if (kind === 'number' && !spec.step) input.step = 'any';
+      }
+      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.updates.check'].includes(path);
+      input.addEventListener('change', () => {
+        if (!input.checkValidity()) { input.reportValidity(); return; }
+        if (kind !== 'checkbox' && input.value === '' && spec.key) delete object[key];
+        else object[key] = kind === 'checkbox'
+          ? (typeof current === 'boolean' ? input.checked : input.checked ? '1' : '0')
+          : (typeof current === 'number' ? Number(input.value) : input.value);
+        if (spec.key === 'modelEvery') object.defaultsVersion = '2';
+        if (key === 'sharpen' && /^addons\.(DLSS4DLAA|FSR3UPSC|XESSUPSC|VSRUPSC)\./.test(path)) object.sharpenScale = '1.6';
+        addonEditorChanged();
+      });
+      label.appendChild(input);
+      group.appendChild(label);
+      container.appendChild(group);
     }
 
-    function stopEchoEmbed() {
-      if (echoEmbedTimer) clearInterval(echoEmbedTimer);
-      echoEmbedTimer = null;
-      lastEchoEmbedRect = '';
-      echoEmbedAttached = false;
-      const host = document.getElementById('echoAddonPanelHost');
-      if (host) host.classList.remove('embedded', 'available');
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'DETACH_ADDON_MENU' }));
-      }
+    function addonSavedFields(container, object, prefix, excluded = new Set()) {
+      Object.entries(object || {}).forEach(([key, value]) => {
+        if (excluded.has(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) return;
+        const path = `${prefix}.${key}`;
+        if (value && typeof value === 'object') {
+          const nested = document.createElement('fieldset');
+          const legend = document.createElement('legend');
+          legend.textContent = key;
+          nested.appendChild(legend);
+          addonSavedFields(nested, value, path);
+          container.appendChild(nested);
+        } else addonSettingField(container, object, key, {}, path);
+      });
+    }
+
+    function renderAddonEditor() {
+      const host = document.getElementById('addonEditorCards');
+      if (!host) return;
+      host.replaceChildren();
+      const catalog = new Map(addonEditorCatalog.map(addon => [addon.id, addon]));
+      ['DLSS5NR01', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC', 'WindowedMode', 'ReShadePassthrough',
+        ...Object.keys(addonEditorDraft.addons)].forEach(id => {
+        if (!catalog.has(id)) catalog.set(id, { id, name: id, fields: [] });
+      });
+      catalog.forEach(addon => {
+        if (['__proto__', 'constructor', 'prototype'].includes(addon.id)) return;
+        const section = addonEditorDraft.addons[addon.id];
+        const values = section && typeof section === 'object' && !Array.isArray(section)
+          ? section : (addonEditorDraft.addons[addon.id] = {});
+        if (typeof values._enabled !== 'boolean') values._enabled = false;
+        const reshadeRequired = addon.id === 'ReShadePassthrough' && !!document.getElementById('reshadeManagedProfile').value;
+        if (reshadeRequired) values._enabled = true;
+        const card = document.createElement('section');
+        card.className = 'ls-settings-card';
+        const heading = document.createElement('div');
+        heading.className = 'addon-editor-heading';
+        const title = document.createElement('h5');
+        title.textContent = addon.name;
+        heading.appendChild(title);
+        const toggle = document.createElement('label');
+        toggle.className = 'ls-switch';
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.checked = values._enabled;
+        enabled.disabled = reshadeRequired;
+        enabled.setAttribute('aria-label', `Enable ${addon.name}`);
+        const track = document.createElement('span');
+        track.className = 'ls-switch-track';
+        toggle.append(enabled, track);
+        heading.appendChild(toggle);
+        card.appendChild(heading);
+        const description = document.createElement('p');
+        description.className = 'addon-description';
+        description.textContent = (addon.installed === false ? 'Not installed. ' : '')
+          + (addon.description || 'Settings saved by this add-on.');
+        card.appendChild(description);
+        enabled.addEventListener('change', () => {
+          values._enabled = enabled.checked;
+          addonEditorChanged();
+        });
+        const settings = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = 'Settings';
+        settings.appendChild(summary);
+        const fields = document.createElement('div');
+        fields.className = 'addon-editor-fields';
+        const knownKeys = new Set(['_enabled']);
+        (addon.fields || []).forEach(spec => {
+          knownKeys.add(spec.key);
+          addonSettingField(fields, values, spec.key, spec, `addons.${addon.id}.${spec.key}`);
+        });
+        addonSavedFields(fields, values, `addons.${addon.id}`, knownKeys);
+        if (fields.children.length) { settings.appendChild(fields); card.appendChild(settings); }
+        host.appendChild(card);
+      });
+      const globalHost = document.getElementById('addonManagerFields');
+      globalHost.replaceChildren();
+      addonSavedFields(globalHost, addonEditorDraft.global, 'global');
     }
 
     function syncNativeControlDisplay(control) {
@@ -2231,13 +2310,13 @@
     }
 
     function setProfileEditorOpen(open) {
-      if (!open) stopEchoEmbed();
+      if (!open && addonEditorTimer) saveAddonEditor();
       document.getElementById('profileModal').classList.toggle('active', open);
       document.body.classList.toggle('profile-editor-open', open);
-      if (open) setTimeout(startEchoEmbed, 0);
     }
 
     function openModal(profile = null, autosave = false) {
+      if (addonEditorTimer) saveAddonEditor();
       const creating = !profile || !profile.id;
       const defaultSummary = profiles.find(item => item.is_default);
       if (creating && defaultSummary && !defaultTemplateProfile) {
@@ -2279,6 +2358,11 @@
         }
       }
       editingOriginalProfile = profile ? JSON.parse(JSON.stringify(profile)) : null;
+      addonEditorGeneration++;
+      addonEditorUnsaved = false;
+      addonEditorDraft = structuredClone(profile && profile.addon_config || { global: {}, addons: {} });
+      if (!addonEditorDraft.global || typeof addonEditorDraft.global !== 'object') addonEditorDraft.global = {};
+      if (!addonEditorDraft.addons || typeof addonEditorDraft.addons !== 'object') addonEditorDraft.addons = {};
       renderNativeSettings(profile);
 
       const nativeDefaultAlias = !!(profile && profile.is_default);
@@ -2337,6 +2421,8 @@
       renderRtssProfileAvailability();
       renderSpecialKSettings();
       renderProfileTargetValidation();
+      renderAddonEditor();
+      document.getElementById('addonEditorStatus').textContent = 'Optional add-ons are off unless explicitly enabled for this profile.';
       const autosaveStatus = document.getElementById('profileAutosaveStatus');
       autosaveStatus.textContent = creating
         ? 'Changes save automatically after you enter profile details.'
@@ -2681,8 +2767,18 @@
       renderTargetType();
     };
     ['input', 'change'].forEach(eventName => {
-      document.getElementById('profileForm').addEventListener(eventName, () => scheduleProfileAutosave());
+      document.getElementById('profileForm').addEventListener(eventName, event => {
+        if (!event.target.closest('#addonEditorCards, #addonManagerFields')) scheduleProfileAutosave();
+      });
     });
+    document.getElementById('disableOptionalAddonsBtn').onclick = () => {
+      Object.entries(addonEditorDraft.addons).forEach(([id, values]) => {
+        if (id !== 'ReShadePassthrough' && values && typeof values === 'object') values._enabled = false;
+      });
+      renderAddonEditor();
+      addonEditorChanged();
+    };
+    document.getElementById('reshadeManagedProfile').addEventListener('change', renderAddonEditor);
     document.getElementById('browseTargetProgramBtn').onclick = () => {
       ws.send(JSON.stringify({
         type: 'BROWSE_GENERAL_PATH',
@@ -2936,9 +3032,7 @@
         ? ''
         : (editingOriginalProfile && editingOriginalProfile.reshade && editingOriginalProfile.reshade.preset_path || '');
       const requestId = crypto.randomUUID().replaceAll('-', '');
-      const addonConfig = JSON.parse(JSON.stringify(
-        editingOriginalProfile && editingOriginalProfile.addon_config || { global: {}, addons: {} }
-      ));
+      const addonConfig = structuredClone(addonEditorDraft);
       addonConfig.global = addonConfig.global && typeof addonConfig.global === 'object' ? addonConfig.global : {};
       addonConfig.addons = addonConfig.addons && typeof addonConfig.addons === 'object' ? addonConfig.addons : {};
       if (managedReshadeProfile || legacyReshadePresetPath) {
@@ -3088,7 +3182,7 @@
       openMajorDashboardPanel(target, true);
     }
 
-    window.addEventListener('beforeunload', stopEchoEmbed);
+    window.addEventListener('beforeunload', () => { if (addonEditorTimer) saveAddonEditor(); });
     connectWS();
   </script>
 </body>

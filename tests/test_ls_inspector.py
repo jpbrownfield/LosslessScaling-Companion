@@ -7,6 +7,18 @@ from companion.services.ls_inspector import LosslessScalingInspector
 
 
 class LosslessScalingInspectorTests(unittest.TestCase):
+    def test_echo_log_does_not_block_overlay_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "LSAddonManager.log"
+            log.write_text("Addon Manager starting\nApplySettings: scalingMode=0\n", encoding="utf-8")
+            with patch("companion.services.ls_inspector.glob.glob", return_value=[str(log)]):
+                inspector = LosslessScalingInspector()
+                self.assertEqual(inspector._candidate_log_files(), [])
+                inspector.begin_scaling_confirmation(True)
+                with patch.object(inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)):
+                    self.assertIsNone(inspector.probe_scaling_state())
+                    self.assertTrue(inspector.probe_scaling_state())
+
     def test_existing_log_history_is_not_replayed_as_current_state(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "LosslessScaling.log"

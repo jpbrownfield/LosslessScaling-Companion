@@ -19,6 +19,7 @@ from ..core.models import HotkeyConfig
 from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
 from .proxy_menu import AddonManagerMenuController
+from .startup_guard import launch_hidden
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -460,22 +461,24 @@ class ProcessWatcher:
 
         try:
             logger.info("Launching Lossless Scaling hidden: %s", executable)
-            startup_info = subprocess.STARTUPINFO()
-            startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup_info.wShowWindow = 0  # SW_HIDE
-            process = subprocess.Popen(
-                [str(executable)],
-                cwd=str(executable.parent),
-                close_fds=True,
-                startupinfo=startup_info,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            pid = launch_hidden(executable)
+            if pid is None:
+                startup_info = subprocess.STARTUPINFO()
+                startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startup_info.wShowWindow = 0  # SW_HIDE
+                process = subprocess.Popen(
+                    [str(executable)],
+                    cwd=str(executable.parent),
+                    close_fds=True,
+                    startupinfo=startup_info,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                pid = process.pid
             self.state.lossless_scaling_running = True
-            # Arm the window watcher immediately. Waiting until after the
-            # initialization delay allowed LS's delayed WPF window to paint
-            # for roughly one second before we ever attempted to hide it.
-            self._suppress_startup_window(process.pid)
-            self.proxy_menu.suppress_startup_window(process.pid)
+            # Retain the polling safety net for security policies that allow
+            # hook registration but prevent loading the DLL inside LS.
+            self._suppress_startup_window(pid)
+            self.proxy_menu.suppress_startup_window(pid)
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
@@ -619,6 +622,12 @@ class ProcessWatcher:
         info = self.get_foreground_window_info()
         if not info:
             return None
+
+        # LS's dashboard/overlay is a control surface, not a scaling target.
+        # Matching it to Default can otherwise swap deployed add-ons and
+        # restart LS, then swap back when the game regains focus.
+        if info.name.casefold() == "losslessscaling.exe":
+            return info
 
         if (
             not self.state.is_scaling_active
