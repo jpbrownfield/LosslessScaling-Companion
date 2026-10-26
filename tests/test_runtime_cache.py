@@ -139,16 +139,45 @@ class RuntimeCacheTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows junction integration")
     def test_real_junction_targets_cache_not_steam_and_cleanup_preserves_target(self):
+        self._assert_private_junction_cleanup()
+
+    def _assert_private_junction_cleanup(self):
         self.cache.junction_creator = create_directory_junction
         runtime = self.prepare(shared_assets={"reshade-shaders/Shaders": self.shaders})
         self.assertEqual(runtime.linked_assets, ("reshade-shaders/Shaders",))
         link = runtime.root / "reshade-shaders/Shaders"
         target = link.resolve(strict=True)
         self.assertTrue(link.is_junction())
-        self.assertTrue(target.is_relative_to(self.cache.root / "assets"))
+        # Windows TEMP can contain an 8.3 alias (e.g. RUNNER~1), whereas
+        # resolving the junction expands it to the full directory name.
+        asset_root = (self.cache.root / "assets").resolve(strict=True)
+        self.assertTrue(target.is_relative_to(asset_root), (target, asset_root))
+        self.assertTrue(target.parent.samefile(asset_root))
         shutil.rmtree(runtime.root)
         self.assertTrue((target / "test.fx").exists())
         self.assertTrue((self.shaders / "test.fx").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows short-path integration")
+    def test_junction_cleanup_with_short_name_cache_path(self):
+        import ctypes
+        from ctypes import wintypes
+
+        cache_root = self.directory / "Cache directory with long name"
+        cache_root.mkdir()
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_short_path = kernel.GetShortPathNameW
+        get_short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get_short_path.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = get_short_path(str(cache_root), buffer, len(buffer))
+        if not length:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.assertLess(length, len(buffer))
+        short_root = Path(buffer.value)
+        if short_root == cache_root.resolve(strict=True):
+            self.skipTest("This filesystem does not provide an 8.3 alias")
+        self.cache = RuntimeCache(short_root)
+        self._assert_private_junction_cleanup()
 
     @unittest.skipUnless(os.name == "nt", "Windows junction integration")
     def test_internal_cache_junction_is_rejected_before_writes(self):
