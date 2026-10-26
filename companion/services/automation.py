@@ -16,6 +16,7 @@ from .addon_config import AddonConfigService
 from .deployment_manager import DeploymentManager
 from .graphics_resolver import GraphicsResolutionError, GraphicsResolver
 from .gpu_router import GpuRouter
+from .gpu_selections import GpuSelectionService
 from .input_simulator import InputSimulator
 from .ls_settings import LosslessSettingsXml
 from .nvidia_profile import NvidiaProfileManager
@@ -68,6 +69,7 @@ class AutomationController:
             receipt_path=Path(profile_manager.config_dir) / "nvidia-profile-rollback.json"
         )
         self.gpu_router = gpu_router or GpuRouter()
+        self.gpu_selections = GpuSelectionService(profile_manager)
         self.lossless_settings = lossless_settings or LosslessSettingsXml(
             profile_manager.config.lossless_settings_xml_path
         )
@@ -730,9 +732,12 @@ class AutomationController:
     def _desired_gpu_route(
         self, profile: Optional[Profile], target_hwnd: Optional[int]
     ) -> Dict:
+        self.refresh_gpu_selections()
         profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(profile)
         config = self.profile_manager.config
-        route = self.gpu_router.route_for_gpu(config.preferred_scaling_gpu_device_id)
+        route = self.gpu_router.route_for_gpu(
+            None if profile_gpu_id or config.auto_route_gpu_to_display else config.preferred_scaling_gpu_device_id
+        )
         if config.auto_route_gpu_to_display and target_hwnd:
             detected = self.gpu_router.route_for_window(target_hwnd)
             if detected:
@@ -744,10 +749,18 @@ class AutomationController:
             if profile_gpu_id:
                 route["lsGpuId"] = selected["lsGpuId"]
                 route["gpuDeviceId"] = selected["gpuDeviceId"]
+                route["gpuName"] = selected.get("gpuName")
             if profile_display_id:
                 route["lsDisplayId"] = selected["lsDisplayId"]
                 route["deviceName"] = selected["deviceName"]
         return route
+
+    def refresh_gpu_selections(self, inventory=None):
+        with self._lock:
+            if inventory is None:
+                inventory = self.gpu_router.detect()
+            self.gpu_selections.refresh(inventory)
+            return inventory
 
     @staticmethod
     def _gpu_route_key(route: Dict) -> str:
@@ -1043,6 +1056,8 @@ class AutomationController:
                 ) if route_change else False
                 if route_change is False or route_updated:
                     self.state.current_gpu_route_key = self._gpu_route_key(gpu_route)
+                if route_updated:
+                    logger.info("Applied GPU route for '%s': GPU %s (%s), display %s", profile.name if profile else "Default", gpu_route.get("lsGpuId"), gpu_route.get("gpuName") or gpu_route.get("gpuDeviceId") or "Auto", gpu_route.get("lsDisplayId"))
             smooth_motion = bool(
                 profile
                 and profile.graphics.special_k.enabled

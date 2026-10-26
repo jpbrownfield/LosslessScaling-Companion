@@ -361,6 +361,11 @@ class CompanionApplication:
             return
         self.running = True
 
+        try:
+            self.automation.refresh_gpu_selections()
+        except (OSError, ValueError, RuntimeError):
+            logger.exception("Could not refresh persisted GPU selections at startup")
+
         # Check / Launch Lossless Scaling
         self._native_auto_scale_enforced = bool(
             self.profile_manager.config.lossless_control_configured

@@ -479,6 +479,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         }))
 
         self.assertEqual(self.manager.config.preferred_scaling_gpu_device_id, device_id)
+        self.assertEqual(self.manager.config.preferred_scaling_gpu_name, "NVIDIA GeForce RTX 5080")
         self.assertFalse(self.manager.config.auto_route_gpu_to_display)
         self.assertTrue(self.manager.config.nvidia_rtx_hdr_enabled)
         self.assertEqual(self.manager.config.reshade_hdr_peak_nits, 1400)

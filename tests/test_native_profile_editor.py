@@ -27,6 +27,14 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             [key for key, count in Counter(native_keys).items() if count > 1], []
         )
 
+    def test_echo_upscalers_are_distinct_from_native_fsr_and_save_as_nis(self):
+        self.assertIn('<option value="FSR">FSR (LS built-in)</option>', self.html)
+        self.assertIn('<option value="EchoDLSS">DLSS (Echo add-on)</option>', self.html)
+        self.assertIn('<option value="EchoFSR">FSR (Echo add-on)</option>', self.html)
+        self.assertIn("values.ScalingType = serializedScalingType(values.ScalingType)", self.html)
+        self.assertIn("if (addonScalingSavePending) { scheduleProfileAutosave(0); return; }", self.html)
+        self.assertIn("activeProfileSaveAddonGeneration = addonGeneration", self.html)
+
     def test_normalized_native_fixture_fields_have_editor_mappings(self):
         fixture_keys = set()
         for fixture in (FIXTURE, FIXTURE_322):

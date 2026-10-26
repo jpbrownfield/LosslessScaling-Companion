@@ -353,6 +353,7 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "GET_PROFILE_DETAILS":
+                await asyncio.to_thread(self.automation.refresh_gpu_selections)
                 await websocket.send(json.dumps({
                     "type": "PROFILE_DETAILS",
                     "generation": msg.get("generation"),
@@ -361,6 +362,7 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "GET_PROFILE_DETAIL":
+                await asyncio.to_thread(self.automation.refresh_gpu_selections)
                 profile = self.profile_manager.get_profile_by_id(str(msg.get("profileId") or ""))
                 if profile is None:
                     raise ValueError("Unknown profile")
@@ -874,6 +876,10 @@ class CompanionWebSocketServer:
                 self.config.addon_manager_enabled = requested_addon_manager_enabled
                 self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
+                self.config.preferred_scaling_gpu_name = next(
+                    (gpu.get("name") for gpu in gpu_inventory.get("gpus", [])
+                     if str(gpu.get("deviceId") or "").casefold() == str(requested_gpu_id or "").casefold()), None
+                )
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.reshade_hdr_peak_nits = requested_reshade_peak
@@ -1446,6 +1452,8 @@ class CompanionWebSocketServer:
                         prof_data["is_default"] = False
                     prof = Profile.model_validate(prof_data)
                     previous = self.profile_manager.get_profile_by_id(prof.id)
+                    inventory = await asyncio.to_thread(self.automation.refresh_gpu_selections)
+                    self.automation.gpu_selections.capture_profile(prof, inventory, previous)
                     if previous and previous.is_default:
                         # This helper profile is an alias for LS's first/native
                         # profile. Its display name and native identity are not
@@ -2491,7 +2499,7 @@ class CompanionWebSocketServer:
         process_lasso_detected = bool(
             selected_process_lasso_log and selected_process_lasso_log.is_file()
         )
-        gpu_inventory = self.automation.gpu_router.detect()
+        gpu_inventory = self.automation.refresh_gpu_selections()
         displayed_override_hotkey = self.config.override_hotkey
         if not self.config.override_lossless_hotkey:
             displayed_override_hotkey = (
@@ -2519,6 +2527,8 @@ class CompanionWebSocketServer:
             "gpuInventory": gpu_inventory,
             "hasNvidiaGpu": bool(gpu_inventory.get("hasNvidia")),
             "preferredScalingGpuDeviceId": self.config.preferred_scaling_gpu_device_id or "",
+            "preferredScalingGpuName": self.config.preferred_scaling_gpu_name or "",
+            "gpuRoutingWarnings": self.automation.gpu_selections.warnings,
             "autoRouteGpuToDisplay": self.config.auto_route_gpu_to_display,
             "nvidiaRtxHdrEnabled": self.config.nvidia_rtx_hdr_enabled,
             "reshadeHdr": self.reshade_profiles.hdr_settings_payload(),

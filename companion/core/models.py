@@ -271,6 +271,12 @@ class Profile(BaseModel):
     lossless_profile_path: Optional[str] = None
     last_imported_hash: Optional[str] = None
     native_scaling_settings: Dict[str, Any] = Field(default_factory=dict)
+    # Numeric LS IDs are routing outputs, not persistent hardware identities.
+    preferred_gpu_device_id: Optional[str] = None
+    preferred_gpu_name: Optional[str] = None
+    output_display_device_id: Optional[str] = None
+    output_display_name: Optional[str] = None
+    profile_settings_revision: Optional[str] = None
     graphics: GraphicsStackConfig = Field(default_factory=GraphicsStackConfig)
     rtss: RtssLimiterConfig = Field(default_factory=RtssLimiterConfig)
     reshade: Optional[ReshadeConfig] = None
@@ -354,6 +360,8 @@ class AppConfig(BaseModel):
     default_profile_auto_scale: bool = True
     run_at_startup: bool = False
     preferred_scaling_gpu_device_id: Optional[str] = None
+    preferred_scaling_gpu_name: Optional[str] = None
+    gpu_inventory_snapshot: Dict[str, Any] = Field(default_factory=dict)
     auto_route_gpu_to_display: bool = True
     nvidia_rtx_hdr_enabled: bool = False
     reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)

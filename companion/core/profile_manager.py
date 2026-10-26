@@ -7,9 +7,13 @@ import os
 import hashlib
 import threading
 import shutil
+import logging
 from pathlib import Path
 from typing import Optional, List
 from .models import AppConfig, Profile, HotkeyConfig, ReshadeConfig, DllOverrideConfig
+from .profile_settings import ProfileSettingsStore
+
+logger = logging.getLogger("LSCompanion.ProfileManager")
 
 
 DEFAULT_BROWSER_EXECUTABLES = [
@@ -58,6 +62,7 @@ class ProfileManager:
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / "settings.json"
+        self.profile_settings = ProfileSettingsStore(self.config_dir)
         self.config: AppConfig = self.load_config()
 
     def _get_default_config(self) -> AppConfig:
@@ -110,8 +115,8 @@ class ProfileManager:
             profile.id
             for profile in config.profiles
             if profile.id in legacy
-            and profile.model_dump(exclude={"id"})
-            == legacy[profile.id].model_dump(exclude={"id"})
+            and profile.model_dump(exclude={"id", "profile_settings_revision"})
+            == legacy[profile.id].model_dump(exclude={"id", "profile_settings_revision"})
         }
         changed = False
         if removable_ids:
@@ -218,6 +223,7 @@ class ProfileManager:
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             config = AppConfig.model_validate(data)
+            self.profile_settings.restore(config.profiles)
             if self._migrate_legacy_seed_profiles(config):
                 self.save_config(config)
             return config
@@ -231,10 +237,17 @@ class ProfileManager:
         with self._lock:
             if config is not None:
                 self.config = config
+            self.profile_settings.prepare(self.config.profiles)
             temp_file = self.config_file.with_suffix(".json.tmp")
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(self.config.model_dump(), f, indent=2)
             os.replace(temp_file, self.config_file)
+            try:
+                self.profile_settings.sync(self.config.profiles)
+            except (OSError, ValueError):
+                # A failed optional snapshot must not invalidate the successfully
+                # saved main configuration or cause load_config to reset it.
+                logger.exception("Settings saved, but profile JSON snapshots could not be synchronized; retrying on the next save")
 
     def get_profile_by_id(self, profile_id: str) -> Optional[Profile]:
         for p in self.config.profiles:
@@ -362,9 +375,18 @@ class ProfileManager:
             profile.target_domain = None
             profile.lossless_profile_title = title
             profile.lossless_profile_path = path
+        saved_route = {
+            key: profile.native_scaling_settings[key]
+            for key in ("PreferredGpuId", "OutputDisplayId")
+            if profile.profile_settings_revision and key in profile.native_scaling_settings
+        }
         profile.native_scaling_settings = {
             key: value for key, value in native_profile.items() if key not in {"Title", "Path"}
         }
+        # The XML contains the last *resolved* runtime route. Importing that
+        # number at startup must not turn a saved 'follow General' preference
+        # into a permanent GPU override.
+        profile.native_scaling_settings.update(saved_route)
         profile.last_imported_hash = self.native_profile_hash(native_profile)
         for other in self.config.profiles:
             if other.id != profile.id:
@@ -383,6 +405,11 @@ class ProfileManager:
             if self.config.active_profile_id == profile_id:
                 self.config.active_profile_id = self.config.profiles[0].id if self.config.profiles else None
             self.save_config()
+            if selected:
+                try:
+                    self.profile_settings.remove(selected)
+                except (OSError, ValueError):
+                    logger.exception("Could not remove deleted profile's settings snapshot")
             return True
         return False
 
@@ -550,9 +577,15 @@ class ProfileManager:
         if path:
             profile.target_executable_path = profile.target_executable_path or path
             profile.target_process = profile.target_process or Path(path).name
+        saved_route = {
+            key: profile.native_scaling_settings[key]
+            for key in ("PreferredGpuId", "OutputDisplayId")
+            if profile.profile_settings_revision and key in profile.native_scaling_settings
+        }
         profile.native_scaling_settings = {
             key: value for key, value in native_profile.items() if key not in {"Title", "Path"}
         }
+        profile.native_scaling_settings.update(saved_route)
         profile.last_imported_hash = self.native_profile_hash(native_profile)
         self.add_or_update_profile(profile)
         return profile

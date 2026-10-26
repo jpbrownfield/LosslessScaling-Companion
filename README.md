@@ -12,6 +12,9 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Confirms the resulting scaling state from Lossless Scaling's overlay instead of treating successful keyboard input as proof of activation.
    - Keeps an application scaled when focus changes. A configured game can explicitly take precedence over an actively scaled browser profile.
    - Starts LS with a bundled, process-specific startup-window guard to suppress dashboard flashes without hiding its scaling overlay. The guard expires after startup so the dashboard can still be opened manually.
+   - Offers DLSS and FSR Echo add-ons in the profile's Scaling Type list. These choices save native NIS plus the matching add-on configuration together, disable competing upscalers, and remain distinct from LS's built-in FSR.
+   - Refreshes GPU identities at startup and before routing. Profile GPU/display numbers are remapped using saved device identity, PCI model or an unambiguous friendly name; the inventory history is persisted. Unrecoverable legacy numeric-only overrides follow General Settings rather than binding to an arbitrary GPU. An unavailable explicit General Settings GPU is reported instead of silently switching to Auto. Native LS routing is updated through the normal safe profile-activation path, not by restarting scaling just to refresh the inventory.
+   - Keeps readable per-profile JSON snapshots under `%LOCALAPPDATA%\LosslessScalingHelper\profile-settings\<profile-id>.json`, with friendly setting labels, GPU/display names, device identities and resolved IDs. Snapshots follow profile edits, renames and hardware remapping; unchanged files are not rewritten. The main `settings.json` remains authoritative, and revision checks prevent a stale snapshot from undoing newer settings. Missing or ambiguous legacy identity records fall back to General Settings. Echo's existing per-profile add-on JSON remains separate.
 
 2. **Native Win32 Input Injection (`ctypes` + `SendInput`):**
    - Synthesizes scan-code keyboard input through the Windows input API.
@@ -371,6 +374,24 @@ version is embedded in the packaged executable for update comparison.
 Release versions are immutable through this shortcut, so reusing an existing
 `@x.x.x` value fails instead of replacing its asset.
 
+To stage all non-ignored changes, commit and push the next sequential release
+from `main`, use the repository-root helper:
+
+```powershell
+python create_release.py --dry-run
+python create_release.py --message "Describe this release"
+```
+
+The helper checks commit-message versions and local/remote release tags, then
+increments with decimal rollover (`0.4.9` becomes `0.5.0`; `4.9.9` becomes
+`5.0.0`). Running it stages everything, including deletions, commits and pushes
+immediately without confirmation. Use `--dry-run` for a read-only preview.
+It refuses an out-of-date/diverged `main`
+and never force-pushes or creates release tags itself. If pushing fails after
+the commit succeeds, it retains that commit and prints a manual push command;
+retry that push rather than creating another release. A successful push starts
+the existing CI release workflow; it does not guarantee the build will pass.
+
 ---
 
 ## Third-party attribution
@@ -408,6 +429,31 @@ storage, and transactional deployment is documented in
 
 The WebSocket server accepts native local clients, Chrome-extension origins, and
 the companion-hosted dashboard origin. Ordinary web-page origins are rejected.
+
+### Experimental cached runtime
+
+`companion/services/runtime_cache.py` is a staging prototype, not yet connected
+to normal Lossless Scaling launches. It requires an explicit, verified pristine
+file manifest rather than copying an already modified Steam installation.
+Echo runtimes receive a private `Lossless.dll` manager and
+`Lossless_original.dll` engine; vanilla runtimes retain the original
+`Lossless.dll`. DLLs and per-profile INI/JSON files are real copies, not links.
+
+Shader/texture directories can use Windows junctions to cache-owned asset
+snapshots, with a copy fallback. These links never target Steam. Junctions are
+not read-only: edits affect their shared cache target, and subsequent integrity
+checks reject modified assets. Unchanged runtime recipes reuse their generation
+without resetting edited configs; changed inputs create a separate generation.
+Old generations are retained to avoid disrupting running processes. The prototype
+rejects unexpected runtime files; handling legitimate new LS output files,
+generation eviction, Steam launch behavior and executable-path-specific GPU rules
+must be addressed before production integration.
+
+Run the isolated tests (no real LS launch):
+
+```powershell
+python -m pytest tests/test_runtime_cache.py -q
+```
 
 ### Experimental multi-instance probe
 

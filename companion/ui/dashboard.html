@@ -585,7 +585,8 @@
             <div class="ls-settings-column">
               <section class="ls-settings-card">
                 <h5>Scaling</h5>
-                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR</option><option value="NIS">NIS</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeScalingType" data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR (LS built-in)</option><option value="NIS">NIS</option><option value="EchoDLSS">DLSS (Echo add-on)</option><option value="EchoFSR">FSR (Echo add-on)</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
+                <p id="profileScalingTypeHint" class="addon-description">Echo DLSS and FSR use NIS under the hood and require the corresponding Echo add-on to be installed.</p>
                 <div class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
                 <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LS1Type" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
                 <div class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select data-native-key="ScalingMode" data-native-default="Auto"><option value="Auto">Auto</option><option value="Custom">Custom</option></select></div></div>
@@ -774,6 +775,7 @@
     let profileSaveInFlight = false;
     let profileSaveQueued = false;
     let activeProfileSaveRequestId = null;
+    let activeProfileSaveAddonGeneration = null;
     let reshadeAutosaveTimer = null;
     let reshadeSaveInFlight = false;
     let reshadeSaveQueued = false;
@@ -784,6 +786,7 @@
     let addonEditorTimer = null;
     let addonEditorGeneration = 0;
     let addonEditorUnsaved = false;
+    let addonScalingSavePending = false;
     let rtssDetectionTimer = null;
     let rtssDetectionChecks = 0;
     let generalSettingsReady = false;
@@ -964,6 +967,11 @@
               activeProfileSaveRequestId = null;
               editingOriginalProfile = JSON.parse(JSON.stringify(msg.profile));
               editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
+              if (activeProfileSaveAddonGeneration === addonEditorGeneration) {
+                addonScalingSavePending = false;
+                addonEditorUnsaved = false;
+              }
+              activeProfileSaveAddonGeneration = null;
               profileDetails.set(msg.profile.id, msg.profile);
               if (msg.profile.is_default) defaultTemplateProfile = msg.profile;
               document.getElementById('profileId').value = msg.profile.id;
@@ -1346,15 +1354,25 @@
         option.textContent = `${gpu.name || 'Unknown GPU'}${displays ? ` - ${displays}` : ''}`;
         select.appendChild(option);
       });
-      select.value = [...select.options].some(option => option.value === selected)
-        ? selected
-        : '__auto__';
+      if (![...select.options].some(option => option.value === selected)) {
+        const option = document.createElement('option');
+        option.value = selected;
+        option.textContent = `${controlSettings.preferredScalingGpuName || 'Saved GPU'} (unavailable — select a detected GPU)`;
+        select.appendChild(option);
+      }
+      select.value = selected;
       const status = document.getElementById('gpuRoutingStatus');
       if (!(inventory.gpus || []).length) {
         status.innerHTML = '<span class="integration-status missing">No physical GPU detected</span><div class="integration-path">Display routing is unavailable in this session.</div>';
       } else {
         status.innerHTML = `<span class="integration-status detected">${inventory.gpus.length} GPU${inventory.gpus.length === 1 ? '' : 's'} detected</span><div class="integration-path">${escapeHtml((inventory.gpus || []).map(gpu => `${gpu.vendor}: ${gpu.name}`).join(' | '))}</div>`;
       }
+      (controlSettings.gpuRoutingWarnings || []).forEach(warning => {
+        const line = document.createElement('div');
+        line.className = 'integration-path';
+        line.textContent = warning;
+        status.appendChild(line);
+      });
       renderSpecialKSettings();
     }
 
@@ -1986,6 +2004,60 @@
       return !!(profile && (profile.is_default || profile.target_domain || profileTargets(profile).trim()));
     }
 
+    function profileUpscalerChoice(nativeType, addons) {
+      if (!['NIS', 'EchoDLSS', 'EchoFSR'].includes(nativeType)) return nativeType;
+      if (addons.DLSS4DLAA?._enabled === true) return 'EchoDLSS';
+      if (addons.FSR3UPSC?._enabled === true) return 'EchoFSR';
+      return 'NIS';
+    }
+
+    function setExclusiveProfileUpscaler(addons, selected) {
+      ['DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC'].forEach(id => {
+        if (id !== selected && !addons[id]) return;
+        if (!addons[id] || typeof addons[id] !== 'object' || Array.isArray(addons[id])) addons[id] = {};
+        addons[id]._enabled = id === selected;
+      });
+    }
+
+    function serializedScalingType(choice) {
+      return ['EchoDLSS', 'EchoFSR'].includes(choice) ? 'NIS' : choice;
+    }
+
+    function renderProfileScalingChoice() {
+      const control = document.getElementById('nativeScalingType');
+      if (!control) return;
+      control.value = profileUpscalerChoice(control.value, addonEditorDraft.addons);
+      const hint = document.getElementById('profileScalingTypeHint');
+      if (!hint) return;
+      const addonId = {EchoDLSS: 'DLSS4DLAA', EchoFSR: 'FSR3UPSC'}[control.value];
+      hint.textContent = addonId
+        ? `Uses NIS in Lossless Scaling and enables Echo's ${control.value === 'EchoDLSS' ? 'DLSS' : 'FSR'} upscaler. Fine-tune it in Echo Add-on Manager Configuration below.`
+        : 'Echo DLSS and FSR use NIS under the hood and require the corresponding Echo add-on to be installed.';
+      if (addonId && controlSettings?.addonManagerEnabled === false) {
+        hint.textContent += ' Enable Echo LS Add-on Manager in General Settings to use this mode.';
+      } else if (addonId && addonEditorCatalog.find(addon => addon.id === addonId)?.installed === false) {
+        hint.textContent += ' This add-on is not installed; install/update Echo LS Add-on Manager first.';
+      }
+    }
+
+    function profileUpscalerChanged() {
+      // Native NIS and the add-on flags must travel in one SAVE_PROFILE, not
+      // in independently debounced native/add-on requests.
+      addonScalingSavePending = true;
+      addonEditorChanged();
+      clearTimeout(addonEditorTimer);
+      addonEditorTimer = null;
+      scheduleProfileAutosave();
+    }
+
+    function changeProfileScalingChoice(choice) {
+      const selected = {EchoDLSS: 'DLSS4DLAA', EchoFSR: 'FSR3UPSC'}[choice] || null;
+      setExclusiveProfileUpscaler(addonEditorDraft.addons, selected);
+      document.getElementById('nativeScalingType').value = choice;
+      profileUpscalerChanged();
+      renderAddonEditor();
+    }
+
     function addonEditorChanged() {
       addonEditorGeneration++;
       addonEditorUnsaved = true;
@@ -2004,6 +2076,7 @@
         document.getElementById('addonEditorStatus').textContent = 'Disconnected. Reconnect to save these changes.';
         return;
       }
+      if (addonScalingSavePending) { scheduleProfileAutosave(0); return; }
       ws.send(JSON.stringify({ type: 'SAVE_ADDON_CONFIG', profileId,
         config: addonEditorDraft, generation: addonEditorGeneration }));
     }
@@ -2110,6 +2183,15 @@
         card.appendChild(description);
         enabled.addEventListener('change', () => {
           values._enabled = enabled.checked;
+          if (['DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC'].includes(addon.id)) {
+            if (enabled.checked) {
+              setExclusiveProfileUpscaler(addonEditorDraft.addons, addon.id);
+              document.getElementById('nativeScalingType').value = 'NIS';
+            }
+            profileUpscalerChanged();
+            renderAddonEditor();
+            return;
+          }
           addonEditorChanged();
         });
         const settings = document.createElement('details');
@@ -2130,6 +2212,7 @@
       const globalHost = document.getElementById('addonManagerFields');
       globalHost.replaceChildren();
       addonSavedFields(globalHost, addonEditorDraft.global, 'global');
+      renderProfileScalingChoice();
     }
 
     function syncNativeControlDisplay(control) {
@@ -2174,25 +2257,32 @@
             const selected = (inventory.gpus || []).find(
               gpu => gpu.deviceId === controlSettings.preferredScalingGpuDeviceId
             );
-            return selected ? selected.name : 'automatic GPU selection';
+            return selected ? selected.name : (controlSettings?.preferredScalingGpuDeviceId
+              ? `${controlSettings.preferredScalingGpuName || 'Saved GPU'} (unavailable)` : 'automatic GPU selection');
           })();
       preferredGpu.replaceChildren();
       preferredGpu.appendChild(new Option(`Follow General Settings (${globalGpu})`, '0'));
       (inventory.gpus || []).forEach(gpu => {
         const displays = (gpu.connectedDisplays || []).join(', ');
-        preferredGpu.appendChild(new Option(
+        const option = new Option(
           `${gpu.lsGpuId} — ${gpu.name}${displays ? ` (${displays})` : ''}`,
           String(gpu.lsGpuId)
-        ));
+        );
+        option.dataset.deviceId = gpu.deviceId || '';
+        option.dataset.deviceName = gpu.name || '';
+        preferredGpu.appendChild(option);
       });
       outputDisplay.replaceChildren();
       outputDisplay.appendChild(new Option('Follow General Settings (application display)', '0'));
       (inventory.displays || []).forEach(display => {
         const gpu = (inventory.gpus || []).find(item => item.deviceId === display.gpuDeviceId);
-        outputDisplay.appendChild(new Option(
+        const option = new Option(
           `${display.lsDisplayId} — ${display.name}${gpu ? ` (${gpu.name})` : ''}`,
           String(display.lsDisplayId)
-        ));
+        );
+        option.dataset.deviceId = display.deviceId || '';
+        option.dataset.deviceName = display.name || '';
+        outputDisplay.appendChild(option);
       });
     }
 
@@ -2262,6 +2352,10 @@
       };
       renderFrameGenerationModeSettings();
 
+      const scalingType = document.getElementById('nativeScalingType');
+      scalingType.onchange = () => changeProfileScalingChoice(scalingType.value);
+      renderProfileScalingChoice();
+
       const known = new Set(controls.flatMap(control => [
         control.dataset.nativeKey,
         control.dataset.nativeCanonicalKey,
@@ -2303,10 +2397,30 @@
       document.querySelectorAll('[data-native-extra-key]').forEach(control => {
         values[control.dataset.nativeExtraKey] = control.value;
       });
+      if (Object.prototype.hasOwnProperty.call(values, 'ScalingType')) {
+        values.ScalingType = serializedScalingType(values.ScalingType);
+      }
       if (controlSettings && controlSettings.smartAutoScaleEnabled !== false) {
         values.AutoScale = 'false';
       }
       return values;
+    }
+
+    function profileGpuSelectionPayload() {
+      const gpuControl = document.getElementById('nativePreferredGpu');
+      const displayControl = document.getElementById('nativeOutputDisplay');
+      const gpuId = Number(gpuControl.value || 0);
+      const displayId = Number(displayControl.value || 0);
+      // These identities belong to the option the user saw, not a newer
+      // inventory that may have reordered while the editor remained open.
+      const gpu = gpuControl.selectedOptions[0]?.dataset;
+      const display = displayControl.selectedOptions[0]?.dataset;
+      return {
+        preferred_gpu_device_id: gpuId ? (gpu?.deviceId || editingOriginalProfile?.preferred_gpu_device_id || null) : null,
+        preferred_gpu_name: gpuId ? (gpu?.deviceName || editingOriginalProfile?.preferred_gpu_name || null) : null,
+        output_display_device_id: displayId ? (display?.deviceId || editingOriginalProfile?.output_display_device_id || null) : null,
+        output_display_name: displayId ? (display?.deviceName || editingOriginalProfile?.output_display_name || null) : null
+      };
     }
 
     function setProfileEditorOpen(open) {
@@ -2360,6 +2474,7 @@
       editingOriginalProfile = profile ? JSON.parse(JSON.stringify(profile)) : null;
       addonEditorGeneration++;
       addonEditorUnsaved = false;
+      addonScalingSavePending = false;
       addonEditorDraft = structuredClone(profile && profile.addon_config || { global: {}, addons: {} });
       if (!addonEditorDraft.global || typeof addonEditorDraft.global !== 'object') addonEditorDraft.global = {};
       if (!addonEditorDraft.addons || typeof addonEditorDraft.addons !== 'object') addonEditorDraft.addons = {};
@@ -3033,6 +3148,7 @@
         : (editingOriginalProfile && editingOriginalProfile.reshade && editingOriginalProfile.reshade.preset_path || '');
       const requestId = crypto.randomUUID().replaceAll('-', '');
       const addonConfig = structuredClone(addonEditorDraft);
+      const addonGeneration = addonEditorGeneration;
       addonConfig.global = addonConfig.global && typeof addonConfig.global === 'object' ? addonConfig.global : {};
       addonConfig.addons = addonConfig.addons && typeof addonConfig.addons === 'object' ? addonConfig.addons : {};
       if (managedReshadeProfile || legacyReshadePresetPath) {
@@ -3059,6 +3175,7 @@
           lossless_profile_path: editingOriginalProfile && editingOriginalProfile.lossless_profile_path || null,
           last_imported_hash: editingOriginalProfile && editingOriginalProfile.last_imported_hash || null,
           native_scaling_settings: nativeSettingsPayload(),
+          ...profileGpuSelectionPayload(),
           addon_config: addonConfig,
           custom_notes: editingOriginalProfile && editingOriginalProfile.custom_notes || null,
           auto_scale: !!(editingOriginalProfile && editingOriginalProfile.is_default)
@@ -3135,6 +3252,7 @@
       const submitProfile = () => {
         profileSaveInFlight = true;
         activeProfileSaveRequestId = requestId;
+        activeProfileSaveAddonGeneration = addonGeneration;
         const status = document.getElementById('profileAutosaveStatus');
         status.textContent = 'Saving…';
         status.classList.remove('error');

@@ -297,6 +297,7 @@ class GpuRouter:
                 gpu_by_device[key] = gpu
                 gpus.append(gpu)
             friendly_monitors: List[str] = []
+            monitor_id = str(raw.get("displayDeviceId") or "").strip()
             explicit_display = str(raw.get("displayName") or "").strip()
             if explicit_display and not _DISPLAY_PATH_RE.match(explicit_display):
                 friendly_monitors.append(explicit_display)
@@ -306,12 +307,16 @@ class GpuRouter:
                         label = str(monitor.get("name") or "").strip()
                         if label and not _DISPLAY_PATH_RE.match(label):
                             friendly_monitors.append(label)
+                            if not monitor_id:
+                                monitor_id = str(monitor.get("deviceId") or "")
                 except Exception:
                     friendly_monitors = []
             display_name = friendly_monitors[0] if friendly_monitors else f"Display {display_index}"
             display = {
+                "deviceId": monitor_id,
                 "deviceName": adapter_name,
                 "name": display_name,
+                "gpuName": gpu["name"],
                 "gpuDeviceId": gpu["deviceId"],
                 "lsGpuId": gpu["lsGpuId"],
                 "lsDisplayId": display_index,
@@ -343,8 +348,8 @@ class GpuRouter:
             return {"gpuDeviceId": None, "lsGpuId": 0, "lsDisplayId": 0, "deviceName": ""}
         for gpu in self.detect()["gpus"]:
             if gpu["deviceId"].casefold() == device_id.casefold():
-                return {"gpuDeviceId": gpu["deviceId"], "lsGpuId": gpu["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
-        return {"gpuDeviceId": None, "lsGpuId": 0, "lsDisplayId": 0, "deviceName": ""}
+                return {"gpuDeviceId": gpu["deviceId"], "gpuName": gpu["name"], "lsGpuId": gpu["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
+        raise RuntimeError("The selected default scaling GPU is unavailable; choose a detected GPU in General Settings instead of silently using Auto")
 
     def route_for_ls_ids(self, gpu_id: int, display_id: int) -> Dict:
         """Resolve LS numeric IDs back to the corresponding Windows devices."""
@@ -363,6 +368,10 @@ class GpuRouter:
             ),
             None,
         )
+        if gpu_id and selected_gpu is None:
+            raise RuntimeError("The selected profile GPU ID is no longer available; refresh the GPU selection")
+        if display_id and selected_display is None:
+            raise RuntimeError("The selected output display ID is no longer available; refresh the display selection")
         if not selected_display and selected_gpu:
             connected = [
                 item for item in inventory["displays"]
@@ -387,6 +396,7 @@ class GpuRouter:
             )
         return {
             "gpuDeviceId": selected_gpu.get("deviceId") if selected_gpu else None,
+            "gpuName": selected_gpu.get("name") if selected_gpu else None,
             "lsGpuId": int(selected_gpu.get("lsGpuId") or 0) if selected_gpu else gpu_id,
             "lsDisplayId": int(selected_display.get("lsDisplayId") or 0) if selected_display else display_id,
             "deviceName": selected_display.get("deviceName", "") if selected_display else "",
