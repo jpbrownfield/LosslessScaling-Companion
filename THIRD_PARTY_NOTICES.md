@@ -39,3 +39,11 @@ the license and notice files shipped in the verified Echo payload. The upstream
 [NOTICE](https://github.com/Echo-Storm/ls-addon-manager/blob/main/NOTICE.md) is
 the authoritative component-level attribution and licensing inventory.
 
+## py7zr
+
+Special K's official 7-Zip download is read with unmodified
+[py7zr](https://github.com/miurahr/py7zr), licensed under LGPL-2.1-or-later.
+Packaged builds include its distribution metadata, full license and dependency
+notices. Its source is available from the upstream repository; the dependency
+range used to rebuild Companion is recorded in `companion/requirements.txt`.
+

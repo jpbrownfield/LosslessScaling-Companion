@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 import sys
 import threading
+from .external_process import external_dll_search
 
 logger = logging.getLogger(__name__)
 _libraries: dict[Path, object] = {}
@@ -45,8 +46,9 @@ def launch_hidden(executable: Path, *, duration_ms: int = 6000) -> int | None:
                 _libraries[path] = library
         pid = wintypes.DWORD()
         session = ctypes.c_void_p()
-        if not library.LSCLaunchHidden(str(executable.resolve()), duration_ms, ctypes.byref(pid), ctypes.byref(session)):
-            raise ctypes.WinError(ctypes.get_last_error())
+        with external_dll_search():
+            if not library.LSCLaunchHidden(str(executable.resolve()), duration_ms, ctypes.byref(pid), ctypes.byref(session)):
+                raise ctypes.WinError(ctypes.get_last_error())
 
     except (OSError, AttributeError) as error:
         logger.warning("Early-window guard unavailable; using post-show hiding: %s", error)

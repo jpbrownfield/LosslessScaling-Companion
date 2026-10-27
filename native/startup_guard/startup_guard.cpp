@@ -109,6 +109,9 @@ DWORD RunGuardImpl(void* argument) {
     auto* state = static_cast<Session*>(argument);
     const auto& path = state->path;
     const auto slash = path.find_last_of(L"\\/");
+    const auto directory = path.substr(0, slash);
+    const auto specialKRoot = directory + L"\\.companion-special-k";
+    const bool localSpecialK = GetFileAttributesW((specialKRoot + L"\\Global\\osd.ini").c_str()) != INVALID_FILE_ATTRIBUTES;
     LPWCH inherited = GetEnvironmentStringsW();
     if (!inherited) {
         state->error = GetLastError();
@@ -119,14 +122,18 @@ DWORD RunGuardImpl(void* argument) {
     for (const wchar_t* item = inherited; *item; item += wcslen(item) + 1) {
         if (!_wcsnicmp(item, kDeadline, ARRAYSIZE(kDeadline) - 1) &&
             item[ARRAYSIZE(kDeadline) - 1] == L'=') continue;
+        if (localSpecialK && !_wcsnicmp(item, L"SPECIALK_PATH=", 14)) continue;
         environment.insert(environment.end(), item, item + wcslen(item) + 1);
     }
     FreeEnvironmentStringsW(inherited);
     const auto marker = std::wstring(kDeadline) + L"=" + std::to_wstring(GetTickCount64() + state->duration);
     environment.insert(environment.end(), marker.c_str(), marker.c_str() + marker.size() + 1);
+    if (localSpecialK) {
+        const auto specialK = L"SPECIALK_PATH=" + specialKRoot;
+        environment.insert(environment.end(), specialK.c_str(), specialK.c_str() + specialK.size() + 1);
+    }
     environment.push_back(L'\0');
     std::wstring command = L"\"" + path + L"\"";
-    const auto directory = path.substr(0, slash);
     STARTUPINFOW startup{sizeof(startup)};
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;

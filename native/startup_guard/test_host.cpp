@@ -1,6 +1,7 @@
 // Off-screen native integration fixture, never the installed LS executable.
 #include <windows.h>
 #include <dwmapi.h>
+#include <string>
 
 LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(window, message, wp, lp);
@@ -17,6 +18,14 @@ HWND MakeWindow(const wchar_t* name, DWORD style, HWND owner = nullptr) {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    wchar_t executable[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, executable, MAX_PATH);
+    const std::wstring fullPath = executable;
+    const auto specialKRoot = fullPath.substr(0, fullPath.find_last_of(L"\\/")) + L"\\.companion-special-k";
+    if (GetFileAttributesW((specialKRoot + L"\\Global\\osd.ini").c_str()) != INVALID_FILE_ATTRIBUTES) {
+        wchar_t configured[MAX_PATH]{};
+        if (!GetEnvironmentVariableW(L"SPECIALK_PATH", configured, MAX_PATH) || _wcsicmp(configured, specialKRoot.c_str())) return 10;
+    }
     wchar_t marker[32]{};
     const bool guarded = GetEnvironmentVariableW(L"LSC_STARTUP_HIDE_UNTIL", marker, 32) != 0;
     const HWND dashboard = MakeWindow(L"HwndWrapper[StartupGuardTest]", WS_OVERLAPPEDWINDOW | WS_VISIBLE);

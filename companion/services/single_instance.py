@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -145,6 +146,40 @@ class SingleInstanceGuard:
                     path.unlink()
             except OSError:
                 pass
+
+    def request_dashboard(self) -> bool:
+        """Signal the existing instance through its per-user, PID-bound mailbox."""
+        if not self.holder_pid:
+            return False
+        path = _lock_file_path(self.instance_name).with_suffix(".activate")
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps({"pid": self.holder_pid}), encoding="utf-8")
+            os.replace(temporary, path)
+            if os.name == "nt":
+                import ctypes
+                # Transfer the shortcut's foreground permission to the owner.
+                ctypes.windll.user32.AllowSetForegroundWindow(self.holder_pid)
+            return True
+        except OSError:
+            logger.exception("Could not request the running dashboard")
+            return False
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def consume_dashboard_request(self) -> bool:
+        if not self.acquired:
+            return False
+        path = _lock_file_path(self.instance_name).with_suffix(".activate")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            path.unlink(missing_ok=True)
+            return isinstance(data, dict) and data.get("pid") == os.getpid()
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError):
+            logger.warning("Could not read the dashboard activation request", exc_info=True)
+            return False
 
     def __enter__(self) -> "SingleInstanceGuard":
         if not self.acquire():

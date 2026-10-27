@@ -75,6 +75,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
           node tests/check_javascript.js companion/ui/dashboard.html
           if ($LASTEXITCODE -ne 0) { throw "Dashboard JavaScript validation failed" }
+          node tests/test_component_updates.js
+          if ($LASTEXITCODE -ne 0) { throw "Component update UI tests failed" }
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1

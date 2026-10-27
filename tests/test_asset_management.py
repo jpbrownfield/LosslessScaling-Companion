@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 import zipfile
+import os
+from unittest.mock import patch
 from pathlib import Path
 
 from companion.core.models import DllOverrideConfig, ManagedPackageConfig, Profile, SpecialKConfig
@@ -11,6 +13,46 @@ from companion.services.graphics_resolver import GraphicsResolutionError, Graphi
 
 
 class AssetStoreTests(unittest.TestCase):
+    def test_atomic_copy_retries_transient_windows_lock_without_touching_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / "source.dll", Path(directory) / "target.dll"
+            source.write_bytes(b"new")
+            target.write_bytes(b"original")
+            error = PermissionError("temporarily locked")
+            error.winerror = 32
+            replace = os.replace
+            attempts = []
+
+            def retry(source_name, target_name):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    self.assertEqual(target.read_bytes(), b"original")
+                    raise error
+                replace(source_name, target_name)
+
+            with patch("companion.services.deployment_manager.os.replace", side_effect=retry), patch(
+                "companion.services.deployment_manager.time.sleep"
+            ):
+                DeploymentManager._atomic_copy(source, target)
+            self.assertEqual(target.read_bytes(), b"new")
+            self.assertEqual(len(attempts), 2)
+
+    def test_persistent_dll_lock_preserves_original_and_removes_only_temporary_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / "source.dll", Path(directory) / "target.dll"
+            source.write_bytes(b"new")
+            target.write_bytes(b"original")
+            error = PermissionError("still locked")
+            error.winerror = 5
+            with patch("companion.services.deployment_manager.os.replace", side_effect=error) as replace, patch(
+                "companion.services.deployment_manager.time.sleep"
+            ):
+                with self.assertRaises(PermissionError):
+                    DeploymentManager._atomic_copy(source, target)
+            self.assertEqual(replace.call_count, 5)
+            self.assertEqual(target.read_bytes(), b"original")
+            self.assertEqual(sorted(path.name for path in Path(directory).iterdir()), ["source.dll", "target.dll"])
+
     def test_manual_import_writes_security_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -722,7 +764,10 @@ class GraphicsResolverTests(unittest.TestCase):
                 profile, lossless_scaling_exe=str(executable)
             )
             by_destination = {item["relative_path"]: item for item in plan}
-            self.assertEqual(set(by_destination), {"dxgi.dll", "dxgi.ini"})
+            self.assertEqual(set(by_destination), {"dxgi.dll", "dxgi.ini", ".companion-special-k/Global/osd.ini"})
+            overlay = Path(by_destination[".companion-special-k/Global/osd.ini"]["source_path"]).read_text(encoding="utf-8")
+            self.assertIn("[SpecialK.OSD]\nShow=false", overlay)
+            self.assertIn("[SpecialK.VersionBanner]\nDuration=0", overlay)
             generated = Path(by_destination["dxgi.ini"]["source_path"]).read_text(
                 encoding="utf-8"
             )
@@ -732,6 +777,7 @@ class GraphicsResolverTests(unittest.TestCase):
             self.assertIn("TemporaryDesktopHDRMode=true", generated)
             self.assertIn("[NVIDIA.Reflex]\nEnable=true", generated)
             self.assertIn("AllowFlipMetering=true", generated)
+            self.assertIn("EnableImGuiToggle=false", generated)
 
     def test_special_k_rejects_paper_white_above_peak_brightness(self):
         with self.assertRaises(ValueError):

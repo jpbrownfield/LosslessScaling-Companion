@@ -20,6 +20,7 @@ from ..core.state import AppState
 from .ls_settings import LosslessSettingsXml
 from .proxy_menu import AddonManagerMenuController
 from .startup_guard import launch_hidden
+from .external_process import external_dll_search
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -466,13 +467,19 @@ class ProcessWatcher:
                 startup_info = subprocess.STARTUPINFO()
                 startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startup_info.wShowWindow = 0  # SW_HIDE
-                process = subprocess.Popen(
-                    [str(executable)],
-                    cwd=str(executable.parent),
-                    close_fds=True,
-                    startupinfo=startup_info,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                environment = os.environ.copy()
+                special_k_root = executable.parent / ".companion-special-k"
+                if (special_k_root / "Global" / "osd.ini").is_file():
+                    environment["SPECIALK_PATH"] = str(special_k_root.resolve())
+                with external_dll_search():
+                    process = subprocess.Popen(
+                        [str(executable)],
+                        cwd=str(executable.parent),
+                        close_fds=True,
+                        startupinfo=startup_info,
+                        env=environment,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
                 pid = process.pid
             self.state.lossless_scaling_running = True
             # Retain the polling safety net for security policies that allow

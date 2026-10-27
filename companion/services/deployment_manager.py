@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -107,7 +108,7 @@ class DeploymentManager:
                 shutil.copytree(source, temporary)
             else:
                 shutil.copy2(source, temporary)
-            os.replace(temporary, destination)
+            DeploymentManager._replace_with_retry(temporary, destination)
         finally:
             if temporary.is_dir():
                 shutil.rmtree(temporary, ignore_errors=True)
@@ -603,6 +604,19 @@ class DeploymentManager:
                 shutil.rmtree(rollback_root, ignore_errors=True)
 
     @staticmethod
+    def _replace_with_retry(source, destination):
+        # AV/indexers can briefly retain a closed file after LS has exited.
+        # Never change ACLs, delete the destination, or force a locked DLL out.
+        for attempt in range(5):
+            try:
+                os.replace(source, destination)
+                return
+            except OSError as error:
+                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
+
+    @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:
         handle, temp_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
@@ -610,7 +624,7 @@ class DeploymentManager:
         os.close(handle)
         try:
             shutil.copy2(source, temp_name)
-            os.replace(temp_name, destination)
+            DeploymentManager._replace_with_retry(temp_name, destination)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)

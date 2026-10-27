@@ -97,6 +97,9 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             executable = Path(directory) / "LosslessScaling.exe"
             executable.write_bytes(b"exe")
             watcher.profile_manager.config.lossless_scaling_exe_path = str(executable)
+            osd = executable.parent / ".companion-special-k/Global/osd.ini"
+            osd.parent.mkdir(parents=True)
+            osd.write_text("[SpecialK.OSD]\nShow=false", encoding="utf-8")
             process = SimpleNamespace(pid=4242)
             launch_events = []
             with (
@@ -122,6 +125,7 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertEqual(popen.call_args.args[0], [str(executable)])
             self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
+            self.assertEqual(kwargs["env"]["SPECIALK_PATH"], str(osd.parent.parent.resolve()))
             suppress.assert_called_once_with(4242)
             self.assertEqual(launch_events, ["popen", "suppress", "sleep"])
 

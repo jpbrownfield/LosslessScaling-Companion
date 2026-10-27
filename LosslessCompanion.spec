@@ -1,6 +1,6 @@
 # PyInstaller build definition. Run: pyinstaller LosslessCompanion.spec
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 from pathlib import Path
 import json
 import os
@@ -29,6 +29,8 @@ native_data = [
     ("native/vendor/losslessproxy-sdk/LICENSE", "licenses/LosslessProxy-SDK"),
     ("native/README.md", "licenses/native-components"),
 ]
+# Keep the archive reader's license and its dependency notices in the package.
+native_data.extend(copy_metadata("py7zr", recursive=True))
 neural_render_bundle = Path("build/native/LSP-NeuralRender.zip")
 if not neural_render_bundle.is_file():
     raise SystemExit("Build the bundled NeuralRender archive before packaging LS Companion")

@@ -17,3 +17,4 @@ jobs:
       - run: python -m pytest -v
       - run: node tests/check_javascript.js
       - run: node tests/test_addon_editor.js
+      - run: node tests/test_component_updates.js

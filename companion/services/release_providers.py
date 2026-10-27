@@ -15,12 +15,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from .asset_store import AssetStore, UnsafeAssetError
+from .external_process import external_dll_search
 
 
 USER_AGENT = "LosslessScalingHelper/1.0 (+local companion)"
@@ -251,7 +253,7 @@ class GitLabReleaseProvider(ReleaseProvider):
 
 
 class ReShadeReleaseProvider(ReleaseProvider):
-    """Version notification only; downloads remain an official-site user handoff."""
+    """Official Full Add-On installer, extracted without running Setup."""
 
     provider_id = "reshade"
     allowed_hosts = frozenset({"reshade.me"})
@@ -286,8 +288,9 @@ class ReShadeReleaseProvider(ReleaseProvider):
                 published_at=None,
                 prerelease=False,
                 html_url="https://reshade.me/",
-                notes="Download/import must be completed from the official ReShade site.",
-                assets=[],
+                notes="Official Full Add-On runtime; Setup is extracted, not executed.",
+                assets=[ReleaseAsset(name=f"ReShade_Setup_{version}_Addon.exe",
+                                     url=f"https://reshade.me/downloads/ReShade_Setup_{version}_Addon.exe")],
             )
         ]
 
@@ -481,6 +484,7 @@ class ReleaseManager:
         *,
         channel: str = "stable",
         max_bytes: int = 1024 * 1024 * 1024,
+        progress_callback=None,
     ) -> Dict:
         provider = self.registry.get(provider_id)
         release_data = next(
@@ -500,6 +504,9 @@ class ReleaseManager:
         if asset_data is None:
             raise ValueError("Release asset is not part of the selected official release")
         asset = ReleaseAsset(**asset_data)
+        def progress(phase, received=0, total=0):
+            if progress_callback:
+                progress_callback({"phase": phase, "receivedBytes": received, "totalBytes": total})
         release = ReleaseInfo(
             **{key: value for key, value in release_data.items() if key != "assets"},
             assets=[ReleaseAsset(**value) for value in release_data.get("assets", [])],
@@ -513,6 +520,7 @@ class ReleaseManager:
         ):
             raise UnsafeAssetError("Release asset has an unsafe filename")
         if isinstance(provider, BundledArchiveReleaseProvider):
+            progress("verifying")
             archive = provider.archive_path()
             expected_digest = asset.digest if asset.digest and asset.digest.startswith("sha256:") else None
             result = self.store.import_release_archive(
@@ -554,6 +562,8 @@ class ReleaseManager:
                 if final_url.scheme != "https" or final_url.hostname not in provider.allowed_hosts:
                     raise UnsafeAssetError("Release download redirected outside the provider allowlist")
                 received = 0
+                total = asset.size or int(response.headers.get("Content-Length") or 0)
+                progress("downloading", 0, total)
                 while True:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
@@ -562,6 +572,8 @@ class ReleaseManager:
                     if received > max_bytes:
                         raise UnsafeAssetError("Release asset exceeded the download size limit")
                     output.write(chunk)
+                    progress("downloading", received, total)
+            progress("verifying", received, total)
             if asset.size and destination.stat().st_size != asset.size:
                 raise UnsafeAssetError("Downloaded release size does not match metadata")
             expected_digest = asset.digest if asset.digest and asset.digest.startswith("sha256:") else None
@@ -595,10 +607,13 @@ class ReleaseManager:
                 publisher_digest_verified=bool(expected_digest),
                 size=destination.stat().st_size,
             )
+            progress("staging", received, total)
             if provider_id == "ls-addon-manager":
                 result = self._expand_ls_addon_manager(
                     destination, staging, version, metadata
                 )
+            elif provider_id in {"reshade", "special-k"}:
+                result = self._stage_graphics_runtime(destination, staging, provider_id, version, metadata)
             elif zipfile.is_zipfile(destination):
                 result = self.store.import_release_archive(
                     str(destination),
@@ -636,6 +651,44 @@ class ReleaseManager:
             raise
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+    def _stage_graphics_runtime(self, archive, staging, provider, version, metadata):
+        from .graphics_source_importer import GraphicsSourceImporter
+
+        importer = GraphicsSourceImporter(self.store)
+        if provider == "reshade":
+            package = importer._stage_reshade({"path": str(archive), "version": version}, "reshade-" + uuid.uuid4().hex)
+        else:
+            extracted = staging / "special-k-runtime"
+            extracted.mkdir()
+            if zipfile.is_zipfile(archive):
+                with zipfile.ZipFile(archive) as bundle:
+                    members = [(item, self.store._safe_zip_member(item)) for item in bundle.infolist()]
+                    matches = [(item, name) for item, name in members if name.name.casefold() == "specialk64.dll" and not item.is_dir()]
+                    if len(matches) != 1 or not 0 < matches[0][0].file_size <= importer.MAX_RUNTIME_BYTES:
+                        raise UnsafeAssetError("Special K archive must contain one bounded SpecialK64.dll")
+                    runtime = extracted / "SpecialK64.dll"
+                    with bundle.open(matches[0][0]) as source, runtime.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+            else:
+                import py7zr
+
+                with py7zr.SevenZipFile(archive, "r") as bundle:
+                    members = bundle.list()
+                    if len(members) > 4096 or sum(item.uncompressed or 0 for item in members) > 1024 ** 3:
+                        raise UnsafeAssetError("Special K archive exceeds extraction limits")
+                    names = [(item, self.store._safe_zip_member(zipfile.ZipInfo(item.filename))) for item in members]
+                    matches = [(item, name) for item, name in names if name.name.casefold() == "specialk64.dll" and not item.is_directory]
+                    if len(matches) != 1 or not 0 < (matches[0][0].uncompressed or 0) <= importer.MAX_RUNTIME_BYTES:
+                        raise UnsafeAssetError("Special K archive must contain one bounded SpecialK64.dll")
+                    bundle.extract(path=extracted, targets=[matches[0][0].filename])
+                    runtime = (extracted / matches[0][1]).resolve(strict=True)
+                    if extracted.resolve() not in runtime.parents or runtime.is_symlink():
+                        raise UnsafeAssetError("Special K runtime escaped extraction")
+            package = importer._stage_special_k({"path": str(runtime), "version": version})
+        package["source"]["download"] = metadata
+        AssetStore._atomic_json(Path(package["payload_path"]).parent / "package.json", package)
+        return package
 
     def _expand_ls_addon_manager(
         self,
@@ -687,19 +740,24 @@ class ReleaseManager:
             raise UnsafeAssetError("Echo release must contain one x64 LSAddonManagerSetup.exe")
         extracted = staging / "echo-payload"
         log_path = staging / "echo-extract.log"
-        completed = subprocess.run(
-            [
-                str(setups[0]), "--extract", str(extracted), "--no-remember",
-                "--log", str(log_path),
-            ],
-            check=False,
-            timeout=180,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if completed.returncode != 0:
+        with external_dll_search():
+            process = subprocess.Popen(
+                [
+                    str(setups[0]), "--extract", str(extracted), "--no-remember",
+                    "--log", str(log_path),
+                ],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        try:
+            exit_code = process.wait(timeout=180)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        if exit_code != 0:
             detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
             raise UnsafeAssetError(
-                f"Echo Setup could not extract its managed payload (exit {completed.returncode}): {detail[-500:]}"
+                f"Echo Setup could not extract its managed payload (exit {exit_code}): {detail[-500:]}"
             )
         host = extracted / "Lossless.dll"
         addons = extracted / "addons"

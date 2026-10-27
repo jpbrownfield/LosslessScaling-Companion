@@ -285,6 +285,7 @@ class ProxyIntegrationTests(unittest.TestCase):
             "neuralEngineReady": True,
             "neuralModelPrepared": True,
             "neuralTapObserved": True,
+            "runtimeCrashed": False,
         })
 
 

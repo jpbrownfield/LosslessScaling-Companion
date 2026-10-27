@@ -5,7 +5,7 @@ import urllib.request
 import json
 import threading
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
@@ -403,7 +403,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(result, expected)
-        self.server.companion_updater.download.assert_called_once_with("1.1.0")
+        self.server.companion_updater.download.assert_called_once_with("1.1.0", progress_callback=ANY)
         self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
         self.server.on_installer_launched.assert_called_once_with()
 
@@ -423,7 +423,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.graphics_source_importer.stage.assert_called_once_with(
             "reshade", "test-operation"
         )
-        self.assertEqual(json.loads(websocket.messages[-1]), {
+        self.assertEqual(next(json.loads(item) for item in websocket.messages if json.loads(item)["type"] == "GRAPHICS_RELEASE_STAGED"), {
             "type": "GRAPHICS_RELEASE_STAGED", "package": package,
         })
 
@@ -727,7 +727,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('addonAutoImportInFlight', body)
             self.assertIn("type: 'IMPORT_GRAPHICS_SOURCE', provider", body)
             self.assertIn('id="addonUpdateNotice"', body)
-            self.assertIn("Ignore these versions", body)
+            self.assertIn('download.dataset.componentDownload = item.provider', body)
             self.assertNotIn('id="graphicsProvider"', body)
             self.assertNotIn('id="manualAssetPath"', body)
             self.assertNotIn("Expected SHA-256", body)
@@ -906,10 +906,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.server.release_manager.stage_release.assert_called_once_with(
             "ls-addon-manager", "v2.0", "LSAddonManager-v2.0-x64.zip", "operation123",
-            channel="stable",
+            channel="stable", progress_callback=ANY,
         )
         self.assertEqual(
-            json.loads(websocket.messages[-1])["type"], "GRAPHICS_RELEASE_STAGED"
+            next(json.loads(item)["type"] for item in websocket.messages if json.loads(item)["type"] == "GRAPHICS_RELEASE_STAGED"), "GRAPHICS_RELEASE_STAGED"
         )
 
     async def test_neural_render_install_also_imports_verified_community_runtime(self):
@@ -984,8 +984,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "operationId": "operation123",
         }))
 
-        response = json.loads(websocket.messages[-1])
-        self.assertEqual(response["type"], "NEURAL_RENDER_BUNDLE_STAGED")
+        response = next(json.loads(item) for item in websocket.messages if json.loads(item)["type"] == "NEURAL_RENDER_BUNDLE_STAGED")
         self.assertEqual(response["proxyPackage"], proxy_package)
         self.assertEqual(response["runtime"]["filename"], "nvngx_dlssnr.dll")
         self.assertEqual(response["runtime"]["source"]["kind"], "community-release")

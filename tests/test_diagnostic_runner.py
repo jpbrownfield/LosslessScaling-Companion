@@ -4,12 +4,79 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from companion.core.models import AppConfig, Profile
+from companion.core.state import AppState
 
 from companion.services.diagnostic_runner import DiagnosticRunner
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_live_cleanup_does_not_restore_files_when_host_will_not_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable, workload, settings_path = root / "LosslessScaling.exe", root / "LSBenchmark.exe", root / "Settings.xml"
+            for path in (executable, workload, settings_path):
+                path.write_bytes(b"original")
+            config = AppConfig(lossless_scaling_exe_path=str(executable))
+            manager, watcher, automation = Mock(config=config), Mock(), Mock()
+            watcher.check_is_lossless_scaling_running.return_value = True
+            watcher.stop_lossless_scaling.return_value = False
+            runner = DiagnosticRunner.__new__(DiagnosticRunner)
+            runner.server = SimpleNamespace(config=config, profile_manager=manager, state=AppState(),
+                process_watcher=watcher, automation=automation, ls_settings=SimpleNamespace(path=settings_path),
+                hotkey_listener=None, _embedded_benchmark_executable=lambda: str(workload))
+            runner._path = str
+            with patch("companion.services.ls_inspector.LosslessScalingInspector") as inspector, patch(
+                "companion.services.diagnostic_runner.subprocess.Popen", side_effect=RuntimeError("workload unavailable")
+            ):
+                inspector.return_value._find_log_file.return_value = None
+                results = runner._run_live_scaling_workflow()
+            automation.deployment_manager.apply.assert_not_called()
+            self.assertEqual(settings_path.read_bytes(), b"original")
+            self.assertFalse(runner.server.state.benchmark_mode_active)
+            self.assertTrue(all("restoration was not attempted" in result["details"]["cleanupError"] for result in results.values()))
+
+    def test_echo_106_crash_is_a_fatal_runtime_error(self):
+        logs = {"LSAddonManager.log": "[16:44:43.832] [ERROR] [Crash] unhandled exception\n"
+                "[16:44:43.832] [ERROR] [Crash] code 0xC0000005 at d3d11.dll+0x988FD\n"}
+        errors = DiagnosticRunner._runtime_log_errors(logs)
+        self.assertEqual(len(errors), 2)
+        self.assertIn("0xC0000005", errors[-1])
+        self.assertTrue(DiagnosticRunner._runtime_log_evidence(logs)["runtimeCrashed"])
+
+    def test_live_profiles_inherit_gpu_identity_without_enabling_default_addons(self):
+        default = Profile(name="Default", is_default=True, lossless_profile_title="Native",
+                          preferred_gpu_device_id="gpu-two", preferred_gpu_name="RTX 5050",
+                          native_scaling_settings={"PreferredGpuId": "2", "OutputDisplayId": "1", "ScalingType": "NIS"},
+                          addon_config={"addons": {"DLSS5NR01": {"_enabled": True}}})
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(config=AppConfig(profiles=[default]))
+        profile = runner._live_test_profile("scale")
+        self.assertEqual(profile.preferred_gpu_device_id, "gpu-two")
+        self.assertEqual(profile.preferred_gpu_name, "RTX 5050")
+        self.assertEqual(profile.native_scaling_settings, {"PreferredGpuId": "2", "OutputDisplayId": "1"})
+        self.assertEqual(profile.addon_config["addons"], {})
+
+    def test_runtime_gpu_is_dispatch_device_not_preflight_or_gui_card(self):
+        names = DiagnosticRunner._runtime_gpu_names({"addon.log":
+            "requirements: Graphics card: NVIDIA GeForce RTX 5050 (8 GB)\n"
+            "Running on NVIDIA GeForce RTX 5050 Driver 617.42\n"
+            "dispatching device 00000139941F9BC0 on NVIDIA GeForce RTX 3090 Ti (LUID 000149e3) -> TAPPED\n"})
+        self.assertEqual(names, ["NVIDIA GeForce RTX 3090 Ti"])
+
+    def test_cleanup_refuses_running_or_relaunched_host(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        watcher = Mock()
+        runner.server = SimpleNamespace(process_watcher=watcher)
+        watcher.check_is_lossless_scaling_running.return_value = True
+        watcher.stop_lossless_scaling.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "restoration was not attempted"):
+            runner._require_stopped_for_deployment()
+        watcher.stop_lossless_scaling.return_value = True
+        with self.assertRaisesRegex(RuntimeError, "restarted during cleanup"):
+            runner._require_stopped_for_deployment()
+
     def test_lossless_settings_log_exposes_schema_without_titles_or_paths(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
         settings = Mock()

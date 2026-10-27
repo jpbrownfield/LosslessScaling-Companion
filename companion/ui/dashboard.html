@@ -162,6 +162,9 @@
     .btn-secondary { background: #334155; color: #cbd5e1; }
     .btn-secondary:hover { background: #475569; }
     .btn:disabled { cursor: not-allowed; opacity: 1; }
+    .btn-primary:disabled { background: #4b5057; color: #c7cbd1; border-color: #4b5057; }
+    .component-update-list { max-width: 1100px; margin: 0 auto 20px; }
+    .component-update-list .update-notice { margin: 0 0 8px; }
     .btn-secondary:disabled { background: #4b5057; color: #c7cbd1; }
     .btn[aria-disabled="true"] { cursor: not-allowed; background: #4b5057; color: #c7cbd1; }
     .btn-danger { background: rgba(239,68,68,0.2); color: var(--danger); border: 1px solid rgba(239,68,68,0.4); }
@@ -174,7 +177,7 @@
     .modal.active { display: flex; }
     .modal-content { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; width: 500px; max-width: 90vw; padding: 24px; max-height: 90vh; overflow-y: auto; }
     #profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }
-    body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .container { visibility: hidden; }
+    body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .component-update-list, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
     .addon-editor-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:12px; margin-top:12px; }
     .addon-editor-heading { display:flex; justify-content:space-between; gap:16px; align-items:center; }
@@ -289,10 +292,7 @@
     </div>
   </header>
 
-  <aside id="addonUpdateNotice" class="update-notice" role="status" hidden>
-    <div><strong>Add-on updates available</strong><p id="addonUpdateText"></p></div>
-    <div class="update-notice-actions"><button id="ignoreAddonUpdatesBtn" class="btn btn-secondary" type="button">Ignore these versions</button><button id="showAddonDownloadsBtn" class="btn btn-primary" type="button">Download</button></div>
-  </aside>
+  <section id="addonUpdateNotice" class="component-update-list" aria-live="polite" hidden></section>
   <aside id="companionUpdateNotice" class="update-notice" role="status" hidden>
     <div><strong>LS Companion update available</strong><p id="companionUpdateText"></p></div>
     <div class="update-notice-actions">
@@ -797,6 +797,8 @@
     let visibleAddonUpdateKeys = [];
     let companionUpdateState = null;
     let companionUpdateBusy = false;
+    let componentOperation = null;
+    let addonUpdateItems = [];
     let runtimeActiveProfile = null;
     let runtimeScalingActive = false;
 
@@ -985,6 +987,7 @@
               }
             }
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
+            if ('componentOperation' in msg) renderComponentOperation(msg.componentOperation);
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'PROXY_MENU_OPENED') {
@@ -1004,7 +1007,7 @@
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
             const updateWasBusy = companionUpdateBusy;
-            if (updateWasBusy) {
+            if (updateWasBusy && !componentOperation?.busy) {
               companionUpdateBusy = false;
               document.getElementById('checkCompanionUpdateBtn').disabled = false;
               document.getElementById('companionUpdateStatusText').textContent = `Update operation failed: ${errorText}`;
@@ -1050,6 +1053,7 @@
           } else if (msg.type === 'DIAGNOSTICS_STATUS' || msg.type === 'DIAGNOSTICS_RESULT') {
             renderDiagnostics(msg);
           } else if (msg.type === 'GRAPHICS_STATUS') {
+            renderComponentOperation(msg.componentOperation || null);
             renderGraphicsStatus(msg);
           } else if (msg.type === 'RESHADE_PROFILES') {
             reshadeProfiles = msg.profiles || [];
@@ -1117,6 +1121,8 @@
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
+          } else if (msg.type === 'COMPONENT_OPERATION') {
+            renderComponentOperation(msg);
           } else if (msg.type === 'ADDON_UPDATES') {
             renderAddonUpdateNotice(msg.updates || [], msg.latestVersions || {});
           } else if (msg.type === 'COMPANION_UPDATE_STATUS') {
@@ -1553,8 +1559,10 @@
             && latestProxyDownloaded
             && dlssnrRuntimes.length > 0;
         }
-        button.disabled = latestDownloaded;
-        button.textContent = latestDownloaded
+        const busy = !!componentOperation?.busy || companionUpdateBusy;
+        button.disabled = latestDownloaded || busy;
+        button.textContent = busy && componentOperation?.provider === provider
+          ? componentProgressLabel(componentOperation) : latestDownloaded
           ? 'Latest version already downloaded'
           : button.dataset.installLabel;
         button.classList.toggle('btn-primary', !latestDownloaded);
@@ -1576,8 +1584,10 @@
         const detected = !!source.detected && !!latestVersion
           && normalizedAddonVersion(source.version) === normalizedAddonVersion(latestVersion);
         const latestDownloaded = staged || detected;
-        link.setAttribute('aria-disabled', latestDownloaded ? 'true' : 'false');
-        link.textContent = latestDownloaded
+        const busy = !!componentOperation?.busy || companionUpdateBusy;
+        link.setAttribute('aria-disabled', latestDownloaded || busy ? 'true' : 'false');
+        link.textContent = busy && componentOperation?.provider === provider
+          ? componentProgressLabel(componentOperation) : latestDownloaded
           ? 'Latest version already downloaded'
           : link.dataset.downloadLabel;
         link.classList.toggle('btn-primary', !latestDownloaded);
@@ -1622,6 +1632,7 @@
     }
 
     function renderAddonUpdateNotice(updates, latestVersions) {
+      addonUpdateItems = updates;
       latestAddonVersions = { ...latestAddonVersions, ...latestVersions };
       updateAddonInstallButtons();
       const notice = document.getElementById('addonUpdateNotice');
@@ -1633,15 +1644,85 @@
       let ignored = [];
       try { ignored = JSON.parse(localStorage.getItem('ignored-addon-update-versions') || '[]'); } catch (_) {}
       const visible = updates.filter(item => !ignored.includes(`${item.provider}:${item.latestVersion}`));
-      visibleAddonUpdateKeys = visible.map(item => `${item.provider}:${item.latestVersion}`);
-      if (!visible.length) {
-        notice.hidden = true;
-        return;
+      notice.replaceChildren();
+      visible.forEach(item => {
+        const row = document.createElement('aside');
+        row.className = 'update-notice';
+        row.dataset.component = item.provider;
+        const description = document.createElement('div');
+        const heading = document.createElement('strong');
+        heading.textContent = `${item.name} update available`;
+        const text = document.createElement('p');
+        const operation = componentOperation?.provider === item.provider ? componentOperation : null;
+        text.textContent = `${item.currentVersion} → ${item.latestVersion}` + (operation?.error ? ` — ${operation.error}` : '');
+        description.append(heading, text);
+        const actions = document.createElement('div');
+        actions.className = 'update-notice-actions';
+        const later = document.createElement('button');
+        later.className = 'btn btn-secondary';
+        later.textContent = 'Later';
+        later.disabled = !!componentOperation?.busy;
+        later.onclick = () => {
+          localStorage.setItem('ignored-addon-update-versions', JSON.stringify([...ignored, `${item.provider}:${item.latestVersion}`]));
+          renderAddonUpdateNotice(addonUpdateItems, latestAddonVersions);
+        };
+        const download = document.createElement('button');
+        download.className = 'btn btn-primary';
+        download.dataset.componentDownload = item.provider;
+        const complete = operation?.phase === 'complete' && !!operation.version
+          && normalizedAddonVersion(operation.version) === normalizedAddonVersion(item.latestVersion);
+        download.disabled = !!componentOperation?.busy || companionUpdateBusy || complete;
+        download.textContent = operation?.busy ? componentProgressLabel(operation) : complete ? 'Downloaded' : 'Download';
+        download.onclick = () => installGraphicsAddon(item.provider);
+        actions.append(later, download);
+        row.append(description, actions);
+        notice.appendChild(row);
+      });
+      notice.hidden = !visible.length;
+    }
+
+    function componentProgressLabel(operation) {
+      if (operation.phase === 'downloading') {
+        const total = Number(operation.totalBytes || 0);
+        return total > 0 ? `Downloading ${Math.min(100, Math.floor(Number(operation.receivedBytes || 0) * 100 / total))}%`
+          : `Downloading ${(Number(operation.receivedBytes || 0) / 1048576).toFixed(1)} MB`;
       }
-      document.getElementById('addonUpdateText').textContent = visible
-        .map(item => `${item.name} ${item.currentVersion} → ${item.latestVersion}`)
-        .join(' · ');
-      notice.hidden = false;
+      return ({checking: 'Checking...', verifying: 'Verifying...', staging: 'Preparing...', installing: 'Installing...'})[operation.phase] || 'Working...';
+    }
+
+    function renderComponentOperation(operation) {
+      componentOperation = operation;
+      if (operation?.provider === 'companion') companionUpdateBusy = !!operation.busy;
+      updateAddonInstallButtons();
+      updateAddonDownloadLinks();
+      renderAddonUpdateNotice(addonUpdateItems, latestAddonVersions);
+      ['checkCompanionUpdateBtn', 'downloadCompanionUpdateBtn', 'installCompanionUpdateBtn'].forEach(id => {
+        document.getElementById(id).disabled = !!operation?.busy || companionUpdateBusy;
+      });
+      if (operation?.busy && operation.provider === 'companion') {
+        document.getElementById('downloadCompanionUpdateBtn').textContent = componentProgressLabel(operation);
+        document.getElementById('companionUpdateText').textContent = `${componentProgressLabel(operation)} LS Companion`;
+        document.getElementById('companionUpdateStatusText').textContent = `${componentProgressLabel(operation)} LS Companion`;
+      } else {
+        document.getElementById('downloadCompanionUpdateBtn').textContent = 'Download and install';
+      }
+      if (operation?.provider === 'companion' && operation.error) {
+        document.getElementById('companionUpdateText').textContent = `Update failed: ${operation.error}`;
+        document.getElementById('companionUpdateStatusText').textContent = `Update failed: ${operation.error}`;
+      }
+      if (operation && !operation.busy && operation.provider !== 'companion') setGraphicsStatus(operation.error ? `Update failed: ${operation.error}` : 'Component ready. Running scaling sessions are not interrupted for ReShade/Special K updates.');
+    }
+
+    async function installGraphicsAddon(provider) {
+      if (componentOperation?.busy || companionUpdateBusy || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (provider === 'lsp-neural-render') {
+        const accepted = await confirmDialog('This installs a community-modified, unsigned NVIDIA-derived DLSS 5 runtime. It is not an official NVIDIA release and may carry compatibility, security or licensing risks. Continue?',
+          {title: 'Community Runtime Warning', okLabel: 'Accept and Install', danger: true});
+        if (!accepted || componentOperation?.busy || companionUpdateBusy) return;
+      }
+      renderComponentOperation({provider, busy: true, phase: 'checking'});
+      ws.send(JSON.stringify({type: 'INSTALL_LATEST_GRAPHICS_ADDON', provider,
+        acceptCommunityRuntime: provider === 'lsp-neural-render', operationId: crypto.randomUUID().replaceAll('-', '')}));
     }
 
     function renderCompanionUpdate(status) {
@@ -1660,7 +1741,7 @@
         : 'Check for updates';
       checkButton.classList.toggle('btn-primary', updateActionAvailable);
       checkButton.classList.toggle('btn-secondary', !updateActionAvailable);
-      checkButton.disabled = companionUpdateBusy;
+      checkButton.disabled = companionUpdateBusy || !!componentOperation?.busy;
       if (status.error) {
         statusText.textContent = `Update check failed: ${status.error}`;
       } else if (status.supported === false) {
@@ -1682,9 +1763,9 @@
       releaseLink.href = status.releaseUrl || '#';
       releaseLink.hidden = !status.releaseUrl;
       download.hidden = !!status.downloaded;
-      download.disabled = companionUpdateBusy;
+      download.disabled = companionUpdateBusy || !!componentOperation?.busy;
       install.hidden = !status.downloaded;
-      install.disabled = companionUpdateBusy;
+      install.disabled = companionUpdateBusy || !!componentOperation?.busy;
     }
 
     function startAddonDetection(provider) {
@@ -2750,15 +2831,6 @@
         if (panel) openMajorDashboardPanel(panel, true);
       };
     });
-    document.getElementById('ignoreAddonUpdatesBtn').onclick = () => {
-      let ignored = [];
-      try { ignored = JSON.parse(localStorage.getItem('ignored-addon-update-versions') || '[]'); } catch (_) {}
-      localStorage.setItem('ignored-addon-update-versions', JSON.stringify([...new Set([...ignored, ...visibleAddonUpdateKeys])]));
-      document.getElementById('addonUpdateNotice').hidden = true;
-    };
-    document.getElementById('showAddonDownloadsBtn').onclick = () => {
-      openMajorDashboardPanel(losslessAddonsPanel, true);
-    };
     document.getElementById('checkCompanionUpdateBtn').onclick = function () {
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         document.getElementById('companionUpdateStatusText').textContent = 'The companion is not connected.';
@@ -2783,13 +2855,15 @@
       document.getElementById('companionUpdateNotice').hidden = true;
     };
     document.getElementById('downloadCompanionUpdateBtn').onclick = function () {
+      if (componentOperation?.busy || companionUpdateBusy) return;
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;
       confirmDialog(
         `Download, verify, and install LS Companion ${companionUpdateState.latestVersion}? Companion will close after the Windows installer starts.`,
         { title: 'Update LS Companion', okLabel: 'Download and install' }
       ).then(accepted => {
-        if (!accepted) return;
+        if (!accepted || componentOperation?.busy || companionUpdateBusy) return;
         companionUpdateBusy = true;
+        renderComponentOperation({provider: 'companion', busy: true, phase: 'checking'});
         this.disabled = true;
         ws.send(JSON.stringify({
           type: 'APPLY_COMPANION_UPDATE', version: companionUpdateState.latestVersion
@@ -2797,13 +2871,15 @@
       });
     };
     document.getElementById('installCompanionUpdateBtn').onclick = function () {
+      if (componentOperation?.busy || companionUpdateBusy) return;
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;
       confirmDialog(
         `Run the verified LS Companion ${companionUpdateState.latestVersion} installer now? The installer may close the running companion while replacing its files.`,
         { title: 'Install Companion Update', okLabel: 'Run Installer' }
       ).then(accepted => {
-        if (!accepted) return;
+        if (!accepted || componentOperation?.busy || companionUpdateBusy) return;
         companionUpdateBusy = true;
+        renderComponentOperation({provider: 'companion', busy: true, phase: 'installing'});
         this.disabled = true;
         ws.send(JSON.stringify({
           type: 'INSTALL_COMPANION_UPDATE', version: companionUpdateState.latestVersion
@@ -3082,32 +3158,12 @@
           event.preventDefault();
           return;
         }
-        startAddonDetection(link.dataset.addonDownload);
+        event.preventDefault();
+        installGraphicsAddon(link.dataset.addonDownload);
       });
     });
     document.querySelectorAll('[data-addon-install]').forEach(button => {
-      button.onclick = () => {
-        const provider = button.dataset.addonInstall;
-        const isNeuralRender = provider === 'lsp-neural-render';
-        const warning = isNeuralRender
-          ? 'This installs LosslessProxy, LSP-NeuralRender, and the compatible 310.8.2 SF-v2 DLSS neural-rendering runtime from RankFTW/rhi-repo. The runtime is a community-modified, unsigned NVIDIA-derived DLL, is not an official NVIDIA release, and may carry compatibility, security, copyright, or licensing risk. Continue only if you accept those risks.'
-          : `Install the latest verified ${provider} release?`;
-        confirmDialog(warning, {
-          title: isNeuralRender ? 'Community Runtime Warning' : 'Install Add-on',
-          okLabel: isNeuralRender ? 'Accept and Install' : 'Install',
-          danger: isNeuralRender
-        }).then(accepted => {
-          if (!accepted) return;
-          setGraphicsStatus(isNeuralRender
-            ? 'Downloading and verifying LSP-NeuralRender and the community DLSS 5 runtime...'
-            : `Downloading and verifying ${provider}...`);
-          ws.send(JSON.stringify({
-            type: 'INSTALL_LATEST_GRAPHICS_ADDON', provider,
-            acceptCommunityRuntime: isNeuralRender,
-            operationId: crypto.randomUUID().replaceAll('-', '')
-          }));
-        });
-      };
+      button.onclick = () => installGraphicsAddon(button.dataset.addonInstall);
     });
     document.getElementById('profileForm').onsubmit = (e) => {
       e.preventDefault();

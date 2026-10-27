@@ -11,6 +11,20 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_echo_106_features_are_opt_in_and_user_choices_survive(self):
+        service = self.service()
+        profile = Profile(name="Game")
+        baseline = service.effective(profile, reshade_enabled=False)
+        for addon_id in ("ECHOFG", "GpuLimit", "Recorder", "SuperLog"):
+            self.assertIs(baseline["addons"][addon_id]["_enabled"], False)
+        profile.addon_config = {"global": {"future": {"keep": True}},
+                                "addons": {"ECHOFG": {"_enabled": True, "future": "keep"}}}
+        preserved = service.effective(profile, reshade_enabled=False)
+        self.assertTrue(preserved["addons"]["ECHOFG"]["_enabled"])
+        self.assertEqual(preserved["addons"]["ECHOFG"]["future"], "keep")
+        self.assertFalse(preserved["global"]["updates"]["check"])
+        self.assertFalse(preserved["global"]["ui"]["open_on_start"])
+
     def test_echo_attribution_is_shipped_and_visible(self):
         root = Path(__file__).resolve().parents[1]
         notice = (root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
@@ -20,6 +34,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         self.assertIn("FrankBarretta", notice)
         self.assertIn("Echo-Storm/ls-addon-manager/blob/main/NOTICE.md", dashboard)
         self.assertIn('("THIRD_PARTY_NOTICES.md", ".")', spec)
+        self.assertIn('copy_metadata("py7zr", recursive=True)', spec)
 
     def service(self):
         manager = SimpleNamespace(

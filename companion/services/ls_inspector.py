@@ -12,6 +12,8 @@ import glob
 import logging
 import ctypes
 import threading
+import time
+from datetime import datetime, timedelta
 from ctypes import wintypes
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
@@ -58,6 +60,13 @@ class ScaledTargetInfo:
 
 
 class LosslessScalingInspector:
+    # Echo 1.0.6/API 1.4: 0 disabled, 1 temporarily disabled, 2 enabled,
+    # 3 countdown. Only the exact Core event is evidence, not addon chatter.
+    _ECHO_STATUS_RE = re.compile(
+        r"^\[(\d{2}:\d{2}:\d{2}\.\d{3})\] \[INFO\] \[Core\] Scaling status ([0-3]) "
+        r"\(window ((?:0x)?[0-9a-fA-F]+), (\d+)x(\d+) -> (\d+)x(\d+), "
+        r"resized [01], scale ([0-9]+(?:\.[0-9]+)?), error (\d+)\)$"
+    )
     # Window titles/classes that are part of LS itself or OS helpers and must
     # never count as the scaling presentation overlay. A bare WS_POPUP /
     # WS_EX_TOPMOST check matches tooltips, IME windows and 1x1 GDI+
@@ -129,6 +138,10 @@ class LosslessScalingInspector:
         self._confirmation_baseline: Optional[int] = None
         self._confirmation_requires_log = False
         self._inspection_lock = threading.RLock()
+        self._echo_positions = {}
+        self._echo_started_at = time.time()
+        self._echo_confirmation_started_at = None
+        self._echo_event_seen = False
         self.last_known_target = ScaledTargetInfo()
         self.settings_xml = LosslessSettingsXml(settings_xml_path)
         self._overlay_true_streak = 0
@@ -138,6 +151,90 @@ class LosslessScalingInspector:
         # EOF so an old unmatched "scaling started" line cannot make a new
         # Companion process report a false active session.
         self._refresh_log_files(initialize_at_end=True)
+        self._parse_echo_updates(initialize_at_end=True)
+
+    def _echo_log_files(self):
+        if self.custom_log_path:
+            path = Path(self.custom_log_path)
+            return [path] if path.name.casefold() == "lsaddonmanager.log" and path.is_file() else []
+        if not self.lossless_exe_path:
+            return []
+        root = Path(self.lossless_exe_path).parent
+        return [path for path in (root / "logs/LSAddonManager.log", root / "LSAddonManager.log") if path.is_file()]
+
+    @staticmethod
+    def _echo_target_identity(hwnd):
+        if not hwnd or not user32.IsWindow(hwnd):
+            return None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+        try:
+            process = psutil.Process(pid.value)
+            name = process.name()
+            if name.casefold() == "losslessscaling.exe":
+                return None
+            return dict(pid=pid.value, process_name=name, exe_path=process.exe(),
+                        window_title=LosslessScalingInspector._window_title(hwnd))
+        except (psutil.Error, OSError):
+            return None
+
+    def _parse_echo_updates(self, *, initialize_at_end=False):
+        observed = False
+        for path in self._echo_log_files():
+            try:
+                with path.open("rb") as stream:
+                    size = path.stat().st_size
+                    if initialize_at_end:
+                        head = stream.read(64)
+                        stream.seek(max(0, size - 64))
+                        self._echo_positions[path] = (size, stream.read(64), head)
+                        continue
+                    position, anchor, head = self._echo_positions.get(path, (0, b"", b""))
+                    prefix_changed = stream.read(len(head)) != head
+                    stream.seek(max(0, position - len(anchor)))
+                    if size < position or prefix_changed or stream.read(len(anchor)) != anchor:
+                        position = 0  # Truncation, replacement or same-size rewrite.
+                    stream.seek(position)
+                    content = stream.read(2 * 1024 * 1024)
+                    end = content.rfind(b"\n") + 1
+                    if not end:
+                        continue  # Do not consume a partially written event.
+                    position += end
+                    stream.seek(0)
+                    head = stream.read(64)
+                    stream.seek(max(0, position - 64))
+                    self._echo_positions[path] = (position, stream.read(min(position, 64)), head)
+                for line in content[:end].decode("utf-8", errors="replace").splitlines():
+                    match = self._ECHO_STATUS_RE.fullmatch(line.strip())
+                    if not match:
+                        continue
+                    now = datetime.now()
+                    stamp = datetime.combine(now.date(), datetime.strptime(match[1], "%H:%M:%S.%f").time())
+                    stamp = min((stamp + timedelta(days=day) for day in (-1, 0, 1)), key=lambda value: abs((now - value).total_seconds()))
+                    minimum = self._echo_confirmation_started_at or self._echo_started_at
+                    if not minimum - 0.002 <= stamp.timestamp() <= now.timestamp() + 1:
+                        continue  # A copied/rotated historical log is not a current event.
+                    status, hwnd, error = int(match[2]), int(match[3], 16), int(match[9])
+                    if status in (1, 3):
+                        continue  # Countdown/pause does not confirm a toggle or release ownership.
+                    active = status == 2 and error == 0
+                    identity = self._echo_target_identity(hwnd) if active else None
+                    if active and (not identity or any(int(match[i]) <= 0 for i in (4, 5, 6, 7))):
+                        continue
+                    self.last_known_target = ScaledTargetInfo(
+                        is_active=active, source="log_file", scale_factor=match[8], **(identity or {})
+                    )
+                    self._log_state = active
+                    self._log_event_sequence += 1
+                    self._echo_event_seen = True
+                    self.active_log_file = path
+                    observed = True
+                    logger.info("Observed Lossless Scaling state=%s from Echo Core event in %s", "active" if active else "idle", path)
+            except (OSError, ValueError) as error:
+                logger.debug("Could not read Echo scaling events from %s: %s", path, error)
+        return observed
 
     @staticmethod
     def _lossless_exe_directories(configured_exe: Optional[str] = None) -> List[Path]:
@@ -175,6 +272,8 @@ class LosslessScalingInspector:
         """Return possible LS event logs, excluding known add-on/debug logs."""
         if self.custom_log_path:
             custom = Path(self.custom_log_path)
+            if custom.name.casefold() == "lsaddonmanager.log":
+                return []
             return [custom] if custom.is_file() else []
         candidate_patterns = [
             os.path.expandvars(r"%LOCALAPPDATA%\LosslessScaling\*.log"),
@@ -225,7 +324,7 @@ class LosslessScalingInspector:
         """Locate the newest eligible log (diagnostic compatibility helper)."""
         with self._inspection_lock:
             self._refresh_log_files()
-            return self.active_log_file
+            return self.active_log_file or next(iter(self._echo_log_files()), None)
 
     def parse_log_updates(self) -> Optional[ScaledTargetInfo]:
         """Tail all eligible logs and return only newly observed state events."""
@@ -307,7 +406,10 @@ class LosslessScalingInspector:
             # Only report a log observation when new scaling state actually
             # appeared. Reporting latched state on every no-op poll is what
             # kept "unknown" sources from ever clearing.
-            if saw_state_transition:
+            echo_transition = self._parse_echo_updates()
+            if saw_state_transition or echo_transition:
+                if echo_transition:
+                    return self.last_known_target
                 if transition_file is not None:
                     self.active_log_file = transition_file
                     logger.info(
@@ -324,10 +426,14 @@ class LosslessScalingInspector:
             self._log_state = None
             self._confirmation_baseline = None
             self._confirmation_requires_log = False
-            self.last_known_target.is_active = False
+            self.last_known_target = ScaledTargetInfo()
             self._overlay_true_streak = 0
             self._overlay_false_streak = 0
             self._overlay_stable_present = False
+            self._echo_event_seen = False
+            self._echo_started_at = time.time()
+            self._echo_confirmation_started_at = None
+            self._parse_echo_updates(initialize_at_end=True)
 
     def begin_scaling_confirmation(self, expected: bool) -> None:
         """Snapshot log offsets before the hotkey so only a new event can confirm it."""
@@ -335,12 +441,14 @@ class LosslessScalingInspector:
         with self._inspection_lock:
             self.parse_log_updates()
             self._confirmation_baseline = self._log_event_sequence
-            self._confirmation_requires_log = bool(self._candidate_log_files())
+            self._echo_confirmation_started_at = time.time()
+            self._confirmation_requires_log = bool(self._candidate_log_files()) or (self._echo_event_seen and bool(self._echo_log_files()))
 
     def end_scaling_confirmation(self) -> None:
         with self._inspection_lock:
             self._confirmation_baseline = None
             self._confirmation_requires_log = False
+            self._echo_confirmation_started_at = None
 
     @classmethod
     def _window_title(cls, hwnd) -> str:
@@ -517,6 +625,7 @@ class LosslessScalingInspector:
             target.process_name = self.last_known_target.process_name
             target.window_title = self.last_known_target.window_title
             target.pid = self.last_known_target.pid
+            target.exe_path = self.last_known_target.exe_path
 
         # If log didn't specify the PID/process, resolve from current/tracked foreground window
         # Only for authoritative sources (overlay / fresh log event). Falling

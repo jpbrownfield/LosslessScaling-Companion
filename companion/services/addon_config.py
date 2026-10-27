@@ -24,7 +24,7 @@ class AddonConfigService:
 
     def catalog(self, packages=()) -> list[Dict]:
         """Read names from installed manifests; never execute an add-on to edit it."""
-        entries = {item["id"]: dict(item, installed=item["id"] in {"WindowedMode", "ReShadePassthrough"}) for item in ADDONS}
+        entries = {item["id"]: dict(item, installed=item["id"] in {"WindowedMode", "ReShadePassthrough", "GpuLimit", "Recorder", "SuperLog"}) for item in ADDONS}
         manifests = []
         for package in packages:
             if package.get("provider") != "ls-addon-manager":

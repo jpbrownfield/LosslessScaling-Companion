@@ -15,6 +15,39 @@ from companion.ui.tray import CompanionTrayIcon
 
 
 class CompanionTrayIconTests(unittest.TestCase):
+    def test_menu_refresh_is_marshaled_to_the_native_tray_thread(self):
+        from pystray._util import win32
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        tray.icon = Mock(_hwnd=101, _message_handlers={win32.WM_NOTIFY: Mock()})
+        tray._create_icon_image = Mock(return_value="image")
+        tray._tray_title = Mock(return_value="title")
+        tray._build_menu = Mock(return_value=Menu())
+        tray._install_topmost_menu_hook(tray.icon)
+        with patch("companion.ui.tray.ctypes.windll.user32.PostMessageW", return_value=1) as post:
+            tray.update_menu()
+            tray.update_menu()  # Coalesce monitor ticks until the UI consumes it.
+            post.assert_called_once_with(101, tray.WM_REFRESH_MENU, 0, 0)
+            tray.icon.update_menu.assert_not_called()
+            tray.icon._message_handlers[tray.WM_REFRESH_MENU](0, 0)
+        tray.icon.update_menu.assert_called_once()
+        self.assertFalse(tray._pending_menu_refresh)
+
+    def test_animation_does_not_replace_native_icon_from_worker_thread(self):
+        from pystray._util import win32
+        tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
+        tray.icon = Mock(_hwnd=101, _message_handlers={win32.WM_NOTIFY: Mock()}, icon="old")
+        tray._visual_state = Mock(return_value="closed")
+        tray._create_icon_image = Mock(return_value="frame")
+        tray._animation_stop = Mock()
+        tray._animation_stop.is_set.side_effect = [False, True]
+        tray._install_topmost_menu_hook(tray.icon)
+        with patch("companion.ui.tray.ctypes.windll.user32.PostMessageW", return_value=1) as post:
+            tray._animate_icon()
+            self.assertEqual(tray.icon.icon, "old")
+            post.assert_called_once_with(101, tray.WM_ICON_FRAME, 0, 0)
+            tray.icon._message_handlers[tray.WM_ICON_FRAME](0, 0)
+        self.assertEqual(tray.icon.icon, "frame")
+
     def test_visual_state_follows_lossless_scaling_runtime(self):
         tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
         tray.state = AppState()

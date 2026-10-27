@@ -265,6 +265,8 @@ class CompanionApplication:
         logger.info("Starting background process and window monitor...")
         while self.running:
             try:
+                if self._instance_guard and self._instance_guard.consume_dashboard_request():
+                    self.tray._open_dashboard(None, None)
                 if (
                     not self._settings_backup_ready
                     and time.monotonic() >= self._next_settings_backup_check
@@ -348,6 +350,9 @@ class CompanionApplication:
             "simulation" if self.simulation_mode else "companion"
         )
         if not self._instance_guard.acquire():
+            if self._instance_guard.request_dashboard():
+                logger.info("Requested dashboard activation in the running Companion")
+                return
             holder = self._instance_guard.holder_pid
             detail = f" (PID {holder})" if holder else ""
             logger.error(

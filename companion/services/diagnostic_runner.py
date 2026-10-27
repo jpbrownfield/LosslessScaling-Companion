@@ -547,16 +547,8 @@ class DiagnosticRunner:
             if current is None or str(package.get("version") or "") > str(current.get("version") or ""):
                 packages[provider] = package
 
-        default = next((item for item in self.server.config.profiles if item.is_default), None)
-        native_title = default.lossless_profile_title if default else None
-
         def base(label: str) -> Profile:
-            return Profile(
-                id=f"experimental-live-{label}-{uuid.uuid4().hex}",
-                name=f"Experimental Live {label}",
-                lossless_profile_title=native_title,
-                addon_config={"global": {}, "addons": {}},
-            )
+            return self._live_test_profile(label)
 
         profiles: list[Profile] = []
         manager = packages.get("ls-addon-manager")
@@ -594,6 +586,28 @@ class DiagnosticRunner:
                 profiles.append(profile)
         return profiles
 
+    def _live_test_profile(self, label):
+        """Inherit routing intent, never the default profile's expensive addons."""
+        default = next((item for item in self.server.config.profiles if item.is_default), None)
+        profile = Profile(id=f"experimental-live-{label}-{uuid.uuid4().hex}",
+                          name=f"Experimental Live {label}",
+                          lossless_profile_title=default.lossless_profile_title if default else None,
+                          addon_config={"global": {}, "addons": {}})
+        if default:
+            for field in ("preferred_gpu_device_id", "preferred_gpu_name", "output_display_device_id", "output_display_name"):
+                setattr(profile, field, getattr(default, field))
+            profile.native_scaling_settings = {key: value for key, value in default.native_scaling_settings.items()
+                                               if key in {"PreferredGpuId", "OutputDisplayId"}}
+        return profile
+
+    def _require_stopped_for_deployment(self):
+        """Never restore DLLs or Settings.xml while LS still holds them open."""
+        watcher = self.server.process_watcher
+        if watcher.check_is_lossless_scaling_running() and not watcher.stop_lossless_scaling():
+            raise RuntimeError("Lossless Scaling could not be stopped; DLL/settings restoration was not attempted")
+        if watcher.check_is_lossless_scaling_running():
+            raise RuntimeError("Lossless Scaling restarted during cleanup; DLL/settings restoration was not attempted")
+
     def _live_addon_deployment_behavior(self) -> Dict:
         if self._live_addon_result is None:
             self._live_addon_result = self._run_live_addon_deployment_behavior()
@@ -613,6 +627,8 @@ class DiagnosticRunner:
         auto_scale_was_enabled = self.server.state.auto_scale_enabled
         benchmark_was_active = self.server.state.benchmark_mode_active
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
+        settings_path = self.server.ls_settings.path
+        settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
         checks = []
         failures = []
         workload_process: Optional[subprocess.Popen] = None
@@ -659,6 +675,11 @@ class DiagnosticRunner:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
                         if not self.server.process_watcher.stop_lossless_scaling():
                             raise RuntimeError("Lossless Scaling could not be stopped between add-on tests")
+                    route = self.server.automation._desired_gpu_route(profile, hwnd)
+                    attempt["requestedGpuRoute"] = route
+                    route_args = (profile.lossless_profile_title, int(route.get("lsGpuId", 0)), int(route.get("lsDisplayId", 0)))
+                    if self.server.ls_settings.gpu_route_changes_required(*route_args) and not self.server.ls_settings.update_gpu_route(*route_args):
+                        raise RuntimeError("Diagnostic GPU route could not be applied")
                     plan = self.server.automation.resolve_deployment_files(profile)
                     manifest = manager.apply(
                         profile_id=profile.id,
@@ -771,6 +792,9 @@ class DiagnosticRunner:
                     runtime_delta = self._log_delta(runtime_snapshot, current_runtime_paths)
                     runtime_errors = self._runtime_log_errors(runtime_delta)
                     runtime_evidence = self._runtime_log_evidence(runtime_delta)
+                    actual_gpus = self._runtime_gpu_names(runtime_delta)
+                    requested_gpu = str(route.get("gpuName") or "")
+                    gpu_matches = (requested_gpu.casefold() in {name.casefold() for name in actual_gpus}) if requested_gpu and actual_gpus else None
                     expected_proxy_version = None
                     reported_proxy_version = self._reported_lossless_proxy_version(runtime_delta)
                     proxy_version_matches = (
@@ -790,6 +814,8 @@ class DiagnosticRunner:
                         "runtimeLogTail": self._path("\n".join(runtime_delta.values())[-8000:]),
                         "runtimeErrors": runtime_errors,
                         "runtimeEvidence": runtime_evidence,
+                        "actualRuntimeGpuNames": actual_gpus,
+                        "gpuRouteMatches": gpu_matches,
                         "loadedModules": [self._path(item) for item in loaded_modules],
                         "moduleInspectionError": module_inspection_error,
                         "addonRuntimeReady": addon_ready,
@@ -807,6 +833,7 @@ class DiagnosticRunner:
                         scaled and active_observed and stopped
                         and bool(runtime_delta) and not runtime_errors
                         and addon_ready and not module_inspection_error
+                        and gpu_matches is not False
                     )
                     if not runtime_confirmed:
                         raise RuntimeError(
@@ -815,6 +842,7 @@ class DiagnosticRunner:
                             f"runtimeLog={bool(runtime_delta)}, runtimeErrors={runtime_errors}, "
                             f"runtimeEvidence={runtime_evidence}, addonReady={addon_ready}, "
                             f"moduleInspectionError={module_inspection_error}"
+                            f", requestedGpu={requested_gpu}, actualRuntimeGpus={actual_gpus}"
                         )
                     attempt["status"] = "pass"
                 except Exception as error:
@@ -841,6 +869,9 @@ class DiagnosticRunner:
             except Exception:
                 pass
             try:
+                self._require_stopped_for_deployment()
+                if settings_bytes is not None:
+                    settings_path.write_bytes(settings_bytes)
                 restore_plan = (
                     self.server.automation.resolve_deployment_files(previous)
                     if previous else []
@@ -850,6 +881,7 @@ class DiagnosticRunner:
                     lossless_scaling_exe=str(executable),
                     files=restore_plan,
                 )
+                self.server.state.current_active_profile = previous
             except Exception as error:
                 failures.append({"profile": "restore", "error": str(error)})
             if was_running:
@@ -925,6 +957,7 @@ class DiagnosticRunner:
             r"NrEngine FAILED:",
             r"\bDISABLED:",
             r"\[(?:FATAL|PANIC)\]",
+            r"\[ERROR\]\s*\[Crash\]\s*(?:unhandled exception|code\s+0x[0-9a-f]+)",
         )
         findings: List[str] = []
         for path, content in logs.items():
@@ -932,6 +965,13 @@ class DiagnosticRunner:
                 if any(re.search(pattern, line, re.IGNORECASE) for pattern in patterns):
                     findings.append(f"{Path(path).name}: {line.strip()}")
         return findings[-20:]
+
+    @staticmethod
+    def _runtime_gpu_names(logs: Dict[str, str]) -> List[str]:
+        # A preflight/UI device is NOT proof of the GPU doing LSFG/model work.
+        names = re.findall(r"dispatching device\s+\S+\s+on\s+(.+?)\s+\(LUID\s+[^)]+\)\s*->\s*TAPPED\b",
+                           "\n".join(logs.values()), re.IGNORECASE)
+        return sorted(set(name.strip() for name in names))
 
     @staticmethod
     def _runtime_log_evidence(logs: Dict[str, str]) -> Dict[str, bool]:
@@ -949,6 +989,7 @@ class DiagnosticRunner:
             "neuralTapObserved": bool(re.search(
                 r"(?:\btaps\s+[1-9]\d*\b|\btap\s+#[1-9]\d*\b)", content
             )),
+            "runtimeCrashed": bool(re.search(r"\[ERROR\]\s*\[Crash\]", content, re.IGNORECASE)),
         }
 
     @staticmethod
@@ -1030,10 +1071,7 @@ class DiagnosticRunner:
         active_log = log_inspector._find_log_file()
         ls_paths = [active_log] if active_log else []
         ls_snapshot = self._log_snapshot(ls_paths)
-        live_profile = Profile(
-            id=f"experimental-live-scale-{uuid.uuid4().hex}",
-            name="Experimental Live Scaling",
-        )
+        live_profile = self._live_test_profile("scale")
         live_profile.target_process = Path(workload).name
         live_profile.target_executable_path = str(Path(workload).resolve())
         live_profile.auto_scale = True
@@ -1044,7 +1082,11 @@ class DiagnosticRunner:
         process: Optional[subprocess.Popen] = None
         autoscale_ok = override_ok = active_seen = False
         hwnd = None
+        benchmark_was_active = self.server.state.benchmark_mode_active
         try:
+            # The workflow explicitly invokes foreground discovery below. The
+            # normal monitor must not switch profiles during its setup/cleanup.
+            self.server.state.benchmark_mode_active = True
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(False, reason="experimental_test_setup", force=True)
             config.disable_native_auto_scale = True
@@ -1172,9 +1214,10 @@ class DiagnosticRunner:
             for field, value in original_fields.items():
                 setattr(config, field, value)
             manager.save_config()
-            if settings_bytes is not None:
-                settings_path.write_bytes(settings_bytes)
             try:
+                self._require_stopped_for_deployment()
+                if settings_bytes is not None:
+                    settings_path.write_bytes(settings_bytes)
                 restored = next((item for item in config.profiles if previous and item.id == previous.id), None)
                 plan = self.server.automation.resolve_deployment_files(restored) if restored else []
                 self.server.automation.deployment_manager.apply(
@@ -1192,6 +1235,7 @@ class DiagnosticRunner:
             if was_running:
                 self.server.process_watcher.launch_lossless_scaling(force=True)
             self.server.state.auto_scale_enabled = auto_scale_was_enabled
+            self.server.state.benchmark_mode_active = benchmark_was_active
         return results
 
     def _process_windows(self) -> Dict:

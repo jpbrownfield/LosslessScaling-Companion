@@ -1,6 +1,8 @@
 import ctypes
 from ctypes import wintypes
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -64,6 +66,18 @@ class StartupGuardTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("LSC_TEST_NATIVE_STARTUP_GUARD") == "1", "Opt-in native GUI integration test")
 class NativeStartupGuardTests(unittest.TestCase):
+    def test_private_special_k_environment_is_only_applied_to_the_child(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            host = Path(directory) / "LosslessScaling.exe"
+            shutil.copy2(root / "build/native/startup-guard-test/LosslessScaling.exe", host)
+            config = Path(directory) / ".companion-special-k/Global/osd.ini"
+            config.parent.mkdir(parents=True)
+            config.write_text("[SpecialK.OSD]\nShow=false", encoding="utf-8")
+            with patch.dict(os.environ, {"SPECIALK_PATH": "external-special-k-settings"}):
+                self.run_host(host, 1200)
+                self.assertEqual(os.environ["SPECIALK_PATH"], "external-special-k-settings")
+
     def test_real_cross_process_hook_prevents_show_and_expires(self):
         # This is our compiled fixture, never the installed Lossless Scaling.
         root = Path(__file__).resolve().parents[1]

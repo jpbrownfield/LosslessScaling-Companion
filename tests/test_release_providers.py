@@ -64,10 +64,10 @@ class ReleaseManagerTests(unittest.TestCase):
                     '{"name":"Example"}', encoding="utf-8"
                 )
                 (addon / "Example.dll").write_bytes(b"addon")
-                return type("Result", (), {"returncode": 0})()
+                return type("Result", (), {"wait": lambda self, timeout=None: 0})()
 
             with patch.object(store, "pe_architecture", return_value="x64"), patch(
-                "companion.services.release_providers.subprocess.run", side_effect=extract
+                "companion.services.release_providers.subprocess.Popen", side_effect=extract
             ):
                 package = manager._expand_ls_addon_manager(
                     release,

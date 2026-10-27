@@ -358,6 +358,47 @@ and then waits for explicit confirmation before launching it. Source and
 simulation runs never download or launch production updates. The checksum guards
 against corruption and mismatched assets; releases are not currently code-signed.
 
+Each available component update has its own dashboard notification row. Its
+Download button stages that component directly, with percentage progress when
+the download size is known and a byte counter otherwise. A shared server-side
+lock prevents overlapping downloads/installs across dashboards and tray actions;
+controls remain disabled through verification and installation. ReShade Setup
+and Special K archives are extracted without running their installers. Their
+profile updates wait until scaling stops before replacing active injector files.
+Echo's existing installer flow may still restart LS when updating its host.
+
+Opening Companion's Windows shortcut again opens or focuses the existing
+dashboard instead of starting a second tray instance. Special K uses an LS-only
+`SPECIALK_PATH` and private OSD config to hide its HUD and startup banner; other
+games' shared Special K settings are not changed. Existing LS processes need a
+restart for that environment/configuration change to take effect.
+
+Echo compatibility reviewed against [v1.0.6](https://github.com/Echo-Storm/ls-addon-manager/releases/tag/v1.0.6):
+the `addons/config.json` structure remains compatible and its additive 1.4 API
+retains the 1.x compatibility guarantee for our existing bridge. EchoFG, GPU
+limit, recorder and Super Log are opt-in in Companion (explicit saved choices
+are preserved); Echo's separate updater stays disabled. The Super Log shortcut
+is now Ctrl+Shift+F11, so avoid assigning that combination elsewhere if enabling
+it. Upstream still documents dual-GPU/device-reset and shutdown risks in its
+[review](https://github.com/Echo-Storm/ls-addon-manager/blob/v1.0.6/handoff/sweep-2026-10-26.md).
+This is a source/API review, not live validation of 1.0.6 scaling performance.
+
+Diagnostics recognize Echo's explicit crash records and report the actual neural
+processing GPU separately from its preflight/UI device. Temporary live-test
+profiles inherit the default profile's GPU/display identities without enabling
+its add-ons; injector restoration refuses to run until LS has stopped. Scaling
+confirmation accepts fresh Echo Core status events with a verified target HWND;
+countdowns, temporary pauses, old logs and general add-on messages do not count
+as completed toggles. Tray artwork/menu writes run on the native tray thread.
+
+Packaged launches of LS and Echo Setup temporarily clear PyInstaller's private
+DLL search directory and restore it after process creation, so those external
+programs can resolve their own runtime dependencies. See
+[PyInstaller's external-program guidance](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application).
+This addresses the private DLL-path contamination observed in diagnostics, but
+does not establish that the Echo/ReShade access violation is resolved; rerun the
+live diagnostics after updating.
+
 The build intentionally uses PyInstaller's one-folder mode. PyInstaller advises
 against granting administrator privileges to one-file bundles because they unpack
 executable dependencies into a temporary directory before starting.

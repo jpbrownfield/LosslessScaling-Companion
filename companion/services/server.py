@@ -58,6 +58,10 @@ if TYPE_CHECKING:
 
 class CompanionWebSocketServer:
     PRESENTMON_STARTUP_DELAY_SECONDS = 1.0
+    COMPONENT_ACTIONS = {
+        "INSTALL_LATEST_GRAPHICS_ADDON", "STAGE_GRAPHICS_RELEASE", "IMPORT_GRAPHICS_SOURCE",
+        "DOWNLOAD_COMPANION_UPDATE", "APPLY_COMPANION_UPDATE", "INSTALL_COMPANION_UPDATE",
+    }
 
     def _lossless_scaling_found(self) -> bool:
         value = self.config.lossless_scaling_exe_path
@@ -107,6 +111,9 @@ class CompanionWebSocketServer:
         self.presentmon_detection_task: Optional[asyncio.Task] = None
         self._background_thread_tasks: Set[asyncio.Task] = set()
         self.addon_update_lock = asyncio.Lock()
+        self.component_install_lock = asyncio.Lock()
+        self.component_operation_status = None
+        self._component_progress_callback = None
         self.addon_update_status: Optional[Dict] = None
         self.benchmark_task: Optional[asyncio.Task] = None
         self._benchmark_previous_profile: Optional[Profile] = None
@@ -222,6 +229,7 @@ class CompanionWebSocketServer:
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
+            "componentOperation": self.component_operation_status,
         }))
 
         try:
@@ -245,6 +253,68 @@ class CompanionWebSocketServer:
             logger.info(f"Client disconnected. Total clients: {self.state.connected_clients}")
 
     async def process_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> None:
+        try:
+            message = json.loads(raw_message)
+        except (ValueError, TypeError):
+            return await self._process_message(websocket, raw_message)
+        action = message.get("type") if isinstance(message, dict) else None
+        if action not in self.COMPONENT_ACTIONS or self.client_authority.get(websocket) != "dashboard":
+            return await self._process_message(websocket, raw_message)
+        if self.component_install_lock.locked():
+            await websocket.send(json.dumps(self.component_operation_status))
+            await websocket.send(json.dumps({"type": "ERROR", "message": "Another component download/install is in progress"}))
+            return
+        async with self.component_install_lock:
+            provider = "companion" if "COMPANION_UPDATE" in action else str(message.get("provider") or "")
+            self.component_operation_status = {
+                "type": "COMPONENT_OPERATION", "provider": provider, "busy": True,
+                "phase": "checking", "receivedBytes": 0, "totalBytes": 0,
+                "version": message.get("version"),
+            }
+            queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+            self._component_progress_callback = lambda status: loop.call_soon_threadsafe(queue.put_nowait, status)
+            await self._broadcast_component_operation(websocket)
+            task = asyncio.create_task(self._process_message(websocket, raw_message))
+            try:
+                while not task.done():
+                    try:
+                        progress = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        continue
+                    while not queue.empty():
+                        progress = queue.get_nowait()
+                    self.component_operation_status.update(progress)
+                    await self._broadcast_component_operation(websocket)
+                result = await task
+                self.component_operation_status.update(
+                    busy=False, phase="failed" if isinstance(result, Exception) else "complete",
+                    error=str(result) if isinstance(result, Exception) else None,
+                )
+            finally:
+                # A client disconnect must not unlock while a worker still writes.
+                if not task.done():
+                    await asyncio.shield(task)
+                self._component_progress_callback = None
+                self.component_operation_status["busy"] = False
+                await self._broadcast_component_operation(websocket)
+
+    async def _broadcast_component_operation(self, requester=None):
+        recipients = set(self.clients)
+        if requester:
+            recipients.add(requester)
+        payload = json.dumps(self.component_operation_status)
+        await asyncio.gather(*(client.send(payload) for client in recipients), return_exceptions=True)
+
+    def _stage_release(self, *args, **kwargs):
+        if self._component_progress_callback:
+            kwargs["progress_callback"] = self._component_progress_callback
+        result = self.release_manager.stage_release(*args, **kwargs)
+        if self._component_progress_callback:
+            self._component_progress_callback({"phase": "installing", "receivedBytes": 0, "totalBytes": 0})
+        return result
+
+    async def _process_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> Optional[Exception]:
         try:
             msg = json.loads(raw_message)
             msg_type = msg.get("type")
@@ -437,6 +507,7 @@ class CompanionWebSocketServer:
                     "packages": self.asset_store.list_packages(),
                     "dlssnrRuntimes": dlssnr_runtimes,
                     "externalSources": external_sources,
+                    "componentOperation": self.component_operation_status,
                 }))
                 return
 
@@ -956,7 +1027,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "STAGE_GRAPHICS_RELEASE":
                 result = await asyncio.to_thread(
-                    self.release_manager.stage_release,
+                    self._stage_release,
                     str(msg.get("provider") or ""),
                     str(msg.get("version") or ""),
                     str(msg.get("assetName") or ""),
@@ -968,7 +1039,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"ls-addon-manager", "lsp-neural-render"}:
+                if provider not in {"ls-addon-manager", "lsp-neural-render", "reshade", "special-k"}:
                     raise ValueError("This add-on cannot be installed automatically")
                 if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
                     raise ValueError(
@@ -980,6 +1051,8 @@ class CompanionWebSocketServer:
                 release = next((item for item in releases if item.get("assets")), None)
                 if release is None:
                     raise ValueError(f"No downloadable stable release is available for {provider}")
+                if self.component_operation_status:
+                    self.component_operation_status["version"] = str(release.get("version") or "")
                 assets = list(release.get("assets") or [])
 
                 def asset_priority(asset: Dict) -> tuple:
@@ -995,7 +1068,7 @@ class CompanionWebSocketServer:
 
                 asset = min(assets, key=asset_priority)
                 result = await asyncio.to_thread(
-                    self.release_manager.stage_release,
+                    self._stage_release,
                     provider,
                     str(release.get("version") or ""),
                     str(asset.get("name") or ""),
@@ -1069,7 +1142,7 @@ class CompanionWebSocketServer:
                         ),
                     )
                     proxy_package = await asyncio.to_thread(
-                        self.release_manager.stage_release,
+                        self._stage_release,
                         "lossless-proxy",
                         str(proxy_release.get("version") or ""),
                         str(proxy_asset.get("name") or ""),
@@ -1094,7 +1167,7 @@ class CompanionWebSocketServer:
                             "The community runtime release has no publisher SHA-256 digest"
                         )
                     runtime_package = await asyncio.to_thread(
-                        self.release_manager.stage_release,
+                        self._stage_release,
                         runtime_provider,
                         str(runtime_release.get("version") or ""),
                         str(runtime_asset.get("name") or ""),
@@ -1192,6 +1265,18 @@ class CompanionWebSocketServer:
                         "activeProfileRedeployed": active_redeployed,
                     }))
                     return
+                for profile in self.config.profiles:
+                    component = getattr(profile.graphics, provider.replace("-", "_"))
+                    if component.enabled or (provider == "reshade" and profile.reshade and profile.reshade.enabled):
+                        component.version = str(result.get("version") or "") or None
+                await asyncio.to_thread(self.profile_manager.save_config)
+                active = self.state.current_active_profile
+                if active and (getattr(active.graphics, provider.replace("-", "_")).enabled
+                               or (provider == "reshade" and active.reshade and active.reshade.enabled)):
+                    # Do not interrupt a running game just to refresh an injector.
+                    # Activation after scaling stops will apply the new files.
+                    getattr(active.graphics, provider.replace("-", "_")).version = str(result.get("version") or "") or None
+                    self.automation.addon_configs.mark_edited(active)
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
                 return
 
@@ -1688,6 +1773,7 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({"type": "ERROR", "message": str(e)}))
             except Exception:
                 pass
+            return e
 
     async def _revert_all_changes(self) -> Dict:
         """Return LS, RTSS, and deployed add-ons to their pre-helper state."""
@@ -2114,42 +2200,71 @@ class CompanionWebSocketServer:
 
         def report_progress(received: int, total: int) -> None:
             loop.call_soon_threadsafe(progress.put_nowait, (received, total))
+            if self._component_progress_callback:
+                self._component_progress_callback({"phase": "downloading", "receivedBytes": received, "totalBytes": total})
 
         task = asyncio.create_task(self._run_background_thread(
             self.companion_updater.download,
             version,
             progress_callback=report_progress,
         ))
-        while not task.done():
-            try:
-                received, total = await asyncio.wait_for(progress.get(), timeout=0.25)
-            except asyncio.TimeoutError:
-                continue
-            while not progress.empty():
-                received, total = progress.get_nowait()
-            await websocket.send(json.dumps({
-                "type": "COMPANION_UPDATE_DOWNLOAD_PROGRESS",
-                "version": version,
-                "receivedBytes": received,
-                "totalBytes": total,
-            }))
+        try:
+            while not task.done():
+                try:
+                    received, total = await asyncio.wait_for(progress.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    continue
+                while not progress.empty():
+                    received, total = progress.get_nowait()
+                await websocket.send(json.dumps({
+                    "type": "COMPANION_UPDATE_DOWNLOAD_PROGRESS",
+                    "version": version,
+                    "receivedBytes": received,
+                    "totalBytes": total,
+                }))
+        finally:
+            if not task.done():
+                await asyncio.shield(task)
         return await task
 
     async def apply_companion_update(self, version: str) -> Dict:
         """Download, verify, and launch an update requested outside the dashboard."""
-        normalized = str(version or "").strip().removeprefix("v")
-        status = self.companion_update_status or await self._refresh_companion_update(
-            force=True
-        )
-        if not status.get("updateAvailable") or status.get("latestVersion") != normalized:
-            raise ValueError("The requested companion update is no longer available")
-        if not status.get("downloaded"):
-            await self._run_background_thread(
-                self.companion_updater.download, normalized
-            )
-        launched = await self._run_background_thread(
-            self.companion_updater.launch_installer, normalized
-        )
+        if self.component_install_lock.locked():
+            raise RuntimeError("Another component download/install is in progress")
+        async with self.component_install_lock:
+            self.component_operation_status = {
+                "type": "COMPONENT_OPERATION", "provider": "companion", "busy": True,
+                "phase": "checking", "receivedBytes": 0, "totalBytes": 0,
+            }
+            await self._broadcast_component_operation()
+            server = self
+
+            class BroadcastProgress:
+                async def send(self, encoded):
+                    message = json.loads(encoded)
+                    server.component_operation_status.update(
+                        phase="downloading", receivedBytes=message.get("receivedBytes", 0),
+                        totalBytes=message.get("totalBytes", 0),
+                    )
+                    await server._broadcast_component_operation()
+
+            try:
+                normalized = str(version or "").strip().removeprefix("v")
+                status = self.companion_update_status or await self._refresh_companion_update(force=True)
+                if not status.get("updateAvailable") or status.get("latestVersion") != normalized:
+                    raise ValueError("The requested companion update is no longer available")
+                if not status.get("downloaded"):
+                    await self._download_companion_update(BroadcastProgress(), normalized)
+                self.component_operation_status.update(phase="installing", receivedBytes=0, totalBytes=0)
+                await self._broadcast_component_operation()
+                launched = await self._run_background_thread(self.companion_updater.launch_installer, normalized)
+                self.component_operation_status["phase"] = "complete"
+            except Exception as error:
+                self.component_operation_status.update(phase="failed", error=str(error))
+                raise
+            finally:
+                self.component_operation_status["busy"] = False
+                await self._broadcast_component_operation()
         if self.on_installer_launched:
             asyncio.get_running_loop().call_soon(self.on_installer_launched)
         return launched

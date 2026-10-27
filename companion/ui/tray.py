@@ -49,6 +49,8 @@ class _MenuInfo(ctypes.Structure):
 
 
 class CompanionTrayIcon:
+    WM_REFRESH_MENU = 0x8000 + 0x4C
+    WM_ICON_FRAME = 0x8000 + 0x4D
     def __init__(
         self,
         profile_manager: ProfileManager,
@@ -84,6 +86,9 @@ class CompanionTrayIcon:
         self._animation_stop = threading.Event()
         self._animation_thread: Optional[threading.Thread] = None
         self.icon: Optional[pystray.Icon] = None
+        self._tray_dispatch_ready = False
+        self._pending_icon_frame = None
+        self._pending_menu_refresh = False
 
     def _visual_state(self) -> str:
         if not self.state.lossless_scaling_running:
@@ -223,6 +228,9 @@ class CompanionTrayIcon:
                 return original(wparam, lparam)
 
             handlers[win32.WM_NOTIFY] = notify
+            handlers[self.WM_REFRESH_MENU] = lambda _wp, _lp: self._update_menu_now()
+            handlers[self.WM_ICON_FRAME] = lambda _wp, _lp: self._apply_icon_frame()
+            self._tray_dispatch_ready = True
         except Exception:
             logger.exception("Could not enable topmost tray-menu behavior")
 
@@ -249,7 +257,10 @@ class CompanionTrayIcon:
                 delay = 0.10
             try:
                 if self.icon:
-                    self.icon.icon = self._create_icon_image(pulse=pulse)
+                    image = self._create_icon_image(pulse=pulse)
+                    self._pending_icon_frame = image
+                    if not self._post_tray_update(self.WM_ICON_FRAME):
+                        self._apply_icon_frame()
             except Exception:
                 logger.debug("Could not update animated tray artwork", exc_info=True)
             self._animation_stop.wait(delay)
@@ -493,6 +504,33 @@ class CompanionTrayIcon:
             self._animation_thread.join(timeout=1.0)
 
     def update_menu(self) -> None:
+        if getattr(self, "_pending_menu_refresh", False):
+            return
+        self._pending_menu_refresh = True
+        if not self._post_tray_update(self.WM_REFRESH_MENU):
+            self._update_menu_now()
+
+    def _post_tray_update(self, message):
+        hwnd = getattr(self.icon, "_hwnd", None) if self.icon else None
+        if not getattr(self, "_tray_dispatch_ready", False) or not isinstance(hwnd, int) or not hwnd:
+            return False
+        post = ctypes.windll.user32.PostMessageW
+        post.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        post.restype = wintypes.BOOL
+        if not post(hwnd, message, 0, 0):
+            self._pending_menu_refresh = False
+            logger.debug("Tray update dropped while its window is closing")
+        return True
+
+    def _apply_icon_frame(self):
+        image = self._pending_icon_frame
+        self._pending_icon_frame = None
+        if self.icon and image is not None:
+            self.icon.icon = image
+
+    def _update_menu_now(self):
+        """Runs on the tray's message loop, not the monitor/animation thread."""
+        self._pending_menu_refresh = False
         if self.icon:
             # Reflect state changes immediately instead of waiting for the next
             # animation frame.
