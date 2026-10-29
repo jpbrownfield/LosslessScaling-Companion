@@ -12,6 +12,7 @@ VERSION = re.compile(r"\d+\.\d+\.\d+")
 MARKER = re.compile(r"@(\d+\.\d+\.\d+)(?![\d.])")
 
 
+
 class ReleaseError(RuntimeError):
     pass
 
