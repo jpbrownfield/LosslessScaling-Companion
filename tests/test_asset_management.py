@@ -49,7 +49,7 @@ class AssetStoreTests(unittest.TestCase):
             ):
                 with self.assertRaises(PermissionError):
                     DeploymentManager._atomic_copy(source, target)
-            self.assertEqual(replace.call_count, 5)
+            self.assertEqual(replace.call_count, 10)
             self.assertEqual(target.read_bytes(), b"original")
             self.assertEqual(sorted(path.name for path in Path(directory).iterdir()), ["source.dll", "target.dll"])
 
