@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 companion/config/settings.json
+test_binaries/
 test-results/
 dist/
 build/

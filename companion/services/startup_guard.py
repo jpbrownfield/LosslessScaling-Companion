@@ -17,6 +17,14 @@ _lock = threading.Lock()
 def guard_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tools" / "LSC_StartupGuard.dll"
+    try:
+        from .test_binaries import candidate as _test_binary
+
+        cached = _test_binary("tools/LSC_StartupGuard.dll")
+        if cached.is_file():
+            return cached
+    except Exception:
+        pass
     return Path(__file__).resolve().parents[2] / "build" / "native" / "LSC_StartupGuard.dll"
 
 

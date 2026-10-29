@@ -607,14 +607,17 @@ class DeploymentManager:
     def _replace_with_retry(source, destination):
         # AV/indexers can briefly retain a closed file after LS has exited.
         # Never change ACLs, delete the destination, or force a locked DLL out.
-        for attempt in range(5):
+        # Callers must stop LosslessScaling.exe first; retries only cover the
+        # transient post-exit handle window. Fail fast afterwards so live
+        # diagnostics report the lock instead of a pending-reboot state.
+        for attempt in range(10):
             try:
                 os.replace(source, destination)
                 return
             except OSError as error:
-                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 4:
+                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 9:
                     raise
-                time.sleep(0.05 * (2 ** attempt))
+                time.sleep(0.1 * (2 ** min(attempt, 3)))
 
     @staticmethod
     def _atomic_copy(source: Path, destination: Path) -> None:

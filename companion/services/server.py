@@ -2398,6 +2398,12 @@ class CompanionWebSocketServer:
         candidates = []
         if getattr(sys, "frozen", False):
             candidates.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tools" / "LSBenchmark.exe")
+        try:
+            from .test_binaries import candidate as _test_binary
+
+            candidates.append(_test_binary("tools/LSBenchmark.exe"))
+        except Exception:
+            pass
         candidates.append(Path(__file__).resolve().parents[2] / "build" / "native" / "LSBenchmark.exe")
         for candidate in candidates:
             if candidate.is_file() and self.asset_store.pe_architecture(candidate) == "x64":

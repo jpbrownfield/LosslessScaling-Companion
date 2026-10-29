@@ -299,8 +299,31 @@ class AutomationController:
                     target_pid is None
                     or target_hwnd is None
                     or self.process_watcher is None
-                    or not self.process_watcher.focus_window_identity(target_pid, target_hwnd)
                 ):
+                    self._set_control_status(
+                        "error",
+                        f"Target PID {target_pid} / HWND {target_hwnd} could not be verified",
+                    )
+                    logger.error(
+                        "Scaling activation refused because target PID %s / HWND %s could not be verified",
+                        target_pid,
+                        target_hwnd,
+                    )
+                    return False
+                verified = False
+                for _ in range(3):
+                    try:
+                        if self.process_watcher.focus_window_identity(target_pid, target_hwnd):
+                            verified = True
+                            break
+                    except Exception:
+                        logger.exception("PID/HWND verification attempt failed")
+                    try:
+                        self.process_watcher.invalidate_foreground_cache()
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                if not verified:
                     self._set_control_status(
                         "error",
                         f"Target PID {target_pid} / HWND {target_hwnd} could not be verified",
@@ -325,9 +348,13 @@ class AutomationController:
             max_attempts = (
                 self.AUTO_SCALE_MAX_ATTEMPTS if automatic_activation else 1
             )
-            confirmation_timeout = (
-                self.AUTO_SCALE_CONFIRMATION_SECONDS if active else 8.0
-            )
+            if active and automatic_activation:
+                # Cold LS starts need longer to confirm the first toggle.
+                confirmation_timeout = 15.0
+            else:
+                confirmation_timeout = (
+                    self.AUTO_SCALE_CONFIRMATION_SECONDS if active else 8.0
+                )
             confirmed = False
             for attempt in range(1, max_attempts + 1):
                 if attempt > 1 and target_pid and target_hwnd and self.process_watcher:

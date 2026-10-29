@@ -39,6 +39,14 @@ class GraphicsResolver:
             frozen_root = getattr(sys, "_MEIPASS", None)
             if frozen_root:
                 candidates.append(Path(frozen_root) / "addons" / "LSP-ReShade")
+            try:
+                from .test_binaries import candidate as _test_binary
+
+                cached = _test_binary("addons/LSP-ReShade")
+                if (cached / "LSC_ReShadeBridge.dll").is_file():
+                    candidates.append(cached)
+            except Exception:
+                pass
             candidates.append(
                 Path(__file__).resolve().parents[2] / "build" / "native" / "LSP-ReShade"
             )
