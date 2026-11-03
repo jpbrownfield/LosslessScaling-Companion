@@ -272,6 +272,15 @@ class CompanionTrayIcon:
             self.update_menu()
         return handler
 
+    def _on_scale_now(self, icon, menu_item):
+        try:
+            self.automation.scale_focused_after_delay(5.0)
+            self._notify("Scaling in 5 seconds — focus the target window.")
+        except Exception as error:
+            logger.exception("Could not schedule Scale Now from the tray")
+            self._notify(f"Could not schedule scaling: {error}")
+        self.update_menu()
+
     def _open_dashboard(self, icon, item):
         url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard"
         open_dashboard_window(url)
@@ -440,6 +449,7 @@ class CompanionTrayIcon:
             item("LS Companion", None, enabled=False),
             *status_items,
             Menu.SEPARATOR,
+            item("Scale Now (5s)", self._on_scale_now),
             item("Open Dashboard", self._open_dashboard, default=True),
             item("Quick Add Profile", Menu(*proc_items) if proc_items else Menu(item("No apps detected", lambda icon, item: None, enabled=False))),
             item("Open Settings", self._open_settings),

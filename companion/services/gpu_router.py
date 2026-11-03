@@ -343,11 +343,24 @@ class GpuRouter:
                 return dict(display)
         return None
 
-    def route_for_gpu(self, device_id: Optional[str]) -> Dict:
-        if not device_id:
-            return {"gpuDeviceId": None, "lsGpuId": 0, "lsDisplayId": 0, "deviceName": ""}
-        for gpu in self.detect()["gpus"]:
-            if gpu["deviceId"].casefold() == device_id.casefold():
+    def route_for_gpu(self, device_id: Optional[str], name: Optional[str] = None) -> Dict:
+        # Friendly name is authoritative: a unique name match wins and the
+        # volatile deviceId/lsGpuId is rebound from it. Exact deviceId is
+        # only a fallback for stale dashboards that send no name.
+        if not device_id and not name:
+            return {"gpuDeviceId": None, "gpuName": None, "lsGpuId": 0, "lsDisplayId": 0, "deviceName": ""}
+        inventory = self.detect()["gpus"]
+        if name or device_id:
+            try:
+                from .gpu_selections import match_device
+
+                selected = match_device(inventory, device_id, name, gpu=True)
+            except ImportError:
+                selected = None
+            if selected is not None:
+                return {"gpuDeviceId": selected["deviceId"], "gpuName": selected["name"], "lsGpuId": selected["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
+        for gpu in inventory:
+            if device_id and gpu["deviceId"].casefold() == device_id.casefold():
                 return {"gpuDeviceId": gpu["deviceId"], "gpuName": gpu["name"], "lsGpuId": gpu["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
         raise RuntimeError("The selected default scaling GPU is unavailable; choose a detected GPU in General Settings instead of silently using Auto")
 

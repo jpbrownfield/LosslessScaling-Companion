@@ -170,3 +170,40 @@ class GpuSelectionTests(unittest.TestCase):
         router = GpuRouter(lambda: [])
         with self.assertRaisesRegex(RuntimeError, "GPU ID"):
             router.route_for_ls_ids(123, 0)
+
+    def test_duplicate_card_names_disambiguated_by_monitor_name(self):
+        cards = {
+            "gpus": [
+                dict(deviceId="gpu-a", name="NVIDIA GeForce RTX 5050", vendor="NVIDIA", lsGpuId=1,
+                     connectedDisplays=["Dell A"]),
+                dict(deviceId="gpu-b", name="NVIDIA GeForce RTX 5050", vendor="NVIDIA", lsGpuId=2,
+                     connectedDisplays=["Dell B"]),
+            ],
+            "displays": [
+                dict(deviceId="mon-a", deviceName="DISPLAY1", name="Dell A", gpuDeviceId="gpu-a", lsGpuId=1, lsDisplayId=1),
+                dict(deviceId="mon-b", deviceName="DISPLAY2", name="Dell B", gpuDeviceId="gpu-b", lsGpuId=2, lsDisplayId=2),
+            ],
+            "hasNvidia": True,
+        }
+        # Same card name, different monitors: each display picks its own card.
+        for display_name, gpu_id in [("Dell A", "gpu-a"), ("Dell B", "gpu-b")]:
+            selected = match_device(cards["gpus"], None, "NVIDIA GeForce RTX 5050", gpu=True, display_hint=display_name)
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected["deviceId"], gpu_id)
+        # No hint with duplicate names: no guess.
+        self.assertIsNone(match_device(cards["gpus"], None, "NVIDIA GeForce RTX 5050", gpu=True))
+        # Profile carrying display Dell B keeps card gpu-b across a reorder.
+        self.profile.preferred_gpu_device_id = "gpu-b"
+        self.profile.preferred_gpu_name = "NVIDIA GeForce RTX 5050"
+        self.profile.output_display_device_id = "mon-b"
+        self.profile.output_display_name = "Dell B"
+        self.profile.native_scaling_settings["PreferredGpuId"] = "2"
+        self.profile.native_scaling_settings["OutputDisplayId"] = "2"
+        swapped = {
+            "gpus": [dict(cards["gpus"][1], lsGpuId=1), dict(cards["gpus"][0], lsGpuId=2)],
+            "displays": [dict(cards["displays"][1], lsGpuId=1, lsDisplayId=1), dict(cards["displays"][0], lsGpuId=2, lsDisplayId=2)],
+            "hasNvidia": True,
+        }
+        self.service.refresh(swapped)
+        self.assertEqual(self.profile.preferred_gpu_device_id, "gpu-b")
+        self.assertEqual(self.profile.native_scaling_settings["PreferredGpuId"], "1")

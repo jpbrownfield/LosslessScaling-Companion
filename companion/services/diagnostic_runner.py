@@ -626,6 +626,8 @@ class DiagnosticRunner:
         previous = self.server.state.current_active_profile
         auto_scale_was_enabled = self.server.state.auto_scale_enabled
         benchmark_was_active = self.server.state.benchmark_mode_active
+        addon_manager_was_enabled = self.server.config.addon_manager_enabled
+        addon_manager_config_was_enabled = bool(getattr(getattr(self.server.config, "addon_manager", None), "enabled", True))
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         settings_path = self.server.ls_settings.path
         settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
@@ -639,6 +641,13 @@ class DiagnosticRunner:
             workload = self.server._embedded_benchmark_executable()
             if not workload or not Path(workload).is_file():
                 raise RuntimeError("the bundled LSBenchmark.exe is unavailable")
+            # Live Echo recipes require the manager regardless of the saved
+            # user setting. Force it in memory for the run; restored below.
+            self.server.config.addon_manager_enabled = True
+            try:
+                self.server.config.addon_manager.enabled = True
+            except Exception:
+                pass
             # Keep the foreground watcher from racing this explicitly controlled
             # start/stop cycle and immediately reactivating scaling after stop.
             self.server.state.auto_scale_enabled = False
@@ -700,7 +709,13 @@ class DiagnosticRunner:
                             "verified": good,
                         })
                     attempt["files"] = file_checks
-                    if not plan or not all(item["verified"] for item in file_checks):
+                    if not plan:
+                        raise RuntimeError(
+                            "deployment plan resolved 0 files; the Echo Add-on Manager package "
+                            "or its lossless-scaling-deployment.json is missing, so this Echo "
+                            "recipe has nothing to deploy"
+                        )
+                    if not all(item["verified"] for item in file_checks):
                         raise RuntimeError("one or more deployed files failed destination verification")
 
                     log_inspector = LosslessScalingInspector(
@@ -903,6 +918,11 @@ class DiagnosticRunner:
                 self.server.process_watcher.launch_lossless_scaling(force=True)
             self.server.state.auto_scale_enabled = auto_scale_was_enabled
             self.server.state.benchmark_mode_active = benchmark_was_active
+            self.server.config.addon_manager_enabled = addon_manager_was_enabled
+            try:
+                self.server.config.addon_manager.enabled = addon_manager_config_was_enabled
+            except Exception:
+                pass
 
         passed = bool(checks) and not failures
         return self._result(

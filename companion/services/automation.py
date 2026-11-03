@@ -186,6 +186,11 @@ class AutomationController:
         windowed = str(settings.get("WindowedMode") or "false").strip().casefold()
         return scaling_type == "off" and windowed not in {"1", "true", "yes", "on"}
 
+    #: User-toggled stops skip the deactivation hotkey + confirmation wait and
+    #: kill Lossless Scaling for an instant unscale. Automatic stops keep the
+    #: graceful hotkey path so background transitions never close LS.
+    INSTANT_STOP_REASONS = frozenset({"override_hotkey", "manual"})
+
     def set_scaling(
         self,
         active: bool,
@@ -203,6 +208,8 @@ class AutomationController:
                 logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             selected = profile or self.state.current_active_profile
+            # A direct scale/stop supersedes any pending Scale Now timer.
+            self._cancel_delayed_scale()
             if active and selected and self.addon_configs.has_pending(selected):
                 self.activate_profile(
                     selected, force=True, suppress_auto_scale=True,
@@ -241,6 +248,14 @@ class AutomationController:
                 if self.process_watcher and changed and not self.process_watcher.launch_lossless_scaling(force=True):
                     self._set_control_status("error", "Could not restart Lossless Scaling with graphics add-ons")
                     return False
+            if not active and self.state.is_scaling_active and reason in self.INSTANT_STOP_REASONS:
+                # User-toggled stop with confirmed scaling: kill LS now instead
+                # of sending the toggle hotkey and waiting up to 8s for the
+                # deactivation confirmation. Falls through to the graceful
+                # path when scaling never confirmed or the kill fails.
+                instant = self._instant_stop_scaling(selected, reason)
+                if instant is not None:
+                    return instant
             if (
                 active
                 and target_hwnd
@@ -493,33 +508,12 @@ class AutomationController:
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
                 self._minimize_other_windows(target_hwnd, target_pid)
             elif not active:
+                # The latest profile stays hotloaded on stop: no undeploy, no
+                # park, no restart. A later scale with the same profile needs
+                # no file changes; a different profile redeploys (and restarts
+                # only if the deployment actually changed) via activate_profile.
                 if self.process_watcher:
                     self.process_watcher.invalidate_foreground_cache()
-                if (
-                    park_runtime_on_stop
-                    and runtime_providers
-                    and configured_exe
-                    and self.process_watcher
-                    and self.deployment_manager.runtime_packages_need_state(
-                        runtime_providers, active=False
-                    )
-                ):
-                    was_running = self.process_watcher.check_is_lossless_scaling_running()
-                    if was_running and not self.process_watcher.stop_lossless_scaling():
-                        self._set_control_status("error", "Scaling stopped, but LS could not close to park graphics add-ons")
-                        return emitted
-                    try:
-                        changed = self.deployment_manager.set_runtime_packages_active(
-                            configured_exe, runtime_providers, active=False
-                        )
-                    except Exception as error:
-                        logger.error("Scaling stopped, but graphics add-ons could not be parked: %s", error)
-                        self._set_control_status("error", str(error))
-                        if was_running:
-                            self.process_watcher.launch_lossless_scaling(force=True)
-                        return emitted
-                    if was_running and changed and not self.process_watcher.launch_lossless_scaling(force=True):
-                        self._set_control_status("error", "Graphics add-ons were parked, but LS did not restart")
             return True
 
     @staticmethod
@@ -588,6 +582,94 @@ class AutomationController:
 
     def _set_control_status(self, state: str, message: str) -> None:
         self.state.scaling_control_status = {"state": state, "message": message}
+
+    def _instant_stop_scaling(
+        self,
+        selected: Optional[Profile],
+        reason: str,
+    ) -> Optional[bool]:
+        """Stop confirmed scaling by killing LS. None = use the graceful path."""
+        if self.process_watcher is None:
+            return None
+        try:
+            stopped = self.process_watcher.stop_lossless_scaling()
+            still_running = self.process_watcher.check_is_lossless_scaling_running()
+        except Exception:
+            logger.exception("Instant stop kill failed; falling back to hotkey toggle")
+            return None
+        if not stopped and still_running:
+            logger.warning("Instant stop could not close LS; falling back to hotkey toggle")
+            return None
+        configured_exe = self.profile_manager.config.lossless_scaling_exe_path
+        try:
+            if self.profile_manager.config.addon_manager_enabled:
+                self.addon_configs.capture(selected, configured_exe)
+        except Exception:
+            logger.exception("Instant stop continued without capturing live add-on settings")
+        self.state.mark_scaling_toggled(False)
+        self._set_control_status("confirmed", "Scaling stopped instantly (Lossless Scaling closed)")
+        self.state.scaling_owner_profile_id = None
+        self.state.scaling_trigger = None
+        self.state.scaling_target_pid = None
+        self.state.scaling_target_hwnd = None
+        self.state.scaling_target_verified_for_minimization = False
+        self.process_watcher.invalidate_foreground_cache()
+        # Keep the deployment hotloaded: no parking, no undeploy. A later
+        # scale with the same profile needs no restart; a different profile
+        # redeploys via activate_profile.
+        # Relaunch hidden so the next scale does not pay a cold start.
+        def relaunch() -> None:
+            try:
+                self.process_watcher.launch_lossless_scaling(force=True)
+            except Exception:
+                logger.exception("Instant-stop relaunch of Lossless Scaling failed")
+
+        threading.Thread(target=relaunch, daemon=True, name="LSInstantStopRelaunch").start()
+        logger.info("Scaling stopped instantly for %s (Lossless Scaling closed)", reason)
+        return True
+
+    def scale_focused_after_delay(self, delay_seconds: float = 5.0) -> float:
+        """Scale whatever window is focused when the delay elapses. Restarts."""
+        try:
+            delay = float(delay_seconds)
+        except (TypeError, ValueError):
+            delay = 5.0
+        delay = min(max(delay, 1.0), 30.0)
+        previous = getattr(self, "_delayed_scale_timer", None)
+        if previous is not None:
+            try:
+                previous.cancel()
+            except Exception:
+                pass
+        self._set_control_status(
+            "pending",
+            f"Scale Now: focus the target window — scaling in {delay:.0f}s",
+        )
+        logger.info("Scale Now scheduled in %.0fs", delay)
+
+        def fire() -> None:
+            self._delayed_scale_timer = None
+            if self.state.is_scaling_active:
+                logger.info("Scale Now skipped; scaling is already active")
+                self._set_control_status("confirmed", "Scale Now skipped; scaling is already active")
+                return
+            self.handle_override_hotkey()
+
+        timer = threading.Timer(delay, fire)
+        timer.daemon = True
+        timer.name = "LSScaleNow"
+        self._delayed_scale_timer = timer
+        timer.start()
+        return delay
+
+    def _cancel_delayed_scale(self) -> None:
+        timer = getattr(self, "_delayed_scale_timer", None)
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+            self._delayed_scale_timer = None
 
     def toggle_scaling(self, profile: Optional[Profile] = None, *, reason: str) -> bool:
         return self.set_scaling(
@@ -763,7 +845,8 @@ class AutomationController:
         profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(profile)
         config = self.profile_manager.config
         route = self.gpu_router.route_for_gpu(
-            None if profile_gpu_id or config.auto_route_gpu_to_display else config.preferred_scaling_gpu_device_id
+            None if profile_gpu_id or config.auto_route_gpu_to_display else config.preferred_scaling_gpu_device_id,
+            None if profile_gpu_id or config.auto_route_gpu_to_display else config.preferred_scaling_gpu_name,
         )
         if config.auto_route_gpu_to_display and target_hwnd:
             detected = self.gpu_router.route_for_window(target_hwnd)

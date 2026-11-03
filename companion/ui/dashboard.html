@@ -81,7 +81,7 @@
     .settings-column > .form-group { margin: 0; }
     .settings-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
     .settings-area { grid-column: 1 / -1; display: grid; gap: 24px; }
-    .profiles-panel .profile-list { max-height: 620px; }
+    .profiles-panel .profile-list { max-height: none; overflow: visible; }
     .process-picker-content { width: 720px; }
     .process-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .debug-settings-action { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--card-border); padding: 18px 4px 0; }
@@ -177,6 +177,7 @@
     .modal.active { display: flex; }
     .modal-content { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; width: 500px; max-width: 90vw; padding: 24px; max-height: 90vh; overflow-y: auto; }
     #profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }
+    body.profile-editor-open { overflow: hidden; }
     body.profile-editor-open > header, body.profile-editor-open > .update-notice, body.profile-editor-open > .component-update-list, body.profile-editor-open > .container { visibility: hidden; }
     .profile-editor-content { width: calc(100vw - 48px); max-width: none; contain: layout paint; overscroll-behavior: contain; }
     .addon-editor-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:12px; margin-top:12px; }
@@ -187,7 +188,7 @@
     .addon-editor-fields fieldset { grid-column:1/-1; border:1px solid var(--card-border); border-radius:6px; padding:12px; }
     .addon-editor-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
     .profile-basics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-areas: "name name name auto" "type path path path"; gap: 12px 18px; align-items: end; }
-    .profile-basics-grid.native-default-profile { grid-template-areas: "name name name name" "type path path path"; }
+    .profile-basics-grid.native-default-profile { display: none; }
     .profile-basics-grid > .form-group { min-width: 0; margin: 0; }
     .profile-name-field { grid-area: name; }
     .profile-target-type-field { grid-area: type; }
@@ -205,6 +206,9 @@
     .profile-reshade-picker select { flex: 1; min-width: 0; min-height: 38px; padding: 9px 12px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--input-bg); color: #fff; font-size: 13px; }
     .profile-reshade-picker .btn { min-height: 38px; font-size: 13px; }
     .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .modal-header button[aria-label="Close"], #closeModalBtn, #closeProcessModalBtn, #closeReshadeProfileModalBtn, #confirmModalCloseBtn { flex: 0 0 auto; width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--card-border); border-radius: 8px; background: var(--surface-bg); color: var(--text); font-size: 20px; line-height: 1; cursor: pointer; }
+    .modal-header button[aria-label="Close"]:hover, #closeModalBtn:hover, #closeProcessModalBtn:hover, #closeReshadeProfileModalBtn:hover, #confirmModalCloseBtn:hover { border-color: var(--accent); color: var(--accent); }
+    .profile-editor-content .modal-header { position: sticky; top: -24px; z-index: 20; background: var(--card-bg); margin: -24px -24px 18px; padding: 16px 24px; border-bottom: 1px solid var(--card-border); }
     .autosave-status { display: block; min-height: 15px; margin-top: 3px; color: var(--text-muted); font-size: 10px; font-weight: 500; }
     .autosave-status.error { color: #f87171; }
     .form-group { margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
@@ -289,6 +293,7 @@
       <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
       <div id="statusPill" class="status-pill inactive" role="status" aria-live="polite">LS Inactive</div>
       <button id="addProfileBtn" class="btn btn-primary header-btn" type="button">Add Profile</button>
+      <button id="scaleNowBtn" class="btn btn-primary header-btn" type="button" title="Scale whatever window is focused 5 seconds from now">Scale Now (5s)</button>
     </div>
   </header>
 
@@ -484,7 +489,7 @@
           <h3 id="processModalTitle" style="color:var(--accent); margin-bottom:4px">Add Profile</h3>
           <p class="item-sub">Choose a running application or start with a blank profile.</p>
         </div>
-        <button id="closeProcessModalBtn" type="button" aria-label="Close" style="background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer">&times;</button>
+        <button id="closeProcessModalBtn" type="button" aria-label="Close" style="font-size:20px; cursor:pointer">&times;</button>
       </div>
       <div class="process-picker-toolbar">
         <label style="font-size:12px; color:var(--text-muted); display:flex; align-items:center; gap:6px; cursor:pointer">
@@ -507,7 +512,7 @@
     <div class="modal-content profile-editor-content">
       <div class="modal-header">
         <div><h3 id="modalTitle" style="color: var(--accent);">Create Profile</h3><span id="profileAutosaveStatus" class="autosave-status">Changes save automatically.</span></div>
-        <button id="closeModalBtn" style="background:none; border:none; color: var(--text-muted); font-size: 20px; cursor:pointer;">&times;</button>
+        <button id="closeModalBtn" aria-label="Close" style="font-size: 20px; cursor:pointer;">&times;</button>
       </div>
       <form id="profileForm">
         <input type="hidden" id="profileId">
@@ -727,7 +732,7 @@
 
   <div id="reshadeProfileModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="reshadeProfileModalTitle">
     <div class="modal-content reshade-profile-content">
-      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Choose provider packs, then individual shader files just like ReShade Setup.</p><span id="reshadeAutosaveStatus" class="autosave-status">Enter a name to begin autosaving.</span></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button></div>
+      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Choose provider packs, then individual shader files just like ReShade Setup.</p><span id="reshadeAutosaveStatus" class="autosave-status">Enter a name to begin autosaving.</span></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="font-size:20px;cursor:pointer">&times;</button></div>
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
@@ -742,7 +747,7 @@
        prompts render inside the dashboard instead of a browser popup. -->
   <div id="confirmModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
     <div class="modal-content" style="width:440px">
-      <div class="modal-header"><h3 id="confirmModalTitle" style="color: var(--accent);">Confirm</h3><button id="confirmModalCloseBtn" type="button" aria-label="Close" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">&times;</button></div>
+      <div class="modal-header"><h3 id="confirmModalTitle" style="color: var(--accent);">Confirm</h3><button id="confirmModalCloseBtn" type="button" aria-label="Close" style="font-size:20px;cursor:pointer">&times;</button></div>
       <p id="confirmModalMessage" class="item-sub" style="white-space:normal;line-height:1.5"></p>
       <div class="modal-actions">
         <button id="confirmModalCancelBtn" class="btn btn-secondary" type="button">Cancel</button>
@@ -791,6 +796,7 @@
     let rtssDetectionChecks = 0;
     let generalSettingsReady = false;
     let generalSettingsSaveTimer = null;
+    let generalSettingsSaveInFlight = false;
     const addonDetectionTimers = {};
     const addonDetectionChecks = {};
     const addonAutoImportInFlight = new Set();
@@ -957,12 +963,16 @@
             profiles = msg.profiles || [];
             invalidateProfileDetails();
             activeProfileId = msg.activeProfileId;
-            controlSettings = msg.controlSettings || controlSettings;
             renderProcesses();
             renderProfiles();
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
-            renderControlSettings();
+            // Visual state is authoritative while a general-settings save is
+            // awaiting its ack; background pushes must not flip toggles back.
+            if (!generalSettingsSaveInFlight) {
+              controlSettings = msg.controlSettings || controlSettings;
+              renderControlSettings();
+            }
           } else if (msg.type === 'PROFILE_SAVED') {
             if (!msg.requestId || msg.requestId === activeProfileSaveRequestId) {
               profileSaveInFlight = false;
@@ -1019,6 +1029,7 @@
             addonAutoImportInFlight.clear();
             profileSaveInFlight = false;
             reshadeSaveInFlight = false;
+            generalSettingsSaveInFlight = false;
             if (document.getElementById('profileModal').classList.contains('active')) {
               const status = document.getElementById('profileAutosaveStatus');
               status.textContent = `Not saved: ${errorText}`;
@@ -1155,12 +1166,14 @@
             document.getElementById('companionUpdateText').textContent = `Installer for ${msg.version} launched. Follow its prompts; Companion may close during installation.`;
             document.getElementById('companionUpdateStatusText').textContent = `Installer for ${msg.version} launched. Follow the Windows prompts.`;
           } else if (msg.type === 'CONTROL_SETTINGS_SAVED') {
+            generalSettingsSaveInFlight = false;
             controlSettings = msg.controlSettings;
             renderControlSettings();
             document.getElementById('controlSettingsStatus').textContent = msg.synchronized
               ? (controlSettings.overrideLosslessHotkey ? 'Saved. Hotkey override active.' : 'Saved. Lossless Scaling hotkey loaded.')
               : 'Saved, but the Lossless Scaling hotkey could not be read.';
           } else if (msg.type === 'GENERAL_SETTINGS' || msg.type === 'GENERAL_SETTINGS_SAVED') {
+            generalSettingsSaveInFlight = false;
             controlSettings = msg.controlSettings;
             document.getElementById('runAtStartup').checked = !!msg.runAtStartup;
             renderControlSettings();
@@ -1172,6 +1185,10 @@
                   ? (controlSettings.overrideLosslessHotkey ? 'Hotkey override active.' : 'Lossless Scaling hotkey loaded.')
                   : 'Lossless Scaling hotkey unavailable.');
             }
+          } else if (msg.type === 'SCALE_NOW_SCHEDULED') {
+            startScaleNowCountdown(Number(msg.delaySeconds) || 5);
+            document.getElementById('controlSettingsStatus').textContent =
+              'Scale Now scheduled — focus the target window.';
           } else if (msg.type === 'RTSS_STATUS') {
             controlSettings = controlSettings || {};
             controlSettings.rtssStatus = msg.status || {};
@@ -1280,6 +1297,20 @@
 
     function renderControlSettings() {
       if (!controlSettings) return;
+      // Visual state is authoritative: never overwrite the control the user
+      // is interacting with, even if a background push slips through.
+      const focused = document.activeElement;
+      const focusedId = focused && focused.id ? focused.id : null;
+      const focusedChecked = focused && focused.type === 'checkbox' ? focused.checked : null;
+      const focusedValue = focused && (focused.tagName === 'SELECT' || focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA') ? focused.value : null;
+      const restoreFocused = () => {
+        if (!focusedId) return;
+        const element = document.getElementById(focusedId);
+        if (!element) return;
+        if (focusedChecked !== null && element.type === 'checkbox') element.checked = focusedChecked;
+        else if (focusedValue !== null && element.value !== focusedValue && [...element.options || []].some(option => option.value === focusedValue)) element.value = focusedValue;
+        else if (focusedValue !== null && !element.options) element.value = focusedValue;
+      };
       document.getElementById('smartAutoScaleEnabled').checked = controlSettings.smartAutoScaleEnabled !== false;
       document.getElementById('overrideLosslessHotkey').checked = !!controlSettings.overrideLosslessHotkey;
       const overrideHotkey = controlSettings.overrideHotkey || controlSettings.hotkey || { modifiers: ['ctrl', 'alt'], key: 's' };
@@ -1328,6 +1359,7 @@
       renderRtssProfileAvailability();
       renderRtssModeSettings();
       renderDefaultRtssModeSettings();
+      restoreFocused();
     }
 
     function renderOverrideHotkeySettings() {
@@ -1349,13 +1381,28 @@
     function renderGpuRoutingSettings() {
       const inventory = controlSettings.gpuInventory || { gpus: [], displays: [], hasNvidia: false };
       const select = document.getElementById('preferredScalingGpu');
-      const selected = controlSettings.autoRouteGpuToDisplay
-        ? '__auto__'
-        : (controlSettings.preferredScalingGpuDeviceId || '__auto__');
+      // Friendly name is authoritative; deviceId is only a resolved hint.
+      // A save is now sent immediately, so any in-flight ack guards the
+      // dropdown; focus is a second backstop for races.
+      const pendingSave = typeof generalSettingsSaveInFlight !== 'undefined' && generalSettingsSaveInFlight;
+      const focused = typeof document !== 'undefined' && document.activeElement === select;
+      const pendingValue = select.value;
+      let selected = '__auto__';
+      if (!controlSettings.autoRouteGpuToDisplay) {
+        selected = controlSettings.preferredScalingGpuName || '__auto__';
+        if (selected === '__auto__' && controlSettings.preferredScalingGpuDeviceId) {
+          const legacy = (inventory.gpus || []).find(gpu => gpu.deviceId === controlSettings.preferredScalingGpuDeviceId);
+          if (legacy) selected = legacy.name || '__auto__';
+        }
+      }
+      if ((pendingSave || focused) && pendingValue && pendingValue !== '__auto__') {
+        selected = pendingValue;
+      }
       select.innerHTML = '<option value="__auto__">Match Application Monitor GPU</option>';
       (inventory.gpus || []).forEach(gpu => {
         const option = document.createElement('option');
-        option.value = gpu.deviceId || '';
+        option.value = gpu.name || '';
+        option.dataset.deviceId = gpu.deviceId || '';
         const displays = (gpu.connectedDisplays || []).join(', ');
         option.textContent = `${gpu.name || 'Unknown GPU'}${displays ? ` - ${displays}` : ''}`;
         select.appendChild(option);
@@ -1363,6 +1410,7 @@
       if (![...select.options].some(option => option.value === selected)) {
         const option = document.createElement('option');
         option.value = selected;
+        option.dataset.deviceId = controlSettings.preferredScalingGpuDeviceId || '';
         option.textContent = `${controlSettings.preferredScalingGpuName || 'Saved GPU'} (unavailable — select a detected GPU)`;
         select.appendChild(option);
       }
@@ -2336,10 +2384,12 @@
         ? 'match the application monitor GPU'
         : (() => {
             const selected = (inventory.gpus || []).find(
+              gpu => gpu.name === controlSettings.preferredScalingGpuName
+            ) || (inventory.gpus || []).find(
               gpu => gpu.deviceId === controlSettings.preferredScalingGpuDeviceId
             );
-            return selected ? selected.name : (controlSettings?.preferredScalingGpuDeviceId
-              ? `${controlSettings.preferredScalingGpuName || 'Saved GPU'} (unavailable)` : 'automatic GPU selection');
+            return selected ? selected.name : (controlSettings?.preferredScalingGpuName
+              ? `${controlSettings.preferredScalingGpuName} (unavailable)` : 'automatic GPU selection');
           })();
       preferredGpu.replaceChildren();
       preferredGpu.appendChild(new Option(`Follow General Settings (${globalGpu})`, '0'));
@@ -2797,6 +2847,29 @@
       requestProcesses();
       setTimeout(() => document.getElementById('procSearch').focus(), 0);
     };
+    let scaleNowCountdown = null;
+    document.getElementById('scaleNowBtn').onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'SCALE_NOW', delaySeconds: 5 }));
+    };
+    function startScaleNowCountdown(seconds) {
+      const button = document.getElementById('scaleNowBtn');
+      if (scaleNowCountdown) clearInterval(scaleNowCountdown);
+      let remaining = Math.max(1, Math.round(seconds));
+      button.disabled = true;
+      button.textContent = `Scaling in ${remaining}…`;
+      scaleNowCountdown = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(scaleNowCountdown);
+          scaleNowCountdown = null;
+          button.disabled = false;
+          button.textContent = 'Scale Now (5s)';
+          return;
+        }
+        button.textContent = `Scaling in ${remaining}…`;
+      }, 1000);
+    }
     document.getElementById('closeProcessModalBtn').onclick = closeProcessPicker;
     processModal.onclick = event => {
       if (event.target === processModal) closeProcessPicker();
@@ -3004,8 +3077,12 @@
       const deactivatesRtss = !!(controlSettings && controlSettings.rtssFrameLimitingEnabled) &&
         (!rtssEnabled || (controlSettings.rtssInstallPath || '').toLowerCase() !== rtssPath.toLowerCase());
       const proceedWithSave = () => {
-        const gpuSelection = document.getElementById('preferredScalingGpu').value;
-        document.getElementById('controlSettingsStatus').textContent = 'Saving automatically...';
+        const gpuSelect = document.getElementById('preferredScalingGpu');
+        const gpuSelection = gpuSelect.value;
+        const gpuOption = gpuSelect.selectedOptions && gpuSelect.selectedOptions[0];
+        const gpuDeviceHint = (gpuOption && gpuOption.dataset && gpuOption.dataset.deviceId) || '';
+        document.getElementById('controlSettingsStatus').textContent = 'Saving...';
+        generalSettingsSaveInFlight = true;
         ws.send(JSON.stringify({
           type: 'SAVE_GENERAL_SETTINGS',
           runAtStartup: document.getElementById('runAtStartup').checked,
@@ -3013,7 +3090,8 @@
           overrideLosslessHotkey: document.getElementById('overrideLosslessHotkey').checked,
           overrideHotkey: overrideHotkeyPayload(),
           defaultProfileAutoScale: document.getElementById('smartAutoScaleEnabled').checked,
-          preferredScalingGpuDeviceId: gpuSelection === '__auto__' ? '' : gpuSelection,
+          preferredScalingGpuDeviceId: gpuSelection === '__auto__' ? '' : gpuDeviceHint,
+          preferredScalingGpuName: gpuSelection === '__auto__' ? '' : gpuSelection,
           autoRouteGpuToDisplay: gpuSelection === '__auto__',
           nvidiaRtxHdrEnabled: false,
           reshadeHdrPeakNits: document.getElementById('reshadeHdrPeakNits').value === ''
@@ -3050,13 +3128,17 @@
       proceedWithSave();
     }
 
-    function scheduleGeneralSettingsSave(delay = 650) {
+    function scheduleGeneralSettingsSave(delay = 0) {
+      // Visual state is authoritative: no debounce. Send immediately so a
+      // background FULL_DATA_UPDATE can never overwrite a pending edit.
+      // The in-flight flag (cleared on ack/ERROR) tells status pushes to
+      // leave general settings alone until the server confirms.
       if (!generalSettingsReady) return;
-      if (generalSettingsSaveTimer) clearTimeout(generalSettingsSaveTimer);
-      generalSettingsSaveTimer = setTimeout(() => {
+      if (generalSettingsSaveTimer) {
+        clearTimeout(generalSettingsSaveTimer);
         generalSettingsSaveTimer = null;
-        saveGeneralSettings();
-      }, delay);
+      }
+      saveGeneralSettings();
     }
 
     [

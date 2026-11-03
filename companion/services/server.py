@@ -40,6 +40,7 @@ from .release_providers import ReleaseManager
 from .startup_manager import StartupTaskManager
 from .process_lasso_monitor import ProcessLassoLogTailer
 from .rtss_manager import RtssProfileManager
+from .gpu_selections import match_device
 from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
 from .input_simulator import InputSimulator
@@ -334,6 +335,7 @@ class CompanionWebSocketServer:
                 "SELECT_DLSSNR_RUNTIME",
                 "SAVE_CONTROL_SETTINGS",
                 "SAVE_GENERAL_SETTINGS",
+                "SCALE_NOW",
                 "RESET_RTSS_CALIBRATION",
                 "START_RTSS_MANUAL_CALIBRATION",
                 "REVERT_ALL_CHANGES",
@@ -408,6 +410,21 @@ class CompanionWebSocketServer:
 
             if msg_type == "MANUAL_TRIGGER":
                 await self.handle_manual_trigger(msg)
+                return
+
+            if msg_type == "SCALE_NOW":
+                try:
+                    delay = float(msg.get("delaySeconds", 5.0))
+                except (TypeError, ValueError):
+                    delay = 5.0
+                scheduled = await asyncio.to_thread(
+                    self.automation.scale_focused_after_delay, delay
+                )
+                await websocket.send(json.dumps({
+                    "type": "SCALE_NOW_SCHEDULED",
+                    "delaySeconds": scheduled,
+                }))
+                await self.broadcast_state()
                 return
 
             if msg_type == "GET_STATE_AND_PROCESSES":
@@ -793,17 +810,26 @@ class CompanionWebSocketServer:
                 smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
                 gpu_inventory = self.automation.gpu_router.detect()
                 requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
-                detected_gpu_ids = {
-                    str(item.get("deviceId") or "").casefold()
-                    for item in gpu_inventory.get("gpus", [])
-                }
                 requested_gpu_id = str(
                     msg.get("preferredScalingGpuDeviceId") or ""
                 ).strip() or None
+                requested_gpu_name = str(
+                    msg.get("preferredScalingGpuName") or ""
+                ).strip() or None
                 if requested_auto_route:
                     requested_gpu_id = None
-                elif requested_gpu_id and requested_gpu_id.casefold() not in detected_gpu_ids:
-                    raise ValueError("Select a currently detected GPU")
+                    requested_gpu_name = None
+                elif requested_gpu_name or requested_gpu_id:
+                    resolved = match_device(
+                        gpu_inventory.get("gpus", []),
+                        requested_gpu_id,
+                        requested_gpu_name,
+                        gpu=True,
+                    )
+                    if resolved is None:
+                        raise ValueError("Select a currently detected GPU")
+                    requested_gpu_id = str(resolved.get("deviceId") or "")
+                    requested_gpu_name = str(resolved.get("name") or "")
                 requested_rtx_hdr = bool(msg.get("nvidiaRtxHdrEnabled", False))
                 if requested_rtx_hdr and not gpu_inventory.get("hasNvidia"):
                     raise ValueError("NVIDIA RTX HDR requires a detected NVIDIA GPU")
@@ -947,10 +973,7 @@ class CompanionWebSocketServer:
                 self.config.addon_manager_enabled = requested_addon_manager_enabled
                 self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
-                self.config.preferred_scaling_gpu_name = next(
-                    (gpu.get("name") for gpu in gpu_inventory.get("gpus", [])
-                     if str(gpu.get("deviceId") or "").casefold() == str(requested_gpu_id or "").casefold()), None
-                )
+                self.config.preferred_scaling_gpu_name = requested_gpu_name
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.reshade_hdr_peak_nits = requested_reshade_peak
