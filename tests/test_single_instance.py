@@ -1,11 +1,16 @@
 import unittest
 import json
 import os
+import uuid
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
 from companion.services.single_instance import SingleInstanceGuard
+
+
+def _unique(prefix="test"):
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
 class SingleInstanceGuardTests(unittest.TestCase):
@@ -28,27 +33,31 @@ class SingleInstanceGuardTests(unittest.TestCase):
                 owner.release()
 
     def test_second_acquire_fails_while_first_is_held(self):
-        first = SingleInstanceGuard()
+        name = _unique("hold")
+        first = SingleInstanceGuard(name)
         self.assertTrue(first.acquire())
         try:
-            second = SingleInstanceGuard()
+            second = SingleInstanceGuard(name)
             self.assertFalse(second.acquire())
             self.assertIsNotNone(second.holder_pid)
         finally:
             first.release()
 
     def test_acquire_succeeds_after_release(self):
-        guard = SingleInstanceGuard()
+        name = _unique("release")
+        guard = SingleInstanceGuard(name)
         self.assertTrue(guard.acquire())
         guard.release()
-        again = SingleInstanceGuard()
+        again = SingleInstanceGuard(name)
         self.assertTrue(again.acquire())
         again.release()
 
     def test_simulation_and_production_use_separate_guards(self):
         production = SingleInstanceGuard("companion")
         simulation = SingleInstanceGuard("simulation-test")
-        self.assertTrue(production.acquire())
+        self.assertNotEqual(production.mutex_name, simulation.mutex_name)
+        if not production.acquire():
+            self.skipTest("LS Companion is already running; production mutex is held")
         try:
             self.assertTrue(simulation.acquire())
             simulation.release()

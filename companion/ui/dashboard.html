@@ -84,7 +84,6 @@
     .profiles-panel .profile-list { max-height: none; overflow: visible; }
     .process-picker-content { width: 720px; }
     .process-picker-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .debug-settings-action { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--card-border); padding: 18px 4px 0; }
     .addon-primary-stack { display: grid; gap: 12px; margin-bottom: 12px; }
     .addon-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .addon-card { display: flex; flex-direction: column; gap: 12px; min-height: 190px; padding: 16px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--surface-bg); }
@@ -475,10 +474,6 @@
         <div id="diagnosticResults" class="diagnostic-results" aria-live="polite"></div>
       </div>
     </details>
-    <div class="debug-settings-action">
-      <div><strong style="font-size:13px">Debug menu</strong></div>
-      <button id="openConfigFolderBtn" class="btn btn-danger" type="button">Debug: Open Configuration Folder</button>
-    </div>
     </div>
   </div>
 
@@ -1198,8 +1193,6 @@
               clearInterval(rtssDetectionTimer);
               rtssDetectionTimer = null;
             }
-          } else if (msg.type === 'CONFIG_FOLDER_OPENED') {
-            document.getElementById('configFolderStatus').textContent = `Opened ${msg.path}`;
           } else if (msg.type === 'GENERAL_PATH_SELECTED') {
             if (!msg.path) return;
             if (msg.kind === 'program_executable') {
@@ -3222,10 +3215,6 @@
     };
     document.getElementById('openDiagnosticsFolderBtn').onclick = () => {
       ws.send(JSON.stringify({ type: 'OPEN_DIAGNOSTICS_FOLDER' }));
-    };
-    document.getElementById('openConfigFolderBtn').onclick = () => {
-      document.getElementById('configFolderStatus').textContent = 'Opening configuration folder...';
-      ws.send(JSON.stringify({ type: 'OPEN_CONFIG_FOLDER' }));
     };
     document.querySelectorAll('[data-addon-check]').forEach(button => {
       button.onclick = () => {

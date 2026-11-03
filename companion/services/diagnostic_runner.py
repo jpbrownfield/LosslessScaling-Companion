@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -30,6 +31,8 @@ from .deployment_manager import DeploymentManager
 from .input_simulator import InputSimulator
 from .graphics_source_importer import GraphicsSourceImporter
 from .reshade_manager import ReshadeManager
+
+logger = logging.getLogger("LSCompanion.Diagnostics")
 
 
 class DiagnosticRunner:
@@ -293,32 +296,46 @@ class DiagnosticRunner:
             )
         stopped = True
         restarted = not should_be_running
+        manifest = None
         try:
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(
                     False, reason="experimental_environment_reset", force=True,
                     park_runtime_on_stop=False,
                 )
-            if self.server.process_watcher.check_is_lossless_scaling_running():
-                stopped = self.server.process_watcher.stop_lossless_scaling()
+            self._ensure_lossless_stopped(purpose="folder reset")
+            stopped = not self.server.process_watcher.check_is_lossless_scaling_running()
             if not stopped:
                 raise RuntimeError("Lossless Scaling could not be stopped for folder reset")
-            manifest = self.server.automation.deployment_manager.apply(
-                profile_id=None,
-                lossless_scaling_exe=str(executable),
-                files=[],
-            )
+            for attempt in range(3):
+                try:
+                    manifest = self.server.automation.deployment_manager.apply(
+                        profile_id=None,
+                        lossless_scaling_exe=str(executable),
+                        files=[],
+                    )
+                    break
+                except OSError as error:
+                    if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 2:
+                        raise
+                    logger.warning(
+                        "Folder reset hit a locked file; re-stopping LS and retrying (%d/3)",
+                        attempt + 1,
+                    )
+                    time.sleep(2.0)
+                    self._ensure_lossless_stopped(purpose="folder reset")
             self.server.state.current_active_profile = None
             self.server.process_watcher.invalidate_foreground_cache()
             if should_be_running:
                 restarted = self.server.process_watcher.launch_lossless_scaling(force=True)
-            passed = stopped and restarted and not manifest.get("files")
+            remaining = (manifest or {}).get("files", [])
+            passed = stopped and restarted and not remaining
             return self._result(
                 "pass" if passed else "fail",
                 "Managed add-on files were removed, original files restored, and the prior LS running state restored."
                 if passed else "The Lossless Scaling folder reset did not fully complete.",
                 directory=self._path(executable.parent),
-                managedFilesRemaining=len(manifest.get("files", [])),
+                managedFilesRemaining=len(remaining),
                 priorRunningState=should_be_running,
                 stopped=stopped,
                 restarted=restarted,
@@ -608,6 +625,30 @@ class DiagnosticRunner:
         if watcher.check_is_lossless_scaling_running():
             raise RuntimeError("Lossless Scaling restarted during cleanup; DLL/settings restoration was not attempted")
 
+    def _ensure_lossless_stopped(self, *, purpose: str, timeout: float = 20.0) -> None:
+        """Stop LS and poll until no process remains; force-kill stragglers.
+
+        stop_lossless_scaling() already terminates then kills (we run
+        elevated), but teardown/AV can lag behind its return. Poll until the
+        exe path is truly gone so locked-DLL replaces do not WinError 5.
+        """
+        watcher = self.server.process_watcher
+        deadline = time.monotonic() + timeout
+        while True:
+            if not watcher.check_is_lossless_scaling_running():
+                return
+            watcher.stop_lossless_scaling()
+            if not watcher.check_is_lossless_scaling_running():
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Lossless Scaling could not be stopped for {purpose}"
+                )
+            logger.warning(
+                "Lossless Scaling still present; re-killing before %s", purpose
+            )
+            time.sleep(0.5)
+
     def _live_addon_deployment_behavior(self) -> Dict:
         if self._live_addon_result is None:
             self._live_addon_result = self._run_live_addon_deployment_behavior()
@@ -663,8 +704,11 @@ class DiagnosticRunner:
             hwnd = find_largest_window(workload_process.pid, timeout=12.0)
             if not focus_window(hwnd):
                 raise RuntimeError("Windows did not grant the benchmark foreground ownership")
-            if was_running and not self.server.process_watcher.stop_lossless_scaling():
-                raise RuntimeError("Lossless Scaling could not be stopped for live deployment")
+            if was_running:
+                try:
+                    self._ensure_lossless_stopped(purpose="live deployment")
+                except RuntimeError as error:
+                    raise RuntimeError(f"Lossless Scaling could not be stopped for live deployment: {error}")
             for profile in profiles:
                 attempt = {"profile": profile.name, "status": "fail", "files": []}
                 lossless_delta: Dict[str, str] = {}
@@ -682,8 +726,10 @@ class DiagnosticRunner:
                 module_inspection_error: Optional[str] = None
                 try:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
-                        if not self.server.process_watcher.stop_lossless_scaling():
-                            raise RuntimeError("Lossless Scaling could not be stopped between add-on tests")
+                        try:
+                            self._ensure_lossless_stopped(purpose="add-on test rotation")
+                        except RuntimeError as error:
+                            raise RuntimeError(f"Lossless Scaling could not be stopped between add-on tests: {error}")
                     route = self.server.automation._desired_gpu_route(profile, hwnd)
                     attempt["requestedGpuRoute"] = route
                     route_args = (profile.lossless_profile_title, int(route.get("lsGpuId", 0)), int(route.get("lsDisplayId", 0)))

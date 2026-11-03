@@ -362,7 +362,8 @@ class GpuRouter:
         for gpu in inventory:
             if device_id and gpu["deviceId"].casefold() == device_id.casefold():
                 return {"gpuDeviceId": gpu["deviceId"], "gpuName": gpu["name"], "lsGpuId": gpu["lsGpuId"], "lsDisplayId": 0, "deviceName": ""}
-        raise RuntimeError("The selected default scaling GPU is unavailable; choose a detected GPU in General Settings instead of silently using Auto")
+        available = ", ".join(f"{gpu.get('name')} [{gpu.get('deviceId')}]" for gpu in inventory) or "none detected"
+        raise RuntimeError(f"The selected default scaling GPU is unavailable (requested id={device_id!r} name={name!r}; detected: {available}); choose a detected GPU in General Settings instead of silently using Auto")
 
     def route_for_ls_ids(self, gpu_id: int, display_id: int) -> Dict:
         """Resolve LS numeric IDs back to the corresponding Windows devices."""
