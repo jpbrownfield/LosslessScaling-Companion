@@ -31,6 +31,7 @@ def next_version(value: str) -> str:
     return f"{number // 100}.{number // 10 % 10}.{number % 10}"
 
 
+
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace"
