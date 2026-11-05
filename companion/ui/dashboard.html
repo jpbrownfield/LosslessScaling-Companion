@@ -355,6 +355,8 @@
             <p class="item-sub" style="white-space:normal;margin-bottom:10px">Enabled for every profile. Its own window starts hidden; use <strong>Show Add-on Menu</strong> from the Companion tray while scaling.</p>
             <div class="form-group checkbox-group smart-master-setting section-primary-toggle"><input id="smartAutoScaleEnabled" type="checkbox" checked><label for="smartAutoScaleEnabled">Automatic Profile Scaling Enabled</label></div>
             <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize Other Windows on the Scaled Monitor (for Dual GPU PCIe Bandwidth Savings)</label></div>
+            <div class="form-group checkbox-group"><input id="overlayIndicatorEnabled" type="checkbox" checked><label for="overlayIndicatorEnabled">Show On-Screen Scaling Indicator</label></div>
+            <p class="item-sub" style="white-space:normal;margin-bottom:8px">Puts a small terminal-style log in the corner of the scaled window showing what the companion is doing (profile armed, hotkey received, scaling confirmed), plus a pulsing blue frame while scaling starts and a maroon frame while it is active. Click-through: it never steals focus.</p>
             <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey</label></div>
             <div id="overrideHotkeySettings" class="form-row hotkey-settings">
               <div class="form-group"><label for="overrideHotkeyKey">Activation Key</label><input id="overrideHotkeyKey" class="activation-key-input" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
@@ -1319,6 +1321,7 @@
       renderOverrideHotkeySettings();
       document.getElementById('snapNearFullscreenWindowsToMonitor').checked = controlSettings.snapNearFullscreenWindowsToMonitor !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
+    document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
       renderGpuRoutingSettings();
       const reshadeHdr = controlSettings.reshadeHdr || {};
       const reshadeHdrInput = document.getElementById('reshadeHdrPeakNits');
@@ -3094,6 +3097,7 @@
           addonManagerEnabled: document.getElementById('addonManagerEnabled').checked,
           snapNearFullscreenWindowsToMonitor: document.getElementById('snapNearFullscreenWindowsToMonitor').checked,
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
+        overlayIndicatorEnabled: document.getElementById('overlayIndicatorEnabled').checked,
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
           processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
           rtssFrameLimitingEnabled: rtssEnabled,

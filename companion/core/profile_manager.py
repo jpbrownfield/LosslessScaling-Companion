@@ -200,12 +200,11 @@ class ProfileManager:
             if browser.target_processes != expected_targets:
                 browser.target_processes = expected_targets
                 changed = True
-        # The GPU dropdown always represents exactly one routing mode. Resolve
-        # legacy ambiguous states while retaining an explicitly selected GPU.
-        if config.auto_route_gpu_to_display and config.preferred_scaling_gpu_device_id:
-            config.preferred_scaling_gpu_device_id = None
-            changed = True
-        elif not config.auto_route_gpu_to_display and not config.preferred_scaling_gpu_device_id:
+        # The GPU dropdown always has a defined routing mode. An explicit
+        # preferred GPU now coexists with auto-routing as the default route
+        # (see AutomationController._desired_gpu_route); only seed Auto mode
+        # when no GPU was ever selected.
+        if not config.auto_route_gpu_to_display and not config.preferred_scaling_gpu_device_id:
             config.auto_route_gpu_to_display = True
             changed = True
         if config.default_profile_auto_scale != config.disable_native_auto_scale:

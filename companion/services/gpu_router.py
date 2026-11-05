@@ -53,6 +53,84 @@ def _vendor(device_id: str, name: str) -> str:
 
 
 _DISPLAY_PATH_RE = re.compile(r"^\\\\\.\\DISPLAY\d+$", re.IGNORECASE)
+_VEN_DEV_RE = re.compile(r"VEN_([0-9A-Fa-f]{4}).*?DEV_([0-9A-Fa-f]{4})",
+                        re.IGNORECASE)
+
+
+def pci_ven_dev(text: object) -> Optional[tuple[str, str]]:
+    """Stable PCI identity (vendor, device) for matching across enumerations."""
+    if not isinstance(text, str):
+        return None
+    match = _VEN_DEV_RE.search(text)
+    if not match:
+        return None
+    return (match.group(1).upper(), match.group(2).upper())
+
+
+def _ven_dev(text: str) -> Optional[tuple[str, str]]:
+    return pci_ven_dev(text)
+
+
+def _normalize_gpu_map(raw: object) -> Dict[str, int]:
+    """Normalize the LS GPU-ID calibration map (dict or zero-arg provider)."""
+    if callable(raw):
+        try:
+            raw = raw()
+        except Exception:
+            return {}
+    result: Dict[str, int] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            try:
+                slot = int(value)
+            except (TypeError, ValueError):
+                continue
+            if slot >= 1:
+                result[str(key).strip().casefold()] = slot
+    return result
+
+
+def _ls_id_for_device(device_id: str, mapping: Dict[str, int]) -> Optional[int]:
+    """Look up a calibrated LS GPU ID: exact PCI ID first, VEN/DEV fallback."""
+    if not mapping:
+        return None
+    exact = mapping.get((device_id or "").strip().casefold())
+    if exact is not None:
+        return exact
+    want = _ven_dev(device_id or "")
+    if want is None:
+        return None
+    for key, slot in mapping.items():
+        if _ven_dev(key) == want:
+            return slot
+    return None
+
+
+def inventory_fingerprint(inventory: Dict) -> str:
+    """Stable topology hash: sorted GPU PCI IDs + display attachments.
+
+    Recalibration is required when this changes (GPU added/removed, driver
+    reorder, monitor moved to another adapter). Deliberately insensitive to
+    LS numeric IDs so a stale map cannot mask as fresh.
+    """
+    import hashlib
+    import json
+
+    gpus = sorted(
+        str(gpu.get("deviceId") or "").upper()
+        for gpu in inventory.get("gpus", [])
+    )
+    displays = sorted(
+        "|".join((
+            str(item.get("deviceName") or "").upper(),
+            str(item.get("gpuDeviceId") or "").upper(),
+            "P" if item.get("primary") else "",
+        ))
+        for item in inventory.get("displays", [])
+    )
+    payload = json.dumps({"gpus": gpus, "displays": displays},
+                         separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
 class GpuRouter:
@@ -63,9 +141,14 @@ class GpuRouter:
         display_enumerator: Optional[Callable[[], List[Dict]]] = None,
         window_device_resolver: Optional[Callable[[int], Optional[str]]] = None,
         monitor_enumerator: Optional[Callable[[str], List[Dict]]] = None,
+        *,
+        ls_gpu_id_map: Optional[object] = None,
+        ls_display_id_map: Optional[object] = None,
     ):
         self._display_enumerator = display_enumerator or self._enumerate_windows_displays
         self._window_device_resolver = window_device_resolver or self._window_display_device
+        self._ls_gpu_id_map = ls_gpu_id_map
+        self._ls_display_id_map = ls_display_id_map
         if monitor_enumerator is not None:
             self._monitor_enumerator = monitor_enumerator
         elif display_enumerator is None:
@@ -278,6 +361,7 @@ class GpuRouter:
         displays: List[Dict] = []
         gpus: List[Dict] = []
         gpu_by_device: Dict[str, Dict] = {}
+        calibrated = _normalize_gpu_map(self._ls_gpu_id_map)
         for display_index, raw in enumerate(self._display_enumerator(), start=1):
             adapter_name = str(raw.get("deviceName") or "").strip()
             adapter_label = str(raw.get("name") or "").strip()
@@ -291,7 +375,8 @@ class GpuRouter:
                     "deviceId": device_id,
                     "name": adapter_label,
                     "vendor": _vendor(device_id, adapter_label),
-                    "lsGpuId": len(gpus) + 1,
+                    # Resolved below: calibrated LS IDs first, GDI order fills gaps.
+                    "lsGpuId": 0,
                     "connectedDisplays": [],
                 }
                 gpu_by_device[key] = gpu
@@ -318,8 +403,9 @@ class GpuRouter:
                 "name": display_name,
                 "gpuName": gpu["name"],
                 "gpuDeviceId": gpu["deviceId"],
-                "lsGpuId": gpu["lsGpuId"],
-                "lsDisplayId": display_index,
+                # Resolved from the calibrated map below; GDI order fills gaps.
+                "lsGpuId": 0,
+                "lsDisplayId": 0,
                 "primary": bool(raw.get("primary")),
             }
             displays.append(display)
@@ -327,6 +413,45 @@ class GpuRouter:
             for extra in friendly_monitors[1:]:
                 if extra not in gpu["connectedDisplays"]:
                     gpu["connectedDisplays"].append(extra)
+        # Apply calibrated LS GPU IDs. Explicit mappings are performance-
+        # validated recipes and may legitimately repeat (several Windows
+        # displays can share one working LS route); only auto-assigned gap
+        # fillers must stay unique.
+        for gpu in gpus:
+            slot = _ls_id_for_device(gpu["deviceId"], calibrated)
+            if slot is not None:
+                gpu["lsGpuId"] = slot
+        used_ids = {gpu["lsGpuId"] for gpu in gpus if gpu["lsGpuId"]}
+        next_id = 1
+        for gpu in gpus:
+            if not gpu["lsGpuId"]:
+                while next_id in used_ids:
+                    next_id += 1
+                gpu["lsGpuId"] = next_id
+                used_ids.add(next_id)
+        # Apply calibrated LS display IDs the same way; LS counts outputs
+        # (including inactive virtual ones) that GDI never shows, so its
+        # numbering can shift independently of the GPU numbering. Recipes may
+        # repeat: several Windows displays can share one working LS output.
+        display_map = _normalize_gpu_map(self._ls_display_id_map)
+        for display in displays:
+            slot = display_map.get(
+                str(display.get("deviceName") or "").strip().casefold())
+            if slot is not None:
+                display["lsDisplayId"] = slot
+        used_displays = {d["lsDisplayId"] for d in displays if d["lsDisplayId"]}
+        next_display = 1
+        for display in displays:
+            if not display["lsDisplayId"]:
+                while next_display in used_displays:
+                    next_display += 1
+                display["lsDisplayId"] = next_display
+                used_displays.add(next_display)
+        for display in displays:
+            owner = gpu_by_device.get(
+                str(display.get("gpuDeviceId") or "").casefold())
+            if owner is not None:
+                display["lsGpuId"] = owner["lsGpuId"]
         return {
             "gpus": gpus,
             "displays": displays,

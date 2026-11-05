@@ -1,0 +1,12 @@
+{"t": 1793895830.369885, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895830.370867, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1316292, "pulse": false}}
+{"t": 1793895830.6202936, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895832.3739479, "payload": null}
+{"t": 1793895832.6246636, "payload": null}
+{"t": 1793895832.8752182, "payload": null}
+{"t": 1793895833.1256168, "payload": null}
+{"t": 1793895833.3763163, "payload": {"lines": [], "border": "pending", "border_anchor_hwnd": 1316292, "anchor_hwnd": 1316292, "pulse": false}}
+{"t": 1793895833.6271563, "payload": {"lines": [], "border": "pending", "border_anchor_hwnd": 1316292, "anchor_hwnd": 1316292, "pulse": true}}
+{"t": 1793895833.8779256, "payload": {"lines": [], "border": "pending", "border_anchor_hwnd": 1316292, "anchor_hwnd": 1316292, "pulse": false}}
+{"t": 1793895834.1283503, "payload": {"lines": [], "border": "pending", "border_anchor_hwnd": 1316292, "anchor_hwnd": 1316292, "pulse": true}}
+{"t": 1793895834.3791852, "payload": {"lines": [], "border": "pending", "border_anchor_hwnd": 1316292, "anchor_hwnd": 1316292, "pulse": false}}

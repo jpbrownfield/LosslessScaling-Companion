@@ -31,6 +31,7 @@ from ..core.profile_manager import GAME_DEFAULT_PROFILE_NAME, ProfileManager
 from ..core.state import AppState
 from .process_watcher import ProcessWatcher
 from .automation import AutomationController
+from .overlay_indicator import production_indicator
 from .ls_settings import LosslessSettingsXml
 from .asset_store import AssetStore, UnsafeAssetError
 from .graphics_source_detector import GraphicsSourceDetector
@@ -88,7 +89,9 @@ class CompanionWebSocketServer:
         self.profile_manager = profile_manager
         self.state = state
         self.process_watcher = process_watcher
-        self.automation = automation or AutomationController(profile_manager, state)
+        self.automation = automation or AutomationController(
+            profile_manager, state,
+            overlay_indicator=production_indicator(profile_manager))
         self.ls_settings = ls_settings or LosslessSettingsXml(
             profile_manager.config.lossless_settings_xml_path
         )
@@ -764,6 +767,12 @@ class CompanionWebSocketServer:
                     msg.get(
                         "minimizeOtherWindowsOnScale",
                         self.config.minimize_other_windows_on_scale,
+                    )
+                )
+                self.config.overlay_indicator_enabled = bool(
+                    msg.get(
+                        "overlayIndicatorEnabled",
+                        self.config.overlay_indicator_enabled,
                     )
                 )
                 self.config.process_lasso_performance_mode_scaling = bool(
@@ -2655,6 +2664,7 @@ class CompanionWebSocketServer:
                 self.config.snap_near_fullscreen_windows_to_monitor
             ),
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
+        "overlayIndicatorEnabled": self.config.overlay_indicator_enabled,
             "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
             "processLassoLogPath": self.config.process_lasso_log_path or "",
             "processLassoDetectedLogPath": (

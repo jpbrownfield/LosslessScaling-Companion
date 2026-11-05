@@ -27,6 +27,7 @@ from .services.server import CompanionWebSocketServer
 from .services.process_watcher import ProcessWatcher
 from .services.ls_inspector import LosslessScalingInspector
 from .services.automation import AutomationController
+from .services.overlay_indicator import production_indicator
 from .services.ls_settings import LosslessSettingsXml
 from .services.asset_store import AssetStore
 from .services.release_providers import ReleaseManager
@@ -97,6 +98,7 @@ class CompanionApplication:
             self.process_watcher,
             asset_store=self.asset_store,
             lossless_settings=self.ls_settings,
+            overlay_indicator=production_indicator(self.profile_manager),
             nvidia_profile_manager=(
                 SimulationNvidiaProfileManager() if self.simulation_mode else None
             ),
@@ -120,7 +122,11 @@ class CompanionApplication:
             self.automation.scaling_confirmation_end = (
                 self.ls_inspector.end_scaling_confirmation
             )
-        self.process_watcher.on_profile_changed = self.automation.activate_profile
+        self.process_watcher.on_profile_changed = (
+            lambda profile, exe_path=None, **kwargs:
+            self.automation.activate_profile(
+                profile, exe_path, source="process match", **kwargs)
+        )
         self.process_lasso_monitor = ProcessLassoScalingMonitor(
             self.profile_manager, self.state, self.process_watcher, self.automation
         )
@@ -152,6 +158,7 @@ class CompanionApplication:
             on_installer_launched=self.request_update_shutdown,
             proxy_menu=self.proxy_menu,
         )
+        self.automation.presentmon_provider = self.server._presentmon_executable
         
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.server_thread: Optional[threading.Thread] = None

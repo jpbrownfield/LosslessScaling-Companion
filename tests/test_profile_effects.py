@@ -595,6 +595,10 @@ class ProfileEffectsTests(unittest.TestCase):
             watcher.target_is_foreground.return_value = True
             automation = AutomationController(manager, state, watcher)
             automation._confirm_scaling_state = Mock(return_value=False)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
 
             self.assertFalse(
                 automation.set_scaling(
@@ -625,6 +629,10 @@ class ProfileEffectsTests(unittest.TestCase):
             state = AppState()
             automation = AutomationController(manager, state, watcher)
             automation._confirm_scaling_state = Mock(return_value=False)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
 
             self.assertFalse(
                 automation.set_scaling(
@@ -692,6 +700,10 @@ class ProfileEffectsTests(unittest.TestCase):
             state = AppState()
             automation = AutomationController(manager, state)
             automation._confirm_scaling_state = Mock(return_value=False)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
 
             self.assertFalse(automation.set_scaling(True, reason="manual"))
 

@@ -20,6 +20,7 @@ from ..services.process_watcher import ProcessWatcher
 from ..services.ls_inspector import LosslessScalingInspector
 from ..services.startup_manager import StartupTaskManager
 from ..services.automation import AutomationController
+from ..services.overlay_indicator import production_indicator
 from ..services.proxy_menu import AddonManagerMenuController
 from .dashboard_window import close_dashboard_window, open_dashboard_window
 from .icons import create_lightning_icon
@@ -68,7 +69,9 @@ class CompanionTrayIcon:
         self.state = state
         self.process_watcher = process_watcher
         self.ls_inspector = ls_inspector
-        self.automation = automation or AutomationController(profile_manager, state)
+        self.automation = automation or AutomationController(
+            profile_manager, state,
+            overlay_indicator=production_indicator(profile_manager))
         self.on_exit_callback = on_exit_callback
         self.startup_manager = startup_manager
         self.on_check_updates_callback = on_check_updates_callback

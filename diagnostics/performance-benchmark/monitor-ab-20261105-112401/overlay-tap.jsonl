@@ -1,0 +1,61 @@
+{"t": 1793895846.335043, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895846.3360703, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895846.40349, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895846.4042861, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895846.5850904, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895847.513267, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895847.5135434, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895847.5208259, "payload": {"lines": [{"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895847.5865517, "payload": {"lines": [{"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895847.752275, "payload": {"lines": [{"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895847.8370533, "payload": {"lines": [{"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895848.5886853, "payload": {"lines": [{"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895849.3407104, "payload": {"lines": [{"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895849.591468, "payload": {"lines": [{"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895849.8420963, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895850.092541, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895850.3433025, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895850.5939403, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895850.8444664, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895851.0952172, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895851.345713, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895851.5961208, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895851.846618, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895852.097478, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895852.3479583, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895852.5983353, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895852.848868, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895853.0993183, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895853.3497992, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895853.6005535, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895853.8511417, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895854.1016572, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895854.3524003, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895854.6032243, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895854.8536553, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895855.1044798, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895855.3548381, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895855.6053834, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895855.8563333, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895856.1069083, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895856.357552, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895856.6083736, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895856.8589752, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895857.1096442, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895857.3601463, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895857.6108518, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895857.8616817, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895858.1121948, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895858.362549, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895858.6132603, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895858.863733, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895859.1145508, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895859.3651226, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": false}}
+{"t": 1793895859.6156406, "payload": {"lines": [], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895859.7605991, "payload": {"lines": [{"text": "Hotkey received: stopping scaling", "accent": [255, 185, 0]}], "border": "active", "border_anchor_hwnd": 1840712, "anchor_hwnd": 1840712, "pulse": true}}
+{"t": 1793895859.7608316, "payload": {"lines": [{"text": "Hotkey received: stopping scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895861.8685527, "payload": null}
+{"t": 1793895862.1190238, "payload": null}
+{"t": 1793895862.3693368, "payload": null}
+{"t": 1793895862.6197672, "payload": null}
+{"t": 1793895862.870141, "payload": null}

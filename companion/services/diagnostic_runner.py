@@ -57,6 +57,7 @@ class DiagnosticRunner:
         "deployment": ("assets", "lossless_installation"),
         "deployment_behavior": ("deployment", "benchmark", "process_windows"),
         "benchmark": ("assets", "lossless_installation"),
+        "gpu_routing": ("configuration",),
         "rtss": ("process_windows",),
         "startup": ("configuration",),
         "runtime": ("configuration",),
@@ -113,6 +114,7 @@ class DiagnosticRunner:
             ("deployment", "Active add-on deployment integrity", self._deployment),
             ("deployment_behavior", "Live add-on and proxy deployment behavior", self._live_addon_deployment_behavior),
             ("benchmark", "Benchmark workload and PresentMon command", self._benchmark),
+            ("gpu_routing", "Lossless Scaling GPU identity mapping", self._gpu_routing),
             ("rtss", "RTSS integration readiness", self._rtss),
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
@@ -1208,6 +1210,15 @@ class DiagnosticRunner:
                 activeProfileId=getattr(self.server.state.current_active_profile, "id", None),
                 scalingControl=dict(self.server.state.scaling_control_status),
             )
+            if autoscale_ok and self.server.state.is_scaling_active:
+                health = self._route_health()
+                results["autoscale"].setdefault("details", {})["routeHealth"] = health
+                if health.get("checked") and not health.get("healthy"):
+                    logger.error(
+                        "Scaling is active but LS emits no frames (median %s fps); "
+                        "the LS GPU map is likely wrong for this machine.",
+                        health.get("medianFps"),
+                    )
 
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(
@@ -1585,6 +1596,110 @@ class DiagnosticRunner:
             restored = destination.read_bytes() == b"original"
             passed = deployed and restored
             return self._result("pass" if passed else "fail", "Transactional deployment replaced, verified, and restored an existing DLL in an isolated Lossless Scaling fixture." if passed else "Transactional deployment behavior failed.", deployedAndVerified=deployed, originalRestored=restored)
+
+    def _gpu_routing(self) -> Dict:
+        status = self.server.automation.gpu_map_status()
+        route = self.server.automation._desired_gpu_route(None, None)
+        try:
+            from .adapter_report import detect_reshaping_layers, load_latest, report_directory
+
+            config_dir = getattr(self.server.profile_manager, "config_dir", None)
+            latest = load_latest(report_directory(config_dir))
+            report_info = ({
+                "present": True,
+                "path": self._path(latest.get("_path", "")),
+                "device": (latest.get("device") or {}).get("description"),
+            } if latest else {"present": False})
+            try:
+                from .performance_benchmark import find_process_id
+            except Exception:
+                find_process_id = None
+            ls_pid = None
+            if find_process_id is not None:
+                try:
+                    ls_pid = find_process_id("LosslessScaling.exe")
+                except Exception:
+                    ls_pid = None
+            layers = detect_reshaping_layers(pid=ls_pid) if ls_pid else []
+        except Exception as error:
+            report_info = {"present": False, "error": str(error)}
+            layers = []
+        details = {
+            "mapStatus": status,
+            "pinRoute": {k: self._path(v) if isinstance(v, str) else v
+                         for k, v in route.items()},
+            "adapterReport": report_info,
+            "reshapingLayers": layers,
+        }
+        state = status["state"]
+        if state == "stale":
+            return self._result(
+                "fail",
+                "The GPU topology changed since calibration; recalibrate with "
+                "run_monitor_benchmarks.py --calibrate before trusting LS GPU routes.",
+                **details,
+            )
+        if state == "missing":
+            return self._result(
+                "warn",
+                "Multiple GPUs with no calibrated LS GPU map; routes use "
+                "enumeration order until run_monitor_benchmarks.py --calibrate runs.",
+                **details,
+            )
+        return self._result(
+            "pass",
+            "The LS GPU map matches this machine."
+            if state == "ok" else
+            "A single GPU makes LS GPU calibration unnecessary.",
+            **details,
+        )
+
+    def _route_health(self, seconds: float = 5.0) -> Dict:
+        """Prove LS is emitting scaled frames (catches silent GPU misroutes).
+
+        A starved route still shows the overlay while presenting ~2 fps, so
+        overlay confirmation alone cannot validate the GPU map. Returns a
+        checked dict or a skipped reason when PresentMon/admin is unavailable.
+        """
+        try:
+            presentmon = self.server._presentmon_executable()
+        except Exception:
+            presentmon = None
+        if not presentmon:
+            return {"checked": False, "reason": "PresentMon unavailable"}
+        try:
+            from .benchmark_metrics import summarize_presentmon_files
+            from .performance_benchmark import PresentMonCapture
+        except Exception as error:
+            return {"checked": False, "reason": f"{type(error).__name__}: {error}"}
+        run_dir = self.root / ".route-health"
+        capture = PresentMonCapture(Path(presentmon), run_dir)
+        try:
+            capture.start(["LosslessScaling.exe"], seconds)
+            capture.wait(timeout=seconds + 30)
+        except Exception as error:
+            try:
+                capture.stop()
+            except Exception:
+                pass
+            return {"checked": False, "reason": str(error)}
+        try:
+            summaries = summarize_presentmon_files(
+                sorted(run_dir.glob("presentmon*.csv")), warmup_seconds=1.0)
+        except Exception as error:
+            return {"checked": False, "reason": f"summarize failed: {error}"}
+        target = next(
+            (item for item in summaries
+             if str(item.get("application") or "").casefold() == "losslessscaling.exe"),
+            None,
+        )
+        if target is None:
+            return {"checked": True, "healthy": False, "reason": "no LS frames captured"}
+        fps = (target.get("metrics") or {}).get("displayed_fps") or {}
+        median = fps.get("median")
+        healthy = isinstance(median, (int, float)) and median >= 10.0
+        return {"checked": True, "healthy": healthy, "medianFps": median,
+                "rows": target.get("rows")}
 
     def _benchmark(self) -> Dict:
         status = self.server._benchmark_status_payload()

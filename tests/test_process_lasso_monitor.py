@@ -171,6 +171,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
             target_pid=4312,
             target_hwnd=99,
             suppress_auto_scale=True,
+            source="Process Lasso",
         )
         automation.set_scaling.assert_called_once_with(
             True,

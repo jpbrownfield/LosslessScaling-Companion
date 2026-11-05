@@ -402,6 +402,7 @@ class ProcessLassoScalingMonitor:
             target_pid=window.pid,
             target_hwnd=window.hwnd,
             suppress_auto_scale=True,
+            source="Process Lasso",
         )
         if not self.state.current_active_profile or self.state.current_active_profile.id != profile.id:
             logger.warning("Process Lasso profile activation did not complete for %s", profile.name)

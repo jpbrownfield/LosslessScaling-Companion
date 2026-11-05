@@ -1,0 +1,58 @@
+{"t": 1793895355.1254406, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895355.1261208, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895355.205041, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895355.2058184, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895355.375306, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895356.2182057, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895356.2185028, "payload": {"lines": [{"text": "Hotkey received: starting scaling", "accent": [255, 185, 0]}, {"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895356.2271476, "payload": {"lines": [{"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895356.37692, "payload": {"lines": [{"text": "Routing GPU 1 / display 2 for 'Game Default'", "accent": [200, 200, 200]}, {"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895356.4777253, "payload": {"lines": [{"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": 4656356, "pulse": false}}
+{"t": 1793895356.6276243, "payload": {"lines": [{"text": "Applying addon configuration", "accent": [200, 200, 200]}, {"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895357.3791158, "payload": {"lines": [{"text": "Game window detected: Game Default", "accent": [0, 120, 255]}, {"text": "Configuring for profile: Game Default (manual hotkey)", "accent": [0, 120, 255]}, {"text": "Moved game window to configured monitor", "accent": [200, 200, 200]}, {"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895358.3807929, "payload": {"lines": [{"text": "Scaling started: Game Default", "accent": [16, 192, 16]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895358.6319885, "payload": null}
+{"t": 1793895358.882657, "payload": null}
+{"t": 1793895359.1332598, "payload": null}
+{"t": 1793895359.3838005, "payload": null}
+{"t": 1793895359.63449, "payload": null}
+{"t": 1793895359.8849738, "payload": null}
+{"t": 1793895360.1355932, "payload": null}
+{"t": 1793895360.386381, "payload": null}
+{"t": 1793895360.6369486, "payload": null}
+{"t": 1793895360.8872952, "payload": null}
+{"t": 1793895361.1376941, "payload": null}
+{"t": 1793895361.3884702, "payload": null}
+{"t": 1793895361.6391964, "payload": null}
+{"t": 1793895361.8899229, "payload": null}
+{"t": 1793895362.1408646, "payload": null}
+{"t": 1793895362.3914647, "payload": null}
+{"t": 1793895362.6422892, "payload": null}
+{"t": 1793895362.8927987, "payload": null}
+{"t": 1793895363.1439385, "payload": null}
+{"t": 1793895363.3948424, "payload": null}
+{"t": 1793895363.6452415, "payload": null}
+{"t": 1793895363.8959062, "payload": null}
+{"t": 1793895364.1463473, "payload": null}
+{"t": 1793895364.3970428, "payload": null}
+{"t": 1793895364.6477287, "payload": null}
+{"t": 1793895364.898626, "payload": null}
+{"t": 1793895365.1493745, "payload": null}
+{"t": 1793895365.3999484, "payload": null}
+{"t": 1793895365.6506672, "payload": null}
+{"t": 1793895365.901221, "payload": null}
+{"t": 1793895366.1520667, "payload": null}
+{"t": 1793895366.40271, "payload": null}
+{"t": 1793895366.6535134, "payload": null}
+{"t": 1793895366.904258, "payload": null}
+{"t": 1793895367.1551685, "payload": null}
+{"t": 1793895367.4057913, "payload": null}
+{"t": 1793895367.6566832, "payload": null}
+{"t": 1793895367.9071262, "payload": null}
+{"t": 1793895368.1577942, "payload": null}
+{"t": 1793895368.4082906, "payload": null}
+{"t": 1793895368.4863315, "payload": {"lines": [{"text": "Hotkey received: stopping scaling", "accent": [255, 185, 0]}], "border": null, "border_anchor_hwnd": null, "anchor_hwnd": null, "pulse": false}}
+{"t": 1793895370.6608994, "payload": null}
+{"t": 1793895370.9117746, "payload": null}
+{"t": 1793895371.1621702, "payload": null}
+{"t": 1793895371.4126704, "payload": null}

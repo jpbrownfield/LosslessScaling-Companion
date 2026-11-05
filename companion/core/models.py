@@ -361,6 +361,20 @@ class AppConfig(BaseModel):
     run_at_startup: bool = False
     preferred_scaling_gpu_device_id: Optional[str] = None
     preferred_scaling_gpu_name: Optional[str] = None
+    # Calibrated translation from physical GPU identity to the numeric GPU
+    # IDs Lossless Scaling itself uses (its enumeration order does not match
+    # Windows display-adapter order on multi-GPU/virtual-display systems).
+    # Keys are PCI device IDs (case-insensitive; VEN/DEV prefix also matches);
+    # values are LS GPU IDs. Empty means "GDI enumeration order" (legacy).
+    ls_gpu_id_map: Dict[str, int] = Field(default_factory=dict)
+    # Keys are Windows display device names (\\.\DISPLAYx, case-insensitive);
+    # values are LS output display IDs. Same calibration source as the GPU map.
+    ls_display_id_map: Dict[str, int] = Field(default_factory=dict)
+    # Topology hash captured when the map was calibrated; a mismatch means the
+    # map may no longer describe this machine. Previous maps kept for rollback.
+    ls_gpu_map_fingerprint: Optional[str] = None
+    ls_gpu_id_map_previous: Dict[str, int] = Field(default_factory=dict)
+    ls_display_id_map_previous: Dict[str, int] = Field(default_factory=dict)
     gpu_inventory_snapshot: Dict[str, Any] = Field(default_factory=dict)
     auto_route_gpu_to_display: bool = True
     nvidia_rtx_hdr_enabled: bool = False
@@ -373,6 +387,7 @@ class AppConfig(BaseModel):
     default_addon_config: Dict[str, Any] = Field(default_factory=dict)
     snap_near_fullscreen_windows_to_monitor: bool = True
     minimize_other_windows_on_scale: bool = False
+    overlay_indicator_enabled: bool = True
     override_lossless_hotkey: bool = False
     override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     process_lasso_performance_mode_scaling: bool = False

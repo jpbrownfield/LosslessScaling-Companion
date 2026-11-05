@@ -105,6 +105,18 @@ jobs:
             throw "Bundled ReShade bridge manifest was not produced"
           }
 
+      - name: Build adapter reporter
+        shell: pwsh
+        run: |
+          cmake -S native/adapter_report -B build/adapter_report -A x64
+          cmake --build build/adapter_report --config Release
+          if (-not (Test-Path -LiteralPath build/native/LSC-AdapterReport/LSC_AdapterReport.dll)) {
+            throw "Adapter reporter was not produced"
+          }
+          if (-not (Test-Path -LiteralPath build/native/LSC-AdapterReport/addon.json)) {
+            throw "Adapter reporter manifest was not produced"
+          }
+
       - name: Build and test startup window guard
         shell: pwsh
         run: |

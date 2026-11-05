@@ -39,7 +39,6 @@ the DLL beside LS does **not** activate it; Companion's guarded launch does.
 `reshade_bridge` is LS Companion's maintained fork of the MIT-licensed
 LSP-ReShade input-passthrough add-on. It targets the LosslessProxy 0.3.x add-on
 ABI vendored under `vendor/losslessproxy-sdk`.
-
 The fork is derived from FrankBarretta/LSP-ReShade commit
 `15902acd5d532ceba97345b3e318ce60d44effbc`. The SDK snapshot is derived from
 FrankBarretta/LosslessProxy commit
@@ -79,3 +78,12 @@ Visual Studio installation. It sparsely checks out the required files from the
 official `NVIDIA/DLSS` repository at a pinned commit, keeps them outside release
 artifacts, and uploads a separate `LSP-NeuralRender-windows-x64-*` artifact. That
 artifact does not contain `nvngx_dlssnr.dll` or any neural model/runtime.
+
+adapter_report is a tiny diagnostics add-on for the same host ABI. On load it records the physical GPU the host renders with (via GetD3D11Device), both DXGI adapter enumerations, the rendering adapter's attached outputs, and the active numeric route from Settings.xml, then writes ls-adapter-report-<pid>.json under the companion diagnostics directory. The companion matches the device by PCI identity and derives LS numeric IDs from the in-process enumeration instead of trial scaling.
+
+```powershell
+cmake -S native/adapter_report -B build/adapter_report -A x64
+cmake --build build/adapter_report --config Release
+```
+
+The off-LS fixture (LSC_AdapterReportHost.exe) drives the real DLL entry point against a real D3D11 device: `.\LSC_AdapterReportHost.exe <adapter-index>`. Python coverage lives in tests/test_adapter_report.py (reader) and tests/test_adapter_report_host.py (fixture, skips when the DLL was not built).
