@@ -9,6 +9,18 @@ from companion.ui.dashboard_window import (
 
 
 class DashboardWindowTests(unittest.TestCase):
+    def setUp(self):
+        import companion.ui.dashboard_window as dashboard_window
+
+        dashboard_window._last_launch_at = 0.0
+        dashboard_window._cached_hwnd = None
+
+    def tearDown(self):
+        import companion.ui.dashboard_window as dashboard_window
+
+        dashboard_window._last_launch_at = 0.0
+        dashboard_window._cached_hwnd = None
+
     @patch("companion.ui.dashboard_window.subprocess.Popen")
     @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
     @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
@@ -28,6 +40,37 @@ class DashboardWindowTests(unittest.TestCase):
     def test_focuses_existing_dashboard_instead_of_opening_another(self, _find_browser, _focus, popen):
         self.assertTrue(open_dashboard_window("http://127.0.0.1:24892/dashboard"))
         popen.assert_not_called()
+
+    @patch("companion.ui.dashboard_window.subprocess.Popen")
+    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
+    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
+    def test_rapid_opens_collapse_into_a_single_launch(self, _find_browser, _focus, popen):
+        import threading
+        import companion.ui.dashboard_window as dashboard_window
+
+        dashboard_window._last_launch_at = 0.0
+        url = "http://127.0.0.1:24892/dashboard"
+        threads = [threading.Thread(target=open_dashboard_window, args=(url,))
+                   for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+        self.assertEqual(popen.call_count, 1)
+
+    @patch("companion.ui.dashboard_window.subprocess.Popen")
+    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
+    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
+    def test_open_after_close_launches_again(self, _find_browser, _focus, popen):
+        import companion.ui.dashboard_window as dashboard_window
+
+        dashboard_window._last_launch_at = 0.0
+        url = "http://127.0.0.1:24892/dashboard"
+        self.assertTrue(open_dashboard_window(url))
+        self.assertEqual(popen.call_count, 1)
+        close_dashboard_window()
+        self.assertTrue(open_dashboard_window(url))
+        self.assertEqual(popen.call_count, 2)
 
     @patch("companion.ui.dashboard_window.webbrowser.open", return_value=True)
     @patch("companion.ui.dashboard_window._find_app_browser", return_value=None)

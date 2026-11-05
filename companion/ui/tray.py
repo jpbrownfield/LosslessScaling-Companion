@@ -92,6 +92,11 @@ class CompanionTrayIcon:
         self._tray_dispatch_ready = False
         self._pending_icon_frame = None
         self._pending_menu_refresh = False
+        # Debounces rapid tray clicks (single/double-clicks, menu spam) so
+        # only one dashboard open is issued per burst.
+        self._dashboard_open_lock = threading.Lock()
+        self._last_dashboard_open = 0.0
+        self._dashboard_open_debounce_seconds = 1.5
 
     def _visual_state(self) -> str:
         if not self.state.lossless_scaling_running:
@@ -284,13 +289,24 @@ class CompanionTrayIcon:
             self._notify(f"Could not schedule scaling: {error}")
         self.update_menu()
 
-    def _open_dashboard(self, icon, item):
-        url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard"
+    def _request_dashboard_open(self, url: str) -> bool:
+        """Issue one dashboard open per burst; collapses rapid clicks."""
+        now = time.monotonic()
+        with self._dashboard_open_lock:
+            if (now - self._last_dashboard_open
+                    < self._dashboard_open_debounce_seconds):
+                return False
+            self._last_dashboard_open = now
         threading.Thread(target=open_dashboard_window, args=(url,), daemon=True, name="OpenDashboard").start()
+        return True
+
+    def _open_dashboard(self, icon, item):
+        self._request_dashboard_open(
+            f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard")
 
     def _open_settings(self, icon, item):
-        url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings"
-        threading.Thread(target=open_dashboard_window, args=(url,), daemon=True, name="OpenDashboard").start()
+        self._request_dashboard_open(
+            f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings")
 
     def _open_proxy_menu(self, icon, menu_item):
         if not self.proxy_menu:

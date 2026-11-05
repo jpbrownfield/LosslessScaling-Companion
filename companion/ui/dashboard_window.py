@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import ctypes
+import threading
+import time
 from ctypes import wintypes
 from pathlib import Path
 import shutil
@@ -23,6 +25,12 @@ _WM_CLOSE = 0x0010
 _cached_hwnd: Optional[int] = None
 _cached_browser: Optional[str] = None
 _browser_cache_checked = False
+
+# Serializes concurrent open requests (e.g. rapid tray clicks) so only one
+# browser launch happens; double-checked focus runs inside the lock.
+_open_lock = threading.Lock()
+_last_launch_at = 0.0
+LAUNCH_DEBOUNCE_SECONDS = 2.5
 
 
 def _browser_profile_directory() -> Path:
@@ -145,8 +153,9 @@ def dashboard_css_rect_to_client_pixels(rect: dict) -> Optional[tuple[int, int, 
 
 def close_dashboard_window() -> bool:
     """Request that every dedicated dashboard app window close normally."""
-    global _cached_hwnd
+    global _cached_hwnd, _last_launch_at
     _cached_hwnd = None
+    _last_launch_at = 0.0
     if os.name != "nt":
         return False
     handles = _dashboard_window_handles()
@@ -192,28 +201,45 @@ def _find_app_browser() -> Optional[str]:
 
 
 def open_dashboard_window(url: str) -> bool:
-    """Focus the one dashboard app window or create it without browser chrome."""
+    """Focus the one dashboard app window or create it without browser chrome.
+
+    Idempotent under concurrency: rapid repeated calls (e.g. tray
+    double-clicks) focus the existing window or collapse into a single
+    in-flight browser launch instead of opening duplicates.
+    """
     if _focus_cached_dashboard():
         return True
-    browser = _find_app_browser()
-    if browser:
+    with _open_lock:
+        global _last_launch_at
+        # Re-check inside the lock: a sibling click may have focused or
+        # launched while this call was waiting.
+        if _focus_cached_dashboard():
+            return True
         if _focus_existing_dashboard():
             return True
-        try:
-            profile_directory = _browser_profile_directory()
-            subprocess.Popen(
-                [
-                    browser,
-                    f"--app={url}",
-                    "--window-size=1180,820",
-                    f"--user-data-dir={profile_directory}",
-                    "--no-first-run",
-                ],
-                close_fds=True,
-            )
+        now = time.monotonic()
+        if now - _last_launch_at < LAUNCH_DEBOUNCE_SECONDS:
+            # A launch is already in flight but its window has not appeared
+            # yet; do not start another one.
             return True
-        except OSError:
-            logger.exception("Could not launch the dashboard app window with %s", browser)
+        browser = _find_app_browser()
+        if browser:
+            try:
+                profile_directory = _browser_profile_directory()
+                subprocess.Popen(
+                    [
+                        browser,
+                        f"--app={url}",
+                        "--window-size=1180,820",
+                        f"--user-data-dir={profile_directory}",
+                        "--no-first-run",
+                    ],
+                    close_fds=True,
+                )
+                _last_launch_at = now
+                return True
+            except OSError:
+                logger.exception("Could not launch the dashboard app window with %s", browser)
 
     logger.warning("No app-mode browser was found; opening the dashboard normally")
     return bool(webbrowser.open(url, new=1))

@@ -357,6 +357,40 @@ class CompanionApplicationShutdownTests(unittest.TestCase):
         app.tray.icon.stop.assert_called_once_with()
         close_dashboard.assert_called_once_with()
 
+    @patch("companion.ui.tray.open_dashboard_window")
+    def test_rapid_tray_clicks_open_dashboard_once(self, open_window):
+        import threading
+
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            tray = CompanionTrayIcon(
+                manager, AppState(), watcher, automation=Mock())
+            threads = [
+                threading.Thread(target=tray._open_dashboard,
+                                 args=(None, None))
+                for _ in range(5)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5.0)
+            self.assertEqual(open_window.call_count, 1)
+
+    @patch("companion.ui.tray.open_dashboard_window")
+    def test_dashboard_reopens_after_debounce_window(self, open_window):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            tray = CompanionTrayIcon(
+                manager, AppState(), watcher, automation=Mock())
+            tray._dashboard_open_debounce_seconds = 0.0
+            tray._open_dashboard(None, None)
+            tray._open_dashboard(None, None)
+            self.assertEqual(open_window.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
