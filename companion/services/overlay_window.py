@@ -1,10 +1,10 @@
 """Win32 presenter: scrolling-log pill plus a status border with a calm
 traveling glow.
-
 Two click-through topmost windows, zero injection, zero hooks:
 * pill - terminal-style lines anchored to the target window's top-right;
-* border - a thin (~6px) frame around the target window. While scaling is
-  pending the frame is blue, while active it is maroon; a soft highlight
+* border - a thin (~6px) frame drawn just inside the target window's edges,
+  so it never spills onto a neighboring monitor. While scaling is pending
+  the frame is blue, while active it is maroon; a soft highlight
   continuously circles the frame over a slow, low-amplitude breathing glow.
   The animation runs on a presenter-side timer so it stays smooth and never
   strobes.
@@ -23,11 +23,17 @@ import ctypes
 import logging
 import math
 import threading
-import time
+import time as _time
 from ctypes import wintypes
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("LSCompanion.OverlayWindow")
+
+
+def _pump_idle_wait(seconds: float) -> None:
+    """Idle wait for the presenter pump; indirection keeps the global time
+    module unpatched by tests that mock time.sleep elsewhere."""
+    _time.sleep(seconds)
 
 WIDTH = 440
 LINE_HEIGHT = 28
@@ -65,6 +71,7 @@ WM_TIMER = 0x0113
 WM_PAINT = 0x000F
 WM_DESTROY = 0x0002
 WM_USER_APPLY = 0x8001
+WM_QUIT = 0x0012
 WM_QUIT_MESSAGE = 0x0012
 TRANSPARENT = 1
 DT_SINGLELINE = 0x00000020
@@ -194,6 +201,10 @@ def _user32():
         u.GetMessageW.restype = ctypes.c_int
         u.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
         u.TranslateMessage.restype = ctypes.c_bool
+        u.PeekMessageW.argtypes = [ctypes.POINTER(wintypes.MSG),
+                                   ctypes.c_void_p, ctypes.c_uint,
+                                   ctypes.c_uint, ctypes.c_uint]
+        u.PeekMessageW.restype = ctypes.c_bool
         u.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
         u.DispatchMessageW.restype = ctypes.c_longlong
         u.PostThreadMessageW.argtypes = [ctypes.c_ulong, ctypes.c_uint,
@@ -302,6 +313,16 @@ class Win32OverlayPresenter:
             self._gdi32 = None
             self._kernel32 = None
 
+    def _wakeup(self) -> None:
+        """Nudge the pump thread to apply pending content, if it exists."""
+        try:
+            thread_id = self._thread_id
+            if thread_id:
+                self._user32.PostThreadMessageW(thread_id,
+                                                WM_USER_APPLY, 0, 0)
+        except Exception:
+            pass
+
     def __call__(self, payload: Optional[Dict]) -> None:
         try:
             if not self._usable:
@@ -310,12 +331,7 @@ class Win32OverlayPresenter:
                 self._pending = None if payload is None else dict(payload)
                 self._has_pending = True
             self._ensure_thread()
-            if self._thread_id:
-                try:
-                    self._user32.PostThreadMessageW(self._thread_id,
-                                                    WM_USER_APPLY, 0, 0)
-                except Exception:
-                    pass
+            self._wakeup()
         except Exception:
             self._note_failure("post")
 
@@ -332,17 +348,10 @@ class Win32OverlayPresenter:
     def close(self) -> None:
         try:
             self._stop_border_timer()
-            thread, tid = self._thread, self._thread_id
-            self._thread = None
-            self._thread_id = None
-            if thread is not None and tid:
-                try:
-                    self._user32.PostThreadMessageW(tid,
-                                                     WM_QUIT_MESSAGE, 0, 0)
-                except Exception:
-                    pass
-                thread.join(timeout=5.0)
+            thread = None
             with self._lock:
+                thread, self._thread = self._thread, None
+                self._thread_id = None
                 pill, border = self._hwnd, self._border_hwnd
                 self._hwnd = None
                 self._border_hwnd = None
@@ -350,27 +359,12 @@ class Win32OverlayPresenter:
                 self._border_color = None
                 self._pending = None
                 self._has_pending = False
-            for handle in (pill, border):
-                if handle:
-                    try:
-                        if self._user32.IsWindow(ctypes.c_void_p(handle)):
-                            self._user32.DestroyWindow(ctypes.c_void_p(handle))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        try:
-            thread, pill, border = self._thread, self._hwnd, self._border_hwnd
-            self._thread = None
-            self._hwnd = None
-            self._border_hwnd = None
-            if thread is not None and self._thread_id:
+            if thread is not None:
                 try:
-                    self._user32.PostThreadMessageW(self._thread_id,
-                                                     WM_QUIT_MESSAGE, 0, 0)
+                    thread.join(timeout=5.0)
                 except Exception:
                     pass
-                thread.join(timeout=2.0)
+            self._user32.PostQuitMessage(0)
             for handle in (pill, border):
                 if handle:
                     try:
@@ -401,7 +395,25 @@ class Win32OverlayPresenter:
             # first PostThreadMessageW can predate the queue and is lost.
             self._apply_pending()
             message = wintypes.MSG()
-            while self._user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            while True:
+                with self._lock:
+                    gone = self._thread is None
+                if gone:
+                    break
+                has_message = self._user32.PeekMessageW(
+                    ctypes.byref(message), None, 0, 0, 1)  # PM_REMOVE
+                if not has_message:
+                    with self._lock:
+                        if self._thread is None:
+                            break
+                        pending = self._has_pending
+                    if pending:
+                        self._apply_pending()
+                        continue
+                    _pump_idle_wait(0.01)
+                    continue
+                if message.message == WM_QUIT:
+                    break
                 if message.message == WM_USER_APPLY:
                     self._apply_pending()
                 else:
@@ -411,13 +423,13 @@ class Win32OverlayPresenter:
             self._note_failure("pump")
         finally:
             self._thread_id = None
+            self._border_timer = False
 
     # -- windows ------------------------------------------------------------
     def _make_window(self, class_name: str) -> Optional[int]:
         def _handler(hwnd, message, wparam, lparam):
             try:
                 if message == WM_DESTROY:
-                    self._user32.PostQuitMessage(0)
                     return 0
                 if self._thread is None:
                     return self._user32.DefWindowProcW(
@@ -518,7 +530,7 @@ class Win32OverlayPresenter:
         try:
             with self._lock:
                 t0 = self._border_anim_t0
-            now = time.monotonic()
+            now = _time.monotonic()
             elapsed = max(now - t0, 0.0)
             breathe = int(round(
                 BORDER_BREATHE_AMPLITUDE
@@ -755,17 +767,18 @@ class Win32OverlayPresenter:
             color = _BORDER_COLORS.get(mode, PENDING_COLOR)
             if pulse:
                 color = tuple(min(255, channel + 70) for channel in color)
-            total_w = width + BORDER_PX * 2
-            total_h = height + BORDER_PX * 2
+            # The frame lives strictly inside the target window (same size,
+            # same position) so it can never spill onto a neighboring
+            # monitor; it reads as a border because only the edge band is
+            # visible through the window region.
             self._user32.SetWindowPos(
                 ctypes.c_void_p(self._border_hwnd), None,
-                rect.left - BORDER_PX, rect.top - BORDER_PX,
-                total_w, total_h,
+                rect.left, rect.top, width, height,
                 SWP_NOZORDER | SWP_NOACTIVATE)
-            outer = self._gdi32.CreateRectRgn(0, 0, total_w, total_h)
+            outer = self._gdi32.CreateRectRgn(0, 0, width, height)
             inner = self._gdi32.CreateRectRgn(
-                BORDER_PX, BORDER_PX, total_w - BORDER_PX,
-                total_h - BORDER_PX)
+                BORDER_PX, BORDER_PX, width - BORDER_PX,
+                height - BORDER_PX)
             frame = self._gdi32.CreateRectRgn(0, 0, 1, 1)
             try:
                 self._gdi32.CombineRgn(frame, outer, inner, 3)  # RGN_DIFF
@@ -779,7 +792,7 @@ class Win32OverlayPresenter:
                 self._border_color = tuple(color)
                 fresh = not self._border_visible
                 if fresh:
-                    self._border_anim_t0 = time.monotonic()
+                    self._border_anim_t0 = _time.monotonic()
             self._set_region(self._border_hwnd, "_border_rgn", frame)
             self._user32.InvalidateRect(
                 ctypes.c_void_p(self._border_hwnd), None, True)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
-import time
+import time as _time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
@@ -107,7 +107,7 @@ class OverlayState:
     def log(self, text: str, kind: str = "info",
             hold_seconds: Optional[float] = None,
             now: Optional[float] = None) -> None:
-        moment = time.monotonic() if now is None else now
+        moment = _time.monotonic() if now is None else now
         if hold_seconds is None:
             hold_seconds = (ERROR_TTL_SECONDS if kind == "error"
                             else LINE_TTL_SECONDS)
@@ -123,7 +123,7 @@ class OverlayState:
     def set_border(self, state: Optional[str],
                    anchor_hwnd: Optional[int] = None,
                    now: Optional[float] = None) -> None:
-        moment = time.monotonic() if now is None else now
+        moment = _time.monotonic() if now is None else now
         if self._border.anchor_hwnd != anchor_hwnd:
             self._border = _BorderRequest(state=state, anchor_hwnd=anchor_hwnd,
                                           first_seen=moment)
@@ -131,7 +131,7 @@ class OverlayState:
             self._border.state = state
 
     def tick(self, now: Optional[float] = None) -> None:
-        moment = time.monotonic() if now is None else now
+        moment = _time.monotonic() if now is None else now
         self._lines = [line for line in self._lines
                        if moment < line.expires_at]
 
@@ -156,7 +156,7 @@ def recording_presenter(path: str, inner: Presenter) -> Presenter:
             with lock:
                 with open(path, "a", encoding="utf-8") as stream:
                     stream.write(json.dumps({
-                        "t": time.time(),
+                        "t": _time.time(),
                         "payload": payload,
                     }) + "\n")
         except Exception:
@@ -228,6 +228,12 @@ class OverlayIndicator:
         """Return the presenter, creating the Win32 one on first use."""
         with self._lock:
             if self._presenter is None:
+                if not self._pump_enabled and not getattr(
+                        self, "_allow_lazy_presenter", False):
+                    # Unit-test default: never create real windows or
+                    # threads. Production passes pump=True; explicit
+                    # presenters (including null_presenter) bypass this.
+                    return None
                 try:
                     created = win32_presenter()
                 except Exception:
@@ -271,7 +277,7 @@ class OverlayIndicator:
             with self._lock:
                 if not self._enabled():
                     state = None
-                moment = time.monotonic() if now is None else now
+                moment = _time.monotonic() if now is None else now
                 if (self._state.border.anchor_hwnd != anchor_hwnd
                         or self._state.border.state != state):
                     self._state.set_border(state, anchor_hwnd, now=moment)
@@ -329,7 +335,7 @@ class OverlayIndicator:
         idle_ticks = 0
         try:
             while True:
-                time.sleep(self._pump_interval)
+                _time.sleep(self._pump_interval)
                 with self._lock:
                     if not self._pump_running:
                         return
@@ -360,7 +366,7 @@ class OverlayIndicator:
         request = self._state.border
         if request.state is None or not request.anchor_hwnd:
             return None
-        moment = time.monotonic() if now is None else now
+        moment = _time.monotonic() if now is None else now
         try:
             info = (self._window_info(int(request.anchor_hwnd))
                     if self._window_info else None)
@@ -385,7 +391,7 @@ class OverlayIndicator:
                 border_state = None
                 if border_anchor is not None:
                     border_state = self._state.border.state
-            moment = time.monotonic() if now is None else now
+            moment = _time.monotonic() if now is None else now
             pulse = bool(border_state) and (int(moment * 4) % 2 == 0)
             self._present(lines, border_state, border_anchor, anchor_hwnd,
                           pulse, now=moment)
@@ -416,7 +422,7 @@ class OverlayIndicator:
                 }
             signature = (tuple((line.text, line.accent) for line in lines),
                          border_state, border_anchor, fallback_anchor, pulse)
-            moment = time.monotonic() if now is None else now
+            moment = _time.monotonic() if now is None else now
             with self._lock:
                 changed = (signature != self._last_signature
                            or payload is None)
