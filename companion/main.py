@@ -127,6 +127,9 @@ class CompanionApplication:
             self.automation.activate_profile(
                 profile, exe_path, source="process match", **kwargs)
         )
+        self.process_watcher.on_scaling_target_closed = (
+            lambda: self.automation.handle_scaling_target_closed()
+        )
         self.process_lasso_monitor = ProcessLassoScalingMonitor(
             self.profile_manager, self.state, self.process_watcher, self.automation
         )

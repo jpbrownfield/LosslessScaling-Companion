@@ -1,4 +1,6 @@
 """Overlay pill + border: log terminal, game-like gating, wiring."""
+import ctypes
+import sys
 import tempfile
 import threading
 import unittest
@@ -302,6 +304,36 @@ class OverlayHygieneTests(unittest.TestCase):
         self.assertEqual(len(seen), first)
         indicator.tick(now=100.6)
         self.assertGreater(len(seen), first)
+
+
+@unittest.skipUnless(sys.platform == "win32", "Win32 overlay windows")
+class OverlayWin32VisibilityTests(unittest.TestCase):
+    """The layered-window implementation silently never showed anything
+    (bad class registration, font signature, missing blend constants, and
+    UpdateLayeredWindow error 87). This test creates the real windows and
+    asserts they become visible; the opaque rewrite must keep it green."""
+
+    def test_pill_and_border_become_visible(self):
+        from companion.services import overlay_window as overlay_window
+        user32 = ctypes.windll.user32
+        presenter = overlay_window.Win32OverlayPresenter()
+        try:
+            self.assertTrue(presenter._create_windows())
+            presenter._draw_pill(
+                [{"text": "visibility probe", "accent": (0, 200, 255)}], None)
+            self.assertTrue(presenter._usable)
+            self.assertTrue(presenter._pill_visible)
+            self.assertTrue(bool(user32.IsWindowVisible(
+                ctypes.c_void_p(presenter._hwnd))))
+            presenter._draw_border(
+                "pending", int(user32.GetDesktopWindow()), False)
+            self.assertTrue(presenter._border_visible)
+            self.assertTrue(bool(user32.IsWindowVisible(
+                ctypes.c_void_p(presenter._border_hwnd))))
+        finally:
+            presenter.close()
+        self.assertFalse(bool(user32.IsWindow(
+            ctypes.c_void_p(presenter._hwnd or 0))))
 
 
 if __name__ == "__main__":

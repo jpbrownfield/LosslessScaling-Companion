@@ -220,6 +220,7 @@ class OverlayIndicator:
         self._pump_enabled = pump
         self._pump_interval = max(0.05, pump_interval)
         self._pump_running = False
+        self._pump_thread: Optional[threading.Thread] = None
         self._last_signature: Optional[tuple] = None
         self._last_present_at = 0.0
 
@@ -299,10 +300,15 @@ class OverlayIndicator:
         try:
             with self._lock:
                 self._pump_running = False
+                pump_thread = self._pump_thread
+                self._pump_thread = None
             self.hide()
             closer = getattr(self._presenter, "close", None)
             if callable(closer):
                 closer()
+            if (pump_thread is not None and pump_thread.is_alive()
+                    and pump_thread is not threading.current_thread()):
+                pump_thread.join(timeout=2.0)
         except Exception:
             pass
 
@@ -315,6 +321,8 @@ class OverlayIndicator:
             self._pump_running = True
         thread = threading.Thread(target=self._pump_loop, daemon=True,
                                   name="LSOverlayPump")
+        with self._lock:
+            self._pump_thread = thread
         thread.start()
 
     def _pump_loop(self) -> None:

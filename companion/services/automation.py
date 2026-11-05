@@ -245,6 +245,17 @@ class AutomationController:
                 if self.addon_configs.has_pending(selected):
                     self._set_control_status("error", "Could not apply saved add-on settings before scaling")
                     return False
+            if active and selected and self._live_deployment_stale(selected):
+                # An idle foreground switch deferred the DLL swap; refresh
+                # Lossless Scaling now that scaling is actually starting.
+                self.activate_profile(
+                    selected, force=True, suppress_auto_scale=True,
+                    target_pid=target_pid, target_hwnd=target_hwnd,
+                    for_scaling=True,
+                )
+                if self._live_deployment_stale(selected):
+                    self._set_control_status("error", "Could not refresh Lossless Scaling deployment before scaling")
+                    return False
             runtime_providers = self._runtime_providers(selected)
             configured_exe = self.profile_manager.config.lossless_scaling_exe_path
             if (
@@ -771,16 +782,34 @@ class AutomationController:
             self.overlay_indicator.set_border("pending")
         except Exception:
             pass
-        if self.state.is_scaling_active:
-            return self.set_scaling(
-                False,
-                self.state.current_active_profile,
-                reason="override_hotkey",
-                force=True,
-            )
         if not self.process_watcher:
             return False
         target = self.process_watcher.get_foreground_window_info()
+        if self.state.is_scaling_active:
+            session_pid = int(self.state.scaling_target_pid or 0)
+            session_hwnd = int(self.state.scaling_target_hwnd or 0)
+            if (target is not None and session_pid and session_hwnd
+                    and (int(target.pid), int(target.hwnd)) != (session_pid, session_hwnd)):
+                # Hotkey on a different window: switch sessions instead of
+                # merely toggling the current one off.
+                logger.info(
+                    "Hotkey switching scaling from PID %s to foreground PID %s",
+                    session_pid, target.pid,
+                )
+                if not self.set_scaling(
+                    False,
+                    self.state.current_active_profile,
+                    reason="override_hotkey_switch",
+                    force=True,
+                ):
+                    return False
+            else:
+                return self.set_scaling(
+                    False,
+                    self.state.current_active_profile,
+                    reason="override_hotkey",
+                    force=True,
+                )
         if not target:
             self._set_control_status("error", "No foreground window was available for scaling")
             return False
@@ -817,6 +846,40 @@ class AutomationController:
             target_pid=target.pid,
             target_hwnd=target.hwnd,
         )
+
+    def handle_scaling_target_closed(self) -> None:
+        """End a scaling session whose target process/window is gone.
+
+        Lossless Scaling itself is left running (idle): tearing it down
+        would only force a cold start when the user scales again.
+        """
+        with self._lock:
+            if not self.state.is_scaling_active:
+                return
+            try:
+                owner = self.state.current_active_profile
+                label = owner.name if owner else "game"
+            except Exception:
+                label = "game"
+            logger.info("Scaling target closed; ending scaling session for '%s'", label)
+            self.state.mark_scaling_toggled(False)
+            self._set_control_status("confirmed", "Scaling target closed")
+            self.state.scaling_owner_profile_id = None
+            self.state.scaling_trigger = None
+            self.state.scaling_target_pid = None
+            self.state.scaling_target_hwnd = None
+            self.state.scaling_target_verified_for_minimization = False
+            try:
+                self.overlay_indicator.log(
+                    f"Scaling stopped (target closed): {label}")
+                self.overlay_indicator.set_border(None)
+            except Exception:
+                pass
+            if self.process_watcher:
+                try:
+                    self.process_watcher.invalidate_foreground_cache()
+                except Exception:
+                    pass
 
     def reconcile_observed_scaling_state(self, active: bool, target: Optional[Dict] = None) -> None:
         """Apply window side effects when LS changes state outside our hotkey path."""
@@ -1675,6 +1738,29 @@ class AutomationController:
             force=True, target_pid=target_pid, target_hwnd=target_hwnd,
             park_runtime_on_stop=False))
 
+    def _live_deployment_stale(self, profile: Optional[Profile]) -> bool:
+        """Whether the running Lossless Scaling host needs a DLL refresh.
+
+        Idle foreground switches defer deployment swaps (see
+        activate_profile); this reports when the live host is behind the
+        desired deployment so scaling can refresh it first.
+        """
+        try:
+            if profile is None or self.process_watcher is None:
+                return False
+            if not self.process_watcher.check_is_lossless_scaling_running():
+                return False
+            configured_exe = self.profile_manager.config.lossless_scaling_exe_path
+            if not configured_exe:
+                return False
+            return bool(self.deployment_manager.needs_change(
+                profile.id,
+                self.resolve_deployment_files(profile),
+                lossless_scaling_exe=configured_exe,
+            ))
+        except Exception:
+            return False
+
     def _defer_gpu_route_relaunch(
         self, profile: Optional[Profile], gpu_route: Optional[Dict]
     ) -> Optional[Dict]:
@@ -1848,6 +1934,7 @@ class AutomationController:
         target_hwnd: Optional[int] = None,
         suppress_auto_scale: bool = False,
         source: Optional[str] = None,
+        for_scaling: bool = False,
     ) -> None:
         with self._lock:
             previous = self.state.current_active_profile
@@ -1909,19 +1996,15 @@ class AutomationController:
                 return
 
             if not force and self.state.is_scaling_active and previous and not same_profile:
-                previous_is_browser = self._is_browser_profile(previous)
-                incoming_is_game = bool(profile and not self._is_browser_profile(profile))
-                if target_pid is not None and previous_is_browser and incoming_is_game:
-                    if not self.set_scaling(False, previous, reason="browser_to_game_handoff"):
-                        logger.error("Game profile handoff aborted because browser scaling did not stop")
-                        return
-                else:
-                    logger.info(
-                        "Keeping scaled profile '%s' active while foreground changed to '%s'",
-                        previous.name,
-                        profile.name if profile else "an unprofiled application",
-                    )
-                    return
+                # A live scaling session owns Lossless Scaling until its
+                # target closes or the user scales something else explicitly.
+                # Foreground changes never steal or disturb it.
+                logger.info(
+                    "Keeping scaled profile '%s' active while foreground changed to '%s'",
+                    previous.name,
+                    profile.name if profile else "an unprofiled application",
+                )
+                return
 
             try:
                 configured_exe = self.profile_manager.config.lossless_scaling_exe_path
@@ -1953,6 +2036,9 @@ class AutomationController:
                     )
                 )
                 deployment_change = deployment_change or runtime_state_change
+                # DLL/addon/runtime file state (but not the GPU route, which
+                # still needs a live restart to take effect).
+                dll_deployment_change = deployment_change
                 gpu_route = self._desired_gpu_route(profile, target_hwnd) if profile else None
                 gpu_route_change = self.lossless_settings.gpu_route_changes_required(
                     profile.lossless_profile_title,
@@ -1973,10 +2059,40 @@ class AutomationController:
             restart_succeeded = True
             reshade_swapped = False
             transition_succeeded = False
+            restart_lossless_scaling = False
+            defer_live_files = False
             if deployment_change and self.process_watcher:
-                restart_lossless_scaling = self.process_watcher.check_is_lossless_scaling_running()
-                if restart_lossless_scaling:
-                    self._last_gpu_route_relaunch_at = time.monotonic()
+                ls_running = self.process_watcher.check_is_lossless_scaling_running()
+                live_needed = bool(
+                    force or for_scaling
+                    or self.state.is_scaling_active or will_auto_scale
+                )
+                if (ls_running and not live_needed
+                        and dll_deployment_change):
+                    # Idle handoff (e.g. alt-tab to a browser): Lossless
+                    # Scaling is running but capturing nothing, so tearing it
+                    # down and relaunching buys nothing. Update bookkeeping
+                    # and the GPU route now; the DLL set is applied lazily
+                    # when scaling actually starts (see set_scaling).
+                    # Route-only changes are NOT deferred: the route is read
+                    # at startup, so a live restart is the only way to apply
+                    # it.
+                    logger.info(
+                        "Deferring DLL profile restart for '%s' until scaling starts (Lossless Scaling is idle)",
+                        profile.name if profile else "none",
+                    )
+                    try:
+                        self.overlay_indicator.log(
+                            f"Profile ready: {profile.name if profile else 'none'} "
+                            "(restart deferred)",
+                            anchor_hwnd=target_hwnd)
+                    except Exception:
+                        pass
+                    defer_live_files = True
+                else:
+                    restart_lossless_scaling = ls_running
+                    if restart_lossless_scaling:
+                        self._last_gpu_route_relaunch_at = time.monotonic()
                 if restart_lossless_scaling and not self.process_watcher.stop_lossless_scaling():
                     logger.error(
                         "Profile '%s' was not activated because Lossless Scaling could not be stopped",
@@ -1991,11 +2107,13 @@ class AutomationController:
                     same_profile,
                     deployment_files,
                     park_runtime=park_runtime,
-                    trigger_runtime_actions=not restart_lossless_scaling,
+                    trigger_runtime_actions=(
+                        not restart_lossless_scaling and not defer_live_files),
                     target_pid=target_pid,
                     target_hwnd=target_hwnd,
                     suppress_auto_scale=suppress_auto_scale,
                     gpu_route=gpu_route,
+                    defer_live_files=defer_live_files,
                 )
                 transition_succeeded = True
             except Exception as error:
@@ -2032,14 +2150,20 @@ class AutomationController:
         target_hwnd: Optional[int],
         suppress_auto_scale: bool,
         gpu_route: Optional[Dict] = None,
+        defer_live_files: bool = False,
     ) -> bool:
-        """Clean the old profile and apply the new one while its DLL host is stopped."""
+        """Clean the old profile and apply the new one while its DLL host is stopped.
+
+        With ``defer_live_files`` only bookkeeping, the GPU route, and log
+        lines are updated; DLL/addon/ReShade files are left untouched because
+        the host is idle, and applied lazily when scaling starts.
+        """
         reshade_swapped = False
-        if previous:
+        if previous and not defer_live_files:
             self._cleanup_profile(previous)
 
         configured_exe = self.profile_manager.config.lossless_scaling_exe_path
-        if configured_exe:
+        if configured_exe and not defer_live_files:
             if gpu_route is not None:
                 route_change = self.lossless_settings.gpu_route_changes_required(
                     profile.lossless_profile_title if profile else None,
@@ -2104,7 +2228,7 @@ class AutomationController:
         if not profile:
             return False
 
-        if profile.reshade and profile.reshade.enabled:
+        if not defer_live_files and profile.reshade and profile.reshade.enabled:
             reshade = profile.reshade
             lossless_dir = self._lossless_scaling_dir()
             reshade_ini_path = str(Path(lossless_dir) / "ReShade.ini") if lossless_dir else None

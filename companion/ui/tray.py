@@ -286,11 +286,11 @@ class CompanionTrayIcon:
 
     def _open_dashboard(self, icon, item):
         url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard"
-        open_dashboard_window(url)
+        threading.Thread(target=open_dashboard_window, args=(url,), daemon=True, name="OpenDashboard").start()
 
     def _open_settings(self, icon, item):
         url = f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings"
-        open_dashboard_window(url)
+        threading.Thread(target=open_dashboard_window, args=(url,), daemon=True, name="OpenDashboard").start()
 
     def _open_proxy_menu(self, icon, menu_item):
         if not self.proxy_menu:

@@ -54,6 +54,7 @@ class ProcessWatcher:
         on_profile_changed: Optional[Callable] = None,
         lossless_settings: Optional[LosslessSettingsXml] = None,
         proxy_menu: Optional[AddonManagerMenuController] = None,
+        on_scaling_target_closed: Optional[Callable] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -61,8 +62,37 @@ class ProcessWatcher:
         self._last_foreground_hwnd: Optional[int] = None
         self._recent_unscaled_foreground: Optional[Tuple[float, ProcessInfo]] = None
         self.on_profile_changed = on_profile_changed
+        self.on_scaling_target_closed = on_scaling_target_closed
         self.lossless_settings = lossless_settings
         self.proxy_menu = proxy_menu or AddonManagerMenuController(state)
+
+    def scaling_session_target_alive(self) -> bool:
+        """Whether a live scaling session's target can still exist.
+
+        Unknown targets (never identified) are assumed alive; ending those
+        sessions is the observed-state reconciler's job.
+        """
+        pid = int(getattr(self.state, "scaling_target_pid", 0) or 0)
+        hwnd = int(getattr(self.state, "scaling_target_hwnd", 0) or 0)
+        if pid:
+            try:
+                return bool(psutil.Process(pid).is_running())
+            except psutil.NoSuchProcess:
+                return False
+            except psutil.ZombieProcess:
+                return False
+            except psutil.AccessDenied:
+                # Cannot verify an inaccessible process; assume it is alive
+                # rather than killing a session that may be healthy.
+                return True
+            except Exception:
+                return True
+        if hwnd:
+            try:
+                return bool(user32.IsWindow(hwnd))
+            except Exception:
+                return True
+        return True
 
     @staticmethod
     def get_foreground_window_info() -> Optional[ProcessInfo]:
@@ -651,6 +681,24 @@ class ProcessWatcher:
             self.state.current_foreground_window_title = info.title
             self.state.current_foreground_exe_path = info.exe_path
             self.state.current_foreground_hwnd = info.hwnd
+
+            if self.state.is_scaling_active:
+                if not self.scaling_session_target_alive():
+                    # The scaled program closed: end the session, then handle
+                    # this focus normally below.
+                    callback = self.on_scaling_target_closed
+                    if callback is not None:
+                        try:
+                            callback()
+                        except Exception:
+                            logger.exception(
+                                "Scaling target closed handler failed")
+                if self.state.is_scaling_active and self.scaling_session_target_alive():
+                    # A live scaling session owns Lossless Scaling until its
+                    # target closes or the user scales something else
+                    # explicitly. Focus changes are cosmetic only.
+                    return info
+            # (falls through when no session is live)
 
             # Match profile if process changed
             matched = self.profile_manager.match_target_profile(

@@ -20,6 +20,10 @@ logger = logging.getLogger("LSCompanion.DashboardWindow")
 _BROWSER_NAMES = {"msedge.exe", "chrome.exe"}
 _WM_CLOSE = 0x0010
 
+_cached_hwnd: Optional[int] = None
+_cached_browser: Optional[str] = None
+_browser_cache_checked = False
+
 
 def _browser_profile_directory() -> Path:
     local_root = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -71,9 +75,28 @@ def _dashboard_window_handles() -> list[int]:
     return found
 
 
+def _focus_cached_dashboard() -> bool:
+    """Fast O(1) path: validate the last known hwnd without scanning processes."""
+    global _cached_hwnd
+    if not _cached_hwnd or os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(_cached_hwnd)
+        if user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(hwnd)
+            return True
+    except Exception:
+        pass
+    _cached_hwnd = None
+    return False
+
+
 def _focus_existing_dashboard() -> bool:
     if os.name != "nt":
         return False
+    global _cached_hwnd
     found = _dashboard_window_handles()
     if not found:
         return False
@@ -81,6 +104,7 @@ def _focus_existing_dashboard() -> bool:
     hwnd = found[0]
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     user32.SetForegroundWindow(hwnd)
+    _cached_hwnd = hwnd
     return True
 
 
@@ -121,6 +145,8 @@ def dashboard_css_rect_to_client_pixels(rect: dict) -> Optional[tuple[int, int, 
 
 def close_dashboard_window() -> bool:
     """Request that every dedicated dashboard app window close normally."""
+    global _cached_hwnd
+    _cached_hwnd = None
     if os.name != "nt":
         return False
     handles = _dashboard_window_handles()
@@ -135,9 +161,14 @@ def close_dashboard_window() -> bool:
 
 def _find_app_browser() -> Optional[str]:
     """Return an installed Chromium browser that supports ``--app`` windows."""
+    global _cached_browser, _browser_cache_checked
+    if _browser_cache_checked:
+        return _cached_browser
     for command in ("msedge.exe", "chrome.exe"):
         executable = shutil.which(command)
         if executable:
+            _cached_browser = executable
+            _browser_cache_checked = True
             return executable
 
     roots = [
@@ -153,12 +184,17 @@ def _find_app_browser() -> Optional[str]:
         for relative_path in relative_paths:
             candidate = Path(root) / relative_path
             if candidate.is_file():
+                _cached_browser = str(candidate)
+                _browser_cache_checked = True
                 return str(candidate)
+    _browser_cache_checked = True
     return None
 
 
 def open_dashboard_window(url: str) -> bool:
     """Focus the one dashboard app window or create it without browser chrome."""
+    if _focus_cached_dashboard():
+        return True
     browser = _find_app_browser()
     if browser:
         if _focus_existing_dashboard():

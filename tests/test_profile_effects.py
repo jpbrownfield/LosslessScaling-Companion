@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from companion.core.models import DllOverrideConfig, Profile, ReshadeConfig
@@ -29,6 +30,15 @@ class ProfileEffectsTests(unittest.TestCase):
         def launch_lossless_scaling(self, *, force=False):
             self.events.append(("launch", force))
             self.running = True
+            return True
+
+        def invalidate_foreground_cache(self):
+            return None
+
+        def focus_window_identity(self, pid, hwnd):
+            return True
+
+        def target_is_foreground(self, pid, hwnd):
             return True
 
     def test_neural_render_preserves_native_hdr_profile_setting(self):
@@ -899,7 +909,9 @@ class ProfileEffectsTests(unittest.TestCase):
         self.assertFalse(state.is_scaling_active)
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
-    def test_game_profile_takes_precedence_over_scaled_browser(self, trigger_hotkey):
+    def test_game_focus_does_not_steal_scaled_browser(self, trigger_hotkey):
+        # A live scaling session owns Lossless Scaling: focusing a game must
+        # not stop the browser session. The game scales on explicit hotkey.
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory) / "config")
             browser = Profile(
@@ -931,10 +943,10 @@ class ProfileEffectsTests(unittest.TestCase):
                 target_hwnd=456,
             )
 
-        self.assertEqual(trigger_hotkey.call_count, 2)
-        self.assertEqual(state.current_active_profile.id, game.id)
+        trigger_hotkey.assert_not_called()
+        self.assertEqual(state.current_active_profile.id, browser.id)
         self.assertTrue(state.is_scaling_active)
-        self.assertEqual(state.scaling_owner_profile_id, game.id)
+        self.assertEqual(state.scaling_owner_profile_id, browser.id)
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
     def test_browser_cannot_replace_an_active_game_profile(self, trigger_hotkey):
@@ -964,7 +976,9 @@ class ProfileEffectsTests(unittest.TestCase):
         self.assertEqual(state.current_active_profile.id, game.id)
         self.assertTrue(state.is_scaling_active)
 
-    def test_dll_profile_restarts_running_lossless_scaling(self):
+    def test_dll_profile_defers_restart_while_idle(self):
+        # Alt-tabbing to a profile with different DLLs must not tear down a
+        # running-but-idle Lossless Scaling; the swap waits for scaling.
         events = []
         watcher = self.FakeProcessWatcher(events)
         with tempfile.TemporaryDirectory() as directory:
@@ -985,10 +999,220 @@ class ProfileEffectsTests(unittest.TestCase):
             manager = ProfileManager(root / "config")
             manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
             automation = AutomationController(manager, AppState(), watcher)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
             automation.activate_profile(profile)
+
+            self.assertEqual(events, [])
+            self.assertFalse((root / "dxgi.dll").exists())
+            self.assertEqual(
+                automation.state.current_active_profile.id, profile.id)
+            self.assertTrue(automation._live_deployment_stale(profile))
+
+    def test_deferred_deployment_refreshes_when_scaling_starts(self):
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            profile = Profile(
+                name="DLL profile",
+                target_executable_path=str(root / "game.exe"),
+                dll_overrides=[
+                    DllOverrideConfig(
+                        enabled=True,
+                        source_dll_path=str(root / "mod.dll"),
+                        deployment_target="lossless_scaling",
+                    )
+                ],
+            )
+            (root / "mod.dll").write_bytes(b"managed")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
+            automation = AutomationController(manager, AppState(), watcher)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
+            automation.activate_profile(profile)
+            self.assertEqual(events, [])
+
+            automation.activate_profile(profile, force=True, for_scaling=True)
+
+            self.assertEqual(events, ["stop", ("launch", True)])
+            self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
+            self.assertFalse(automation._live_deployment_stale(profile))
+
+    def test_explicit_activate_restarts_idle_lossless_scaling(self):
+        # Hotkey/dashboard activation (force=True) still refreshes live.
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            profile = Profile(
+                name="DLL profile",
+                target_executable_path=str(root / "game.exe"),
+                dll_overrides=[
+                    DllOverrideConfig(
+                        enabled=True,
+                        source_dll_path=str(root / "mod.dll"),
+                        deployment_target="lossless_scaling",
+                    )
+                ],
+            )
+            (root / "mod.dll").write_bytes(b"managed")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
+            automation = AutomationController(manager, AppState(), watcher)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
+            automation.activate_profile(profile, force=True)
 
             self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
         self.assertEqual(events, ["stop", ("launch", True)])
+
+    def test_auto_scale_profile_restarts_idle_lossless_scaling(self):        # Focusing a game profile with focus auto-scale enabled needs the
+        # deployment live immediately, so it must not defer.
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            profile = Profile(
+                name="DLL profile",
+                target_executable_path=str(root / "game.exe"),
+                auto_scale=True,
+                dll_overrides=[
+                    DllOverrideConfig(
+                        enabled=True,
+                        source_dll_path=str(root / "mod.dll"),
+                        deployment_target="lossless_scaling",
+                    )
+                ],
+            )
+            (root / "mod.dll").write_bytes(b"managed")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
+            manager.config.disable_native_auto_scale = True
+            state = AppState()
+            state.auto_scale_enabled = True
+            automation = AutomationController(manager, state, watcher)
+            from companion.services.overlay_indicator import (
+                OverlayIndicator, null_presenter)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
+            with patch.object(
+                    AutomationController, "_trigger_profile_runtime_actions"):
+                automation.activate_profile(profile)
+
+            self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
+        self.assertEqual(events, ["stop", ("launch", True)])
+
+    def test_scaling_target_closed_ends_session(self):
+        from companion.services.overlay_indicator import (
+            OverlayIndicator, null_presenter)
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            state.is_scaling_active = True
+            state.scaling_target_pid = 4242
+            state.scaling_target_hwnd = 4343
+            state.scaling_owner_profile_id = "game"
+            automation = AutomationController(manager, state, watcher)
+            seen = []
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=seen.append)
+            automation.handle_scaling_target_closed()
+
+            self.assertFalse(state.is_scaling_active)
+            self.assertIsNone(state.scaling_target_pid)
+            self.assertIsNone(state.scaling_target_hwnd)
+            self.assertIsNone(state.scaling_owner_profile_id)
+            texts = [item["text"] for payload in seen if payload
+                     for item in payload.get("lines", [])]
+            self.assertTrue(any("target closed" in text for text in texts),
+                            texts)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey",
+           return_value=True)
+    def test_hotkey_on_other_window_switches_session(self, trigger_hotkey):
+        from companion.services.overlay_indicator import (
+            OverlayIndicator, null_presenter)
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
+            manager.config.override_lossless_hotkey = True
+            game_a = Profile(name="Game A", target_process="GameA.exe")
+            game_b = Profile(name="Game B", target_process="GameB.exe")
+            manager.config.profiles.extend([game_a, game_b])
+            state = AppState()
+            state.is_scaling_active = True
+            state.scaling_target_pid = 1111
+            state.scaling_target_hwnd = 100
+            state.current_active_profile = game_a
+            state.scaling_owner_profile_id = game_a.id
+            automation = AutomationController(manager, state, watcher)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
+            watcher.get_foreground_window_info = Mock(return_value=SimpleNamespace(
+                pid=2222, name="GameB.exe",
+                exe_path=str(root / "GameB.exe"),
+                title="Game B", hwnd=200))
+
+            self.assertTrue(automation.handle_override_hotkey())
+
+            self.assertTrue(state.is_scaling_active)
+            self.assertEqual(state.scaling_target_pid, 2222)
+            self.assertEqual(state.scaling_target_hwnd, 200)
+            # Graceful handoff: the old session stops via hotkey toggle and
+            # the new one starts with no Lossless Scaling process restart.
+            self.assertEqual(events, [])
+            self.assertGreaterEqual(trigger_hotkey.call_count, 2)
+
+    @patch("companion.services.automation.InputSimulator.trigger_hotkey",
+           return_value=True)
+    def test_hotkey_on_same_window_stops_scaling(self, trigger_hotkey):
+        from companion.services.overlay_indicator import (
+            OverlayIndicator, null_presenter)
+        events = []
+        watcher = self.FakeProcessWatcher(events)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
+            manager.config.override_lossless_hotkey = True
+            game_a = Profile(name="Game A", target_process="GameA.exe")
+            manager.config.profiles.append(game_a)
+            state = AppState()
+            state.is_scaling_active = True
+            state.scaling_target_pid = 1111
+            state.scaling_target_hwnd = 100
+            state.current_active_profile = game_a
+            automation = AutomationController(manager, state, watcher)
+            automation.overlay_indicator = OverlayIndicator(
+                presenter=null_presenter())
+            watcher.get_foreground_window_info = Mock(return_value=SimpleNamespace(
+                pid=1111, name="GameA.exe",
+                exe_path=str(root / "GameA.exe"),
+                title="Game A", hwnd=100))
+
+            self.assertTrue(automation.handle_override_hotkey())
+
+            self.assertFalse(state.is_scaling_active)
+            # Instant stop kills and relaunches the LS process itself.
+            self.assertIn("stop", events)
 
     def test_target_application_dll_is_refused(self):
         events = []

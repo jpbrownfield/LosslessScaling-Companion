@@ -1,3 +1,4 @@
+import os
 import unittest
 import tempfile
 import subprocess
@@ -299,6 +300,66 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
 
             watcher._recent_unscaled_foreground = (0.0, game)
             self.assertIsNone(watcher.recent_unscaled_foreground_target("Game.exe"))
+
+
+class ScalingSessionImmunityTests(unittest.TestCase):
+    def make_watcher(self):
+        manager = SimpleNamespace(
+            config=SimpleNamespace(),
+            match_target_profile=Mock(return_value=None),
+            save_config=Mock(),
+        )
+        state = AppState()
+        watcher = ProcessWatcher(
+            manager,
+            state,
+            on_profile_changed=Mock(),
+            on_scaling_target_closed=Mock(),
+        )
+        return watcher, state
+
+    def foreground(self, pid, name, hwnd):
+        return ProcessInfo(pid, name, f"C:\\Games\\{name}", f"{name} window",
+                           hwnd=hwnd)
+
+    def test_focus_changes_are_cosmetic_while_scaling(self):
+        watcher, state = self.make_watcher()
+        state.is_scaling_active = True
+        state.scaling_target_pid = os.getpid()
+        state.scaling_target_hwnd = 1111
+        with patch.object(
+            ProcessWatcher, "get_foreground_window_info",
+            side_effect=[self.foreground(os.getpid(), "GameA.exe", 1111),
+                         self.foreground(4321, "chrome.exe", 2222)],
+        ):
+            watcher.check_foreground_and_update()
+            watcher.check_foreground_and_update()
+        watcher.on_profile_changed.assert_not_called()
+        watcher.on_scaling_target_closed.assert_not_called()
+        self.assertEqual(state.current_foreground_process, "chrome.exe")
+        self.assertTrue(state.is_scaling_active)
+
+    def test_closed_target_ends_session_and_resumes_matching(self):
+        watcher, state = self.make_watcher()
+        dead = subprocess.Popen(["cmd", "/c", "exit"])
+        dead.wait()
+        state.is_scaling_active = True
+        state.scaling_target_pid = dead.pid
+        state.scaling_target_hwnd = 0
+        state.current_active_profile = Mock(id="game-a")
+        watcher.on_scaling_target_closed.side_effect = (
+            lambda: setattr(state, "is_scaling_active", False))
+        matched = Mock(id="browser")
+        watcher.profile_manager.match_target_profile.return_value = matched
+        with patch.object(
+            ProcessWatcher, "get_foreground_window_info",
+            return_value=self.foreground(4321, "chrome.exe", 2222),
+        ):
+            watcher.check_foreground_and_update()
+        watcher.on_scaling_target_closed.assert_called_once_with()
+        watcher.on_profile_changed.assert_called_once()
+        called_profile = watcher.on_profile_changed.call_args[0][0]
+        self.assertEqual(called_profile, matched)
 
 
 if __name__ == "__main__":
