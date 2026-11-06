@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -40,6 +41,13 @@ class CompanionUpdateService:
         self.enabled = bool(getattr(sys, "frozen", False)) if enabled is None else enabled
         self._lock = threading.RLock()
         self._downloaded: Optional[Dict] = None
+
+    def automatic_retry_allowed(self, version: str) -> bool:
+        try:
+            attempt = json.loads((self.root / 'automatic-attempt.json').read_text(encoding='utf-8'))
+            return attempt.get('version') != version or time.time() - float(attempt['time']) >= 3600
+        except (OSError, ValueError, TypeError, KeyError):
+            return True
 
     @staticmethod
     def _asset(release: Dict, name: str) -> Optional[Dict]:
@@ -190,7 +198,7 @@ class CompanionUpdateService:
                 "filename": INSTALLER_NAME,
             }
 
-    def launch_installer(self, version: str) -> Dict:
+    def launch_installer(self, version: str, *, automatic: bool = False) -> Dict:
         with self._lock:
             if not self.enabled:
                 raise RuntimeError("Companion updates are available only in packaged builds")
@@ -206,9 +214,19 @@ class CompanionUpdateService:
             digest = AssetStore.sha256(installer)
             if digest.casefold() != str(receipt.get("sha256") or "").casefold():
                 raise UnsafeAssetError("Companion installer changed after verification")
-            parameters = subprocess.list2cmdline([
+            options = [
                 "/SP-", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS",
-            ])
+            ]
+            if automatic:
+                options.extend([
+                    "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                    "/AUTOMATICUPDATE=1", f"/WAITPID={os.getpid()}",
+                    f"/DIR={Path(sys.executable).resolve().parent}",
+                    f"/LOG={directory / 'install.log'}",
+                ])
+            parameters = subprocess.list2cmdline(options)
+            if automatic:
+                AssetStore._atomic_json(self.root / 'automatic-attempt.json', {'version': normalized, 'time': time.time()})
             result = ctypes.windll.shell32.ShellExecuteW(
                 None,
                 "runas",

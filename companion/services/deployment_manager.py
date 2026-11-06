@@ -49,6 +49,64 @@ class DeploymentManager:
         self.backup_root = store.backups / self.TARGET_ID
         self.originals = self.backup_root / "originals"
         self.preinsert = self.backup_root / "preinsert"
+        self.installation_root = None
+
+    def _select_installation(self, root: Path) -> None:
+        """Scope ownership and backups to one resolved installation directory."""
+        root = root.resolve()
+        key = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
+        base = self.store.deployments / self.TARGET_ID
+        self.manifest_path = base / "installations" / key / "active-manifest.json"
+        self.backup_root = self.store.backups / self.TARGET_ID / "installations" / key
+        self.originals = self.backup_root / "originals"
+        self.preinsert = self.backup_root / "preinsert"
+        self.installation_root = root
+        legacy_path = base / "active-manifest.json"
+        if self.manifest_path.exists() or not legacy_path.is_file():
+            return
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+        if not legacy.get("files"):
+            return
+        owner = legacy.get("installation_root")
+        if not owner:
+            audit_path = self.store.logs / "security-audit.jsonl"
+            if audit_path.is_file():
+                with audit_path.open(encoding="utf-8") as stream:
+                    for line in stream:
+                        try:
+                            record = json.loads(line)
+                        except ValueError:
+                            continue
+                        if (isinstance(record, dict)
+                                and legacy.get("transaction_id")
+                                and record.get("event") == "deployment_applied"
+                                and record.get("transaction_id") == legacy.get("transaction_id")
+                                and record.get("target")):
+                            owner = record["target"]
+            if not owner:
+                raise DeploymentConflictError(
+                    f"Cannot identify the installation for legacy deployment {legacy_path}; "
+                    "preserved its manifest and backups. Restore its audit log before retrying."
+                )
+            legacy["installation_root"] = str(Path(owner).resolve())
+            AssetStore._atomic_json(legacy_path, legacy)
+        if Path(owner).resolve() != root:
+            return
+        old_backups = self.store.backups / self.TARGET_ID
+        # Copy, rather than move, so an interrupted migration remains retryable.
+        for name in ("originals", "preinsert"):
+            source = old_backups / name
+            if source.is_dir():
+                self._copy_tree_or_file_once(source, self.backup_root / name)
+        for entry in legacy["files"]:
+            backup = entry.get("original_backup")
+            if backup:
+                relative = Path(backup).resolve().relative_to(old_backups.resolve())
+                entry["original_backup"] = str(self.backup_root / relative)
+        if legacy.get("legacy_addon_backup"):
+            relative = Path(legacy["legacy_addon_backup"]).resolve().relative_to(old_backups.resolve())
+            legacy["legacy_addon_backup"] = str(self.backup_root / relative)
+        AssetStore._atomic_json(self.manifest_path, legacy)
 
     @staticmethod
     def _hash(path: Path) -> str:
@@ -83,17 +141,118 @@ class DeploymentManager:
             raise UnsafeAssetError("Deployment destination escapes Lossless Scaling")
         return destination
 
-    def _read_manifest(self) -> Dict:
+    def _read_manifest(self, lossless_scaling_exe: Optional[str] = None) -> Dict:
+        with self._lock:
+            return self._load_manifest(lossless_scaling_exe)
+
+    def recovery_status(self, lossless_scaling_exe: Optional[str]) -> Optional[Dict]:
+        if not lossless_scaling_exe:
+            return None
+        with self._lock:
+            self._select_installation(Path(lossless_scaling_exe).resolve().parent)
+            marker = self.backup_root / "pending-recovery.json"
+            if not marker.is_file():
+                return None
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            verified = all(not entry["existed"] or entry.get("sha256") for entry in data.get("files", []))
+            return {"installation": str(self.installation_root),
+                    "message": "A deployment could not be fully rolled back. Recovery files are preserved."
+                               if verified else "An older recovery record lacks snapshot verification. Preserve its files for manual recovery.",
+                    "retryAvailable": verified,
+                    "failures": data.get("failures", [])}
+
+    def retry_recovery(self, lossless_scaling_exe: str) -> None:
+        """Retry only recorded restorations; never reset unknown installation files."""
+        with self._lock:
+            root = self._lossless_root(lossless_scaling_exe)
+            self._select_installation(root)
+            marker = self.backup_root / "pending-recovery.json"
+            if not marker.is_file():
+                raise DeploymentConflictError("There is no pending deployment recovery")
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            rollback_root = Path(data["recovery_directory"]).resolve()
+            if (Path(data["installation_root"]).resolve() != root
+                    or rollback_root.parent != self.store.staging.resolve()
+                    or rollback_root.name != f"deployment-rollback-{data['transaction_id']}"):
+                raise DeploymentConflictError("Recovery record does not match this installation")
+            operations = []
+            previous = data.get("previous_manifest")
+            if not isinstance(previous, dict) or Path(previous.get("installation_root") or "").resolve() != root:
+                raise DeploymentConflictError("Recovery manifest belongs to a different installation")
+            for entry in data["files"]:
+                destination = Path(entry["destination"]).resolve()
+                relative = destination.relative_to(root)
+                if self._destination(root, relative.as_posix()) != destination:
+                    raise DeploymentConflictError("Recovery destination is invalid")
+                snapshot = Path(entry["snapshot"]).resolve()
+                if snapshot != (rollback_root / relative).resolve() or rollback_root not in snapshot.parents:
+                    raise DeploymentConflictError("Recovery snapshot is outside the transaction")
+                if entry["existed"] and (not entry.get("sha256") or not snapshot.is_file()
+                                         or self._hash(snapshot) != entry["sha256"]):
+                    raise DeploymentConflictError(f"Recovery snapshot is missing or modified: {relative}")
+                operations.append((destination, snapshot, entry["existed"]))
+            legacy = []
+            for entry in data.get("legacy_backups", []):
+                destination = Path(entry["destination"]).resolve()
+                relative = destination.relative_to(root)
+                if len(relative.parts) > 2 or self._destination(root, relative.as_posix()) != destination:
+                    raise DeploymentConflictError("Legacy recovery destination is invalid")
+                snapshot = rollback_root / "legacy-addons" / destination.name
+                if rollback_root not in snapshot.resolve().parents:
+                    raise DeploymentConflictError("Legacy recovery snapshot is outside the transaction")
+                if snapshot.exists():
+                    files = list(snapshot.rglob("*")) if snapshot.is_dir() else [snapshot]
+                    actual = {str(path.relative_to(snapshot)) if snapshot.is_dir() else ".": self._hash(path)
+                              for path in files if path.is_file() and rollback_root in path.resolve().parents}
+                    if actual != entry["hashes"]:
+                        raise DeploymentConflictError("Legacy recovery snapshot was modified")
+                    if destination.exists():
+                        raise DeploymentConflictError(f"Move the conflicting file or folder before recovery: {destination}")
+                    legacy.append((destination, snapshot))
+            # All available snapshots are verified before any restoration begins.
+            try:
+                for destination, snapshot, existed in operations:
+                    if existed:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        self._atomic_copy(snapshot, destination)
+                    elif destination.is_file():
+                        destination.unlink()
+                for destination, snapshot in legacy:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(snapshot, destination)
+                AssetStore._atomic_json(self.manifest_path, data["previous_manifest"])
+            except OSError as error:
+                raise DeploymentConflictError(f"Recovery could not finish; snapshots remain at {rollback_root}: {error}") from error
+            marker.unlink()
+            self.store.audit("deployment_recovered", target=str(root), transaction_id=data["transaction_id"])
+            shutil.rmtree(rollback_root, ignore_errors=True)
+
+    def _load_manifest(self, lossless_scaling_exe: Optional[str] = None) -> Dict:
+        if lossless_scaling_exe:
+            executable = Path(lossless_scaling_exe).resolve()
+            if executable.name.casefold() != "losslessscaling.exe":
+                raise UnsafeAssetError("Configured deployment host must be LosslessScaling.exe")
+            # Reading ownership for an absent host is safe; writes still require
+            # _lossless_root() to validate an existing executable.
+            self._select_installation(executable.parent)
+        recovery = self.backup_root / "pending-recovery.json"
+        if recovery.is_file():
+            raise DeploymentConflictError(f"Deployment rollback needs recovery; see {recovery}")
         if not self.manifest_path.is_file():
             return {
                 "schema_version": 1,
                 "target": self.TARGET_ID,
+                "installation_root": str(self.installation_root) if self.installation_root else None,
                 "profile_id": None,
                 "fingerprint": self._fingerprint(None, []),
                 "files": [],
             }
         try:
-            return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            owner = manifest.get("installation_root")
+            if self.installation_root and (not owner or Path(owner).resolve() != self.installation_root):
+                raise DeploymentConflictError("Deployment manifest belongs to a different installation")
+            return manifest
         except (OSError, json.JSONDecodeError) as error:
             raise DeploymentConflictError(f"Active deployment manifest is unreadable: {error}") from error
 
@@ -267,7 +426,7 @@ class DeploymentManager:
             return False
         with self._lock:
             root = self._lossless_root(lossless_scaling_exe)
-            manifest = self._read_manifest()
+            manifest = self._read_manifest(lossless_scaling_exe)
             changes = []
             for entry in manifest.get("files", []):
                 provider = self._runtime_provider(entry)
@@ -318,9 +477,12 @@ class DeploymentManager:
                 )
                 raise
 
-    def runtime_packages_need_state(self, providers: Iterable[str], *, active: bool) -> bool:
+    def runtime_packages_need_state(
+        self, providers: Iterable[str], *, active: bool,
+        lossless_scaling_exe: Optional[str] = None,
+    ) -> bool:
         requested = {str(item).casefold() for item in providers}
-        manifest = self._read_manifest()
+        manifest = self._read_manifest(lossless_scaling_exe)
         return any(
             self._runtime_provider(entry) in requested
             and bool(entry.get("inactive")) != (not active)
@@ -355,17 +517,18 @@ class DeploymentManager:
         *,
         lossless_scaling_exe: Optional[str] = None,
     ) -> bool:
-        desired = self._normalize_desired(files)
-        active = self._read_manifest()
-        if active.get("fingerprint") != self._fingerprint(profile_id, desired):
-            return True
-        if not active.get("files"):
+        with self._lock:
+            desired = self._normalize_desired(files)
+            active = self._read_manifest(lossless_scaling_exe)
+            if active.get("fingerprint") != self._fingerprint(profile_id, desired):
+                return True
+            if not active.get("files"):
+                return False
+            if lossless_scaling_exe:
+                return not self._active_matches_disk(
+                    self._lossless_root(lossless_scaling_exe), active
+                )
             return False
-        if lossless_scaling_exe:
-            return not self._active_matches_disk(
-                self._lossless_root(lossless_scaling_exe), active
-            )
-        return False
 
     def apply(
         self,
@@ -376,10 +539,10 @@ class DeploymentManager:
     ) -> Dict:
         """Apply one complete desired LS file set, rolling back on every failure."""
         with self._lock:
-            self._consolidate_transaction_backups()
             desired = self._normalize_desired(files)
             fingerprint = self._fingerprint(profile_id, desired)
-            active = self._read_manifest()
+            active = self._read_manifest(lossless_scaling_exe)
+            self._consolidate_transaction_backups()
             root = None
             installs_echo = any(
                 str(item.get("source_package") or "").casefold().startswith("ls-addon-manager/")
@@ -466,6 +629,18 @@ class DeploymentManager:
             )
 
             new_entries = []
+            rollback_failures = []
+            rollback_root.mkdir(parents=True, exist_ok=True)
+            recovery_data = {
+                "installation_root": str(root), "transaction_id": transaction_id,
+                "previous_manifest": active,
+                "files": [dict(destination=str(dst), snapshot=str(src), existed=existed,
+                               sha256=self._hash(src) if existed else None)
+                          for dst, src, existed in rollback_state],
+                "legacy_paths": [str(path) for path in legacy_paths],
+                "legacy_backups": [],
+            }
+            AssetStore._atomic_json(rollback_root / "recovery.json", recovery_data)
             try:
                 if installs_echo:
                     original_engine = next(
@@ -485,6 +660,13 @@ class DeploymentManager:
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(legacy_path, backup)
                     migrated_legacy.append((legacy_path, backup))
+                    snapshot_files = list(backup.rglob("*")) if backup.is_dir() else [backup]
+                    recovery_data["legacy_backups"].append({
+                        "destination": str(legacy_path),
+                        "hashes": {str(path.relative_to(backup)) if backup.is_dir() else ".": self._hash(path)
+                                   for path in snapshot_files if path.is_file()},
+                    })
+                    AssetStore._atomic_json(rollback_root / "recovery.json", recovery_data)
                     self._copy_tree_or_file_once(
                         backup, self.preinsert / "legacy-addons" / legacy_path.name
                     )
@@ -550,6 +732,7 @@ class DeploymentManager:
                 manifest = {
                     "schema_version": 1,
                     "target": self.TARGET_ID,
+                    "installation_root": str(root),
                     "profile_id": profile_id,
                     "fingerprint": fingerprint,
                     "transaction_id": transaction_id,
@@ -579,17 +762,19 @@ class DeploymentManager:
                                 destination.unlink()
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         os.replace(backup, destination)
-                    except OSError:
-                        pass
+                    except OSError as rollback_error:
+                        rollback_failures.append(dict(path=str(destination), error=str(rollback_error)))
                 for destination, snapshot, existed in reversed(rollback_state):
                     try:
-                        if existed and snapshot.is_file():
+                        if existed:
+                            if not snapshot.is_file():
+                                raise OSError(f"Recovery snapshot is missing: {snapshot}")
                             destination.parent.mkdir(parents=True, exist_ok=True)
                             self._atomic_copy(snapshot, destination)
                         elif destination.exists():
                             destination.unlink()
-                    except OSError:
-                        pass
+                    except OSError as rollback_error:
+                        rollback_failures.append(dict(path=str(destination), error=str(rollback_error)))
                 self.store.audit(
                     "deployment_rolled_back",
                     outcome="failed",
@@ -598,10 +783,22 @@ class DeploymentManager:
                     transaction_id=transaction_id,
                     error=type(error).__name__,
                     message=str(error),
+                    rollback_failures=rollback_failures,
+                    recovery_directory=str(rollback_root) if rollback_failures else None,
                 )
+                if rollback_failures:
+                    recovery_data["failures"] = rollback_failures
+                    AssetStore._atomic_json(self.backup_root / "pending-recovery.json", {
+                        "recovery_directory": str(rollback_root), **recovery_data,
+                    })
+                    raise DeploymentConflictError(
+                        f"Deployment failed and rollback is incomplete; recovery files retained at {rollback_root}. "
+                        f"Affected files: {', '.join(item['path'] for item in rollback_failures)}"
+                    ) from error
                 raise
             finally:
-                shutil.rmtree(rollback_root, ignore_errors=True)
+                if not rollback_failures:
+                    shutil.rmtree(rollback_root, ignore_errors=True)
 
     @staticmethod
     def _replace_with_retry(source, destination):

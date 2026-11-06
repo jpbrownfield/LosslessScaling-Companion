@@ -17,6 +17,7 @@ from typing import Callable, Dict, Set, Optional, TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 from websockets.legacy.server import WebSocketServerProtocol, serve
 from websockets.exceptions import ConnectionClosed
+from pydantic import ValidationError
 
 from ..core.models import (
     AppConfig,
@@ -29,6 +30,7 @@ from ..core.models import (
 )
 from ..core.profile_manager import GAME_DEFAULT_PROFILE_NAME, ProfileManager
 from ..core.state import AppState
+from ..core.config_validation import validation_issues
 from .process_watcher import ProcessWatcher
 from .automation import AutomationController
 from .overlay_indicator import production_indicator
@@ -46,6 +48,7 @@ from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
 from .input_simulator import InputSimulator
 from .self_update import CompanionUpdateService
+from .automatic_updates import AutomaticUpdates
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
 from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels
@@ -63,6 +66,7 @@ class CompanionWebSocketServer:
     COMPONENT_ACTIONS = {
         "INSTALL_LATEST_GRAPHICS_ADDON", "STAGE_GRAPHICS_RELEASE", "IMPORT_GRAPHICS_SOURCE",
         "DOWNLOAD_COMPANION_UPDATE", "APPLY_COMPANION_UPDATE", "INSTALL_COMPANION_UPDATE",
+        "RETRY_DEPLOYMENT_RECOVERY",
     }
 
     def _lossless_scaling_found(self) -> bool:
@@ -137,6 +141,15 @@ class CompanionWebSocketServer:
         )
         self.companion_update_status: Optional[Dict] = None
         self.companion_update_lock = asyncio.Lock()
+        self._automatic_update_client = None
+        self._update_handoff = False
+        self.automatic_updates = AutomaticUpdates(self)
+        self._next_update_check = 0.0
+        self._active_mutations = 0
+        self._editing_clients = set()
+        self.automation.profile_changes_blocked = lambda: bool(
+            self._editing_clients or self._active_mutations
+        )
 
     async def start(self) -> None:
         logger.info(f"Starting WebSocket server on {self.config.host}:{self.config.port}...")
@@ -209,6 +222,10 @@ class CompanionWebSocketServer:
             await websocket.close(code=1008, reason="Origin not allowed")
             return
         query_token = parse_qs(parsed_path.query).get("token", [None])[0]
+        if self._is_dashboard_origin(origin) and not secrets.compare_digest(query_token or '', self.dashboard_token):
+            logger.info('Dashboard session expired; requesting session renewal')
+            await websocket.close(code=4001, reason='Dashboard session expired')
+            return
         if self._is_dashboard_origin(origin) and secrets.compare_digest(
             query_token or "", self.dashboard_token
         ):
@@ -246,13 +263,12 @@ class CompanionWebSocketServer:
                 active = self.state.current_active_profile
                 if active and self.config.addon_manager_enabled:
                     await asyncio.to_thread(
-                        self.automation.addon_configs.capture,
-                        active,
-                        self.config.lossless_scaling_exe_path,
+                        self.automation.capture_active_addon_config,
                     )
                 await asyncio.to_thread(self.proxy_menu.detach, hide=True)
             self.clients.remove(websocket)
             self.client_authority.pop(websocket, None)
+            self._editing_clients.discard(websocket)
             self.state.connected_clients = len(self.clients)
             logger.info(f"Client disconnected. Total clients: {self.state.connected_clients}")
 
@@ -262,18 +278,37 @@ class CompanionWebSocketServer:
         except (ValueError, TypeError):
             return await self._process_message(websocket, raw_message)
         action = message.get("type") if isinstance(message, dict) else None
+        if (self.state.update_in_progress and websocket is not self._automatic_update_client
+                and not (isinstance(action, str) and (action.startswith("GET_") or action == "PING"))):
+            await websocket.send(json.dumps({"type": "ERROR", "action": action,
+                                            "message": "Companion is installing updates. Try again when it finishes."}))
+            return
         if action not in self.COMPONENT_ACTIONS or self.client_authority.get(websocket) != "dashboard":
-            return await self._process_message(websocket, raw_message)
+            mutation = isinstance(action, str) and not (action.startswith("GET_") or action == "PING")
+            if mutation:
+                self._active_mutations += 1
+            try:
+                return await self._process_message(websocket, raw_message)
+            finally:
+                if mutation:
+                    self._active_mutations -= 1
         if self.component_install_lock.locked():
             await websocket.send(json.dumps(self.component_operation_status))
             await websocket.send(json.dumps({"type": "ERROR", "message": "Another component download/install is in progress"}))
             return
         async with self.component_install_lock:
             provider = "companion" if "COMPANION_UPDATE" in action else str(message.get("provider") or "")
+            if provider == 'companion' and self._editing_clients:
+                await websocket.send(json.dumps({'type': 'ERROR', 'action': action, 'message': 'Close profile editors before updating Companion.'}))
+                return
+            owns_maintenance = provider == "companion" and not self.state.update_in_progress
+            if owns_maintenance and not await self._run_background_thread(self.automation.begin_update):
+                await websocket.send(json.dumps({"type": "ERROR", "action": action, "message": "Wait for scaling to stop before updating Companion."}))
+                return
             self.component_operation_status = {
                 "type": "COMPONENT_OPERATION", "provider": provider, "busy": True,
                 "phase": "checking", "receivedBytes": 0, "totalBytes": 0,
-                "version": message.get("version"),
+                "version": message.get("version"), "automatic": websocket is self._automatic_update_client,
             }
             queue = asyncio.Queue()
             loop = asyncio.get_running_loop()
@@ -300,10 +335,15 @@ class CompanionWebSocketServer:
                 if not task.done():
                     await asyncio.shield(task)
                 self._component_progress_callback = None
-                self.component_operation_status["busy"] = False
+                self.component_operation_status["busy"] = self._update_handoff
+                if self._update_handoff:
+                    self.component_operation_status["phase"] = "restarting"
+                elif owns_maintenance:
+                    await self._run_background_thread(self.automation.end_update)
                 await self._broadcast_component_operation(websocket)
 
     async def _broadcast_component_operation(self, requester=None):
+        self.component_operation_status["locked"] = self.state.update_in_progress
         recipients = set(self.clients)
         if requester:
             recipients.add(requester)
@@ -319,12 +359,13 @@ class CompanionWebSocketServer:
         return result
 
     async def _process_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> Optional[Exception]:
+        msg = {}
         try:
             msg = json.loads(raw_message)
             msg_type = msg.get("type")
 
             dashboard_messages = {
-                "UPDATE_LOSSLESS_PROFILE",
+                "UPDATE_LOSSLESS_PROFILE", "SET_EDITOR_ACTIVITY",
                 "IMPORT_LOSSLESS_PROFILE",
                 "SET_ACTIVE_PROFILE",
                 "SAVE_PROFILE",
@@ -359,6 +400,7 @@ class CompanionWebSocketServer:
                 "DOWNLOAD_COMPANION_UPDATE",
                 "APPLY_COMPANION_UPDATE",
                 "INSTALL_COMPANION_UPDATE",
+                "REPAIR_SETTING", "RETRY_DEPLOYMENT_RECOVERY",
             }
             extension_messages = {"BROWSER_FULLSCREEN_EVENT", "MANUAL_TRIGGER"}
             authority = self.client_authority.get(websocket, "readonly")
@@ -366,6 +408,31 @@ class CompanionWebSocketServer:
                 raise PermissionError("Dashboard capability token required")
             if msg_type in extension_messages and authority not in {"dashboard", "extension"}:
                 raise PermissionError("Automation messages require an authorized local client")
+
+            if msg_type == "GET_NOTIFICATIONS":
+                await websocket.send(json.dumps({"type": "NOTIFICATIONS", **self._notifications_payload()}))
+                return
+            if msg_type == "SET_EDITOR_ACTIVITY":
+                if msg.get("editing") is True:
+                    self._editing_clients.add(websocket)
+                else:
+                    self._editing_clients.discard(websocket)
+                return
+            if msg_type == "REPAIR_SETTING":
+                await asyncio.to_thread(self.profile_manager.repair_setting, msg.get("path"), msg.get("value"))
+                await self.broadcast_full_data_update()
+                await websocket.send(json.dumps({"type": "NOTIFICATIONS", **self._notifications_payload()}))
+                return
+            if self.profile_manager.repair_session and not (
+                str(msg_type).startswith("GET_") or msg_type in {"PING", "OPEN_CONFIG_FOLDER"}
+            ):
+                raise ValueError("Repair saved settings and restart Companion before changing other settings or scaling")
+            if msg_type == "RETRY_DEPLOYMENT_RECOVERY":
+                if self.state.is_scaling_active:
+                    raise ValueError("Stop scaling before retrying deployment recovery")
+                await self._run_background_thread(self.automation.retry_deployment_recovery)
+                await websocket.send(json.dumps({"type": "NOTIFICATIONS", **self._notifications_payload()}))
+                return
 
             if msg_type == "PING":
                 await websocket.send(json.dumps({"type": "PONG", "timestamp": msg.get("timestamp")}))
@@ -483,6 +550,7 @@ class CompanionWebSocketServer:
                     "type": "ADDON_CONFIG_SAVED", "profileId": profile.id,
                     "generation": msg.get("generation"), "config": profile.addon_config,
                     "pending": configs.has_pending(profile),
+                    "restartPending": self.automation.profile_reload_pending(profile.id),
                 }))
                 await self.broadcast_full_data_update()
                 return
@@ -606,9 +674,7 @@ class CompanionWebSocketServer:
                 active = self.state.current_active_profile
                 if active and self.config.addon_manager_enabled:
                     await asyncio.to_thread(
-                        self.automation.addon_configs.capture,
-                        active,
-                        self.config.lossless_scaling_exe_path,
+                        self.automation.capture_active_addon_config,
                     )
                 if self.proxy_menu:
                     await asyncio.to_thread(self.proxy_menu.detach, hide=True)
@@ -671,7 +737,12 @@ class CompanionWebSocketServer:
 
             if msg_type == "SAVE_RESHADE_PROFILE":
                 profile = ManagedReshadeProfile.model_validate(msg.get("profile") or {})
+                previous = next((item for item in self.config.reshade_profiles if item.id == profile.id), None)
                 result = await asyncio.to_thread(self.reshade_profiles.save, profile)
+                active = self.state.current_active_profile
+                if (previous != profile and active and active.reshade
+                        and active.reshade.enabled and active.reshade.managed_profile_id == profile.id):
+                    await asyncio.to_thread(self.automation.apply_saved_profile, active)
                 await websocket.send(json.dumps({"type": "RESHADE_PROFILE_SAVED", "profile": result}))
                 return
 
@@ -811,6 +882,10 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_GENERAL_SETTINGS":
+                notify_updates = msg.get("notifyOnUpdates", self.config.notify_on_updates)
+                automatic_updates = msg.get("automaticallyInstallUpdates", self.config.automatically_install_updates)
+                if type(notify_updates) is not bool or type(automatic_updates) is not bool:
+                    raise ValueError("Update preferences must be checkboxes")
                 run_at_startup = bool(msg.get("runAtStartup", False))
                 previous_addon_manager_enabled = self.config.addon_manager_enabled
                 requested_addon_manager_enabled = bool(
@@ -979,6 +1054,9 @@ class CompanionWebSocketServer:
 
                 self._apply_hotkey_override_settings(msg)
                 self.config.run_at_startup = run_at_startup
+                self.config.notify_on_updates = notify_updates
+                self.config.automatically_install_updates = automatic_updates
+                self._next_update_check = 0.0
                 self.config.addon_manager_enabled = requested_addon_manager_enabled
                 self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
@@ -1080,7 +1158,9 @@ class CompanionWebSocketServer:
                 releases = await asyncio.to_thread(
                     self.release_manager.check, provider, channel="stable", force=True
                 )
-                release = next((item for item in releases if item.get("assets")), None)
+                requested_version = str(msg.get("version") or "") if websocket is self._automatic_update_client else ""
+                release = next((item for item in releases if item.get("assets")
+                                and (not requested_version or str(item.get("version") or "") == requested_version)), None)
                 if release is None:
                     raise ValueError(f"No downloadable stable release is available for {provider}")
                 if self.component_operation_status:
@@ -1111,16 +1191,17 @@ class CompanionWebSocketServer:
                     active_profile = self.state.current_active_profile
                     if active_profile:
                         await asyncio.to_thread(
-                            self.automation.addon_configs.capture,
-                            active_profile,
-                            self.config.lossless_scaling_exe_path,
+                            self.automation.capture_active_addon_config,
                         )
-                    self.config.addon_manager.enabled = True
+                        active_profile = self.state.current_active_profile
+                    if websocket is not self._automatic_update_client:
+                        self.config.addon_manager.enabled = True
                     self.config.addon_manager.version = str(result.get("version") or "") or None
-                    self.config.addon_manager_enabled = True
+                    if websocket is not self._automatic_update_client:
+                        self.config.addon_manager_enabled = True
                     await asyncio.to_thread(self.profile_manager.save_config)
                     active_redeployed = False
-                    if active_profile and self._lossless_scaling_found():
+                    if active_profile and self.config.addon_manager_enabled and self._lossless_scaling_found():
                         await asyncio.to_thread(
                             self.automation.activate_profile,
                             active_profile,
@@ -1334,19 +1415,14 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({
                     "type": "COMPANION_INSTALLER_STARTING", "version": version,
                 }))
-                launched = await asyncio.to_thread(
-                    self.companion_updater.launch_installer, version
-                )
+                launched = await self._launch_companion_installer(version, automatic=websocket is self._automatic_update_client)
                 await websocket.send(json.dumps(launched))
                 if self.on_installer_launched:
                     asyncio.get_running_loop().call_soon(self.on_installer_launched)
                 return
 
             if msg_type == "INSTALL_COMPANION_UPDATE":
-                result = await asyncio.to_thread(
-                    self.companion_updater.launch_installer,
-                    str(msg.get("version") or ""),
-                )
+                result = await self._launch_companion_installer(str(msg.get("version") or ""))
                 await websocket.send(json.dumps(result))
                 if self.on_installer_launched:
                     asyncio.get_running_loop().call_soon(self.on_installer_launched)
@@ -1672,63 +1748,11 @@ class CompanionWebSocketServer:
                         )
                     )
                     if native_settings_changed:
-                        native_values = dict(prof.native_scaling_settings)
                         if (
                             self.config.lossless_control_configured
                             and self.config.disable_native_auto_scale
                         ):
-                            native_values["AutoScale"] = False
                             prof.native_scaling_settings["AutoScale"] = "false"
-                        native_settings_available = self.ls_settings.path.is_file()
-                        if native_settings_available:
-                            was_running = bool(
-                                self.process_watcher
-                                and await asyncio.to_thread(
-                                    self.process_watcher.check_is_lossless_scaling_running
-                                )
-                            )
-                            if was_running and not await asyncio.to_thread(
-                                self.process_watcher.stop_lossless_scaling
-                            ):
-                                raise RuntimeError(
-                                    "Lossless Scaling could not be stopped for the profile settings update"
-                                )
-                            try:
-                                if prof.is_default:
-                                    updated = await asyncio.to_thread(
-                                        self.ls_settings.update_profile,
-                                        prof.lossless_profile_title,
-                                        native_values,
-                                    )
-                                    if not updated:
-                                        raise RuntimeError(
-                                            "The native Lossless Scaling default profile could not be found; "
-                                            "no replacement profile was created"
-                                        )
-                                else:
-                                    await asyncio.to_thread(
-                                        self.ls_settings.upsert_profile,
-                                        prof.lossless_profile_title,
-                                        native_values,
-                                        template_title=(
-                                            previous.lossless_profile_title
-                                            if previous and previous.lossless_profile_title
-                                            else next(
-                                                (
-                                                    item.lossless_profile_title
-                                                    for item in self.config.profiles
-                                                    if item.is_default and item.lossless_profile_title
-                                                ),
-                                                None,
-                                            )
-                                        ),
-                                    )
-                            finally:
-                                if was_running:
-                                    await asyncio.to_thread(
-                                        self.process_watcher.launch_lossless_scaling,
-                                        force=True,
-                                    )
                         prof.last_imported_hash = None
                     if prof.is_default:
                         self.config.default_addon_config = json.loads(
@@ -1749,17 +1773,27 @@ class CompanionWebSocketServer:
                     )
                     await asyncio.to_thread(self.profile_manager.save_config)
                     logger.info(f"Saved profile: {prof.name}")
-                    if self.state.current_active_profile and self.state.current_active_profile.id == prof.id:
+                    if previous is None or previous != prof:
+                        if previous is None or previous.addon_config != prof.addon_config:
+                            self.automation.addon_configs.mark_edited(prof)
                         await asyncio.to_thread(
-                            self.automation.activate_profile,
+                            self.automation.apply_saved_profile,
                             prof,
-                            prof.target_executable_path,
-                            force=True,
+                            native_settings=self.ls_settings if native_settings_changed else None,
+                            template_title=(
+                                previous.lossless_profile_title
+                                if previous and previous.lossless_profile_title
+                                else next((
+                                    item.lossless_profile_title for item in self.config.profiles
+                                    if item.is_default and item.lossless_profile_title
+                                ), None)
+                            ),
                         )
                     await websocket.send(json.dumps({
                         "type": "PROFILE_SAVED",
                         "profile": prof.model_dump(mode="json"),
                         "requestId": msg.get("requestId"),
+                        "restartPending": self.automation.profile_reload_pending(prof.id),
                     }))
                     await self.broadcast_full_data_update()
                 return
@@ -1802,7 +1836,15 @@ class CompanionWebSocketServer:
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             try:
-                await websocket.send(json.dumps({"type": "ERROR", "message": str(e)}))
+                context = msg if isinstance(msg, dict) else {}
+                profile_data = context.get("profile") or {}
+                details = validation_issues(e, profile_data, profile_id=profile_data.get("id")) if (
+                    isinstance(e, ValidationError) and isinstance(profile_data, dict) and context.get("type") == "SAVE_PROFILE"
+                ) else []
+                await websocket.send(json.dumps({"type": "ERROR", "message": str(e),
+                    "code": "DASHBOARD_CAPABILITY_REQUIRED" if isinstance(e, PermissionError) and str(e) == "Dashboard capability token required" else None,
+                    "action": context.get("type"), "profileId": profile_data.get("id") if isinstance(profile_data, dict) else None,
+                    "requestId": context.get("requestId"), "validationErrors": details}))
             except Exception:
                 pass
             return e
@@ -1915,10 +1957,13 @@ class CompanionWebSocketServer:
         return False
 
     def _is_dashboard_origin(self, origin: Optional[str]) -> bool:
+        port = self.config.port
+        if self.server and self.server.sockets:
+            port = self.server.sockets[0].getsockname()[1]
         return origin in {
-            f"http://127.0.0.1:{self.config.port}",
-            f"http://localhost:{self.config.port}",
-            f"http://[::1]:{self.config.port}",
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+            f"http://[::1]:{port}",
         }
 
     async def process_http_request(self, path, request_headers):
@@ -1968,7 +2013,7 @@ class CompanionWebSocketServer:
             (
                 "Content-Security-Policy",
                 "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                f"connect-src ws://127.0.0.1:{self.config.port} "
+                f"connect-src 'self' ws://127.0.0.1:{self.config.port} "
                 f"ws://localhost:{self.config.port} ws://[::1]:{self.config.port}",
             ),
         ], body
@@ -2184,16 +2229,28 @@ class CompanionWebSocketServer:
         await asyncio.sleep(30)
         force = False
         while True:
+            if time.monotonic() >= self._next_update_check:
+                try:
+                    await self._refresh_addon_updates(force=force)
+                    await self._refresh_companion_update(force=force)
+                except Exception as error:
+                    logger.warning("Scheduled update check failed: %s", error)
+                self._next_update_check = time.monotonic() + self.config.update_check_interval_hours * 3600
+                force = True
             try:
-                await self._refresh_addon_updates(force=force)
+                await self.automatic_updates.run_pending()
             except Exception:
-                logger.warning("Daily add-on update check failed", exc_info=True)
-            try:
-                await self._refresh_companion_update(force=force)
-            except Exception as error:
-                logger.warning("Daily companion update check failed: %s", error)
-            force = True
-            await asyncio.sleep(24 * 60 * 60)
+                logger.exception("Automatic update failed")
+            await asyncio.sleep(30)
+
+    async def _launch_companion_installer(self, version: str, *, automatic: bool = False) -> Dict:
+        if self.component_operation_status:
+            self.component_operation_status.update(phase='installing', receivedBytes=0, totalBytes=0)
+            await self._broadcast_component_operation()
+        kwargs = {"automatic": True} if automatic else {}
+        result = await self._run_background_thread(self.companion_updater.launch_installer, version, **kwargs)
+        self._update_handoff = True
+        return result
 
     async def _refresh_companion_update(self, *, force: bool) -> Dict:
         async with self.companion_update_lock:
@@ -2261,9 +2318,13 @@ class CompanionWebSocketServer:
 
     async def apply_companion_update(self, version: str) -> Dict:
         """Download, verify, and launch an update requested outside the dashboard."""
-        if self.component_install_lock.locked():
+        if self.component_install_lock.locked() or self.state.update_in_progress:
             raise RuntimeError("Another component download/install is in progress")
+        if self._editing_clients or self._active_mutations:
+            raise RuntimeError("Close profile editors and wait for settings to save before updating Companion")
         async with self.component_install_lock:
+            if not await self._run_background_thread(self.automation.begin_update):
+                raise RuntimeError("Wait for scaling to stop before updating Companion")
             self.component_operation_status = {
                 "type": "COMPONENT_OPERATION", "provider": "companion", "busy": True,
                 "phase": "checking", "receivedBytes": 0, "totalBytes": 0,
@@ -2289,13 +2350,17 @@ class CompanionWebSocketServer:
                     await self._download_companion_update(BroadcastProgress(), normalized)
                 self.component_operation_status.update(phase="installing", receivedBytes=0, totalBytes=0)
                 await self._broadcast_component_operation()
-                launched = await self._run_background_thread(self.companion_updater.launch_installer, normalized)
+                launched = await self._launch_companion_installer(normalized)
                 self.component_operation_status["phase"] = "complete"
             except Exception as error:
                 self.component_operation_status.update(phase="failed", error=str(error))
                 raise
             finally:
-                self.component_operation_status["busy"] = False
+                self.component_operation_status["busy"] = self._update_handoff
+                if self._update_handoff:
+                    self.component_operation_status["phase"] = "restarting"
+                else:
+                    await self._run_background_thread(self.automation.end_update)
                 await self._broadcast_component_operation()
         if self.on_installer_launched:
             asyncio.get_running_loop().call_soon(self.on_installer_launched)
@@ -2609,6 +2674,7 @@ class CompanionWebSocketServer:
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
+            **self._notifications_payload(),
             "simulationMode": self.state.simulation_mode,
             "processes": procs,
             "profiles": self._profile_summaries(),
@@ -2630,6 +2696,7 @@ class CompanionWebSocketServer:
         procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
         payload = json.dumps({
             "type": "FULL_DATA_UPDATE",
+            **self._notifications_payload(),
             "simulationMode": self.state.simulation_mode,
             "processes": procs,
             "profiles": self._profile_summaries(),
@@ -2644,6 +2711,18 @@ class CompanionWebSocketServer:
             "scalingControl": self.state.scaling_control_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
+
+    def _notifications_payload(self) -> Dict:
+        try:
+            recovery = self.automation.deployment_manager.recovery_status(self.config.lossless_scaling_exe_path)
+        except (OSError, ValueError, RuntimeError) as error:
+            recovery = {"message": str(error), "retryAvailable": False}
+        return {"notifications": {
+            "settingsIssues": self.profile_manager.validation_issues,
+            "repairSession": self.profile_manager.repair_session,
+            "restartRequired": self.profile_manager.repair_session and not self.profile_manager.validation_issues,
+            "deploymentRecovery": recovery,
+        }}
 
     def _control_settings_payload(self) -> Dict:
         selected_process_lasso_log = ProcessLassoLogTailer.resolve_path(
@@ -2660,6 +2739,8 @@ class CompanionWebSocketServer:
             )
         return {
             "smartAutoScaleEnabled": self.config.disable_native_auto_scale,
+            "notifyOnUpdates": self.config.notify_on_updates,
+            "automaticallyInstallUpdates": self.config.automatically_install_updates,
             "snapNearFullscreenWindowsToMonitor": (
                 self.config.snap_near_fullscreen_windows_to_monitor
             ),
@@ -2741,6 +2822,7 @@ class CompanionWebSocketServer:
             return
         payload = json.dumps({
             "type": "STATE_UPDATE",
+            **self._notifications_payload(),
             "simulationMode": self.state.simulation_mode,
             "isScalingActive": self.state.is_scaling_active,
             "losslessScalingFound": self._lossless_scaling_found(),

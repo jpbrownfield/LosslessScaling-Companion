@@ -19,10 +19,12 @@ let reconnectTimer = null;
 let heartbeatTimer = null;
 let reconnectAttempts = 0;
 let cachedSettings = { ...DEFAULT_SETTINGS };
+let settingsLoaded = false;
 
 // Load settings
 chrome.storage.local.get(DEFAULT_SETTINGS, (items) => {
-  cachedSettings = items;
+  cachedSettings = { ...DEFAULT_SETTINGS, ...items };
+  settingsLoaded = true;
   connectWebSocket();
 });
 
@@ -40,14 +42,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
     for (const key in changes) {
       cachedSettings[key] = changes[key].newValue;
     }
-    if (changes.wsPort && socket) {
-      socket.close();
-      connectWebSocket();
+    if (changes.wsPort && settingsLoaded) {
+      restartWebSocket();
     }
   }
 });
 
 function connectWebSocket() {
+  if (!settingsLoaded) return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -59,9 +61,11 @@ function connectWebSocket() {
   console.log(`[LS Bridge] Connecting to ${wsUrl}...`);
 
   try {
-    socket = new WebSocket(wsUrl);
+    const connection = new WebSocket(wsUrl);
+    socket = connection;
 
-    socket.onopen = () => {
+    connection.onopen = () => {
+      if (socket !== connection) return;
       console.log('[LS Bridge] Connected to Python companion.');
       isConnected = true;
       reconnectAttempts = 0;
@@ -69,13 +73,14 @@ function connectWebSocket() {
 
       // Start heartbeat
       heartbeatTimer = setInterval(() => {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+        if (socket === connection && connection.readyState === WebSocket.OPEN) {
+          connection.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
         }
       }, 15000);
     };
 
-    socket.onmessage = (event) => {
+    connection.onmessage = (event) => {
+      if (socket !== connection) return;
       try {
         const msg = JSON.parse(event.data);
         handleServerMessage(msg);
@@ -84,7 +89,9 @@ function connectWebSocket() {
       }
     };
 
-    socket.onclose = () => {
+    connection.onclose = () => {
+      if (socket !== connection) return;
+      socket = null;
       console.log('[LS Bridge] Disconnected. Retrying with backoff...');
       isConnected = false;
       updateConnectionStatus(false);
@@ -92,7 +99,8 @@ function connectWebSocket() {
       scheduleReconnect();
     };
 
-    socket.onerror = (err) => {
+    connection.onerror = (err) => {
+      if (socket !== connection) return;
       console.warn('[LS Bridge] WebSocket error:', err);
       // onclose will trigger next
     };
@@ -102,6 +110,17 @@ function connectWebSocket() {
     updateConnectionStatus(false);
     scheduleReconnect();
   }
+}
+
+function restartWebSocket() {
+  const previous = socket;
+  socket = null;
+  clearTimeout(reconnectTimer);
+  clearInterval(heartbeatTimer);
+  isConnected = false;
+  updateConnectionStatus(false);
+  if (previous) previous.close();
+  connectWebSocket();
 }
 
 function updateConnectionStatus(connected) {
@@ -189,12 +208,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'RECONNECT') {
-    if (socket) socket.close();
-    connectWebSocket();
+    restartWebSocket();
     sendResponse({ status: 'reconnecting' });
     return true;
   }
 });
-
-// Auto-connect on startup / service worker wakeup
-connectWebSocket();

@@ -71,10 +71,14 @@ class CompanionApplication:
                 self.profile_manager.save_config()
         self.state = AppState()
         self.state.simulation_mode = self.simulation_mode
-        self.state.auto_scale_enabled = self.profile_manager.config.disable_native_auto_scale
+        self.state.auto_scale_enabled = (
+            self.profile_manager.config.disable_native_auto_scale
+            and not self.profile_manager.repair_session
+        )
         self.ls_settings = LosslessSettingsXml(self.profile_manager.config.lossless_settings_xml_path)
         self._settings_backup_ready = bool(self.ls_settings.ensure_initial_backup())
-        self.profile_manager.ensure_lossless_default_profile(self.ls_settings.get_profile())
+        if not self.profile_manager.repair_session:
+            self.profile_manager.ensure_lossless_default_profile(self.ls_settings.get_profile())
         self._next_settings_backup_check = 0.0
         self.ls_inspector = LosslessScalingInspector(
             settings_xml_path=self.profile_manager.config.lossless_settings_xml_path,
@@ -277,6 +281,9 @@ class CompanionApplication:
             try:
                 if self._instance_guard and self._instance_guard.consume_dashboard_request():
                     self.tray._open_dashboard(None, None)
+                if self.profile_manager.repair_session or self.state.update_in_progress:
+                    time.sleep(0.5)
+                    continue
                 if (
                     not self._settings_backup_ready
                     and time.monotonic() >= self._next_settings_backup_check
@@ -383,11 +390,14 @@ class CompanionApplication:
 
         # Check / Launch Lossless Scaling
         self._native_auto_scale_enforced = bool(
+            not self.profile_manager.repair_session
+            and
             self.profile_manager.config.lossless_control_configured
             and self.process_watcher.enforce_helper_scaling_control()
         )
-        self.process_watcher.launch_lossless_scaling_if_needed()
-        self.hotkey_listener.start()
+        if not self.profile_manager.repair_session:
+            self.process_watcher.launch_lossless_scaling_if_needed()
+            self.hotkey_listener.start()
 
         # Start Server Thread
         self.server_thread = threading.Thread(target=self._run_async_server, daemon=True, name="WSServerThread")

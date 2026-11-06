@@ -18,3 +18,8 @@ jobs:
       - run: node tests/check_javascript.js
       - run: node tests/test_addon_editor.js
       - run: node tests/test_component_updates.js
+      - run: node tests/test_extension_background.js
+      - run: node tests/test_notifications.js
+      - run: node tests/test_dashboard_navigation.js
+      - run: node tests/test_update_lock.js
+      - run: node tests/test_dashboard_session.js

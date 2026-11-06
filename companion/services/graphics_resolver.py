@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from ..core.models import ManagedPackageConfig, Profile, SpecialKConfig
 from .asset_store import AssetStore
 from .input_simulator import InputSimulator
+from .deployment_manager import DeploymentManager
 
 
 class GraphicsResolutionError(RuntimeError):
@@ -273,9 +274,9 @@ class GraphicsResolver:
         executable = Path(lossless_scaling_exe).resolve()
         if executable.name.casefold() != "losslessscaling.exe":
             raise GraphicsResolutionError("LosslessProxy may only replace LosslessScaling.exe's engine")
-        managed_backup = (
-            self.store.backups / "lossless-scaling" / "originals" / "Lossless.dll"
-        )
+        deployment = DeploymentManager(self.store)
+        deployment._read_manifest(lossless_scaling_exe)
+        managed_backup = deployment.originals / "Lossless.dll"
         legacy_original = executable.parent / "Lossless_original.dll"
         # LosslessProxy and early Echo installs already moved the genuine engine
         # here. Prefer it over a live Lossless.dll that may itself be a proxy host.

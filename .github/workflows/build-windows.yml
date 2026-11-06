@@ -77,6 +77,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Dashboard JavaScript validation failed" }
           node tests/test_component_updates.js
           if ($LASTEXITCODE -ne 0) { throw "Component update UI tests failed" }
+          node tests/test_extension_background.js
+          if ($LASTEXITCODE -ne 0) { throw "Browser extension tests failed" }
+          node tests/test_notifications.js
+          if ($LASTEXITCODE -ne 0) { throw "Notification UI tests failed" }
+          node tests/test_update_lock.js
+          if ($LASTEXITCODE -ne 0) { throw "Update maintenance UI tests failed" }
+          node tests/test_dashboard_session.js
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard session renewal tests failed" }
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -262,6 +270,27 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "tag=$tag"
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "from_commit=$fromCommit"
 
+      - name: Build and verify updater installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $compiler = Get-ChildItem -Path "${env:ProgramFiles(x86)}/Inno Setup*/ISCC.exe", "$env:ProgramFiles/Inno Setup*/ISCC.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $compiler) { throw "Inno Setup compiler was not installed" }
+          $version = $env:LS_COMPANION_VERSION -replace '-dev$', ''
+          & $compiler "/DMyAppVersion=$version" installer/LosslessCompanion.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+          $installer = "dist/installer/LosslessCompanion-Setup-x64.exe"
+          $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  LosslessCompanion-Setup-x64.exe" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii -NoNewline
+
+      - name: Upload verified updater installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: LosslessCompanion-updater-${{ github.sha }}
+          path: dist/installer/
+          if-no-files-found: error
+
       - name: Publish Windows release
         if: steps.release_version.outputs.tag != ''
         shell: pwsh
@@ -270,17 +299,8 @@ jobs:
           RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
           RELEASE_FROM_COMMIT: ${{ steps.release_version.outputs.from_commit }}
         run: |
-          choco install innosetup --no-progress -y
-          $version = $env:RELEASE_TAG.TrimStart('v')
-          $compiler = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
-          & $compiler "/DMyAppVersion=$version" installer/LosslessCompanion.iss
-          if ($LASTEXITCODE -ne 0) {
-            throw "Inno Setup compilation failed"
-          }
           $installer = "dist/installer/LosslessCompanion-Setup-x64.exe"
           $checksum = "$installer.sha256"
-          $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$digest  LosslessCompanion-Setup-x64.exe" | Set-Content -LiteralPath $checksum -Encoding ascii -NoNewline
           $tag = $env:RELEASE_TAG
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {

@@ -8,10 +8,17 @@ import hashlib
 import threading
 import shutil
 import logging
+import copy
+import uuid
+import calendar
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
 from .models import AppConfig, Profile, HotkeyConfig, ReshadeConfig, DllOverrideConfig
 from .profile_settings import ProfileSettingsStore
+from pydantic import ValidationError
+from .config_validation import repair_preview, validation_issues, setting_value
 
 logger = logging.getLogger("LSCompanion.ProfileManager")
 
@@ -44,6 +51,10 @@ BROWSER_DEFAULT_PROFILE_NAME = "Browser Default"
 class ProfileManager:
     def __init__(self, config_dir: Optional[Path] = None):
         self._lock = threading.RLock()
+        self.validation_issues = []
+        self.repair_session = False
+        self._repair_data = None
+        self._repair_source = None
         if config_dir is None:
             legacy_dir = Path(os.path.dirname(os.path.dirname(__file__))) / "config"
             local_root = os.environ.get("LOCALAPPDATA")
@@ -62,8 +73,22 @@ class ProfileManager:
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.config_dir / "settings.json"
+        self._prune_settings_repair_copies()
         self.profile_settings = ProfileSettingsStore(self.config_dir)
         self.config: AppConfig = self.load_config()
+
+    def _prune_settings_repair_copies(self, now=None) -> None:
+        now = now or datetime.now(timezone.utc)
+        year, month = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+        cutoff = now.replace(year=year, month=month, day=min(now.day, calendar.monthrange(year, month)[1]))
+        for path in self.config_dir.glob("settings.before-repair-*.json"):
+            if not re.fullmatch(r"settings\.before-repair-[0-9a-f]{32}\.json", path.name):
+                continue
+            try:
+                if not path.is_symlink() and path.is_file() and path.stat().st_mtime < cutoff.timestamp():
+                    path.unlink()
+            except OSError:
+                logger.warning("Could not remove expired settings repair copy: %s", path, exc_info=True)
 
     def _get_default_config(self) -> AppConfig:
         default_game_profile = Profile(
@@ -222,20 +247,39 @@ class ProfileManager:
             with open(self.config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             config = AppConfig.model_validate(data)
-            self.profile_settings.restore(config.profiles)
-            if self._migrate_legacy_seed_profiles(config):
-                self.save_config(config)
+        except json.JSONDecodeError as error:
+            self._repair_source = self.config_file.read_bytes()
+            self.repair_session = True
+            self.validation_issues = [{
+                "path": [], "field": "settings.json", "profileId": None,
+                "kind": "json_document", "value": self._repair_source.decode("utf-8"),
+                "message": f"Invalid JSON on line {error.lineno}, column {error.colno}: {error.msg}",
+            }]
+            return self._get_default_config()
+        except ValidationError as error:
+            self._repair_data = copy.deepcopy(data)
+            self._repair_source = self.config_file.read_bytes()
+            self.repair_session = True
+            config = repair_preview(data)
+            self.validation_issues = validation_issues(error, data, preview=config)
+            # The dashboard may display valid portions, but runtime work and
+            # writes remain disabled until the document is repaired and restarted.
             return config
-        except Exception as e:
-            print(f"[ProfileManager] Error loading config: {e}. Generating defaults.")
-            default_cfg = self._get_default_config()
-            self.save_config(default_cfg)
-            return default_cfg
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"Cannot load settings from {self.config_file}; the existing file was preserved: {error}"
+            ) from error
+        self.profile_settings.restore(config.profiles)
+        if self._migrate_legacy_seed_profiles(config):
+            self.save_config(config)
+        return config
 
     def save_config(self, config: Optional[AppConfig] = None) -> None:
         with self._lock:
             if config is not None:
                 self.config = config
+            if self._repair_source is not None:
+                return
             self.profile_settings.prepare(self.config.profiles)
             temp_file = self.config_file.with_suffix(".json.tmp")
             with open(temp_file, "w", encoding="utf-8") as f:
@@ -247,6 +291,45 @@ class ProfileManager:
                 # A failed optional snapshot must not invalidate the successfully
                 # saved main configuration or cause load_config to reset it.
                 logger.exception("Settings saved, but profile JSON snapshots could not be synchronized; retrying on the next save")
+
+    def repair_setting(self, path: list, value) -> None:
+        with self._lock:
+            if self._repair_source is None:
+                raise ValueError("There are no saved settings waiting for repair")
+            if not any(issue["path"] == path for issue in self.validation_issues):
+                raise ValueError("Select a currently invalid setting")
+            if self.config_file.read_bytes() != self._repair_source:
+                raise ValueError("Settings changed outside Companion; restart to inspect the latest file")
+            candidate = copy.deepcopy(self._repair_data)
+            if path:
+                setting_value(candidate, path[:-1])[path[-1]] = value
+            else:
+                candidate = value
+            try:
+                repaired = AppConfig.model_validate(candidate)
+            except ValidationError as error:
+                self._repair_data = candidate
+                self.validation_issues = validation_issues(error, candidate, preview=self.config)
+                return
+            backup = self.config_file.with_name(f"settings.before-repair-{uuid.uuid4().hex}.json")
+            shutil.copyfile(self.config_file, backup)
+            # Keep the original recoverable if the final atomic save fails.
+            self._repair_data = None
+            original_source = self._repair_source
+            self._repair_source = None
+            previous = self.config
+            try:
+                self.save_config(repaired)
+            except OSError:
+                self._repair_data = candidate
+                self._repair_source = original_source
+                self.config = previous
+                raise
+            # Server and services share the same config object.
+            for name in type(repaired).model_fields:
+                setattr(previous, name, getattr(repaired, name))
+            self.config = previous
+            self.validation_issues = []
 
     def get_profile_by_id(self, profile_id: str) -> Optional[Profile]:
         for p in self.config.profiles:

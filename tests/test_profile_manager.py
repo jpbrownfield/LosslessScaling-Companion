@@ -1,5 +1,9 @@
 import tempfile
 import unittest
+import json
+import os
+from datetime import datetime, timezone
+from unittest.mock import patch
 from pathlib import Path
 
 from companion.core.models import Profile
@@ -18,6 +22,108 @@ class ProfileManagerTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_invalid_settings_are_preserved_without_starting_with_defaults(self):
+        profile = self.manager.create_profile_from_process("preserved.exe")
+        data = self.manager.config.model_dump()
+        data["port"] = "invalid-port"
+        content = json.dumps(data)
+        self.manager.config_file.write_text(content, encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        self.assertTrue(recovery.repair_session)
+        self.assertEqual(recovery.validation_issues[0]["path"], ["port"])
+        recovery.save_config()
+        self.assertEqual(self.manager.config_file.read_text(encoding="utf-8"), content)
+        self.manager.config_file.write_text('{"profiles": [', encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        self.assertTrue(recovery.repair_session)
+        self.assertIn("line 1, column", recovery.validation_issues[0]["message"])
+        recovery.save_config()
+        self.assertEqual(self.manager.config_file.read_text(encoding="utf-8"), '{"profiles": [')
+        data["port"] = 24892
+        recovery.repair_setting([], data)
+        self.assertEqual(json.loads(self.manager.config_file.read_text())["port"], 24892)
+        self.assertIn(profile.id, json.dumps(data))
+
+    def test_repairs_keep_original_until_all_settings_are_valid(self):
+        profile = self.manager.create_profile_from_process("preserved.exe")
+        data = self.manager.config.model_dump()
+        index = next(i for i, item in enumerate(data["profiles"]) if item["id"] == profile.id)
+        data["profiles"][index]["rtss"]["framerate_limit"] = 5000
+        data["port"] = "bad"
+        original = json.dumps(data)
+        self.manager.config_file.write_text(original, encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        self.assertEqual(len(recovery.validation_issues), 2)
+        self.assertEqual(recovery.validation_issues[1]["profileId"], profile.id)
+        recovery.repair_setting(["port"], 24892)
+        self.assertEqual(self.manager.config_file.read_text(), original)
+        recovery.repair_setting(["profiles", index, "rtss", "framerate_limit"], 90)
+        self.assertEqual(recovery.validation_issues, [])
+        self.assertTrue(recovery.repair_session)
+        backups = list(self.manager.config_dir.glob("settings.before-repair-*.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), original)
+        restarted = ProfileManager(self.manager.config_dir)
+        self.assertFalse(restarted.repair_session)
+        self.assertEqual(restarted.get_profile_by_id(profile.id).rtss.framerate_limit, 90)
+
+    def test_repair_refuses_to_overwrite_external_changes(self):
+        data = self.manager.config.model_dump()
+        data["port"] = "bad"
+        self.manager.config_file.write_text(json.dumps(data), encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        self.manager.config_file.write_text("external edit", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "changed outside"):
+            recovery.repair_setting(["port"], 24892)
+        self.assertEqual(self.manager.config_file.read_text(), "external edit")
+
+    def test_invalid_profile_identity_stays_linked_to_the_repair_preview(self):
+        data = self.manager.config.model_dump()
+        data["profiles"][1]["id"] = "../invalid"
+        data["profiles"][1]["rtss"]["framerate_limit"] = 5000
+        self.manager.config_file.write_text(json.dumps(data), encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        preview_id = recovery.config.profiles[1].id
+        self.assertNotEqual(preview_id, "../invalid")
+        recovery.repair_setting(["profiles", 1, "rtss", "framerate_limit"], 60)
+        self.assertEqual(recovery.validation_issues[0]["profileId"], preview_id)
+
+    def test_null_settings_document_cannot_be_overwritten_until_explicitly_repaired(self):
+        self.manager.config_file.write_text("null", encoding="utf-8")
+        recovery = ProfileManager(self.manager.config_dir)
+        recovery.save_config()
+        self.assertEqual(self.manager.config_file.read_text(), "null")
+        recovery.repair_setting([], self.manager.config.model_dump())
+        self.assertEqual(recovery.validation_issues, [])
+
+    def test_startup_prunes_only_owned_settings_copies_older_than_one_calendar_month(self):
+        now = datetime(2026, 3, 31, 12, tzinfo=timezone.utc)
+        cutoff = datetime(2026, 2, 28, 12, tzinfo=timezone.utc).timestamp()
+        expired = self.manager.config_dir / ("settings.before-repair-" + "a" * 32 + ".json")
+        boundary = self.manager.config_dir / ("settings.before-repair-" + "b" * 32 + ".json")
+        recent = self.manager.config_dir / ("settings.before-repair-" + "c" * 32 + ".json")
+        unrelated = self.manager.config_dir / "settings.before-repair-manual.json"
+        original_backup = self.manager.config_dir / "Settings.xml.bak"
+        for file in (expired, boundary, recent, unrelated, original_backup):
+            file.write_text("preserve unless expired", encoding="utf-8")
+            os.utime(file, (cutoff - 1, cutoff - 1))
+        os.utime(boundary, (cutoff, cutoff))
+        os.utime(recent, (now.timestamp(), now.timestamp()))
+        self.manager._prune_settings_repair_copies(now)
+        self.assertFalse(expired.exists())
+        self.assertTrue(all(file.exists() for file in (boundary, recent, unrelated, original_backup)))
+
+    def test_migration_write_failure_does_not_replace_config_with_defaults(self):
+        self.manager.create_profile_from_process("preserved.exe")
+        original = self.manager.config_file.read_bytes()
+        with patch.object(ProfileManager, "_migrate_legacy_seed_profiles", return_value=True), patch.object(
+            ProfileManager, "save_config", side_effect=PermissionError("locked")
+        ) as save:
+            with self.assertRaises(PermissionError):
+                ProfileManager(self.manager.config_dir)
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(self.manager.config_file.read_bytes(), original)
 
     def test_legacy_neural_working_scale_migrates_to_preset_or_custom(self):
         quality = Profile.model_validate({

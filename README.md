@@ -350,13 +350,36 @@ an unchecked desktop-shortcut option. The installed application retains its own
 `requireAdministrator` manifest.
 
 Packaged builds check this repository's stable GitHub Releases at dashboard
-startup and once per day. You can also open **Settings → Companion Updates** and
+startup and once per day. You can also open **Settings → Updates** and
 select **Check for updates** to bypass the cached result immediately. When a newer semantic version is available, Companion
 offers to download `LosslessCompanion-Setup-x64.exe`, requires the matching
 `LosslessCompanion-Setup-x64.exe.sha256` release asset, verifies the installer,
-and then waits for explicit confirmation before launching it. Source and
-simulation runs never download or launch production updates. The checksum guards
+and then waits for explicit confirmation before launching it unless automatic
+installation is enabled. Source and simulation runs never download or launch
+production Companion updates. The checksum guards
 against corruption and mismatched assets; releases are not currently code-signed.
+
+**Notify me about Companion and add-on updates** is enabled by default.
+**Automatically install updates** is opt-in and takes priority over update
+notifications while preserving that preference. Automatic updates wait for
+scaling, profile editors, diagnostics, and pending edits to finish. During the
+update, the dashboard shows progress and blocks edits; hotkeys, foreground
+automation, and server-side mutations are paused as well. A failed download or
+verification releases the lock and can be retried manually; automatic retries
+back off for an hour. Installed Echo, ReShade, and Special K updates use their
+existing verified release pipeline without enabling disabled integrations.
+Community runtimes requiring a separate approval remain manual.
+
+Automatic Companion updates download the stable GitHub release installer and
+checksum, verify the staged installer again before launching, and use a silent
+installation in the current app directory. The installer waits for the old
+process to exit before replacing files and reopens Companion on success, without
+rebooting Windows. If setup aborts, it attempts to reopen the previous executable;
+a persisted retry cooldown prevents repeated restart attempts. Installer logs remain under the configuration directory's
+`updates/<version>/install.log`. Every Windows build now compiles and uploads
+the updater installer and checksum; versioned releases publish those same assets
+to GitHub Releases. Packaged updates replace the compiled application rather
+than modifying source files inside a running Python/PyInstaller process.
 
 Each available component update has its own dashboard notification row. Its
 Download button stages that component directly, with percentage progress when

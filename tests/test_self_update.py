@@ -131,6 +131,31 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertEqual(progress[0], (0, len(installer)))
         self.assertEqual(progress[-1], (len(installer), len(installer)))
 
+    def test_automatic_installer_waits_for_exit_keeps_install_directory_and_never_reboots(self):
+        installer = b"verified automatic update"
+        digest = hashlib.sha256(installer).hexdigest()
+        manager = SimpleNamespace(check=lambda *args, **kwargs: [self.release()])
+
+        def open_url(request, timeout=60):
+            content = f"{digest}  {INSTALLER_NAME}".encode() if request.full_url.endswith('.sha256') else installer
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            'companion.services.self_update.urllib.request.urlopen', side_effect=open_url
+        ), patch('companion.services.self_update.ctypes.windll.shell32.ShellExecuteW', return_value=42) as launch:
+            service = CompanionUpdateService(manager, Path(directory), enabled=True)
+            service.download('2.0.0')
+            service.launch_installer('2.0.0', automatic=True)
+            self.assertFalse(CompanionUpdateService(manager, Path(directory), enabled=True).automatic_retry_allowed('2.0.0'))
+            self.assertTrue(service.automatic_retry_allowed('2.1.0'))
+            parameters = launch.call_args.args[3]
+            for flag in ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/AUTOMATICUPDATE=1', '/WAITPID=', '/DIR=', '/LOG=']:
+                self.assertIn(flag, parameters)
+            (Path(directory) / 'updates/2.0.0' / INSTALLER_NAME).write_bytes(b'tampered')
+            with self.assertRaisesRegex(UnsafeAssetError, 'changed after verification'):
+                service.launch_installer('2.0.0', automatic=True)
+            launch.assert_called_once()
+
     def test_private_download_uses_configured_github_token(self):
         installer = b"verified installer payload"
         digest = hashlib.sha256(installer).hexdigest()

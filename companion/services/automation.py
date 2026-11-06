@@ -105,6 +105,10 @@ class AutomationController:
         self.reshade_profiles = ReshadeProfileService(profile_manager)
         self.addon_configs = AddonConfigService(profile_manager)
         self._last_gpu_route_relaunch_at: float = 0.0
+        self.profile_changes_blocked: Callable[[], bool] = lambda: False
+        self._pending_profile_restart: Optional[Dict] = None
+        self._pending_native_profiles: Dict[str, tuple] = {}
+        self._pending_native_failed = False
 
     def resolve_deployment_files(self, profile: Optional[Profile]) -> List[Dict]:
         """Resolve runtime binaries plus any selected managed ReShade assets."""
@@ -218,6 +222,21 @@ class AutomationController:
     #: graceful hotkey path so background transitions never close LS.
     INSTANT_STOP_REASONS = frozenset({"override_hotkey", "manual"})
 
+    def begin_update(self) -> bool:
+        """Quiesce automation after in-flight profile/scaling work finishes."""
+        with self._lock:
+            if (self.state.is_scaling_active or self.state.benchmark_mode_active
+                    or self.profile_manager.repair_session
+                    or self.state.scaling_control_status.get("state") == "pending"):
+                return False
+            self._cancel_delayed_scale()
+            self.state.update_in_progress = True
+            return True
+
+    def end_update(self) -> None:
+        with self._lock:
+            self.state.update_in_progress = False
+
     def set_scaling(
         self,
         active: bool,
@@ -230,13 +249,28 @@ class AutomationController:
         park_runtime_on_stop: bool = True,
     ) -> bool:
         """Set scaling idempotently; return whether a hotkey was emitted."""
+        if self.profile_manager.repair_session:
+            self._set_control_status("error", "Repair saved settings and restart Companion before scaling")
+            return False
         with self._lock:
+            if self.state.update_in_progress:
+                return False
+            if not active:
+                self._pending_profile_restart = None
             if not force and self.state.is_scaling_active == active:
                 logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             selected = profile or self.state.current_active_profile
             # A direct scale/stop supersedes any pending Scale Now timer.
             self._cancel_delayed_scale()
+            if active and not self.state.is_scaling_active and self._pending_native_profiles:
+                try:
+                    self._flush_pending_native_profiles()
+                    self._pending_native_failed = False
+                except Exception as error:
+                    self._pending_native_failed = True
+                    self._set_control_status("error", str(error))
+                    return False
             if active and selected and self.addon_configs.has_pending(selected):
                 self.activate_profile(
                     selected, force=True, suppress_auto_scale=True,
@@ -263,7 +297,7 @@ class AutomationController:
                 and runtime_providers
                 and configured_exe
                 and self.deployment_manager.runtime_packages_need_state(
-                    runtime_providers, active=True
+                    runtime_providers, active=True, lossless_scaling_exe=configured_exe
                 )
             ):
                 was_running = bool(
@@ -348,7 +382,7 @@ class AutomationController:
                     )
             if active and (target_pid is not None or target_hwnd is not None):
                 if (
-                    reason == "focus"
+                    reason in {"focus", "profile_edit"}
                     and target_pid is not None
                     and target_hwnd is not None
                     and self.process_watcher is not None
@@ -379,6 +413,13 @@ class AutomationController:
                 verified = False
                 for _ in range(3):
                     try:
+                        # A deferred edit must never focus the game over a
+                        # dashboard/editor the user returned to during reload.
+                        if reason == "profile_edit":
+                            verified = self.process_watcher.maintain_scaling_target_foreground(
+                                target_pid, target_hwnd
+                            )
+                            break
                         if self.process_watcher.focus_window_identity(target_pid, target_hwnd):
                             verified = True
                             break
@@ -455,6 +496,14 @@ class AutomationController:
                         logger.exception("Could not initialize Lossless Scaling confirmation")
                         self._set_control_status("error", "Could not initialize Lossless Scaling confirmation")
                         return False
+                if active and reason == "profile_edit" and (
+                    self.profile_changes_blocked()
+                    or not self.process_watcher.maintain_scaling_target_foreground(target_pid, target_hwnd)
+                ):
+                    if self.scaling_confirmation_end is not None:
+                        self.scaling_confirmation_end()
+                    self._set_control_status("idle", "Profile applied; scaling waits for a manual restart after focus changed")
+                    return False
                 emitted = trigger_hotkey(
                     modifiers=hotkey.modifiers,
                     key=hotkey.key,
@@ -724,6 +773,8 @@ class AutomationController:
 
     def scale_focused_after_delay(self, delay_seconds: float = 5.0) -> float:
         """Scale whatever window is focused when the delay elapses. Restarts."""
+        if self.state.update_in_progress:
+            raise RuntimeError("Companion is installing updates")
         try:
             delay = float(delay_seconds)
         except (TypeError, ValueError):
@@ -772,6 +823,8 @@ class AutomationController:
 
     def handle_override_hotkey(self) -> bool:
         """Route the user's proxy hotkey through the profile for the foreground window."""
+        if self.state.update_in_progress:
+            return False
         if not self.profile_manager.config.override_lossless_hotkey:
             return False
         action = ("stopping scaling"
@@ -986,12 +1039,180 @@ class AutomationController:
             display_id = 0
         return max(0, gpu_id), max(0, display_id)
 
-    def reconcile_pending_addon_settings(self) -> None:
-        """Deploy editor changes once a manually or automatically scaled session stops."""
+    def _queue_profile_restart(self, profile: Profile) -> None:
+        self._pending_profile_restart = {
+            "profile_id": profile.id,
+            "pid": self.state.scaling_target_pid,
+            "hwnd": self.state.scaling_target_hwnd,
+            "session": self.state.last_scale_toggle_time,
+            "ready_at": time.monotonic() + 0.75,
+        }
+        self._set_control_status(
+            "pending", "Profile saved; close the editor and return to the scaled application to reload scaling"
+        )
+
+    def profile_reload_pending(self, profile_id: str) -> bool:
+        pending = self._pending_profile_restart
+        return bool(pending and pending["profile_id"] == profile_id)
+
+    def capture_active_addon_config(self) -> bool:
+        """Capture edits from Echo's native panel and queue the same safe reload."""
         with self._lock:
-            profile = self.state.current_active_profile
-            if not self.state.is_scaling_active and profile and self.addon_configs.has_pending(profile):
+            active = self.state.current_active_profile
+            if active is None:
+                return False
+            profile = self.profile_manager.get_profile_by_id(active.id) or active
+            previous = profile.model_copy(deep=True)
+            captured = self.addon_configs.capture(
+                profile, self.profile_manager.config.lossless_scaling_exe_path
+            )
+            if captured and profile.addon_config != previous.addon_config:
+                self.addon_configs.mark_edited(profile)
+                self.state.current_active_profile = profile
+                if self.state.is_scaling_active:
+                    self._queue_profile_restart(profile)
+            return captured
+
+    def apply_saved_profile(
+        self, profile: Profile, *,
+        native_settings: Optional[LosslessSettingsXml] = None,
+        template_title: Optional[str] = None,
+    ) -> None:
+        """Apply an idle edit, or queue one reload of the existing scaling target."""
+        with self._lock:
+            self._pending_native_failed = False
+            if native_settings is not None and native_settings.path.is_file():
+                # Keep the original template across successive renames/edits.
+                self._pending_native_profiles.setdefault(
+                    profile.id, (native_settings, template_title)
+                )
+            active = self.state.current_active_profile
+            if self.state.is_scaling_active:
+                if active and active.id == profile.id:
+                    self._queue_profile_restart(profile)
+                return
+            self._flush_pending_native_profiles()
+            if active and active.id == profile.id:
                 self.activate_profile(profile, force=True, suppress_auto_scale=True)
+
+    def _write_pending_native_profiles(self) -> None:
+        """Write saved XML values only while their host is stopped."""
+        for profile_id, (settings, template_title) in list(self._pending_native_profiles.items()):
+            profile = self.profile_manager.get_profile_by_id(profile_id)
+            if profile and settings.path.is_file():
+                values = dict(profile.native_scaling_settings)
+                config = self.profile_manager.config
+                if config.lossless_control_configured and config.disable_native_auto_scale:
+                    values["AutoScale"] = False
+                if profile.is_default:
+                    if not settings.update_profile(profile.lossless_profile_title, values):
+                        raise RuntimeError("The native Lossless Scaling default profile could not be found")
+                else:
+                    settings.upsert_profile(
+                        profile.lossless_profile_title, values, template_title=template_title
+                    )
+            self._pending_native_profiles.pop(profile_id, None)
+
+    def _flush_pending_native_profiles(self) -> None:
+        if not self._pending_native_profiles:
+            return
+        was_running = bool(
+            self.process_watcher and self.process_watcher.check_is_lossless_scaling_running()
+        )
+        if was_running and not self.process_watcher.stop_lossless_scaling():
+            raise RuntimeError("Lossless Scaling could not be stopped for the profile settings update")
+        try:
+            self._write_pending_native_profiles()
+        finally:
+            if was_running and not self.process_watcher.launch_lossless_scaling(force=True):
+                raise RuntimeError("Lossless Scaling could not be restarted after updating profile settings")
+
+    def reconcile_pending_addon_settings(self) -> None:
+        """Reload saved edits after editing ends and the original game regains focus."""
+        with self._lock:
+            if (self.profile_changes_blocked() or self.profile_manager.repair_session
+                    or self.state.update_in_progress or self.state.benchmark_mode_active):
+                return
+            pending = self._pending_profile_restart
+            active = self.state.current_active_profile
+            if pending and (
+                not self.state.is_scaling_active or not active
+                or active.id != pending["profile_id"]
+                or self.state.scaling_target_pid != pending["pid"]
+                or self.state.scaling_target_hwnd != pending["hwnd"]
+                or self.state.last_scale_toggle_time != pending["session"]
+            ):
+                self._pending_profile_restart = pending = None
+            if pending:
+                pid, hwnd = pending["pid"], pending["hwnd"]
+                if not pid or not hwnd or not self.process_watcher:
+                    self._set_control_status("pending", "Profile saved; stop and restart scaling to apply it (target unavailable)")
+                    return
+                if (time.monotonic() < pending["ready_at"]
+                        or not self.process_watcher.maintain_scaling_target_foreground(pid, hwnd)):
+                    return
+                profile = self.profile_manager.get_profile_by_id(pending["profile_id"])
+                if profile is None:
+                    self._pending_profile_restart = None
+                    return
+                # Consume before executing: failures never create a restart loop.
+                self._pending_profile_restart = None
+                try:
+                    self.resolve_deployment_files(profile)
+                    self.overlay_indicator.log(
+                        f"Profile updated; restarting scaling: {profile.name}", anchor_hwnd=hwnd
+                    )
+                    self.overlay_indicator.set_border("pending", anchor_hwnd=hwnd)
+                    if not self.process_watcher.stop_lossless_scaling():
+                        raise RuntimeError("Could not stop Lossless Scaling to apply profile changes")
+                    self.state.mark_scaling_toggled(False)
+                    self.state.scaling_owner_profile_id = None
+                    self.state.scaling_trigger = None
+                    self.state.scaling_target_pid = None
+                    self.state.scaling_target_hwnd = None
+                    self.state.scaling_target_verified_for_minimization = False
+                    self._write_pending_native_profiles()
+                    self.activate_profile(
+                        profile, force=True, suppress_auto_scale=True,
+                        target_pid=pid, target_hwnd=hwnd, for_scaling=True,
+                    )
+                    if not self.process_watcher.launch_lossless_scaling(force=True):
+                        raise RuntimeError("Could not restart Lossless Scaling after profile changes")
+                    if self.profile_changes_blocked() or not self.process_watcher.maintain_scaling_target_foreground(pid, hwnd):
+                        raise RuntimeError("Profile applied; return to the application and start scaling again")
+                    if not self.set_scaling(
+                        True, profile, reason="profile_edit", target_pid=pid, target_hwnd=hwnd
+                    ):
+                        raise RuntimeError("Profile applied, but scaling could not be resumed")
+                except Exception as error:
+                    logger.exception("Could not reload the edited scaling profile")
+                    self._pending_native_failed = bool(self._pending_native_profiles)
+                    if not self.state.is_scaling_active:
+                        # Leave the host available for a deliberate retry even
+                        # when applying XML/deployment changes failed.
+                        try:
+                            if not self.process_watcher.check_is_lossless_scaling_running():
+                                self.process_watcher.launch_lossless_scaling(force=True)
+                        except Exception:
+                            logger.exception("Could not restore the idle Lossless Scaling host")
+                    self._set_control_status("error", str(error))
+                    self.overlay_indicator.log(str(error), kind="error", anchor_hwnd=hwnd)
+                    self.overlay_indicator.set_border(None)
+                return
+            if not self.state.is_scaling_active:
+                if self._pending_native_failed:
+                    return
+                try:
+                    self._flush_pending_native_profiles()
+                except Exception as error:
+                    self._pending_native_failed = True
+                    self._set_control_status("error", str(error))
+                    logger.exception("Could not apply saved native profile settings")
+                    return
+                if active:
+                    profile = self.profile_manager.get_profile_by_id(active.id) or active
+                    if self.addon_configs.has_pending(profile):
+                        self.activate_profile(profile, force=True, suppress_auto_scale=True)
 
     def save_addon_config(self, profile_id: str, data: Dict) -> Profile:
         """Serialize profile edits with deployment and scaling transitions."""
@@ -1001,18 +1222,21 @@ class AutomationController:
                 raise ValueError("Save the profile before editing its add-ons")
             profile = existing.model_copy(deep=True)
             profile.addon_config = data
-            self.addon_configs.mark_edited(profile)
             self.addon_configs.catalog(self.asset_store.list_packages())
             self.addon_configs.materialize(
                 profile,
                 reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
                 hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
             )
+            if profile == existing:
+                return existing
+            self.addon_configs.mark_edited(profile)
             self.profile_manager.add_or_update_profile(profile)
             active = self.state.current_active_profile
             if active and active.id == profile.id:
                 if self.state.is_scaling_active:
                     self.state.current_active_profile = profile
+                    self._queue_profile_restart(profile)
                 else:
                     self.activate_profile(profile, force=True, suppress_auto_scale=True)
             return profile
@@ -1936,7 +2160,11 @@ class AutomationController:
         source: Optional[str] = None,
         for_scaling: bool = False,
     ) -> None:
+        if self.profile_manager.repair_session:
+            return
         with self._lock:
+            if self.state.update_in_progress and not suppress_auto_scale:
+                return
             previous = self.state.current_active_profile
             same_profile = bool(previous and profile and previous.id == profile.id)
             if (
@@ -2027,12 +2255,14 @@ class AutomationController:
                     and not suppress_auto_scale
                 )
                 park_runtime = bool(
-                    profile and runtime_providers and not self.state.is_scaling_active and not will_auto_scale
+                    profile and runtime_providers and not self.state.is_scaling_active
+                    and not will_auto_scale and not for_scaling
                 )
                 runtime_state_change = bool(
                     park_runtime
                     and self.deployment_manager.runtime_packages_need_state(
-                        runtime_providers, active=False
+                        runtime_providers, active=False,
+                        lossless_scaling_exe=self.profile_manager.config.lossless_scaling_exe_path,
                     )
                 )
                 deployment_change = deployment_change or runtime_state_change
@@ -2369,6 +2599,17 @@ class AutomationController:
             self.state.scaling_trigger = None
             manifest["nvidiaProfileReverted"] = nvidia_reverted
             return manifest
+
+    def retry_deployment_recovery(self) -> None:
+        with self._lock:
+            if self.state.is_scaling_active:
+                raise ValueError("Stop scaling before retrying deployment recovery")
+            was_running = bool(self.process_watcher and self.process_watcher.check_is_lossless_scaling_running())
+            if was_running and not self.process_watcher.stop_lossless_scaling():
+                raise RuntimeError("Lossless Scaling could not be stopped for recovery")
+            self.deployment_manager.retry_recovery(self.profile_manager.config.lossless_scaling_exe_path)
+            if was_running and not self.process_watcher.launch_lossless_scaling(force=True):
+                raise RuntimeError("Recovery succeeded, but Lossless Scaling could not be restarted")
 
     def shutdown(self) -> None:
         with self._lock:

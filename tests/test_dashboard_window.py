@@ -14,6 +14,11 @@ class DashboardWindowTests(unittest.TestCase):
 
         dashboard_window._last_launch_at = 0.0
         dashboard_window._cached_hwnd = None
+        # Never focus or close the user's actual dashboard during unit tests.
+        # Cases that need native handles provide their own explicit fixtures.
+        handles = patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[])
+        handles.start()
+        self.addCleanup(handles.stop)
 
     def tearDown(self):
         import companion.ui.dashboard_window as dashboard_window

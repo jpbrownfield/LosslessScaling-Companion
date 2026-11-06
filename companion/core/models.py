@@ -357,6 +357,8 @@ class AppConfig(BaseModel):
     lossless_settings_xml_path: Optional[str] = None
     asset_store_path: Optional[str] = None
     update_check_interval_hours: int = Field(default=24, ge=1, le=720)
+    notify_on_updates: bool = True
+    automatically_install_updates: bool = False
     default_profile_auto_scale: bool = True
     run_at_startup: bool = False
     preferred_scaling_gpu_device_id: Optional[str] = None

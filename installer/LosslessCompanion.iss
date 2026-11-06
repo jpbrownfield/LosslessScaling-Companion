@@ -34,3 +34,59 @@ Name: "{autodesktop}\LS Companion"; Filename: "{app}\LosslessCompanion.exe"; Tas
 
 [Run]
 Filename: "{app}\LosslessCompanion.exe"; Description: "Launch LS Companion as administrator"; Flags: nowait postinstall skipifsilent runascurrentuser
+Filename: "{app}\LosslessCompanion.exe"; Flags: nowait runascurrentuser; Check: IsAutomaticUpdate
+
+[Code]
+var
+  AutomaticUpdateSucceeded: Boolean;
+
+function OpenProcess(Access: LongWord; InheritHandle: Boolean; ProcessId: LongWord): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function WaitForSingleObject(Handle: THandle; Milliseconds: LongWord): LongWord;
+  external 'WaitForSingleObject@kernel32.dll stdcall';
+function CloseHandle(Handle: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function IsAutomaticUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:AUTOMATICUPDATE|0}') = '1';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssDone then AutomaticUpdateSucceeded := True;
+end;
+
+procedure DeinitializeSetup;
+var
+  PreviousApplication: String;
+  ResultCode: Integer;
+begin
+  if not IsAutomaticUpdate or AutomaticUpdateSucceeded then exit;
+  PreviousApplication := ExpandConstant('{param:DIR|}') + '\LosslessCompanion.exe';
+  if FileExists(PreviousApplication) then
+    Exec(PreviousApplication, '', ExtractFileDir(PreviousApplication), SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
+
+function InitializeSetup: Boolean;
+var
+  ProcessId: Integer;
+  ProcessHandle: THandle;
+begin
+  Result := True;
+  if not IsAutomaticUpdate then exit;
+  ProcessId := StrToIntDef(ExpandConstant('{param:WAITPID|0}'), 0);
+  if ProcessId <= 0 then begin Result := False; exit; end;
+  ProcessHandle := OpenProcess($00100000, False, ProcessId);
+  if ProcessHandle = 0 then begin
+    { ERROR_INVALID_PARAMETER means Companion has already exited. }
+    Result := DLLGetLastError = 87;
+    exit;
+  end;
+  try
+    Result := WaitForSingleObject(ProcessHandle, 60000) = 0;
+    if not Result then Log('Companion did not exit; automatic update aborted before replacing files.');
+  finally
+    CloseHandle(ProcessHandle);
+  end;
+end;

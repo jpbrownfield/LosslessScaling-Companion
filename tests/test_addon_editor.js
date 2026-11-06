@@ -25,6 +25,7 @@ function editor() {
   const sent = [];
   const profileSaves = [];
   const context = vm.createContext({
+    notificationState: {repairSession: false},
     document: {getElementById: id => nodes[id], createElement: tag => new Element(tag),
       querySelectorAll: selector => selector === '[data-native-key]' ? [nodes.nativeScalingType] : []},
     addonEditorCatalog: [{id: 'DLSS5NR01', name: 'DLSS 5', fields: [{key: 'workingScale', label: 'Resolution', type: 'number', default: '0.5'}]},

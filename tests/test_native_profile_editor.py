@@ -157,19 +157,18 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
         self.assertIn("implementation: dlss5Enabled ? 'lsp_neural_render' : 'disabled'", self.html)
 
-    def test_collapsible_profile_headers_match_other_settings_groups(self):
-        self.assertEqual(self.html.count('class="settings-group profile-settings-group" open>'), 2)
+    def test_profile_headers_are_always_visible_settings_groups(self):
+        self.assertEqual(self.html.count('<section class="settings-group profile-settings-group">'), 2)
         self.assertIn(
-            '<summary>Lossless Scaling Profile Settings <span class="chevron" aria-hidden="true">&#8250;</span></summary>',
+            '<h3 class="settings-group-title">Lossless Scaling Profile Settings</h3>',
             self.html,
         )
         self.assertIn(
-            '<summary>Echo Add-on Manager Configuration <span class="chevron" aria-hidden="true">&#8250;</span></summary>',
+            '<h3 class="settings-group-title">Echo Add-on Manager Configuration</h3>',
             self.html,
         )
-        self.assertIn('.settings-group > summary { display: flex; align-items: center;', self.html)
-        self.assertIn('details[open] > summary .chevron { transform: rotate(90deg); }', self.html)
-        self.assertNotIn('.native-settings-group > summary', self.html)
+        self.assertIn('.settings-group-title { display: flex; align-items: center;', self.html)
+        self.assertNotIn('<details class="settings-group', self.html)
 
     def test_legacy_neural_render_profile_controls_are_removed(self):
         self.assertNotIn('id="dlss5Enabled"', self.html)
@@ -225,10 +224,10 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertIn("const addonAutoImportInFlight = new Set()", self.html)
         self.assertIn("Installing automatically", self.html)
 
-    def test_collapsible_box_titles_match_addon_title_size_with_compact_divider_spacing(self):
+    def test_settings_group_titles_use_consistent_compact_spacing(self):
         self.assertIn(
-            ".settings-group > summary { display: flex; align-items: center; gap: 10px; "
-            "padding: 9px 14px; color: var(--text); font-size: 15px;",
+            ".settings-group-title { display: flex; align-items: center; margin: 0; "
+            "padding: 17px 20px; color: var(--text); font-size: 13px;",
             self.html,
         )
         self.assertIn(".addon-card h3 { color: var(--text); font-size: 15px;", self.html)

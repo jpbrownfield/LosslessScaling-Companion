@@ -79,6 +79,57 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.server.is_origin_allowed("http://localhost:24892"))
         self.assertFalse(self.server.is_origin_allowed("https://malicious.example"))
 
+    async def test_profile_validation_errors_identify_the_field_and_request(self):
+        profile = self.manager.create_profile_from_process("validation.exe")
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        data = profile.model_dump()
+        data["rtss"]["framerate_limit"] = 5000
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE", "profile": data, "requestId": "invalid-limit",
+        }))
+        error = json.loads(websocket.messages[-1])
+        self.assertEqual(error["profileId"], profile.id)
+        self.assertEqual(error["requestId"], "invalid-limit")
+        self.assertEqual(error["validationErrors"][0]["path"], ["rtss", "framerate_limit"])
+        self.assertEqual(self.manager.get_profile_by_id(profile.id).rtss.framerate_limit, 60)
+
+    async def test_recovery_action_requires_dashboard_authority_and_stopped_scaling(self):
+        websocket = self.FakeWebSocket()
+        self.server.automation.deployment_manager.retry_recovery = Mock()
+        await self.server.process_message(websocket, '{"type":"RETRY_DEPLOYMENT_RECOVERY"}')
+        self.server.automation.deployment_manager.retry_recovery.assert_not_called()
+        self.server.client_authority[websocket] = "dashboard"
+        self.state.is_scaling_active = True
+        await self.server.process_message(websocket, '{"type":"RETRY_DEPLOYMENT_RECOVERY"}')
+        self.server.automation.deployment_manager.retry_recovery.assert_not_called()
+        error = next(json.loads(item) for item in reversed(websocket.messages) if json.loads(item)["type"] == "ERROR")
+        self.assertIn("Stop scaling", error["message"])
+
+    async def test_saved_setting_repairs_are_reported_and_automation_stays_paused(self):
+        data = self.manager.config.model_dump()
+        data["port"] = "bad"
+        self.manager.config_file.write_text(json.dumps(data), encoding="utf-8")
+        manager = ProfileManager(self.manager.config_dir)
+        automation = AutomationController(manager, self.state)
+        server = CompanionWebSocketServer(manager, self.state, automation=automation)
+        websocket = self.FakeWebSocket()
+        server.client_authority[websocket] = "dashboard"
+        await server.process_message(websocket, '{"type":"GET_NOTIFICATIONS"}')
+        notifications = json.loads(websocket.messages[-1])["notifications"]
+        self.assertEqual(notifications["settingsIssues"][0]["path"], ["port"])
+        self.assertTrue(notifications["repairSession"])
+        with patch("companion.services.automation.InputSimulator.trigger_hotkey") as hotkey:
+            self.assertFalse(automation.set_scaling(True, reason="test"))
+            hotkey.assert_not_called()
+        await server.process_message(websocket, '{"type":"REPAIR_SETTING","path":["port"],"value":24892}')
+        notifications = json.loads(websocket.messages[-1])["notifications"]
+        self.assertTrue(notifications["restartRequired"])
+        self.assertEqual(notifications["settingsIssues"], [])
+        self.assertEqual(manager.config.port, 24892)
+        self.assertEqual(server.config.port, 24892)
+        self.assertEqual(json.loads(manager.config_file.read_text())["port"], 24892)
+
     async def test_addon_editor_saves_inactive_profile_without_switching_or_enabling_defaults(self):
         profile = self.manager.create_profile_from_process("game.exe")
         websocket = self.FakeWebSocket()
@@ -583,6 +634,43 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             template_title=None,
         )
 
+    async def test_active_profile_save_defers_native_write_and_restart_until_editing_ends(self):
+        profile = self.manager.create_profile_from_process("active-edit.exe")
+        profile.lossless_profile_title = profile.name
+        self.state.current_active_profile = profile
+        self.state.mark_scaling_toggled(True)
+        self.state.scaling_target_pid = 42
+        self.state.scaling_target_hwnd = 99
+        watcher = Mock()
+        self.automation.process_watcher = self.server.process_watcher = watcher
+        self.server.ls_settings = Mock()
+        self.server.ls_settings.path.is_file.return_value = True
+        self.automation.activate_profile = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SET_EDITOR_ACTIVITY", "editing": True,
+        }))
+        payload = profile.model_dump(mode="json")
+        payload["native_scaling_settings"]["ScalingType"] = "FSR"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE", "profile": payload,
+        }))
+        response = next(json.loads(item) for item in websocket.messages if json.loads(item)["type"] == "PROFILE_SAVED")
+        self.assertTrue(response["restartPending"])
+        pending = self.automation._pending_profile_restart
+        self.automation.reconcile_pending_addon_settings()
+        watcher.stop_lossless_scaling.assert_not_called()
+        watcher.maintain_scaling_target_foreground.assert_not_called()
+        self.server.ls_settings.upsert_profile.assert_not_called()
+        self.automation.activate_profile.assert_not_called()
+        self.assertTrue(self.state.is_scaling_active)
+        # An identical autosave must not schedule another reload.
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE", "profile": response["profile"],
+        }))
+        self.assertIs(self.automation._pending_profile_restart, pending)
+
     async def test_default_alias_save_updates_only_existing_native_default(self):
         native = self.manager.ensure_lossless_default_profile({
             "Title": "True Native Default",
@@ -634,8 +722,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-dashboard-panel="lossless-addons"', body)
             self.assertIn('data-dashboard-panel="performance-benchmark"', body)
             self.assertIn('data-dashboard-panel="testing"', body)
-            self.assertIn('header { position: sticky;', body)
-            self.assertIn("window.scrollTo({ top: Math.max(0, panelTop), behavior: 'smooth' })", body)
+            self.assertNotIn('<header>', body)
+            self.assertIn('id="dashboard-subsections-lossless-addons"', body)
+            self.assertIn('class="runtime-status"', body)
+            self.assertIn("window.scrollTo({ top: 0, behavior: window.matchMedia", body)
             self.assertIn('id="profilesPanel"', body)
             self.assertIn('id="generalSettingsPanel"', body)
             self.assertIn('id="losslessAddonsPanel"', body)
@@ -650,7 +740,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('const majorDashboardPanels = [profilesPanel, generalSettingsPanel, losslessAddonsPanel, performanceBenchmarkPanel, testingPanel]', body)
             self.assertIn("setRuntimeStatus('LS Not Found', 'not-found')", body)
             self.assertIn("setRuntimeStatus('LS Active', 'active')", body)
-            self.assertIn('if (candidate !== panel) candidate.open = false', body)
+            self.assertIn('candidate.hidden = candidate !== panel', body)
             self.assertNotIn('id="settingsArea" class="settings-area hidden"', body)
             self.assertNotIn('id="saveControlSettingsBtn"', body)
             self.assertIn('id="browseProcessLassoLogBtn"', body)
@@ -674,14 +764,14 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id="losslessProfileTitle"', body)
             self.assertIn('class="modal-content profile-editor-content"', body)
             self.assertIn('[hidden] { display: none !important; }', body)
-            self.assertIn('--bg: #3a3e44;', body)
-            self.assertIn('--card-bg: #202328;', body)
-            self.assertIn('--surface-bg: #282c31;', body)
+            self.assertIn('class="app-sidebar"', body)
+            self.assertIn('id="mainContent" class="app-main"', body)
+            self.assertIn('aria-current', body)
             self.assertIn(
                 '#profileModal { background: rgba(24,26,30,.96); backdrop-filter: none; }',
                 body,
             )
-            self.assertIn('body.profile-editor-open > header', body)
+            self.assertIn('body.profile-editor-open > .app-sidebar', body)
             self.assertIn('data-native-key="CaptureApi"', body)
             self.assertIn('data-native-key="MaxFrameLatency"', body)
             self.assertIn('data-native-key="QueueTarget"', body)
@@ -702,7 +792,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id="echoConfigJson"', body)
             self.assertNotIn('id="neuralUpdatePolicy"', body)
             self.assertNotIn('id="neuralRuntimeHash"', body)
-            self.assertIn("smart-master-setting", body)
+            self.assertNotIn('id="smartAutoScaleEnabled"', body)
             self.assertIn("integration-status detected", body)
             self.assertIn("integration-status missing", body)
             self.assertIn("Revert All Lossless Scaling Settings and Remove Addon Files", body)

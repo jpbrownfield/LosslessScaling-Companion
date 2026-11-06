@@ -18,6 +18,17 @@ contents.
   every destination that escapes its directory.
 - Existing files are backed up. Deployments are transactional and restore their
   pre-change state after a failure.
+- Deployment manifests and original backups are isolated by the resolved LS
+  installation path. Legacy ownership is migrated using its matching audit receipt;
+  an unidentified legacy deployment is preserved and blocks deployment.
+- If rollback cannot restore every file, recovery snapshots and a recovery record
+  are retained, and further deployment to that installation is blocked until recovery.
+  The dashboard can retry recovery after stopping LS; it verifies the retained
+  snapshots before restoring only the recorded files. It never wipes the installation.
+- Invalid saved settings open in repair mode with automation paused. Corrections
+  are committed only when the complete document validates, with a pre-repair copy.
+  On startup, owned settings repair copies older than one calendar month are
+  removed. Original binary backups and pending recovery files are not expired.
 - Managed binaries are checked against their recorded SHA-256 before replacement,
   removal, activation, or parking. Unexpected changes fail closed.
 - Downloads and file-state changes produce receipts in

@@ -20,6 +20,7 @@ class AppState:
         self.connected_clients: int = 0
         self.lossless_scaling_running: bool = False
         self.auto_scale_enabled: bool = True
+        self.update_in_progress: bool = False
         self.scaling_owner_profile_id: Optional[str] = None
         self.scaling_trigger: Optional[str] = None
         self.current_foreground_exe_path: Optional[str] = None

@@ -275,6 +275,8 @@ class CompanionTrayIcon:
 
     def _on_add_profile_from_process(self, proc_name: str):
         def handler(icon, item):
+            if self.state.update_in_progress:
+                return
             new_p = self.profile_manager.create_profile_from_process(proc_name)
             logger.info(f"Created new profile for: {proc_name} (ID: {new_p.id})")
             self.update_menu()
@@ -324,6 +326,8 @@ class CompanionTrayIcon:
             logger.exception("Could not display a tray notification")
 
     def _on_toggle_startup(self, icon, menu_item):
+        if self.state.update_in_progress:
+            return
         if not self.startup_manager or self._startup_change_running:
             return
         enabled = not self._startup_enabled

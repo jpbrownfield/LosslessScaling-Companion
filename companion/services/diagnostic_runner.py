@@ -1562,7 +1562,7 @@ class DiagnosticRunner:
 
     def _deployment(self) -> Dict:
         manager = self.server.automation.deployment_manager
-        manifest = manager._read_manifest()
+        manifest = manager._read_manifest(self.server.config.lossless_scaling_exe_path)
         files = manifest.get("files", [])
         exe = self.server.config.lossless_scaling_exe_path
         valid = True

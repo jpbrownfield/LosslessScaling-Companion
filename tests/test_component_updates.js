@@ -11,6 +11,8 @@ class Element {
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); }
   replaceChildren() { this.children = []; }
+  focus() {}
+  removeAttribute(key) { delete this[key]; }
 }
 
 function dashboard() {
@@ -18,10 +20,12 @@ function dashboard() {
   const sent = [];
   const storage = new Map();
   const context = vm.createContext({
+    renderNotificationBell() {},
+    updateNotificationsEnabled: () => true,
     addonUpdateItems: [], latestAddonVersions: {}, componentOperation: null,
     companionUpdateBusy: false,
-    document: {getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element('div')); return nodes.get(id); },
-      createElement: tag => new Element(tag)},
+    document: {body: {classList: {toggle() {}}}, getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element('div')); return nodes.get(id); },
+      createElement: tag => new Element(tag), querySelectorAll: () => []},
     localStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value)},
     updateAddonInstallButtons() {}, updateAddonDownloadLinks() {}, setGraphicsStatus() {},
     normalizedAddonVersion: value => String(value || '').replace(/^v/, ''),

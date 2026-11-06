@@ -138,6 +138,7 @@ class DeploymentManagerTests(unittest.TestCase):
             executable = root / "LosslessScaling.exe"
             executable.write_bytes(b"exe")
             manager = DeploymentManager(AssetStore(str(root / "store")))
+            manager._select_installation(root)
             old_transaction = (
                 manager.backup_root
                 / ("a" * 32)
