@@ -534,7 +534,7 @@
         <section class="settings-group">
           <h2 class="settings-group-title">GPU Selection</h2>
           <div class="settings-group-content">
-            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><select id="preferredScalingGpu"><option value="__auto__">Match Application Monitor GPU</option></select></div>
+            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
             <div class="form-group checkbox-group"><input id="snapNearFullscreenWindowsToMonitor" type="checkbox" checked><label for="snapNearFullscreenWindowsToMonitor">Fit Near-Fullscreen Games Exactly to Monitor Bounds</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto follows the display containing the app. Moving it to another GPU’s display briefly restarts scaling with the updated GPU and display.</p>
@@ -1196,7 +1196,7 @@
           }
         });
       }
-      for (const id of ['scaleNowBtn', 'addProfileBtn']) document.getElementById(id).disabled = !!state.repairSession;
+      for (const id of ['scaleNowBtn', 'addProfileBtn', 'calibrateGpusBtn']) { const node = document.getElementById(id); if (node) node.disabled = !!state.repairSession; }
       renderNotificationBell(); renderProfileIssues();
     }
 
@@ -1547,6 +1547,8 @@
           } else if (msg.type === 'BENCHMARK_STARTED') {
             document.getElementById('performanceBenchmarkStatus').textContent = 'Performance test running.';
             document.getElementById('startPerformanceBenchmarkBtn').disabled = true;
+          } else if (msg.type === 'GPU_CALIBRATION_STATUS') {
+            renderGpuCalibrationStatus(msg);
           } else if (msg.type === 'DIAGNOSTICS_STATUS' || msg.type === 'DIAGNOSTICS_RESULT') {
             renderDiagnostics(msg);
           } else if (msg.type === 'GRAPHICS_STATUS') {
@@ -2050,6 +2052,35 @@
         : msg.ready
           ? 'Embedded workload and PresentMon are ready.'
           : workloadReady ? 'Waiting for PresentMon.' : 'This build is missing the embedded workload.';
+    }
+
+    function renderGpuCalibrationStatus(msg) {
+      const status = document.getElementById('gpuCalibrationStatus');
+      const button = document.getElementById('calibrateGpusBtn');
+      if (!status || !button) return;
+      button.disabled = !!msg.running;
+      if (msg.running) {
+        status.textContent = msg.stage === 'starting'
+        ? 'Starting GPU calibration...'
+        : `Calibrating GPUs: ${msg.detail || msg.stage || 'working...'}`;
+        return;
+      }
+      if (msg.error) {
+        status.textContent = `GPU calibration failed: ${msg.error}`;
+        return;
+      }
+      const result = msg.result || {};
+      if (result.state === 'unnecessary') {
+        status.textContent = 'Calibration not needed: single-GPU system.';
+      } else if (result.state === 'ok') {
+        const mapped = result.mapped || {};
+        const ids = [...new Set(Object.values(mapped))].sort();
+        status.textContent = `GPU calibration complete: ${Object.keys(mapped).length} GPU(s) identified (LS GPU ${ids.join(', ')}). GPU indices are now correct.`;
+      } else if (result.state === 'partial') {
+        status.textContent = `GPU calibration partial: ${Object.keys(result.mapped || {}).length} of ${result.gpuCount || '?'} GPUs identified after ${result.tried || 0} attempts. Check the log and retry.`;
+      } else {
+        status.textContent = `GPU calibration could not identify any GPU after ${result.tried || 0} attempts. Check the log and retry.`;
+      }
     }
 
     function renderGraphicsStatus(msg) {
@@ -3866,6 +3897,14 @@
         this.disabled = true;
         document.getElementById('performanceBenchmarkStatus').textContent = 'Starting performance test...';
         ws.send(JSON.stringify({ type: 'START_PERFORMANCE_BENCHMARK' }));
+      });
+    };
+    document.getElementById('calibrateGpusBtn').onclick = function () {
+      confirmDialog("Identify the correct GPU indices by scaling the benchmark workload on each GPU? This stops any active scaling, blocks automatic scaling while it runs, and restarts Lossless Scaling several times.", { title: 'Calibrate GPUs' }).then(accepted => {
+        if (!accepted) return;
+        this.disabled = true;
+        document.getElementById('gpuCalibrationStatus').textContent = 'Starting GPU calibration...';
+        ws.send(JSON.stringify({ type: 'CALIBRATE_GPUS' }));
       });
     };
     document.getElementById('runDiagnosticsBtn').onclick = function () {

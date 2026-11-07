@@ -125,6 +125,7 @@ class CompanionWebSocketServer:
         self.addon_update_status: Optional[Dict] = None
         self.benchmark_task: Optional[asyncio.Task] = None
         self._benchmark_previous_profile: Optional[Profile] = None
+        self._gpu_calibration_task: Optional[asyncio.Task] = None
         self._last_benchmark_result: Optional[Dict] = None
         self._last_benchmark_report_path: Optional[Path] = None
         self._detected_presentmon_path: Optional[Path] = None
@@ -376,6 +377,7 @@ class CompanionWebSocketServer:
                 "INSTALL_LATEST_GRAPHICS_ADDON",
                 "DOWNLOAD_BENCHMARK_TOOL",
                 "START_PERFORMANCE_BENCHMARK",
+                "CALIBRATE_GPUS",
                 "SELECT_DLSSNR_RUNTIME",
                 "SAVE_CONTROL_SETTINGS",
                 "SAVE_GENERAL_SETTINGS",
@@ -487,6 +489,8 @@ class CompanionWebSocketServer:
                     delay = float(msg.get("delaySeconds", 5.0))
                 except (TypeError, ValueError):
                     delay = 5.0
+                if self._gpu_calibration_task and not self._gpu_calibration_task.done():
+                    raise RuntimeError("GPU calibration is running; wait for it to finish")
                 scheduled = await asyncio.to_thread(
                     self.automation.scale_focused_after_delay, delay
                 )
@@ -495,6 +499,44 @@ class CompanionWebSocketServer:
                     "delaySeconds": scheduled,
                 }))
                 await self.broadcast_state()
+                return
+
+            if msg_type == "CALIBRATE_GPUS":
+                if self.benchmark_task and not self.benchmark_task.done():
+                    raise RuntimeError("A performance benchmark is already running")
+                if self._gpu_calibration_task and not self._gpu_calibration_task.done():
+                    raise RuntimeError("GPU calibration is already running")
+                workload = self._embedded_benchmark_executable()
+                presentmon = self._presentmon_executable()
+                if not workload or not presentmon:
+                    raise RuntimeError("PresentMon or the embedded benchmark workload is unavailable")
+                # Calibration owns Lossless Scaling exclusively from here on:
+                # flag first so racing automatic starts refuse, then stop any
+                # live session before the workload takes foreground.
+                self.state.benchmark_mode_active = True
+                try:
+                    if self.state.is_scaling_active:
+                        stopped = await asyncio.to_thread(
+                            self.automation.set_scaling,
+                            False,
+                            self.state.current_active_profile,
+                            reason="gpu_calibration_takeover",
+                            force=True,
+                        )
+                        if not stopped or self.state.is_scaling_active:
+                            raise RuntimeError("The active scaling session could not be stopped")
+                except Exception:
+                    self.state.benchmark_mode_active = False
+                    raise
+                self._gpu_calibration_task = asyncio.create_task(
+                    self._run_gpu_calibration(workload)
+                )
+                await websocket.send(json.dumps({
+                    "type": "GPU_CALIBRATION_STATUS",
+                    "running": True,
+                    "stage": "starting",
+                    "detail": "",
+                }))
                 return
 
             if msg_type == "GET_STATE_AND_PROCESSES":
@@ -1464,6 +1506,8 @@ class CompanionWebSocketServer:
                     raise RuntimeError("PresentMon or the embedded benchmark workload is unavailable")
                 if self.benchmark_task and not self.benchmark_task.done():
                     raise RuntimeError("A performance benchmark is already running")
+                if self._gpu_calibration_task and not self._gpu_calibration_task.done():
+                    raise RuntimeError("GPU calibration is already running")
                 if self.state.is_scaling_active:
                     raise RuntimeError("Stop the current scaling session before running the benchmark")
                 default_profile = next(
@@ -2550,6 +2594,52 @@ class CompanionWebSocketServer:
             "--use-default-profile",
             "--yes",
         ]
+
+    async def _run_gpu_calibration(self, workload: Path) -> None:
+        """Run benchmark-workload GPU calibration in the background.
+
+        Progress and the final summary go out as GPU_CALIBRATION_STATUS
+        broadcasts; a full data update at the end refreshes the GPU
+        dropdown and routing warnings with the newly persisted map.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _broadcast(payload: Dict) -> None:
+            encoded = json.dumps(payload)
+            asyncio.ensure_future(asyncio.gather(
+                *(client.send(encoded) for client in self.clients),
+                return_exceptions=True,
+            ))
+
+        def progress(stage: str, detail: str = "") -> None:
+            loop.call_soon_threadsafe(_broadcast, {
+                "type": "GPU_CALIBRATION_STATUS",
+                "running": True,
+                "stage": stage,
+                "detail": detail,
+            })
+
+        result = None
+        error_message = None
+        try:
+            result = await asyncio.to_thread(
+                self.automation.calibrate_gpu_map, workload, progress=progress
+            )
+        except Exception as error:
+            error_message = str(error)
+            logger.exception("GPU calibration failed")
+        finally:
+            self.state.benchmark_mode_active = False
+            self._gpu_calibration_task = None
+        if self.process_watcher:
+            self.process_watcher.invalidate_foreground_cache()
+        _broadcast({
+            "type": "GPU_CALIBRATION_STATUS",
+            "running": False,
+            "result": result,
+            "error": error_message,
+        })
+        await self.broadcast_full_data_update()
 
     def _benchmark_report_root(self) -> Path:
         return Path(self.profile_manager.config_dir) / "benchmarks"

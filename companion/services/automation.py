@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -254,6 +255,20 @@ class AutomationController:
             return False
         with self._lock:
             if self.state.update_in_progress:
+                return False
+            if (active and self.state.benchmark_mode_active
+                    and reason != "performance_benchmark"
+                    and not reason.startswith("gpu_calibration")):
+                # Benchmark and GPU-calibration runs own Lossless Scaling
+                # exclusively: automatic (focus/hotkey/lasso) starts stay out
+                # until the run releases the flag. Stops always stay allowed.
+                logger.info(
+                    "Scaling start refused while benchmarking/calibrating (%s)",
+                    reason,
+                )
+                self._set_control_status(
+                    "idle", "Scaling paused while benchmarking or GPU calibration runs"
+                )
                 return False
             if not active:
                 self._pending_profile_restart = None
@@ -1610,6 +1625,241 @@ class AutomationController:
         self._last_verified_route_key = self.state.current_gpu_route_key
         logger.info("Route repair verified LS GPU %s display %s for %s",
                     ls_gpu, ls_display, window_device or "the target")
+
+    def calibrate_gpu_map(self, workload_exe, *, progress=None,
+                          window_timeout: float = 15.0) -> Dict:
+        """Identify the correct LS GPU/display indices via the benchmark workload.
+
+        Launches the benchmark workload as a scaling target, places it on each
+        physical GPU's display in turn, and sweeps LS GPU ids until PresentMon
+        proves Lossless Scaling emits frames. Winners persist through
+        _persist_verified_route, so later scaling resolves stable PCI
+        identities instead of today's volatile numbers. The Default profile's
+        original route is always restored and Lossless Scaling is left as
+        found. Returns a summary dict with state ok/partial/failed.
+        """
+        def notify(stage: str, detail: str = "") -> None:
+            try:
+                logger.info("GPU calibration [%s] %s", stage, detail)
+                if progress is not None:
+                    progress(stage, detail)
+            except Exception:
+                logger.debug("GPU calibration progress callback failed",
+                             exc_info=True)
+
+        from .performance_benchmark import (
+            find_largest_window,
+            focus_window,
+        )
+
+        if self.process_watcher is None or self.lossless_settings is None:
+            raise RuntimeError("GPU calibration requires the desktop process watcher")
+        if self.state.is_scaling_active:
+            raise RuntimeError("Stop the current scaling session before calibrating GPUs")
+        try:
+            inventory = self.gpu_router.detect()
+        except Exception as error:
+            raise RuntimeError(f"GPU calibration cannot enumerate displays ({error})")
+        gpus = list(inventory.get("gpus", []) or [])
+        displays = list(inventory.get("displays", []) or [])
+        if len(gpus) < 2:
+            return {"state": "unnecessary", "gpuCount": len(gpus),
+                    "mapped": {}, "tried": 0,
+                    "detail": "Single-GPU system: enumeration order is unambiguous"}
+        default_profile = next(
+            (item for item in self.profile_manager.config.profiles
+             if item.is_default),
+            None,
+        )
+        if default_profile is None:
+            raise RuntimeError("The Lossless Scaling default profile is unavailable")
+        try:
+            presentmon = self.presentmon_provider() if self.presentmon_provider else None
+        except Exception:
+            presentmon = None
+        if not presentmon:
+            raise RuntimeError("PresentMon is unavailable; stage or detect it before calibrating")
+        workload_path = Path(str(workload_exe or ""))
+        if not workload_path.is_file():
+            raise RuntimeError("The benchmark workload executable is unavailable")
+        title = (getattr(default_profile, "lossless_profile_title", None)
+                 or getattr(default_profile, "name", None) or "Default")
+        try:
+            snapshot = self.lossless_settings.read()
+            original: Optional[tuple[int, int]] = None
+            for item in snapshot.get("profiles", []):
+                if str(item.get("Title") or "").casefold() == title.casefold():
+                    original = (int(item.get("PreferredGpuId") or 0),
+                                int(item.get("OutputDisplayId") or 0))
+                    break
+        except Exception:
+            original = None
+        if original is None:
+            raise RuntimeError("GPU calibration cannot read the current LS route")
+        try:
+            from . import adapter_report as adapter_report_module
+
+            adapter_report = adapter_report_module.load_latest(
+                adapter_report_module.report_directory(
+                    self.profile_manager.config_dir))
+        except Exception:
+            adapter_report = None
+
+        was_running = bool(
+            self.process_watcher.check_is_lossless_scaling_running())
+        workload = None
+        mapped: Dict[str, int] = {}
+        tried = 0
+        budget = self.ROUTE_REPAIR_BUDGET * max(1, len(gpus))
+        self._verifying_route = True
+        try:
+            notify("starting",
+                   f"Probing {len(gpus)} GPUs with {workload_path.name}")
+            workload = subprocess.Popen(
+                [str(workload_path)], cwd=str(workload_path.parent))
+            hwnd = find_largest_window(workload.pid, timeout=window_timeout)
+            if not hwnd or not focus_window(hwnd):
+                raise RuntimeError("The benchmark window could not take foreground")
+            self.activate_profile(
+                default_profile, str(workload_path), force=True,
+                target_pid=workload.pid, target_hwnd=hwnd,
+                suppress_auto_scale=True,
+            )
+            ordered_ids = self._repair_gpu_order(
+                adapter_report, len(gpus), title)
+            for gpu in gpus:
+                pci = str(gpu.get("deviceId") or "")
+                gpu_name = str(gpu.get("name") or "GPU")
+                connected = [
+                    item for item in displays
+                    if str(item.get("gpuDeviceId") or "").casefold() == pci.casefold()
+                ]
+                connected.sort(key=lambda item: (
+                    not bool(item.get("primary")),
+                    int(item.get("lsDisplayId") or 0),
+                ))
+                display_device = str((connected[0].get("deviceName") or "")
+                                     if connected else "")
+                if display_device:
+                    try:
+                        if not self.window_manager.move_window_to_display(
+                                hwnd, display_device):
+                            logger.warning(
+                                "Calibration could not move the workload to %s",
+                                display_device)
+                    except Exception:
+                        logger.exception(
+                            "Calibration continued without moving to %s",
+                            display_device)
+                    try:
+                        focus_window(hwnd)
+                    except Exception:
+                        pass
+                try:
+                    window_row = self.gpu_router.route_for_window(hwnd)
+                except Exception:
+                    window_row = None
+                window_device = str(
+                    (window_row or {}).get("deviceName") or display_device)
+                try:
+                    ls_display = int((window_row or {}).get("lsDisplayId") or 0)
+                except (TypeError, ValueError):
+                    ls_display = 0
+                if not ls_display:
+                    ls_display = int((connected[0].get("lsDisplayId") or 1)
+                                     if connected else 1)
+                notify("probing", f"{gpu_name}: sweeping LS GPU ids")
+                for ls_gpu in ordered_ids:
+                    if tried >= budget:
+                        break
+                    tried += 1
+                    notify("attempt",
+                           f"{gpu_name}: trying LS GPU {ls_gpu} display "
+                           f"{ls_display} ({tried}/{budget})")
+                    try:
+                        if self.process_watcher.check_is_lossless_scaling_running():
+                            if not self.process_watcher.stop_lossless_scaling():
+                                continue
+                            self._last_gpu_route_relaunch_at = time.monotonic()
+                        if not self.lossless_settings.update_gpu_route(
+                                title, ls_gpu, ls_display):
+                            continue
+                        if not self.process_watcher.launch_lossless_scaling(force=True):
+                            continue
+                        if not self.set_scaling(
+                                True, default_profile,
+                                reason="gpu_calibration",
+                                force=True, target_pid=workload.pid,
+                                target_hwnd=hwnd,
+                                park_runtime_on_stop=False):
+                            continue
+                    except Exception:
+                        logger.exception("GPU calibration attempt failed")
+                        continue
+                    try:
+                        healthy = self._verify_active_route() is True
+                    finally:
+                        try:
+                            if self.state.is_scaling_active:
+                                self.set_scaling(
+                                    False, default_profile,
+                                    reason="gpu_calibration_probe",
+                                    force=True, park_runtime_on_stop=False)
+                        except Exception:
+                            logger.debug("Calibration probe stop failed",
+                                         exc_info=True)
+                    if healthy:
+                        self._persist_verified_route(
+                            pci, window_device, ls_gpu, ls_display)
+                        mapped[pci] = ls_gpu
+                        notify("verified",
+                               f"{gpu_name} renders as LS GPU {ls_gpu}")
+                        break
+                if tried >= budget:
+                    break
+            if mapped:
+                self.refresh_gpu_selections()
+            state = ("ok" if len(mapped) == len(gpus)
+                     else "partial" if mapped else "failed")
+            notify("done",
+                   f"{len(mapped)}/{len(gpus)} GPUs identified after "
+                   f"{tried} attempt(s)")
+            return {"state": state, "gpuCount": len(gpus), "mapped": mapped,
+                    "tried": tried,
+                    "fingerprint": getattr(
+                        self.profile_manager.config,
+                        "ls_gpu_map_fingerprint", None)}
+        finally:
+            self._verifying_route = False
+            try:
+                if self.state.is_scaling_active:
+                    self.set_scaling(False, default_profile,
+                                     reason="gpu_calibration_done",
+                                     force=True, park_runtime_on_stop=False)
+            except Exception:
+                logger.debug("Calibration final stop failed", exc_info=True)
+            try:
+                if original is not None:
+                    self.lossless_settings.update_gpu_route(title, *original)
+            except Exception:
+                logger.exception("Calibration could not restore the LS route")
+            try:
+                if self.process_watcher.check_is_lossless_scaling_running():
+                    self.process_watcher.stop_lossless_scaling()
+                if was_running:
+                    self.process_watcher.launch_lossless_scaling(force=True)
+            except Exception:
+                logger.debug("Calibration LS state restore failed", exc_info=True)
+            if workload is not None:
+                try:
+                    workload.terminate()
+                    try:
+                        workload.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        workload.kill()
+                except Exception:
+                    logger.debug("Calibration workload cleanup failed",
+                                 exc_info=True)
 
     def _invert_map(self, mapping: Dict[str, int],
                     slot: int) -> Optional[str]:
