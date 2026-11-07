@@ -331,7 +331,7 @@ class OverlayWin32VisibilityTests(unittest.TestCase):
             self.assertTrue(bool(user32.IsWindowVisible(
                 ctypes.c_void_p(presenter._border_hwnd))))
         finally:
-            presenter.close()
+            presenter._teardown_windows()
         self.assertFalse(bool(user32.IsWindow(
             ctypes.c_void_p(presenter._hwnd or 0))))
 

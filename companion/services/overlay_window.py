@@ -346,15 +346,16 @@ class Win32OverlayPresenter:
         self._usable = False
 
     def close(self) -> None:
+        # NOTE: called from arbitrary threads (indicator stop, app
+        # shutdown). Never touch windows here: the pump thread owns them
+        # and may be inside a paint. Signal exit and join; the pump
+        # destroys its own windows on the way out.
         try:
             self._stop_border_timer()
             thread = None
             with self._lock:
                 thread, self._thread = self._thread, None
                 self._thread_id = None
-                pill, border = self._hwnd, self._border_hwnd
-                self._hwnd = None
-                self._border_hwnd = None
                 self._pill_lines = []
                 self._border_color = None
                 self._pending = None
@@ -364,7 +365,20 @@ class Win32OverlayPresenter:
                     thread.join(timeout=5.0)
                 except Exception:
                     pass
-            self._user32.PostQuitMessage(0)
+        except Exception:
+            pass
+
+    def _teardown_windows(self) -> None:
+        """Destroy pump-owned windows; runs only on the pump thread."""
+        try:
+            with self._lock:
+                pill, border = self._hwnd, self._border_hwnd
+                self._hwnd = None
+                self._border_hwnd = None
+                self._pill_lines = []
+                self._border_color = None
+                self._pending = None
+                self._has_pending = False
             for handle in (pill, border):
                 if handle:
                     try:
@@ -422,6 +436,10 @@ class Win32OverlayPresenter:
         except Exception:
             self._note_failure("pump")
         finally:
+            try:
+                self._teardown_windows()
+            except Exception:
+                pass
             self._thread_id = None
             self._border_timer = False
 

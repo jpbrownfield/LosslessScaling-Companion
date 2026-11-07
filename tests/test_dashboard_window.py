@@ -81,8 +81,11 @@ class DashboardWindowTests(unittest.TestCase):
     @patch("companion.ui.dashboard_window._find_app_browser", return_value=None)
     def test_falls_back_to_default_browser(self, _find_browser, browser_open):
         url = "http://127.0.0.1:24892/dashboard"
-
-        self.assertTrue(open_dashboard_window(url))
+        with patch("companion.ui.dashboard_window._focus_cached_dashboard",
+                   return_value=False), patch(
+                       "companion.ui.dashboard_window._focus_existing_dashboard",
+                       return_value=False):
+            self.assertTrue(open_dashboard_window(url))
 
         browser_open.assert_called_once_with(url, new=1)
 
