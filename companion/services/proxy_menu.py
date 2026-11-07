@@ -72,7 +72,11 @@ class AddonManagerMenuController:
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(callback_type(callback), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        find_callback_ref = callback_type(callback)
+        user32.EnumWindows(find_callback_ref, 0)
         return matches
 
     def enforce_hidden(self, pid: Optional[int] = None) -> int:

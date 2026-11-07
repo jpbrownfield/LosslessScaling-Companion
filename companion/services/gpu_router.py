@@ -71,6 +71,48 @@ def _ven_dev(text: str) -> Optional[tuple[str, str]]:
     return pci_ven_dev(text)
 
 
+def dxgi_adapter_counts(report: object) -> Dict[str, int]:
+    """Count non-software DXGI adapters per PCI (vendor, device).
+
+    LS enumerates DXGI directly, so ghost/orphaned adapter instances --
+    same PCI id, fresh LUID, typically minted by virtual-display drivers
+    or repeated driver transitions -- shift LS's numeric GPU ids while the
+    physical topology is unchanged. Counts feed ghost detection only;
+    they never enter the stable topology fingerprint.
+    """
+    counts: Dict[str, int] = {}
+    adapters = []
+    if isinstance(report, dict):
+        adapters = report.get("enumAdapters") or []
+    if not isinstance(adapters, list):
+        return counts
+    for adapter in adapters:
+        if not isinstance(adapter, dict) or adapter.get("isSoftware"):
+            continue
+        try:
+            ven_dev = (str(adapter.get("vendorId") or ""), str(adapter.get("deviceId") or ""))
+            key = "VEN_%04X&DEV_%04X" % (int(ven_dev[0]), int(ven_dev[1]))
+        except (TypeError, ValueError):
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def ghost_signature(counts: object) -> str:
+    """Stable signature of DXGI multiplicity; "" when nothing is duplicated."""
+    if not isinstance(counts, dict):
+        return ""
+    try:
+        duplicated = sorted(
+            "%s:%d" % (str(key).upper(), int(value))
+            for key, value in counts.items()
+            if int(value) > 1
+        )
+    except (TypeError, ValueError):
+        return ""
+    return ",".join(duplicated)
+
+
 def _normalize_gpu_map(raw: object) -> Dict[str, int]:
     """Normalize the LS GPU-ID calibration map (dict or zero-arg provider)."""
     if callable(raw):
@@ -144,11 +186,15 @@ class GpuRouter:
         *,
         ls_gpu_id_map: Optional[object] = None,
         ls_display_id_map: Optional[object] = None,
+        adapter_report_dir: Optional[object] = None,
+        adapter_report_loader: Optional[Callable[[object], Optional[Dict]]] = None,
     ):
         self._display_enumerator = display_enumerator or self._enumerate_windows_displays
         self._window_device_resolver = window_device_resolver or self._window_display_device
         self._ls_gpu_id_map = ls_gpu_id_map
         self._ls_display_id_map = ls_display_id_map
+        self._adapter_report_dir = adapter_report_dir
+        self._adapter_report_loader = adapter_report_loader
         if monitor_enumerator is not None:
             self._monitor_enumerator = monitor_enumerator
         elif display_enumerator is None:
@@ -452,11 +498,62 @@ class GpuRouter:
                 str(display.get("gpuDeviceId") or "").casefold())
             if owner is not None:
                 display["lsGpuId"] = owner["lsGpuId"]
+        dxgi_counts = self._dxgi_adapter_counts()
+        ghosts = self._dxgi_ghosts(gpus, dxgi_counts)
         return {
             "gpus": gpus,
             "displays": displays,
             "hasNvidia": any(gpu["vendor"] == "NVIDIA" for gpu in gpus),
+            "dxgiAdapterCounts": dxgi_counts,
+            "dxgiGhosts": ghosts,
         }
+
+    def _dxgi_adapter_counts(self) -> Dict[str, int]:
+        """Best-effort DXGI multiplicity from the latest adapter report.
+
+        Never fails detection: no report dir, no fresh report, or any
+        parsing problem yields empty counts (ghost-blind, as before).
+        """
+        try:
+            if self._adapter_report_dir is None:
+                return {}
+            loader = self._adapter_report_loader
+            if loader is None:
+                from .adapter_report import load_latest
+                report = load_latest(self._adapter_report_dir)
+            else:
+                report = loader(self._adapter_report_dir)
+            return dxgi_adapter_counts(report)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _dxgi_ghosts(gpus: List[Dict], counts: Dict[str, int]) -> List[Dict]:
+        """Physical GPUs with more DXGI adapters than GDI devices.
+
+        Each entry names the affected GPU so the UI can explain why LS's
+        own GPU list shows duplicates and its numbering may have shifted.
+        """
+        if not counts:
+            return []
+        gdi_counts: Dict[str, int] = {}
+        names: Dict[str, str] = {}
+        for gpu in gpus:
+            key = pci_ven_dev(str(gpu.get("deviceId") or ""))
+            if key is None:
+                continue
+            flat = "VEN_%s&DEV_%s" % key
+            gdi_counts[flat] = gdi_counts.get(flat, 0) + 1
+            names.setdefault(flat, str(gpu.get("name") or flat))
+        ghosts = []
+        for flat, total in sorted(counts.items()):
+            if total > gdi_counts.get(str(flat).upper(), 0):
+                ghosts.append({
+                    "pciId": str(flat).upper(),
+                    "name": names.get(str(flat).upper(), str(flat).upper()),
+                    "dxgiAdapters": int(total),
+                })
+        return ghosts
 
     def route_for_window(self, hwnd: int) -> Optional[Dict]:
         device_name = self._window_device_resolver(hwnd)

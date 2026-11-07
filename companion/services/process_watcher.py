@@ -179,7 +179,11 @@ class ProcessWatcher:
             return True
 
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(WNDENUMPROC(enum_window_callback), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        title_enum_ref = WNDENUMPROC(enum_window_callback)
+        user32.EnumWindows(title_enum_ref, 0)
         return pid_to_title
 
     @classmethod

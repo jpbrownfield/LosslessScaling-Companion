@@ -167,6 +167,21 @@ class GpuSelectionService:
                 if numeric != new_id or str(profile.native_scaling_settings.get(key)) != str(new_id):
                     profile.native_scaling_settings[key] = str(new_id)
                     logger.info("Remapped profile '%s' %s: %s -> %s (%s)", profile.name, key, numeric, new_id, name or device_id or "General Settings")
+        from .gpu_router import GpuRouter
+
+        for ghost in GpuRouter._dxgi_ghosts(
+                inventory.get("gpus", []),
+                inventory.get("dxgiAdapterCounts") or {}) or []:
+            warnings.append(
+                "DXGI reports %(count)d adapters for '%(name)s' but Windows "
+                "shows one %(name)s. These ghost adapters make Lossless "
+                "Scaling's own GPU list show duplicates and renumber its "
+                "GPU slots, so a saved slot may point at the wrong card. "
+                "Restart the PC (or remove unused virtual-display drivers) "
+                "and recalibrate GPUs if scaling lands on the wrong GPU." % {
+                    "count": ghost.get("dxgiAdapters", 0),
+                    "name": ghost.get("name") or ghost.get("pciId") or "GPU",
+                })
         config.gpu_inventory_snapshot = copy.deepcopy(inventory)
         for warning in warnings:
             if warning not in self.warnings:

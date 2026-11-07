@@ -87,6 +87,7 @@ class AutomationController:
             ls_display_id_map=lambda: dict(
                 getattr(profile_manager.config, "ls_display_id_map", None) or {}
             ),
+            adapter_report_dir=self._adapter_report_dir(profile_manager),
         )
         self.gpu_selections = GpuSelectionService(profile_manager)
         self.lossless_settings = lossless_settings or LosslessSettingsXml(
@@ -103,6 +104,7 @@ class AutomationController:
         )
         self._verifying_route = False
         self._last_verified_route_key: Optional[str] = None
+        self._last_verified_ghost_signature = ""
         self.reshade_profiles = ReshadeProfileService(profile_manager)
         self.addon_configs = AddonConfigService(profile_manager)
         self._last_gpu_route_relaunch_at: float = 0.0
@@ -1321,8 +1323,34 @@ class AutomationController:
             return inventory
 
     @staticmethod
+    def _adapter_report_dir(profile_manager) -> Optional[str]:
+        try:
+            from .adapter_report import report_directory
+
+            return str(report_directory(Path(profile_manager.config_dir)))
+        except Exception:
+            return None
+
+    @staticmethod
     def _gpu_route_key(route: Dict) -> str:
         return f"{int(route.get('lsGpuId', 0))}:{int(route.get('lsDisplayId', 0))}:{route.get('deviceName', '')}"
+
+    def _note_route_verified(self, route_key: Optional[str],
+                             ghost_signature: str = "") -> None:
+        """Record a proven route plus the ghost population it was proven under."""
+        if route_key is not None:
+            self._last_verified_route_key = route_key
+        self._last_verified_ghost_signature = ghost_signature or ""
+
+    def _ghost_signature_now(self) -> str:
+        """Current DXGI ghost population; "" when unknown or ghost-free."""
+        try:
+            from .gpu_router import ghost_signature
+
+            return ghost_signature(
+                self.gpu_router.detect().get("dxgiAdapterCounts"))
+        except Exception:
+            return ""
 
     def _gpu_route_relaunch_due(self) -> bool:
         return (
@@ -1353,12 +1381,18 @@ class AutomationController:
             state = "stale"
         else:
             state = "ok"
+        from .gpu_router import ghost_signature, GpuRouter
+
+        counts = inventory.get("dxgiAdapterCounts") or {}
+        ghosts = GpuRouter._dxgi_ghosts(inventory.get("gpus", []), counts)
         return {
             "state": state,
             "gpuCount": gpu_count,
             "liveFingerprint": live,
             "recordedFingerprint": recorded,
             "mappedGpus": len(stored),
+            "ghostSignature": ghost_signature(counts),
+            "ghosts": ghosts,
         }
 
     def rollback_gpu_map(self) -> bool:
@@ -1392,6 +1426,12 @@ class AutomationController:
         except Exception:
             return False
         if status["state"] in ("stale", "missing"):
+            return True
+        # Ghost adapters reshuffle LS's own GPU numbering while the physical
+        # topology (and its fingerprint) is unchanged, so a previously proven
+        # LS id can silently point at a different card. Re-prove once per
+        # ghost population instead of invalidating the calibration.
+        if str(status.get("ghostSignature") or "") != self._last_verified_ghost_signature:
             return True
         key = self.state.current_gpu_route_key
         return bool(key) and key != self._last_verified_route_key
@@ -1463,7 +1503,8 @@ class AutomationController:
             )
         health = self._verify_active_route()
         if health is True:
-            self._last_verified_route_key = self.state.current_gpu_route_key
+            self._note_route_verified(self.state.current_gpu_route_key,
+                                      self._ghost_signature_now())
             return True
         if health is None:
             return True
@@ -1622,7 +1663,8 @@ class AutomationController:
         self.state.current_gpu_route_key = self._gpu_route_key(
             {"lsGpuId": ls_gpu, "lsDisplayId": ls_display,
              "deviceName": window_device})
-        self._last_verified_route_key = self.state.current_gpu_route_key
+        self._note_route_verified(self.state.current_gpu_route_key,
+                                  self._ghost_signature_now())
         logger.info("Route repair verified LS GPU %s display %s for %s",
                     ls_gpu, ls_display, window_device or "the target")
 

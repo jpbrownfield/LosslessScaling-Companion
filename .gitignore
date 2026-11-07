@@ -9,3 +9,5 @@ test-results/
 dist/
 build/
 ls.zip
+
+sandbox/

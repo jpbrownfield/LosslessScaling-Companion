@@ -530,7 +530,11 @@ class LosslessScalingInspector:
             return True
 
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        overlay_enum_ref = WNDENUMPROC(enum_cb)
+        user32.EnumWindows(overlay_enum_ref, 0)
 
         return overlay_found, overlay_hwnd
 
