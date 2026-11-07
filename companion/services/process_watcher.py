@@ -219,7 +219,11 @@ class ProcessWatcher:
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(callback_type(callback), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        hwnd_callback_ref = callback_type(callback)
+        user32.EnumWindows(hwnd_callback_ref, 0)
         return result[0] if result else None
 
     def focus_window(self, info: ProcessInfo) -> bool:
@@ -552,7 +556,11 @@ class ProcessWatcher:
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(callback_type(callback), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        hide_callback_ref = callback_type(callback)
+        user32.EnumWindows(hide_callback_ref, 0)
         return hidden
 
     def _suppress_startup_window(self, pid: int, timeout: float = 6.0) -> None:

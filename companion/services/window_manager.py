@@ -310,7 +310,11 @@ class MonitorWindowManager:
             return True
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows(callback_type(callback), 0)
+        # Keep a live reference to the thunk for the duration of the
+        # enumeration; passing a temporary lets GC free it mid-callback
+        # and AV the interpreter (0xc0000005 in python312.dll).
+        enum_callback_ref = callback_type(callback)
+        user32.EnumWindows(enum_callback_ref, 0)
         return max(candidates, default=(0, 0))[1] or None
 
     @classmethod
@@ -415,6 +419,10 @@ class MonitorWindowManager:
                 return True
 
             callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-            user32.EnumWindows(callback_type(enum_callback), 0)
+            # Keep a live reference to the thunk for the duration of the
+            # enumeration; passing a temporary lets GC free it mid-callback
+            # and AV the interpreter (0xc0000005 in python312.dll).
+            minimize_callback_ref = callback_type(enum_callback)
+            user32.EnumWindows(minimize_callback_ref, 0)
             logger.info("Minimized %d other window(s) on the scaled application's monitor", minimized)
             return minimized
