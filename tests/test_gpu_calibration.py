@@ -223,5 +223,76 @@ class CalibrationExclusivityTests(unittest.TestCase):
         trigger.assert_called_once()
 
 
+class ScaleUntilFramesTests(unittest.TestCase):
+    """Lost hotkeys resend once when starved; flowing captures never resend."""
+
+    def make_automation(self):
+        manager = ProfileManager(Path(tempfile.mkdtemp()))
+        state = AppState()
+        watcher = Mock()
+        automation = AutomationController(
+            manager, state, watcher, lossless_settings=Mock())
+        return automation
+
+    def test_confirmed_scaling_accepted_without_resend(self):
+        automation = self.make_automation()
+        automation.set_scaling = Mock(return_value=True)
+        automation._verify_active_route = Mock(return_value=True)
+        profile = Mock()
+        self.assertTrue(automation._scale_until_frames(
+            profile, "gpu_calibration", 42, 82))
+        self.assertEqual(automation.set_scaling.call_count, 1)
+
+    def test_starved_scaling_resends_once_then_succeeds(self):
+        automation = self.make_automation()
+        automation.set_scaling = Mock(return_value=False)
+        automation._verify_active_route = Mock(side_effect=[False, True])
+        profile = Mock()
+        self.assertTrue(automation._scale_until_frames(
+            profile, "gpu_calibration", 42, 82))
+        self.assertEqual(automation.set_scaling.call_count, 2)
+        reasons = [call.kwargs.get("reason", call.args[1] if len(call.args) > 1 else "")
+                   for call in automation.set_scaling.call_args_list]
+        self.assertTrue(any("retry" in str(reason) for reason in reasons))
+
+    def test_starved_twice_gives_up(self):
+        automation = self.make_automation()
+        automation.set_scaling = Mock(return_value=False)
+        automation._verify_active_route = Mock(return_value=False)
+        profile = Mock()
+        self.assertFalse(automation._scale_until_frames(
+            profile, "gpu_calibration", 42, 82))
+        self.assertEqual(automation.set_scaling.call_count, 2)
+
+    def test_unknown_verification_never_resends(self):
+        automation = self.make_automation()
+        automation.set_scaling = Mock(return_value=False)
+        automation._verify_active_route = Mock(return_value=None)
+        profile = Mock()
+        self.assertFalse(automation._scale_until_frames(
+            profile, "gpu_calibration", 42, 82))
+        self.assertEqual(automation.set_scaling.call_count, 1)
+
+    def test_probe_blind_but_flowing_counts_as_success(self):
+        # Hotkey worked (frames flow) but the overlay probe missed it:
+        # accepting must not resend, which would toggle a live session off.
+        automation = self.make_automation()
+        automation.set_scaling = Mock(return_value=False)
+        automation._verify_active_route = Mock(return_value=True)
+        profile = Mock()
+        self.assertTrue(automation._scale_until_frames(
+            profile, "gpu_calibration", 42, 82))
+        self.assertEqual(automation.set_scaling.call_count, 1)
+
+    def test_wait_for_ls_ready(self):
+        automation = self.make_automation()
+        automation.process_watcher.check_is_lossless_scaling_running.return_value = True
+        self.assertTrue(
+            automation._wait_for_ls_ready(min_uptime_seconds=0, timeout=2))
+        automation.process_watcher.check_is_lossless_scaling_running.return_value = False
+        self.assertFalse(
+            automation._wait_for_ls_ready(min_uptime_seconds=0, timeout=1))
+
+
 if __name__ == "__main__":
     unittest.main()

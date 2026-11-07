@@ -435,8 +435,27 @@ class RouteVerifyRepairTests(unittest.TestCase):
         automation._verify_active_route = Mock(side_effect=[False, True])
         self.assertTrue(automation._repair_route(
             profile, "focus", target_pid=42, target_hwnd=82))
-        # First candidate is GPU 1 on the window's display; the mock scores
-        # the second attempt healthy, so the persisted recipe is (2, 2).
+        # First candidate is GPU 1 on the window's display; a lost hotkey
+        # looks identical to a wrong route, so one resend is attempted
+        # before moving on. The resend proves frames, persisting (1, 2).
+        self.assertEqual(manager.config.ls_gpu_id_map[RTX_5050], 1)
+        self.assertEqual(manager.config.ls_display_id_map[r"\\.\DISPLAY2"], 2)
+        self.assertTrue(settings.update_gpu_route.called)
+        self.assertIsNotNone(manager.config.ls_gpu_map_fingerprint)
+
+    def test_repair_moves_on_after_resend_still_starved(self):
+        from types import SimpleNamespace
+
+        automation, manager, watcher, settings = self._controller()
+        profile = SimpleNamespace(lossless_profile_title="Default", name="Game",
+                                  id="game")
+        automation.set_scaling = Mock(return_value=True)
+        automation._verify_active_route = Mock(
+            side_effect=[False, False, False, True])
+        self.assertTrue(automation._repair_route(
+            profile, "focus", target_pid=42, target_hwnd=82))
+        # First candidate stays starved through its resend, so the sweep
+        # moves on; the second candidate proves frames on its resend.
         self.assertEqual(manager.config.ls_gpu_id_map[RTX_5050], 2)
         self.assertEqual(manager.config.ls_display_id_map[r"\\.\DISPLAY2"], 2)
         self.assertTrue(settings.update_gpu_route.called)

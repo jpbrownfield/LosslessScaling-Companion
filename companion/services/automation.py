@@ -1520,6 +1520,72 @@ class AutomationController:
         finally:
             self._verifying_route = False
 
+    def _wait_for_ls_ready(self, min_uptime_seconds: float = 4.0,
+                           timeout: float = 15.0) -> bool:
+        """Wait until a fresh LS instance is plausibly ready for its hotkey.
+
+        Cold starts with the ReShade hook plus ~100 addon DLLs outlast the
+        stock 1s launch pause; a hotkey sent before LS registers it is lost
+        and the confirmation times out ambiguously. Returns False on timeout.
+        """
+        if self.process_watcher is None:
+            return False
+        deadline = time.monotonic() + max(1.0, timeout)
+        first_seen = None
+        while time.monotonic() < deadline:
+            try:
+                running = bool(
+                    self.process_watcher.check_is_lossless_scaling_running())
+            except Exception:
+                running = False
+            if running:
+                if first_seen is None:
+                    first_seen = time.monotonic()
+                if time.monotonic() - first_seen >= max(0.0, min_uptime_seconds):
+                    return True
+            else:
+                first_seen = None
+            time.sleep(0.25)
+        return False
+
+    def _scale_until_frames(self, profile: Optional[Profile], reason: str,
+                            target_pid: Optional[int],
+                            target_hwnd: Optional[int]) -> bool:
+        """Set scaling and prove LS emits frames, resending once if starved.
+
+        A hotkey lost to a still-starting LS times out "ambiguously" while
+        scaling stays off; resending then is safe. A hotkey that worked but
+        outran the overlay probe shows PresentMon frames; resending would
+        toggle a live session off, so a flowing capture counts as success
+        without a resend. Unknown (no PresentMon) never resends.
+        """
+        for attempt in ("initial", "retry"):
+            attempt_reason = (reason if attempt == "initial"
+                              else "%s_retry" % reason)
+            try:
+                self.set_scaling(
+                    True, profile, reason=attempt_reason, force=True,
+                    target_pid=target_pid, target_hwnd=target_hwnd,
+                    park_runtime_on_stop=False)
+            except Exception:
+                logger.exception("Scaling attempt failed for %s", reason)
+                return False
+            try:
+                flowing = self._verify_active_route()
+            except Exception:
+                logger.debug("Route verification check failed for %s",
+                             reason, exc_info=True)
+                return False
+            if flowing is True:
+                return True
+            if flowing is False and attempt == "initial":
+                logger.warning(
+                    "Scaling unconfirmed and starved for %s; "
+                    "resending the hotkey once", reason)
+                continue
+            return False
+        return False
+
     def _repair_route(self, profile: Optional[Profile], reason: str,
                       target_pid: Optional[int],
                       target_hwnd: Optional[int]) -> bool:
@@ -1601,29 +1667,26 @@ class AutomationController:
                         continue
                     if not self.process_watcher.launch_lossless_scaling(force=True):
                         continue
-                    if not self.set_scaling(
-                            True, profile,
-                            reason=f"{reason}_route_repair",
-                            force=True, target_pid=target_pid,
-                            target_hwnd=target_hwnd,
-                            park_runtime_on_stop=False):
+                    self._wait_for_ls_ready()
+                    if not self._scale_until_frames(
+                            profile, "%s_route_repair" % reason,
+                            target_pid, target_hwnd):
                         continue
                 except Exception:
                     logger.exception("Route repair attempt failed")
                     continue
-                if self._verify_active_route() is True:
-                    device_pci = None
-                    try:
-                        from . import adapter_report as adapter_report_module
+                device_pci = None
+                try:
+                    from . import adapter_report as adapter_report_module
 
-                        device_pci = adapter_report_module.device_pci(
-                            adapter_report) if adapter_report else None
-                    except Exception:
-                        device_pci = None
-                    self._persist_verified_route(
-                        device_pci or window_gpu, window_device,
-                        ls_gpu, ls_display)
-                    return True
+                    device_pci = adapter_report_module.device_pci(
+                        adapter_report) if adapter_report else None
+                except Exception:
+                    device_pci = None
+                self._persist_verified_route(
+                    device_pci or window_gpu, window_device,
+                    ls_gpu, ls_display)
+                return True
         logger.error("Route repair exhausted %d candidates without LS output",
                      tried)
         try:
@@ -1825,28 +1888,22 @@ class AutomationController:
                             continue
                         if not self.process_watcher.launch_lossless_scaling(force=True):
                             continue
-                        if not self.set_scaling(
-                                True, default_profile,
-                                reason="gpu_calibration",
-                                force=True, target_pid=workload.pid,
-                                target_hwnd=hwnd,
-                                park_runtime_on_stop=False):
-                            continue
+                        self._wait_for_ls_ready()
+                        healthy = self._scale_until_frames(
+                            default_profile, "gpu_calibration",
+                            workload.pid, hwnd)
                     except Exception:
                         logger.exception("GPU calibration attempt failed")
                         continue
                     try:
-                        healthy = self._verify_active_route() is True
-                    finally:
-                        try:
-                            if self.state.is_scaling_active:
-                                self.set_scaling(
-                                    False, default_profile,
-                                    reason="gpu_calibration_probe",
-                                    force=True, park_runtime_on_stop=False)
-                        except Exception:
-                            logger.debug("Calibration probe stop failed",
-                                         exc_info=True)
+                        if self.state.is_scaling_active:
+                            self.set_scaling(
+                                False, default_profile,
+                                reason="gpu_calibration_probe",
+                                force=True, park_runtime_on_stop=False)
+                    except Exception:
+                        logger.debug("Calibration probe stop failed",
+                                     exc_info=True)
                     if healthy:
                         self._persist_verified_route(
                             pci, window_device, ls_gpu, ls_display)
