@@ -17,6 +17,9 @@ _lock = threading.Lock()
 def guard_path() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tools" / "LSC_StartupGuard.dll"
+    built = Path(__file__).resolve().parents[2] / "build" / "native" / "LSC_StartupGuard.dll"
+    if built.is_file():
+        return built
     try:
         from .test_binaries import candidate as _test_binary
 
@@ -28,7 +31,9 @@ def guard_path() -> Path:
     return Path(__file__).resolve().parents[2] / "build" / "native" / "LSC_StartupGuard.dll"
 
 
-def launch_hidden(executable: Path, *, duration_ms: int = 6000) -> int | None:
+def launch_hidden(executable: Path, *, duration_ms: int = 6000,
+                  adapter_report_dir: Path | None = None,
+                  probe_token: str | None = None) -> int | None:
     """Return the new PID, or None to use the existing hidden-launch fallback.
 
     Register a process-specific in-context event hook before resuming the child.
@@ -55,7 +60,19 @@ def launch_hidden(executable: Path, *, duration_ms: int = 6000) -> int | None:
         pid = wintypes.DWORD()
         session = ctypes.c_void_p()
         with external_dll_search():
-            if not library.LSCLaunchHidden(str(executable.resolve()), duration_ms, ctypes.byref(pid), ctypes.byref(session)):
+            if adapter_report_dir is not None:
+                probe = library.LSCLaunchHiddenWithReport
+                probe.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR,
+                                  wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD),
+                                  ctypes.POINTER(ctypes.c_void_p)]
+                probe.restype = wintypes.BOOL
+                launched = probe(str(executable.resolve()), duration_ms,
+                                 str(adapter_report_dir.resolve()), probe_token,
+                                 ctypes.byref(pid), ctypes.byref(session))
+            else:
+                launched = library.LSCLaunchHidden(str(executable.resolve()), duration_ms,
+                                                   ctypes.byref(pid), ctypes.byref(session))
+            if not launched:
                 raise ctypes.WinError(ctypes.get_last_error())
 
     except (OSError, AttributeError) as error:

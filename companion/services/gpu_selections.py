@@ -177,8 +177,9 @@ class GpuSelectionService:
                 "shows one %(name)s. These ghost adapters make Lossless "
                 "Scaling's own GPU list show duplicates and renumber its "
                 "GPU slots, so a saved slot may point at the wrong card. "
-                "Restart the PC (or remove unused virtual-display drivers) "
-                "and recalibrate GPUs if scaling lands on the wrong GPU." % {
+                "Companion checks GPU indexes while idle. Stop scaling and "
+                "close profile editors to allow a pending refresh; inspect "
+                "the mapping status or logs if a route remains incorrect." % {
                     "count": ghost.get("dxgiAdapters", 0),
                     "name": ghost.get("name") or ghost.get("pciId") or "GPU",
                 })

@@ -171,6 +171,21 @@ The optional hotkey override preserves an editable user-facing trigger, assigns
 Lossless Scaling an unmodified F24 internally, and routes the trigger through the
 matching foreground-window profile (or the Default profile when none matches).
 
+Companion checks GPU index mappings at startup, then compares fresh DXGI adapter
+order, identities, and duplicate counts about every three hours when idle. The
+standalone DXGI helper runs at Windows idle process priority. Both checks wait
+while scaling, editing, tests, or updates are active. A changed layout
+or LS process triggers an idle LS adapter-list check. Refreshes wait for scaling,
+profile editors, tests, and updates to finish; they never start scaling or request
+game focus. Explicit profile GPU choices are remapped by saved hardware identity,
+with Auto and uncertain matches preserved. Native XML changes are backed up and
+rolled back if LS's order changes across the confirmation restart.
+
+The native name-list call is restricted to the inspected LS UI build. Other builds
+report that local validation is needed and retain saved selections. See the
+[local GPU mapping validation guide](docs/idle-gpu-mapping-handoff.md) for the
+remaining live LS checks, including Parsec/Vibeshine display changes.
+
 On initialization, the companion creates an untouched, one-time
 `Settings.xml.bak` beside `Settings.xml`. If the source XML is invalid or the
 backup cannot be created, native settings writes fail closed. If Lossless Scaling

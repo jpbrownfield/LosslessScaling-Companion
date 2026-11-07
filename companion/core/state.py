@@ -21,6 +21,8 @@ class AppState:
         self.lossless_scaling_running: bool = False
         self.auto_scale_enabled: bool = True
         self.update_in_progress: bool = False
+        self.gpu_mapping_in_progress: bool = False
+        self.gpu_mapping_status: Dict[str, Any] = {"state": "pending", "message": "GPU index check pending"}
         self.scaling_owner_profile_id: Optional[str] = None
         self.scaling_trigger: Optional[str] = None
         self.current_foreground_exe_path: Optional[str] = None

@@ -36,6 +36,7 @@ class AutomaticUpdates:
         server = self.server
         if (not server.config.automatically_install_updates or server.state.simulation_mode
                 or server.profile_manager.repair_session or server.state.update_in_progress
+                or server.state.gpu_mapping_in_progress
                 or server.component_install_lock.locked()
                 or server._active_mutations or server._editing_clients
                 or (server.diagnostics_task and not server.diagnostics_task.done())

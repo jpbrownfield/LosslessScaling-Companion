@@ -10,10 +10,15 @@ static class StartupGuardWpfTest
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+    [DllImport("Lossless.dll", CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.BStr)] static extern string GetAdapterNames();
 
     [STAThread]
     static int Main()
     {
+        if (!String.IsNullOrEmpty(Environment.GetEnvironmentVariable("LSC_ADAPTER_REPORT_TOKEN"))) {
+            if (GetAdapterNames().Split(new char[] {';'}, StringSplitOptions.RemoveEmptyEntries).Length != 4) return 25;
+        }
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var window = new Window {
             Title = "LS Companion WPF startup guard test", Width = 200, Height = 100,

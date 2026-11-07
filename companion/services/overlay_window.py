@@ -4,10 +4,9 @@ Two click-through topmost windows, zero injection, zero hooks:
 * pill - terminal-style lines anchored to the target window's top-right;
 * border - a thin (~6px) frame drawn just inside the target window's edges,
   so it never spills onto a neighboring monitor. While scaling is pending
-  the frame is blue, while active it is maroon; a soft highlight
-  continuously circles the frame over a slow, low-amplitude breathing glow.
-  The animation runs on a presenter-side timer so it stays smooth and never
-  strobes.
+  the frame is blue, while active it is burgundy. A continuous gradient
+  ribbon, a softer opposing highlight, and gentle breathing run on a
+  presenter-side clock; state colors ease into one another without flashing.
 
 Both windows are plain opaque popups shaped with window regions (no
 layered windows: UpdateLayeredWindow proved unreliable on multi-GPU /
@@ -42,19 +41,17 @@ PAD_LEFT = 44
 MAX_DRAWN_LINES = 5
 HEIGHT = PAD_TOP * 2 + LINE_HEIGHT * MAX_DRAWN_LINES
 BORDER_PX = 6
-BORDER_ANIM_MS = 50
-BORDER_LAP_SECONDS = 4.0
-BORDER_BREATHE_SECONDS = 2.4
-BORDER_BREATHE_AMPLITUDE = 12
-BORDER_COMET_FRACTION = 0.12
-BORDER_COMET_BLOCKS = 12
-BORDER_COMET_BOOST = 110
+BORDER_ANIM_MS = 16
+BORDER_LAP_SECONDS = 5.2
+BORDER_BREATHE_SECONDS = 4.8
+BORDER_COLOR_SECONDS = 0.32
+BORDER_GRADIENT_STEPS = 96
 BORDER_TIMER_ID = 1
 
 BG_COLOR = (24, 24, 24)
 TEXT_COLOR = (235, 235, 235)
-PENDING_COLOR = (0, 120, 255)
-ACTIVE_COLOR = (128, 0, 0)
+PENDING_COLOR = (26, 120, 255)
+ACTIVE_COLOR = (145, 24, 62)
 
 WS_POPUP = 0x80000000
 WS_EX_TRANSPARENT = 0x00000020
@@ -99,12 +96,45 @@ class _MonitorInfo(ctypes.Structure):
 
 
 class _PaintStruct(ctypes.Structure):
+    # Win32 BOOL is 32 bits, unlike ctypes.c_bool. Using one-byte fields
+    # allocates only 64 bytes on x64; BeginPaint writes the native 72 bytes
+    # and corrupts the following allocation during the first overlay paint.
     _fields_ = [("hdc", ctypes.c_void_p),
-                ("erase", ctypes.c_bool),
+                ("erase", wintypes.BOOL),
                 ("paint", _Rect),
-                ("restore", ctypes.c_bool),
-                ("update", ctypes.c_bool),
+                ("restore", wintypes.BOOL),
+                ("update", wintypes.BOOL),
                 ("reserved", ctypes.c_ubyte * 32)]
+
+
+class _GradientVertex(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long),
+                ("red", ctypes.c_ushort), ("green", ctypes.c_ushort),
+                ("blue", ctypes.c_ushort), ("alpha", ctypes.c_ushort)]
+
+
+class _GradientRect(ctypes.Structure):
+    _fields_ = [("first", ctypes.c_ulong), ("second", ctypes.c_ulong)]
+
+
+def _border_tint(start: tuple, target: tuple, elapsed: float) -> tuple:
+    progress = min(1.0, max(0.0, elapsed / BORDER_COLOR_SECONDS))
+    eased = progress * progress * (3.0 - 2.0 * progress)
+    return tuple(round(a + (b - a) * eased) for a, b in zip(start, target))
+
+
+def _border_light(color: tuple, position: float, elapsed: float) -> tuple:
+    """Continuous light around the perimeter, including across the wrap."""
+    head = elapsed / BORDER_LAP_SECONDS
+    delta = (position - head + 0.5) % 1.0 - 0.5
+    width = 0.11 if delta < 0 else 0.035
+    trail = math.exp(-0.5 * (delta / width) ** 2)
+    opposite = (position - head) % 1.0 - 0.5
+    echo = 0.2 * math.exp(-0.5 * (opposite / 0.13) ** 2)
+    light = min(1.0, 0.08 + 0.82 * trail + echo)
+    breathe = 0.79 + 0.025 * math.sin(2 * math.pi * elapsed / BORDER_BREATHE_SECONDS)
+    return tuple(round((channel + (255 - channel) * light) * breathe)
+                 for channel in color)
 
 
 _WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_void_p,
@@ -133,6 +163,7 @@ def _user32():
             return _api
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        msimg32 = ctypes.WinDLL("msimg32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
         kernel32.GetModuleHandleW.restype = ctypes.c_void_p
@@ -212,6 +243,10 @@ def _user32():
         u.PostThreadMessageW.restype = ctypes.c_bool
         u.PostQuitMessage.argtypes = [ctypes.c_int]
         u.PostQuitMessage.restype = None
+        u.MsgWaitForMultipleObjectsEx.argtypes = [ctypes.c_ulong, ctypes.c_void_p,
+                                                 ctypes.c_ulong, ctypes.c_ulong,
+                                                 ctypes.c_ulong]
+        u.MsgWaitForMultipleObjectsEx.restype = ctypes.c_ulong
         u.DrawTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
                                 ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
         u.DrawTextW.restype = ctypes.c_int
@@ -225,6 +260,14 @@ def _user32():
         g = gdi32
         g.DeleteDC.argtypes = [ctypes.c_void_p]
         g.DeleteDC.restype = ctypes.c_bool
+        g.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+        g.CreateCompatibleDC.restype = ctypes.c_void_p
+        g.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        g.CreateCompatibleBitmap.restype = ctypes.c_void_p
+        g.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                            ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        g.BitBlt.restype = wintypes.BOOL
         g.CreateSolidBrush.argtypes = [ctypes.c_ulong]
         g.CreateSolidBrush.restype = ctypes.c_void_p
         g.FillRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
@@ -248,7 +291,12 @@ def _user32():
         g.SetTextColor.restype = ctypes.c_ulong
         g.DeleteObject.argtypes = [ctypes.c_void_p]
         g.DeleteObject.restype = ctypes.c_bool
-        _api = {"user32": u, "gdi32": g, "kernel32": kernel32}
+        msimg32.GradientFill.argtypes = [ctypes.c_void_p, ctypes.POINTER(_GradientVertex),
+                                        ctypes.c_ulong, ctypes.POINTER(_GradientRect),
+                                        ctypes.c_ulong, ctypes.c_ulong]
+        msimg32.GradientFill.restype = wintypes.BOOL
+        _api = {"user32": u, "gdi32": g, "kernel32": kernel32,
+                "msimg32": msimg32}
         return _api
 
 
@@ -305,6 +353,10 @@ class Win32OverlayPresenter:
         self._border_color: Optional[tuple] = None
         self._border_timer = False
         self._border_anim_t0 = 0.0
+        self._border_color_from = PENDING_COLOR
+        self._border_color_t0 = 0.0
+        self._border_geometry = None
+        self._border_buffer = None
         try:
             self._user32, self._gdi32, self._kernel32 = _handles()
         except Exception:
@@ -358,6 +410,7 @@ class Win32OverlayPresenter:
                 self._thread_id = None
                 self._pill_lines = []
                 self._border_color = None
+                self._border_geometry = None
                 self._pending = None
                 self._has_pending = False
             if thread is not None:
@@ -371,8 +424,10 @@ class Win32OverlayPresenter:
     def _teardown_windows(self) -> None:
         """Destroy pump-owned windows; runs only on the pump thread."""
         try:
+            self._release_border_buffer()
             with self._lock:
                 pill, border = self._hwnd, self._border_hwnd
+                self._border_geometry = None
                 self._hwnd = None
                 self._border_hwnd = None
                 self._pill_lines = []
@@ -424,7 +479,11 @@ class Win32OverlayPresenter:
                     if pending:
                         self._apply_pending()
                         continue
-                    _pump_idle_wait(0.01)
+                    # Wake on messages/timers instead of quantizing every
+                    # animation frame onto a separate 10 ms polling sleep.
+                    if self._user32.MsgWaitForMultipleObjectsEx(
+                            0, None, BORDER_ANIM_MS, 0x04FF, 0x0004) == 0xFFFFFFFF:
+                        _pump_idle_wait(0.01)
                     continue
                 if message.message == WM_QUIT:
                     break
@@ -523,38 +582,74 @@ class Win32OverlayPresenter:
         except Exception:
             self._note_failure("paint_window")
 
-    def _border_frame_point(self, distance: float, total_w: int,
-                            total_h: int, px: int) -> tuple[int, int]:
-        """Map a clockwise perimeter distance to a px-sized square origin."""
-        perimeter = 2.0 * (total_w + total_h)
-        if perimeter <= 0 or px <= 0:
-            return 0, 0
-        s = distance % perimeter
-        max_x = max(total_w - px, 0)
-        max_y = max(total_h - px, 0)
-        if s < total_w:
-            return min(int(s), max_x), 0
-        s -= total_w
-        if s < total_h:
-            return max_x, min(int(s), max_y)
-        s -= total_h
-        if s < total_w:
-            return max(max_x - int(s), 0), max_y
-        s -= total_w
-        return 0, max(max_y - int(s), 0)
+    def _release_border_buffer(self) -> None:
+        buffer, self._border_buffer = self._border_buffer, None
+        if buffer:
+            dc, bitmap, original, _width, _height = buffer
+            self._gdi32.SelectObject(dc, original)
+            self._gdi32.DeleteObject(bitmap)
+            self._gdi32.DeleteDC(dc)
+
+    def _border_back_buffer(self, hdc, width: int, height: int):
+        buffer = self._border_buffer
+        if buffer and buffer[3:] == (width, height):
+            return buffer[0]
+        self._release_border_buffer()
+        dc = self._gdi32.CreateCompatibleDC(hdc)
+        bitmap = self._gdi32.CreateCompatibleBitmap(hdc, width, height) if dc else None
+        original = self._gdi32.SelectObject(dc, bitmap) if bitmap else None
+        if not original or original == ctypes.c_void_p(-1).value:
+            if bitmap:
+                self._gdi32.DeleteObject(bitmap)
+            if dc:
+                self._gdi32.DeleteDC(dc)
+            raise OSError("Could not create the border back buffer")
+        self._border_buffer = (dc, bitmap, original, width, height)
+        return dc
+
+    def _border_gradients(self, width: int, height: int, color: tuple, elapsed: float):
+        # One native GradientFill call per orientation; no per-dot brushes.
+        groups = [([], []), ([], [])]
+        perimeter = 2.0 * (width + height)
+        offset = 0
+        for side, length in enumerate((width, height, width, height)):
+            vertices, rectangles = groups[side % 2]
+            steps = max(1, round(BORDER_GRADIENT_STEPS * length / perimeter))
+            points = [round(length * i / steps) for i in range(steps + 1)]
+            colors = [_border_light(color, (offset + point) / perimeter, elapsed)
+                      for point in points]
+            for i in range(steps):
+                start, end = points[i:i + 2]
+                for low, high, shade in ((0, 2, 0.38), (2, 4, 1.0), (4, 6, 0.24)):
+                    first, last = colors[i], colors[i + 1]
+                    if side == 0:
+                        box = (start, low, end, high)
+                    elif side == 1:
+                        box = (width - high, start, width - low, end)
+                    elif side == 2:
+                        box = (width - end, height - high, width - start, height - low)
+                        first, last = last, first
+                    else:
+                        box = (low, height - end, high, height - start)
+                        first, last = last, first
+                    index = len(vertices)
+                    for x, y, tint in ((box[0], box[1], first), (box[2], box[3], last)):
+                        channels = [round(channel * shade) << 8 for channel in tint]
+                        vertices.append(_GradientVertex(x, y, *channels, 0))
+                    rectangles.append(_GradientRect(index, index + 1))
+            offset += length
+        return groups
 
     def _paint_border_frame(self, hdc, hwnd: int, color: tuple) -> None:
-        """Paint the frame with a breathing glow plus a circling highlight."""
+        """Draw the continuous shaded ribbon offscreen, then copy its thin edges."""
         try:
             with self._lock:
                 t0 = self._border_anim_t0
+                color_from = self._border_color_from
+                color_t0 = self._border_color_t0
             now = _time.monotonic()
             elapsed = max(now - t0, 0.0)
-            breathe = int(round(
-                BORDER_BREATHE_AMPLITUDE
-                * math.sin(2.0 * math.pi * elapsed / BORDER_BREATHE_SECONDS)))
-            base = tuple(max(0, min(255, channel + breathe))
-                         for channel in color)
+            tint = _border_tint(color_from, color, now - color_t0)
             rect = _Rect()
             if not self._user32.GetWindowRect(ctypes.c_void_p(hwnd),
                                               ctypes.byref(rect)):
@@ -563,57 +658,47 @@ class Win32OverlayPresenter:
             total_h = rect.bottom - rect.top
             if total_w <= 0 or total_h <= 0:
                 return
-            brush = self._gdi32.CreateSolidBrush(self._rgb(base))
-            try:
-                full = _Rect(0, 0, total_w, total_h)
-                self._user32.FillRect(hdc, ctypes.byref(full), brush)
-            finally:
-                try:
-                    self._gdi32.DeleteObject(brush)
-                except Exception:
-                    pass
-            perimeter = 2.0 * (total_w + total_h)
-            head = (elapsed / BORDER_LAP_SECONDS % 1.0) * perimeter
-            tail = perimeter * BORDER_COMET_FRACTION
-            blocks = BORDER_COMET_BLOCKS
-            for index in range(blocks):
-                fade = 1.0 - index / blocks
-                pos = head - (tail * index / max(blocks - 1, 1))
-                x, y = self._border_frame_point(pos, total_w, total_h,
-                                                BORDER_PX)
-                glow = tuple(max(0, min(255, channel + int(BORDER_COMET_BOOST * fade)))
-                             for channel in base)
-                block_brush = self._gdi32.CreateSolidBrush(self._rgb(glow))
-                try:
-                    cell = _Rect(x, y, x + BORDER_PX, y + BORDER_PX)
-                    self._user32.FillRect(hdc, ctypes.byref(cell),
-                                          block_brush)
-                finally:
-                    try:
-                        self._gdi32.DeleteObject(block_brush)
-                    except Exception:
-                        pass
+            memory = self._border_back_buffer(hdc, total_w, total_h)
+            gradient = _user32()["msimg32"].GradientFill
+            for orientation, (vertices, rectangles) in enumerate(
+                    self._border_gradients(total_w, total_h, tint, elapsed)):
+                vertex_buffer = (_GradientVertex * len(vertices))(*vertices)
+                mesh_buffer = (_GradientRect * len(rectangles))(*rectangles)
+                if not gradient(memory, vertex_buffer, len(vertices), mesh_buffer,
+                                len(rectangles), orientation):
+                    raise OSError("Could not paint the border gradient")
+            # Keep memory traffic proportional to the six-pixel frame even on
+            # 4K displays; the application's center is never copied or painted.
+            for x, y, width, height in (
+                    (0, 0, total_w, BORDER_PX),
+                    (0, total_h - BORDER_PX, total_w, BORDER_PX),
+                    (0, BORDER_PX, BORDER_PX, total_h - 2 * BORDER_PX),
+                    (total_w - BORDER_PX, BORDER_PX, BORDER_PX, total_h - 2 * BORDER_PX)):
+                if not self._gdi32.BitBlt(hdc, x, y, width, height, memory, x, y, 0x00CC0020):
+                    raise OSError("Could not present the border frame")
         except Exception:
             self._note_failure("paint_border_frame")
 
-    def _set_region(self, hwnd: int, slot: str, region) -> None:
-        """Apply a window region, disposing the previously applied one."""
+    def _set_region(self, hwnd: int, slot: str, region) -> bool:
+        """Transfer a successful region to Windows; free it only on failure."""
         try:
             if not region:
-                return
+                return False
             applied = self._user32.SetWindowRgn(
                 ctypes.c_void_p(hwnd), region, True)
-            previous = getattr(self, slot, None)
             if applied:
                 setattr(self, slot, region)
-                region = previous
+                # Windows owns a successfully applied region and releases the
+                # previous one. Deleting that handle here can double-free it.
+                region = None
             if region:
                 try:
                     self._gdi32.DeleteObject(region)
                 except Exception:
                     pass
+            return bool(applied)
         except Exception:
-            pass
+            return False
 
     def _create_windows(self) -> bool:
         try:
@@ -783,8 +868,8 @@ class Win32OverlayPresenter:
                 self._hide_border()
                 return
             color = _BORDER_COLORS.get(mode, PENDING_COLOR)
-            if pulse:
-                color = tuple(min(255, channel + 70) for channel in color)
+            # Legacy pulse flags arrive on status heartbeats. Brightness and
+            # motion now come entirely from the continuous presenter clock.
             # The frame lives strictly inside the target window (same size,
             # same position) so it can never spill onto a neighboring
             # monitor; it reads as a border because only the edge band is
@@ -793,27 +878,33 @@ class Win32OverlayPresenter:
                 ctypes.c_void_p(self._border_hwnd), None,
                 rect.left, rect.top, width, height,
                 SWP_NOZORDER | SWP_NOACTIVATE)
-            outer = self._gdi32.CreateRectRgn(0, 0, width, height)
-            inner = self._gdi32.CreateRectRgn(
-                BORDER_PX, BORDER_PX, width - BORDER_PX,
-                height - BORDER_PX)
-            frame = self._gdi32.CreateRectRgn(0, 0, 1, 1)
-            try:
-                self._gdi32.CombineRgn(frame, outer, inner, 3)  # RGN_DIFF
-            finally:
-                for handle in (outer, inner):
-                    try:
+            if self._border_geometry != (width, height):
+                outer = self._gdi32.CreateRectRgn(0, 0, width, height)
+                inner = self._gdi32.CreateRectRgn(
+                    BORDER_PX, BORDER_PX, width - BORDER_PX,
+                    height - BORDER_PX)
+                frame = self._gdi32.CreateRectRgn(0, 0, 1, 1)
+                try:
+                    self._gdi32.CombineRgn(frame, outer, inner, 3)  # RGN_DIFF
+                finally:
+                    for handle in (outer, inner):
                         self._gdi32.DeleteObject(handle)
-                    except Exception:
-                        pass
+                if not self._set_region(self._border_hwnd, "_border_rgn", frame):
+                    raise OSError("Could not apply the border window shape")
+                self._border_geometry = (width, height)
             with self._lock:
-                self._border_color = tuple(color)
                 fresh = not self._border_visible
+                now = _time.monotonic()
+                if fresh or color != self._border_color:
+                    self._border_color_from = (tuple(color) if fresh else _border_tint(
+                        self._border_color_from, self._border_color,
+                        now - self._border_color_t0))
+                    self._border_color_t0 = now
+                    self._border_color = tuple(color)
                 if fresh:
-                    self._border_anim_t0 = _time.monotonic()
-            self._set_region(self._border_hwnd, "_border_rgn", frame)
+                    self._border_anim_t0 = now
             self._user32.InvalidateRect(
-                ctypes.c_void_p(self._border_hwnd), None, True)
+                ctypes.c_void_p(self._border_hwnd), None, False)
             self._user32.ShowWindow(ctypes.c_void_p(self._border_hwnd),
                                     SW_SHOWNOACTIVATE)
             self._border_visible = True

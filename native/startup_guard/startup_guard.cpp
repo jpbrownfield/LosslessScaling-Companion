@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+void StartAdapterProbe(HMODULE module) noexcept;
+
 namespace {
 constexpr wchar_t kDeadline[] = L"LSC_STARTUP_HIDE_UNTIL";
 constexpr UINT_PTR kSubclass = 0x4C534347;
@@ -70,6 +72,7 @@ void CALLBACK StartupEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG object,
         (event == EVENT_OBJECT_CREATE || event == EVENT_OBJECT_SHOW)) {
         if (ConfigurationWindow(window, GetWindowLongPtrW(window, GWL_STYLE),
                                 GetWindow(window, GW_OWNER))) {
+            StartAdapterProbe(module);
             // The subclass can outlive the installer's hook while a queued
             // window message is in flight. Pin our own tiny module, not LS.
             HMODULE pinned = nullptr;
@@ -98,6 +101,8 @@ void CALLBACK StartupEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG object,
 struct Session {
     std::wstring path;
     DWORD duration;
+    std::wstring report_directory;
+    std::wstring report_token;
     HANDLE ready = nullptr;
     HANDLE stop = nullptr;
     HANDLE thread = nullptr;
@@ -123,6 +128,8 @@ DWORD RunGuardImpl(void* argument) {
         if (!_wcsnicmp(item, kDeadline, ARRAYSIZE(kDeadline) - 1) &&
             item[ARRAYSIZE(kDeadline) - 1] == L'=') continue;
         if (localSpecialK && !_wcsnicmp(item, L"SPECIALK_PATH=", 14)) continue;
+        if (!_wcsnicmp(item, L"LSC_ADAPTER_REPORT_DIR=", 23) ||
+            !_wcsnicmp(item, L"LSC_ADAPTER_REPORT_TOKEN=", 25)) continue;
         environment.insert(environment.end(), item, item + wcslen(item) + 1);
     }
     FreeEnvironmentStringsW(inherited);
@@ -131,6 +138,12 @@ DWORD RunGuardImpl(void* argument) {
     if (localSpecialK) {
         const auto specialK = L"SPECIALK_PATH=" + specialKRoot;
         environment.insert(environment.end(), specialK.c_str(), specialK.c_str() + specialK.size() + 1);
+    }
+    if (!state->report_directory.empty()) {
+        for (const auto& value : {L"LSC_ADAPTER_REPORT_DIR=" + state->report_directory,
+                                  L"LSC_ADAPTER_REPORT_TOKEN=" + state->report_token}) {
+            environment.insert(environment.end(), value.c_str(), value.c_str() + value.size() + 1);
+        }
     }
     environment.push_back(L'\0');
     std::wstring command = L"\"" + path + L"\"";
@@ -211,7 +224,8 @@ extern "C" __declspec(dllexport) void WINAPI LSCReleaseStartupGuard(void* sessio
 }
 
 BOOL LaunchHiddenImpl(
-    const wchar_t* executable, DWORD duration, DWORD* pid, void** session) {
+    const wchar_t* executable, DWORD duration, DWORD* pid, void** session,
+    const wchar_t* report_directory = L"", const wchar_t* report_token = L"") {
     launch_stage = L"validate";
     if (!executable || !pid || !session || duration < 100 || duration > 30000) {
         SetLastError(ERROR_INVALID_PARAMETER);
@@ -225,7 +239,7 @@ BOOL LaunchHiddenImpl(
         SetLastError(ERROR_INVALID_NAME);
         return FALSE;
     }
-    Session* state = new (std::nothrow) Session{path, duration};
+    Session* state = new (std::nothrow) Session{path, duration, report_directory, report_token};
     if (!state) {
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;
@@ -257,6 +271,22 @@ extern "C" __declspec(dllexport) BOOL WINAPI LSCLaunchHidden(
     const wchar_t* executable, DWORD duration, DWORD* pid, void** session) {
     try {
         return LaunchHiddenImpl(executable, duration, pid, session);
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI LSCLaunchHiddenWithReport(
+    const wchar_t* executable, DWORD duration, const wchar_t* directory,
+    const wchar_t* token, DWORD* pid, void** session) {
+    if (!directory || !*directory || !token || wcslen(token) != 64 ||
+            wcsspn(token, L"0123456789abcdef") != 64) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    try {
+        return LaunchHiddenImpl(executable, duration, pid, session, directory, token);
     } catch (...) {
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;

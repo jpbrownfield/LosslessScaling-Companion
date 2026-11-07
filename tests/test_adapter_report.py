@@ -255,7 +255,8 @@ class RepairUsesReportTests(unittest.TestCase):
                       "settingsDisplay": 2, "deviceIndexAdapters": 1,
                       "deviceIndexAdapters1": 0}
             with patch.object(adapter_report, "load_latest",
-                              return_value=report):
+                              return_value=report), \
+                    patch.object(automation, "_adapter_report_process", return_value=(4242, 0)):
                 self.assertTrue(automation._repair_route(
                     profile, "focus", target_pid=42, target_hwnd=82))
             first = settings.update_gpu_route.call_args_list[0]
@@ -287,8 +288,7 @@ class AdoptAdapterReportTests(unittest.TestCase):
         profile = SimpleNamespace(lossless_profile_title="Default", name="G")
         with patch.object(adapter_report, "load_latest",
                           return_value=self._report()), \
-             patch("companion.services.performance_benchmark.find_process_id",
-                   return_value=4242):
+             patch.object(automation, "_adapter_report_process", return_value=(4242, 0)):
             self.assertEqual(automation._adopt_adapter_report(profile),
                              "confirmed")
         self.assertEqual(
@@ -305,8 +305,7 @@ class AdoptAdapterReportTests(unittest.TestCase):
         profile = SimpleNamespace(lossless_profile_title="Default", name="G")
         with patch.object(adapter_report, "load_latest",
                           return_value=self._report()), \
-             patch("companion.services.performance_benchmark.find_process_id",
-                   return_value=4242):
+             patch.object(automation, "_adapter_report_process", return_value=(4242, 0)):
             self.assertEqual(automation._adopt_adapter_report(profile),
                              "corrected")
         self.assertEqual(
@@ -321,8 +320,7 @@ class AdoptAdapterReportTests(unittest.TestCase):
         profile = SimpleNamespace(lossless_profile_title="Default", name="G")
         with patch.object(adapter_report, "load_latest",
                           return_value=self._report()), \
-             patch("companion.services.performance_benchmark.find_process_id",
-                   return_value=9999):
+             patch.object(automation, "_adapter_report_process", return_value=(9999, 0)):
             self.assertIsNone(automation._adopt_adapter_report(profile))
         self.assertEqual(manager.config.ls_gpu_id_map, {})
 

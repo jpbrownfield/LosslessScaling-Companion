@@ -3,6 +3,25 @@
 
 #include <windows.h>
 
+namespace {
+SRWLOCK lifecycle = SRWLOCK_INIT;
+HANDLE worker = nullptr;
+lsc::ReportRetryContext context;
+
+// Called under lifecycle, outside DllMain. Never time out and return while a
+// worker can still execute this DLL or dereference its borrowed IHost pointer.
+void StopReporter() {
+    if (context.stop) SetEvent(context.stop);
+    if (worker) {
+        WaitForSingleObject(worker, INFINITE);
+        CloseHandle(worker);
+        worker = nullptr;
+    }
+    if (context.stop) CloseHandle(context.stop);
+    context = {};
+}
+}  // namespace
+
 LSPROXY_EXPORT void AddonInitialize(
     IHost* host,
     ImGuiContext*,
@@ -10,22 +29,28 @@ LSPROXY_EXPORT void AddonInitialize(
     void*,
     void*
 ) {
-    // Never let reporting break scaling: all failures are swallowed inside.
-    __try {
-        void* device = host ? host->GetD3D11Device() : nullptr;
-        std::uint32_t version = host ? host->GetHostVersion() : 0;
-        lsc::WriteAdapterReport(device, version);
-        // LS often creates its D3D device after add-ons load. A short-lived
-        // watcher re-reports once a device exists; AddonInitialize itself
-        // returns immediately so startup is never blocked.
-        HANDLE thread = CreateThread(
-            nullptr, 0, lsc::ReportRetryThread, host, 0, nullptr);
-        if (thread) CloseHandle(thread);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    AcquireSRWLockExclusive(&lifecycle);
+    StopReporter();
+    // A repeated initialize replaces the previous worker only after it exits.
+    // The host owns its device, so retain it during each reporting attempt.
+    if (host) {
+        lsc::ReportHostAdapter(host, true);
+        // Preserve the delayed refresh even when startup already has a device:
+        // LS can replace its initial device while scaling initializes.
+        context.host = host;
+        context.stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (context.stop) {
+            worker = CreateThread(nullptr, 0, lsc::ReportRetryThread, &context, 0, nullptr);
+        }
+        if (!worker) StopReporter();
     }
+    ReleaseSRWLockExclusive(&lifecycle);
 }
 
 LSPROXY_EXPORT void AddonShutdown() {
+    AcquireSRWLockExclusive(&lifecycle);
+    StopReporter();
+    ReleaseSRWLockExclusive(&lifecycle);
 }
 
 LSPROXY_EXPORT std::uint32_t GetAddonCapabilities() {

@@ -537,6 +537,7 @@
             <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
             <div class="form-group checkbox-group"><input id="snapNearFullscreenWindowsToMonitor" type="checkbox" checked><label for="snapNearFullscreenWindowsToMonitor">Fit Near-Fullscreen Games Exactly to Monitor Bounds</label></div>
             <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
+            <div id="gpuIndexRefreshStatus" class="item-sub" style="white-space:normal" aria-live="polite"></div>
             <p class="item-sub" style="white-space:normal;margin-top:8px">Auto follows the display containing the app. Moving it to another GPU’s display briefly restarts scaling with the updated GPU and display.</p>
           </div>
         </section>
@@ -1405,6 +1406,9 @@
             document.getElementById('simulationBadge').hidden = !msg.simulationMode;
           }
           if (msg.notifications) receiveNotifications(msg.notifications);
+          if (msg.gpuIndexMapping) {
+            document.getElementById('gpuIndexRefreshStatus').textContent = msg.gpuIndexMapping.message || '';
+          }
           if (msg.type === 'PROFILE_SUMMARIES') {
             profiles = msg.profiles || [];
             invalidateProfileDetails();

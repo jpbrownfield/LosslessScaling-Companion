@@ -3,13 +3,14 @@ project(LSC_StartupGuard LANGUAGES CXX)
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Startup Guard requires Windows x64")
 endif()
-add_library(LSC_StartupGuard SHARED startup_guard.cpp)
+add_library(LSC_StartupGuard SHARED startup_guard.cpp adapter_probe.cpp ../adapter_report/src/report.cpp)
+target_include_directories(LSC_StartupGuard PRIVATE ../vendor/losslessproxy-sdk/include)
 target_compile_features(LSC_StartupGuard PRIVATE cxx_std_17)
 target_compile_definitions(LSC_StartupGuard PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(LSC_StartupGuard PRIVATE user32 comctl32 dwmapi)
+target_link_libraries(LSC_StartupGuard PRIVATE user32 comctl32 dwmapi dxgi oleaut32)
 set_property(TARGET LSC_StartupGuard PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 if(MSVC)
-  target_compile_options(LSC_StartupGuard PRIVATE /W4 /permissive- /guard:cf)
+  target_compile_options(LSC_StartupGuard PRIVATE /W4 /permissive- /EHsc /guard:cf)
   target_link_options(LSC_StartupGuard PRIVATE /guard:cf /DYNAMICBASE /NXCOMPAT)
 endif()
 set_target_properties(LSC_StartupGuard PROPERTIES
@@ -28,6 +29,10 @@ if(CSC_COMPILER)
   set(WPF_HOST_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../../build/native/startup-guard-wpf-test")
   file(TO_NATIVE_PATH "${WPF_HOST_DIRECTORY}" WPF_HOST_NATIVE)
   file(TO_NATIVE_PATH "${FRAMEWORK_DIRECTORY}" FRAMEWORK_NATIVE)
+  add_library(startup_guard_test_engine SHARED test_engine.cpp)
+  target_link_libraries(startup_guard_test_engine PRIVATE oleaut32)
+  set_target_properties(startup_guard_test_engine PROPERTIES OUTPUT_NAME Lossless
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${WPF_HOST_DIRECTORY}")
   add_custom_target(startup_guard_wpf_test_host ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${WPF_HOST_DIRECTORY}"
     COMMAND "${CSC_COMPILER}" /nologo /target:winexe /platform:x64

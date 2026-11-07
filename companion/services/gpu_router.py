@@ -188,6 +188,7 @@ class GpuRouter:
         ls_display_id_map: Optional[object] = None,
         adapter_report_dir: Optional[object] = None,
         adapter_report_loader: Optional[Callable[[object], Optional[Dict]]] = None,
+        adapter_report_process: Optional[object] = None,
     ):
         self._display_enumerator = display_enumerator or self._enumerate_windows_displays
         self._window_device_resolver = window_device_resolver or self._window_display_device
@@ -195,6 +196,7 @@ class GpuRouter:
         self._ls_display_id_map = ls_display_id_map
         self._adapter_report_dir = adapter_report_dir
         self._adapter_report_loader = adapter_report_loader
+        self._adapter_report_process = adapter_report_process
         if monitor_enumerator is not None:
             self._monitor_enumerator = monitor_enumerator
         elif display_enumerator is None:
@@ -520,7 +522,11 @@ class GpuRouter:
             loader = self._adapter_report_loader
             if loader is None:
                 from .adapter_report import load_latest
-                report = load_latest(self._adapter_report_dir)
+                if self._adapter_report_process is None:
+                    report = load_latest(self._adapter_report_dir)
+                else:
+                    instance = self._adapter_report_process()
+                    report = load_latest(self._adapter_report_dir, pid=instance[0], created_after=instance[1]) if instance else None
             else:
                 report = loader(self._adapter_report_dir)
             return dxgi_adapter_counts(report)

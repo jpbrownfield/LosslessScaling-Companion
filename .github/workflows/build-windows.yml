@@ -117,9 +117,16 @@ jobs:
         shell: pwsh
         run: |
           cmake -S native/adapter_report -B build/adapter_report -A x64
+          if ($LASTEXITCODE -ne 0) { throw "Adapter reporter configure failed" }
           cmake --build build/adapter_report --config Release
+          if ($LASTEXITCODE -ne 0) { throw "Adapter reporter build failed" }
+          ctest --test-dir build/adapter_report -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Adapter reporter lifetime tests failed" }
           if (-not (Test-Path -LiteralPath build/native/LSC-AdapterReport/LSC_AdapterReport.dll)) {
             throw "Adapter reporter was not produced"
+          }
+          if (-not (Test-Path -LiteralPath build/native/LSC-AdapterReport/LSC_AdapterProbe.exe)) {
+            throw "Idle DXGI probe was not produced"
           }
           if (-not (Test-Path -LiteralPath build/native/LSC-AdapterReport/addon.json)) {
             throw "Adapter reporter manifest was not produced"
@@ -203,6 +210,7 @@ jobs:
           }
           $benchmark = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSBenchmark.exe" -ErrorAction Stop
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_StartupGuard.dll" -ErrorAction Stop | Out-Null
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_AdapterProbe.exe" -ErrorAction Stop | Out-Null
           if ((Get-Item -LiteralPath $benchmark).Length -le 0) {
             throw "Embedded benchmark executable is empty"
           }

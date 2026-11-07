@@ -136,6 +136,14 @@ int wmain(int argc, wchar_t** argv) {
         device->Release();
         return 2;
     }
+    // The host/device must outlive all reporter callbacks and worker threads.
+    auto shutdown = reinterpret_cast<void (*)()>(GetProcAddress(module, "AddonShutdown"));
+    if (!shutdown) {
+        printf("FAIL: no AddonShutdown export\n");
+        return 2;
+    }
+    shutdown();
+    FreeLibrary(module);
     device->Release();
 
     wchar_t localAppData[32768]{};

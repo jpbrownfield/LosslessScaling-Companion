@@ -262,6 +262,24 @@ class LosslessSettingsXml:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
+    def update_gpu_indexes(self, indexes: Dict[str, int]) -> None:
+        """Change explicit GPU slots in one atomic write; preserve all other XML."""
+        if not indexes:
+            return
+        tree = ET.parse(self.path)
+        profiles = tree.getroot().findall("./GameProfiles/Profile")
+        for title, slot in indexes.items():
+            if not title or isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
+                raise ValueError("GPU remapping requires an explicit positive slot and title")
+            matches = [p for p in profiles if (self._text(p, "Title") or "").casefold() == title.casefold()]
+            if len(matches) != 1:
+                raise ValueError(f"LS profile title is missing or ambiguous: {title}")
+            node = matches[0].find("PreferredGpuId")
+            if node is None or not node.text or not node.text.isdecimal() or int(node.text) == 0:
+                raise ValueError(f"Cannot remap Auto or unknown GPU selection: {title}")
+            node.text = str(slot)
+        self._write_tree(tree, backup=True)
+
     def update_profile(
         self,
         title: str,

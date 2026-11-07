@@ -71,6 +71,37 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    async def test_editor_request_waits_for_idle_gpu_transaction_without_losing_message(self):
+        from unittest.mock import AsyncMock
+        websocket = self.FakeWebSocket()
+        self.server._process_message = AsyncMock()
+        self.state.gpu_mapping_in_progress = True
+        raw = '{"type":"SET_PROFILE_EDITING","editing":true}'
+        request = asyncio.create_task(self.server.process_message(websocket, raw))
+        try:
+            await asyncio.sleep(0.08)
+            self.server._process_message.assert_not_called()
+            self.state.gpu_mapping_in_progress = False
+            await asyncio.wait_for(request, 1)
+            self.server._process_message.assert_awaited_once_with(websocket, raw)
+            self.assertEqual(self.server._active_mutations, 0)
+        finally:
+            self.state.gpu_mapping_in_progress = False
+            if not request.done():
+                request.cancel()
+
+    async def test_server_shutdown_cancels_and_drains_gpu_probe_worker(self):
+        started, finished = threading.Event(), threading.Event()
+        def check():
+            started.set()
+            self.server.gpu_index_refresh.stopping.wait(2)
+            finished.set()
+        self.server.gpu_index_task = asyncio.create_task(self.server._run_background_thread(check))
+        self.assertTrue(await asyncio.to_thread(started.wait, 1))
+        await self.server.stop()
+        self.assertTrue(finished.is_set())
+        self.assertFalse(self.server._background_thread_tasks)
+
     def test_origin_allowlist(self):
         self.assertTrue(self.server.is_origin_allowed(None))
         self.assertFalse(self.server.is_origin_allowed("null"))

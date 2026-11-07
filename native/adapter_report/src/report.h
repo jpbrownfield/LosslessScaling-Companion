@@ -52,14 +52,30 @@ struct AdapterReport {
     // LS numbers GPUs per its own enumeration, so titles anchor numbers.
     std::vector<SettingsProfile> settingsProfiles;
     int rootGpuPreference = -1;
+    std::vector<std::wstring> lsAdapterNames;
+    std::string requestId;
 };
+
+// No device creation or scaling. The optional names call is the exact export
+// used by the supported LS UI and must only be enabled after its ABI is checked.
+std::string CollectAdapterSnapshot(bool readLsNames = false, const std::string& requestId = {});
 
 // Gathers the report and writes ls-adapter-report-<pid>.json under the
 // companion diagnostics directory. Never throws; best effort only.
 bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion);
 
-// Re-reports once LS has created its D3D device (AddOnInitialize usually
-// runs first). Runs at most ~30s on its own thread, then exits.
-DWORD WINAPI ReportRetryThread(void* host);
+// The owner keeps this context and its stop event alive until the worker joins.
+struct ReportRetryContext {
+    void* host = nullptr;
+    HANDLE stop = nullptr;
+};
+
+// Keeps a COM reference to any returned device until report collection finishes.
+// Returns true only after a report containing a device was written.
+bool ReportHostAdapter(void* host, bool allowEmptyReport = false) noexcept;
+
+// Waits interruptibly for a device, for at most ~30s. The host must call
+// AddonShutdown before destroying IHost or unloading this DLL.
+DWORD WINAPI ReportRetryThread(void* context);
 
 }  // namespace lsc

@@ -88,6 +88,7 @@ class AutomationController:
                 getattr(profile_manager.config, "ls_display_id_map", None) or {}
             ),
             adapter_report_dir=self._adapter_report_dir(profile_manager),
+            adapter_report_process=self._adapter_report_process,
         )
         self.gpu_selections = GpuSelectionService(profile_manager)
         self.lossless_settings = lossless_settings or LosslessSettingsXml(
@@ -1536,9 +1537,7 @@ class AutomationController:
         try:
             from . import adapter_report as adapter_report_module
 
-            adapter_report = adapter_report_module.load_latest(
-                adapter_report_module.report_directory(
-                    self.profile_manager.config_dir))
+            adapter_report = self._current_adapter_report()
         except Exception:
             adapter_report = None
         display_ids = list(range(1, len(inventory.get("displays", [])) + 2))
@@ -1741,9 +1740,7 @@ class AutomationController:
         try:
             from . import adapter_report as adapter_report_module
 
-            adapter_report = adapter_report_module.load_latest(
-                adapter_report_module.report_directory(
-                    self.profile_manager.config_dir))
+            adapter_report = self._current_adapter_report()
         except Exception:
             adapter_report = None
 
@@ -2106,6 +2103,18 @@ class AutomationController:
             return (gpu, disp) if gpu > 0 else None
         return None
 
+    def _adapter_report_process(self):
+        from .adapter_report import configured_process
+        return configured_process(self.profile_manager.config.lossless_scaling_exe_path)
+
+    def _current_adapter_report(self):
+        from .adapter_report import load_latest, report_directory
+        instance = self._adapter_report_process()
+        if instance is None:
+            return None
+        return load_latest(report_directory(self.profile_manager.config_dir),
+                           pid=instance[0], created_after=instance[1])
+
     def _adopt_adapter_report(self, profile: Optional[Profile]) -> Optional[str]:
         """Silent per-scale check: adopt the in-LS adapter report.
 
@@ -2117,26 +2126,24 @@ class AutomationController:
         """
         try:
             from . import adapter_report as adapter_report_module
-            from .performance_benchmark import find_process_id
         except Exception:
             return None
         try:
-            report = adapter_report_module.load_latest(
-                adapter_report_module.report_directory(
-                    self.profile_manager.config_dir))
+            report = self._current_adapter_report()
         except Exception:
             return None
         if not report:
             return None
         try:
-            ls_pid = find_process_id("LosslessScaling.exe")
+            instance = self._adapter_report_process()
+            ls_pid = instance[0] if instance else None
         except Exception:
             ls_pid = None
         try:
             report_pid = int(report.get("pid") or 0)
         except (TypeError, ValueError):
             report_pid = 0
-        if ls_pid and report_pid and int(ls_pid) != report_pid:
+        if not ls_pid or not report_pid or int(ls_pid) != report_pid:
             return None
         device_pci = adapter_report_module.device_pci(report)
         if not device_pci:

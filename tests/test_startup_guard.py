@@ -1,4 +1,5 @@
 import ctypes
+import json
 from ctypes import wintypes
 import os
 import shutil
@@ -66,6 +67,30 @@ class StartupGuardTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("LSC_TEST_NATIVE_STARTUP_GUARD") == "1", "Opt-in native GUI integration test")
 class NativeStartupGuardTests(unittest.TestCase):
+    def test_standalone_dxgi_probe_has_no_rendering_device_or_ls_names(self):
+        from companion.services.gpu_index_refresh import fast_snapshot
+        report = fast_snapshot()
+        self.assertFalse(report["hasDevice"])
+        self.assertEqual(report["lsAdapterNames"], [])
+        self.assertTrue(report["enumAdapters"])
+        self.assertTrue(report["enumAdapters1"])
+
+    def test_idle_adapter_report_uses_child_pid_nonce_and_real_bstr_abi(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            token = "a1" * 32
+            with patch.dict(os.environ, {"LSC_ADAPTER_REPORT_TOKEN": "inherited-untrusted-token"}):
+                pid = self.run_host(root / "build/native/startup-guard-wpf-test/LosslessScaling.exe",
+                                    4000, Path(directory), token)
+                self.assertEqual(os.environ["LSC_ADAPTER_REPORT_TOKEN"], "inherited-untrusted-token")
+            report = json.loads((Path(directory) / f"ls-adapter-report-{pid}.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["pid"], pid)
+            self.assertEqual(report["requestId"], token)
+            self.assertEqual(report["lsAdapterNames"], ["NVIDIA GeForce RTX 3090"] * 2 + ["NVIDIA GeForce RTX 5050", "Test GPU \u03a9"])
+            self.assertFalse(report["hasDevice"])
+            self.assertTrue(report["enumAdapters"])
+            self.assertTrue(report["enumAdapters1"])
+
     def test_private_special_k_environment_is_only_applied_to_the_child(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
@@ -88,7 +113,7 @@ class NativeStartupGuardTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         self.run_host(root / "build/native/startup-guard-wpf-test/LosslessScaling.exe", 4000)
 
-    def run_host(self, host, duration):
+    def run_host(self, host, duration, directory=None, token=None):
         self.assertTrue(host.is_file())
         library = ctypes.WinDLL(str(startup_guard.guard_path()), use_last_error=True)
         library.LSCLaunchHidden.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
@@ -105,7 +130,15 @@ class NativeStartupGuardTests(unittest.TestCase):
         kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
         pid = wintypes.DWORD()
         session = ctypes.c_void_p()
-        launched = library.LSCLaunchHidden(str(host), duration, ctypes.byref(pid), ctypes.byref(session))
+        if directory is not None:
+            library.LSCLaunchHiddenWithReport.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR,
+                                                        wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD),
+                                                        ctypes.POINTER(ctypes.c_void_p)]
+            library.LSCLaunchHiddenWithReport.restype = wintypes.BOOL
+            launched = library.LSCLaunchHiddenWithReport(str(host), duration, str(directory), token,
+                                                        ctypes.byref(pid), ctypes.byref(session))
+        else:
+            launched = library.LSCLaunchHidden(str(host), duration, ctypes.byref(pid), ctypes.byref(session))
         error = ctypes.get_last_error()
         library.LSCStartupGuardLastStage.restype = wintypes.LPCWSTR
         self.assertTrue(launched, f"{library.LSCStartupGuardLastStage()}: {ctypes.WinError(error)}")
@@ -125,6 +158,7 @@ class NativeStartupGuardTests(unittest.TestCase):
                     kernel.TerminateProcess(process, 99)
                     kernel.WaitForSingleObject(process, 2000)
                 kernel.CloseHandle(process)
+        return pid.value
 
 
 if __name__ == "__main__":

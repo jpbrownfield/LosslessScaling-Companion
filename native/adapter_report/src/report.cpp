@@ -10,14 +10,10 @@
 
 #include <cstdio>
 #include <cwchar>
+#include <oleauto.h>
+#include <stdexcept>
 
 namespace lsc {
-namespace {
-
-LONG s_reportedWithDevice = 0;
-
-}  // namespace
-
 constexpr wchar_t kSoftwareDesc[] = L"Microsoft Basic Render Driver";
 
 bool SameAdapter(const AdapterInfo& a, const AdapterInfo& b) {
@@ -43,7 +39,7 @@ void AppendEnum(IUnknown* factory, bool useAdapters1,
     if (!factory) return;
     auto* factory0 = static_cast<IDXGIFactory*>(factory);
     auto* factory1 = static_cast<IDXGIFactory1*>(factory);
-    for (UINT i = 0; i < 16; ++i) {
+    for (UINT i = 0; i < 256; ++i) {
         if (useAdapters1) {
             IDXGIAdapter1* adapter1 = nullptr;
             if (factory1->EnumAdapters1(i, &adapter1) != S_OK || !adapter1) break;
@@ -150,15 +146,12 @@ void EscapeJson(const std::wstring& value, std::string& out) {
             case L'"': out += "\\\""; break;
             case L'\\': out += "\\\\"; break;
             default:
-                if (c < 0x20) {
+                if (c < 0x20 || c >= 0x80) {
                     char buffer[8]{};
                     sprintf_s(buffer, "\\u%04x", c);
                     out += buffer;
                 } else if (c < 0x80) {
                     out += static_cast<char>(c);
-                } else {
-                    // Non-ASCII adapter names are decorative; keep it ASCII.
-                    out += '?';
                 }
         }
     }
@@ -228,6 +221,14 @@ std::string Serialize(const AdapterReport& report) {
     }
     out += "],\"rootGpuPreference\":";
     out += std::to_string(report.rootGpuPreference);
+    out += ",\"requestId\":\"" + report.requestId + "\",\"lsAdapterNames\":[";
+    for (size_t i = 0; i < report.lsAdapterNames.size(); ++i) {
+        if (i) out += ",";
+        out += "\"";
+        EscapeJson(report.lsAdapterNames[i], out);
+        out += "\"";
+    }
+    out += "]";
     out += "}";
     return out;
 }
@@ -244,7 +245,7 @@ bool WriteReportFile(const std::wstring& path, const std::string& content) {
     return ok && written == content.size();
 }
 
-bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion) {
+static AdapterReport CollectReport(void* d3d11Device, std::uint32_t hostVersion) {
     AdapterReport report;
     report.pid = GetCurrentProcessId();
     report.hostVersion = hostVersion;
@@ -297,6 +298,57 @@ bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion) {
     }
     if (deviceAdapter) deviceAdapter->Release();
 
+    return report;
+}
+
+// Keep SEH separate from functions with C++ destructors. Never load a proxy or
+// engine on behalf of the probe; LS must already have loaded its own module.
+static BSTR ReadLsNames() {
+    HMODULE module = nullptr;
+    BSTR result = nullptr;
+    __try {
+        // Retain an already-loaded engine for the entire call. LS/proxy
+        // shutdown must not unload the getter underneath this worker.
+        GetModuleHandleExW(0, L"Lossless.dll", &module);
+        const auto getter = module ? reinterpret_cast<BSTR(__cdecl*)()>(
+            GetProcAddress(module, "GetAdapterNames")) : nullptr;
+        result = getter ? getter() : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result = nullptr;
+    }
+    if (module) FreeLibrary(module);
+    return result;
+}
+
+std::string CollectAdapterSnapshot(bool readLsNames, const std::string& requestId) {
+    auto report = CollectReport(nullptr, 0);
+    report.requestId = requestId;
+    if (readLsNames) {
+        BSTR names = ReadLsNames();
+        if (names) {
+            try {
+                const auto size = SysStringLen(names);
+                if (size > 16384) throw std::length_error("Oversized LS adapter list");
+                const std::wstring text(names, size);
+                size_t from = 0;
+                for (size_t to = 0; to <= text.size(); ++to) {
+                    if (to == text.size() || text[to] == L';') {
+                        if (to > from) report.lsAdapterNames.push_back(text.substr(from, to - from));
+                        from = to + 1;
+                    }
+                }
+            } catch (...) {
+                SysFreeString(names);
+                throw;
+            }
+            SysFreeString(names);
+        }
+    }
+    return Serialize(report);
+}
+
+static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion) {
+    auto report = CollectReport(d3d11Device, hostVersion);
     wchar_t localAppData[32768]{};
     DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
                                            ARRAYSIZE(localAppData));
@@ -309,32 +361,50 @@ bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion) {
     return WriteReportFile(directory + L"\\" + name, Serialize(report));
 }
 
-DWORD WINAPI ReportRetryThread(void* host) {
-    // No C++ objects with destructors here so SEH stays legal.
+bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion) {
+    // Reporting must not unwind an allocation/string exception into the host
+    // or terminate the process from the native worker entry point.
+    try {
+        return WriteAdapterReportImpl(d3d11Device, hostVersion);
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ReportHostAdapter(void* host, bool allowEmptyReport) noexcept {
+    // No C++ objects with destructors here so SEH stays legal. The lifecycle
+    // owner joins this call before permitting the host to be destroyed.
+    ID3D11Device* retained = nullptr;
+    bool written = false;
+    __try {
+        auto* api = static_cast<IHost*>(host);
+        auto* borrowed = api ? static_cast<ID3D11Device*>(api->GetD3D11Device()) : nullptr;
+        if (borrowed) {
+            borrowed->AddRef();
+            retained = borrowed;
+        }
+        if (retained || allowEmptyReport) {
+            const auto version = api ? api->GetHostVersion() : 0;
+            written = WriteAdapterReport(retained, version);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        written = false;
+    }
+    const bool hasDevice = retained != nullptr;
+    if (retained) {
+        __try {
+            retained->Release();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+    return hasDevice && written;
+}
+
+DWORD WINAPI ReportRetryThread(void* argument) {
+    const auto* context = static_cast<const ReportRetryContext*>(argument);
     for (int attempt = 0; attempt < 10; ++attempt) {
-        Sleep(3000);
-        void* device = nullptr;
-        __try {
-            device = host ? static_cast<IHost*>(host)->GetD3D11Device()
-                          : nullptr;
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            return 1;
-        }
-        if (!device) continue;
-        LONG wasFirst = InterlockedCompareExchange(&s_reportedWithDevice, 1, 0);
-        if (wasFirst != 0) return 0;
-        std::uint32_t version = 0;
-        __try {
-            version = static_cast<IHost*>(host)->GetHostVersion();
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            version = 0;
-        }
-        __try {
-            WriteAdapterReport(
-                device, version ? version : 300);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
-        return 0;
+        if (WaitForSingleObject(context->stop, 3000) != WAIT_TIMEOUT) return 0;
+        if (ReportHostAdapter(context->host)) return 0;
     }
     return 0;
 }

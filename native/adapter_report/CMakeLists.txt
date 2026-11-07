@@ -15,7 +15,7 @@ target_include_directories(LSC_AdapterReport PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/losslessproxy-sdk/include
 )
-target_link_libraries(LSC_AdapterReport PRIVATE user32 dxgi)
+target_link_libraries(LSC_AdapterReport PRIVATE user32 dxgi oleaut32)
 
 if(MSVC)
   target_compile_options(LSC_AdapterReport PRIVATE /W4 /permissive- /EHsc /guard:cf)
@@ -51,3 +51,32 @@ set_target_properties(LSC_AdapterReportHost PROPERTIES
   OUTPUT_NAME "LSC_AdapterReportHost"
   RUNTIME_OUTPUT_DIRECTORY_RELEASE "${BUNDLE_DIRECTORY}"
 )
+
+add_executable(LSC_AdapterReportLifetimeHost src/lifetime_host.cpp)
+target_compile_features(LSC_AdapterReportLifetimeHost PRIVATE cxx_std_20)
+target_compile_definitions(LSC_AdapterReportLifetimeHost PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(LSC_AdapterReportLifetimeHost PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/losslessproxy-sdk/include)
+set_target_properties(LSC_AdapterReportLifetimeHost PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${BUNDLE_DIRECTORY}")
+add_dependencies(LSC_AdapterReportLifetimeHost LSC_AdapterReport)
+
+add_executable(LSC_AdapterProbe src/probe.cpp src/report.cpp)
+target_compile_features(LSC_AdapterProbe PRIVATE cxx_std_20)
+target_compile_definitions(LSC_AdapterProbe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(LSC_AdapterProbe PRIVATE src ../vendor/losslessproxy-sdk/include)
+target_link_libraries(LSC_AdapterProbe PRIVATE dxgi oleaut32)
+set_target_properties(LSC_AdapterProbe PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${BUNDLE_DIRECTORY}")
+
+include(CTest)
+if(BUILD_TESTING)
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-localappdata/LosslessScalingHelper")
+  foreach(scenario cancel in-flight reinitialize)
+    add_test(NAME "adapter_report_${scenario}"
+      COMMAND LSC_AdapterReportLifetimeHost "${scenario}")
+    set_tests_properties("adapter_report_${scenario}" PROPERTIES
+      TIMEOUT 20
+      ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-localappdata")
+  endforeach()
+endif()

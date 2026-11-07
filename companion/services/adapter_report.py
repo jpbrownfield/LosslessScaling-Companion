@@ -40,19 +40,41 @@ def find_reports(directory: Path) -> List[Path]:
 
 
 def load_latest(directory: Path, pid: Optional[int] = None,
-                max_age_seconds: float = REPORT_MAX_AGE_SECONDS) -> Optional[Dict]:
+                max_age_seconds: float = REPORT_MAX_AGE_SECONDS,
+                created_after: Optional[float] = None) -> Optional[Dict]:
     for path in find_reports(directory):
         try:
             if pid is not None and path.stem != f"{REPORT_PREFIX}{pid}":
                 continue
-            if time.time() - path.stat().st_mtime > max_age_seconds:
+            modified = path.stat().st_mtime
+            if (time.time() - modified > max_age_seconds
+                    or (created_after is not None and modified < created_after)):
                 continue
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(payload, dict) and payload.get("schema") == 1:
+            if pid is not None and payload.get("pid") != pid:
+                continue
             payload["_path"] = str(path)
             return payload
+    return None
+
+
+def configured_process(executable):
+    """Resolve the configured LS instance, never an unrelated same-name copy."""
+    import psutil
+    if not executable:
+        return None
+    wanted = str(Path(executable).resolve()).casefold()
+    for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+        try:
+            if (str(process.info.get("name") or "").casefold() == "losslessscaling.exe"
+                    and process.info.get("exe")
+                    and str(Path(process.info["exe"]).resolve()).casefold() == wanted):
+                return (process.pid, process.info["create_time"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
     return None
 
 

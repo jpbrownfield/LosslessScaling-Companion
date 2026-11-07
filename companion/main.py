@@ -281,7 +281,8 @@ class CompanionApplication:
             try:
                 if self._instance_guard and self._instance_guard.consume_dashboard_request():
                     self.tray._open_dashboard(None, None)
-                if self.profile_manager.repair_session or self.state.update_in_progress:
+                if (self.profile_manager.repair_session or self.state.update_in_progress
+                        or self.state.gpu_mapping_in_progress):
                     time.sleep(0.5)
                     continue
                 if (

@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from http import HTTPStatus
 from pathlib import Path
@@ -49,6 +50,7 @@ from .diagnostic_runner import DiagnosticRunner
 from .input_simulator import InputSimulator
 from .self_update import CompanionUpdateService
 from .automatic_updates import AutomaticUpdates
+from .gpu_index_refresh import IdleGpuIndexRefresh
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
 from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels
@@ -147,7 +149,11 @@ class CompanionWebSocketServer:
         self.automatic_updates = AutomaticUpdates(self)
         self._next_update_check = 0.0
         self._active_mutations = 0
+        self._gpu_activity_lock = threading.Lock()
+        self._active_requests = 0
         self._editing_clients = set()
+        self.gpu_index_refresh = IdleGpuIndexRefresh(self)
+        self.gpu_index_task: Optional[asyncio.Task] = None
         self.automation.profile_changes_blocked = lambda: bool(
             self._editing_clients or self._active_mutations
         )
@@ -167,9 +173,13 @@ class CompanionWebSocketServer:
         logging.getLogger("LSCompanion.Server.WS").setLevel(logging.WARNING)
         self.addon_update_task = asyncio.create_task(self._addon_update_loop())
         self.presentmon_detection_task = asyncio.create_task(self._detect_presentmon_on_startup())
+        self.gpu_index_task = asyncio.create_task(self._gpu_index_loop())
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
 
     async def stop(self) -> None:
+        self.gpu_index_refresh.stop()
+        if self.gpu_index_task:
+            self.gpu_index_task.cancel()
         if self.addon_update_task:
             self.addon_update_task.cancel()
         if self.presentmon_detection_task:
@@ -192,12 +202,20 @@ class CompanionWebSocketServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.presentmon_detection_task
             self.presentmon_detection_task = None
+        if self.gpu_index_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.gpu_index_task
+            self.gpu_index_task = None
         # Cancelling a coroutine that awaits asyncio.to_thread() does not stop
         # its executor worker. Drain server-owned workers before callers tear
         # down the asset store they may still be reading or writing.
         while self._background_thread_tasks:
             pending = tuple(self._background_thread_tasks)
             await asyncio.gather(*pending, return_exceptions=True)
+            # gather() may complete synchronously for already-finished tasks.
+            # Remove these directly instead of starving their queued callbacks
+            # in a loop after a fast cancellation/completion during shutdown.
+            self._background_thread_tasks.difference_update(pending)
 
     async def _run_background_thread(self, function, /, *args, **kwargs):
         """Run lifecycle-owned blocking work and keep it drainable on shutdown."""
@@ -251,6 +269,7 @@ class CompanionWebSocketServer:
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
+            "gpuIndexMapping": self.state.gpu_mapping_status,
             "componentOperation": self.component_operation_status,
         }))
 
@@ -274,6 +293,24 @@ class CompanionWebSocketServer:
             logger.info(f"Client disconnected. Total clients: {self.state.connected_clients}")
 
     async def process_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> None:
+        # Keep incoming editor/save/install requests in order while the short
+        # idle transaction owns LS. The UI remains responsive and drafts stay
+        # in the browser; no request is rejected or discarded.
+        while True:
+            # Claim request activity atomically against the worker's claim on
+            # LS. Include reads: some inventory reads also refresh saved pins.
+            with self._gpu_activity_lock:
+                if not self.state.gpu_mapping_in_progress:
+                    self._active_requests += 1
+                    break
+            await asyncio.sleep(0.05)
+        try:
+            return await self._process_ready_message(websocket, raw_message)
+        finally:
+            with self._gpu_activity_lock:
+                self._active_requests -= 1
+
+    async def _process_ready_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> None:
         try:
             message = json.loads(raw_message)
         except (ValueError, TypeError):
@@ -2269,6 +2306,12 @@ class CompanionWebSocketServer:
                 )
             return self.addon_update_status
 
+    async def _gpu_index_loop(self) -> None:
+        await asyncio.sleep(5)
+        while True:
+            await self._run_background_thread(self.gpu_index_refresh.check)
+            await asyncio.sleep(30)
+
     async def _addon_update_loop(self) -> None:
         await asyncio.sleep(30)
         force = False
@@ -2777,6 +2820,7 @@ class CompanionWebSocketServer:
             "controlSettings": self._control_settings_payload(),
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
+            "gpuIndexMapping": self.state.gpu_mapping_status,
         })
         await websocket.send(payload)
 
@@ -2799,6 +2843,7 @@ class CompanionWebSocketServer:
             "controlSettings": self._control_settings_payload(),
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
+            "gpuIndexMapping": self.state.gpu_mapping_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
 
@@ -2921,5 +2966,6 @@ class CompanionWebSocketServer:
             "scalingTarget": self.state.current_scaled_target,
             "dynamicLimiter": self.state.dynamic_limiter_status,
             "scalingControl": self.state.scaling_control_status,
+            "gpuIndexMapping": self.state.gpu_mapping_status,
         })
         await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
