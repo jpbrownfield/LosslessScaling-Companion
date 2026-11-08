@@ -153,5 +153,43 @@ class LosslessSettingsXmlTests(unittest.TestCase):
             self.assertEqual(manager.read_hotkey().modifiers, ["ctrl", "shift"])
 
 
+class ResolveLiveTitleTests(unittest.TestCase):
+    def test_exact_and_casefold_matches_win(self):
+        snapshot = {"profiles": [
+            {"Title": "New Game"}, {"Title": "Other"}]}
+        self.assertEqual(
+            LosslessSettingsXml.resolve_live_title(snapshot, "New Game"),
+            "New Game")
+        self.assertEqual(
+            LosslessSettingsXml.resolve_live_title(snapshot, "new game"),
+            "New Game")
+        self.assertIsNone(
+            LosslessSettingsXml.resolve_live_title(snapshot, "Missing"))
+
+    def test_lone_profile_survives_ls_rename(self):
+        # LS rewrites "New Game" as "Default" on save; the companion's
+        # saved title must still resolve instead of erroring.
+        snapshot = {"profiles": [{"Title": "Default"}]}
+        self.assertEqual(
+            LosslessSettingsXml.resolve_live_title(snapshot, "New Game"),
+            "Default")
+
+    def test_update_gpu_indexes_uses_live_title(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "Settings.xml"
+            settings_path.write_text(
+                "<Settings><GameProfiles>"
+                "<Profile><Title>Default</Title><PreferredGpuId>2</PreferredGpuId>"
+                "<OutputDisplayId>2</OutputDisplayId></Profile>"
+                "</GameProfiles></Settings>",
+                encoding="utf-8",
+            )
+            settings = LosslessSettingsXml(str(settings_path))
+            settings.update_gpu_indexes({"New Game": 1})
+            root = ET.parse(settings_path).getroot()
+            self.assertEqual(
+                root.find("./GameProfiles/Profile/PreferredGpuId").text, "1")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,44 @@ class LosslessSettingsXml:
         child = element.find(name)
         return child.text if child is not None else None
 
+    @staticmethod
+    def resolve_live_title(profiles: object, want: Optional[str]) -> Optional[str]:
+        """Find the live LS title for a companion-known profile title.
+
+        LS normalizes titles on save (e.g. "New Game" becomes "Default"),
+        so strict matching breaks after LS rewrites the file. Prefer an
+        exact then case-insensitive match; fall back to a lone profile
+        rather than failing when only one candidate exists. Accepts a
+        read() snapshot, a list of snapshot dicts, or a list of Elements.
+        """
+        if isinstance(profiles, dict):
+            profiles = profiles.get("profiles", [])
+        titles: List[str] = []
+        if isinstance(profiles, list):
+            for item in profiles:
+                title = None
+                if isinstance(item, dict):
+                    title = item.get("Title")
+                elif hasattr(item, "find"):
+                    try:
+                        node = item.find("Title")
+                        title = node.text if node is not None else None
+                    except Exception:
+                        title = None
+                if isinstance(title, str) and title:
+                    titles.append(title)
+        if want:
+            for title in titles:
+                if title == want:
+                    return title
+            lowered = str(want).casefold()
+            for title in titles:
+                if title.casefold() == lowered:
+                    return title
+        if len(titles) == 1:
+            return titles[0]
+        return None
+
     def read(self) -> Dict:
         if not self.path.is_file():
             return {"path": str(self.path), "exists": False, "profiles": []}
@@ -272,6 +310,10 @@ class LosslessSettingsXml:
             if not title or isinstance(slot, bool) or not isinstance(slot, int) or slot < 1:
                 raise ValueError("GPU remapping requires an explicit positive slot and title")
             matches = [p for p in profiles if (self._text(p, "Title") or "").casefold() == title.casefold()]
+            if not matches:
+                live = self.resolve_live_title(profiles, title)
+                if live is not None:
+                    matches = [p for p in profiles if (self._text(p, "Title") or "") == live]
             if len(matches) != 1:
                 raise ValueError(f"LS profile title is missing or ambiguous: {title}")
             node = matches[0].find("PreferredGpuId")

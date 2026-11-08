@@ -371,6 +371,8 @@ class RouteVerifyRepairTests(unittest.TestCase):
         watcher.stop_lossless_scaling.return_value = True
         watcher.launch_lossless_scaling.return_value = True
         settings = Mock()
+        from companion.services.ls_settings import LosslessSettingsXml
+        settings.resolve_live_title = LosslessSettingsXml.resolve_live_title
         settings.read.return_value = {"profiles": [
             {"Title": "Default", "PreferredGpuId": "2", "OutputDisplayId": "1"}]}
         settings.update_gpu_route.return_value = True

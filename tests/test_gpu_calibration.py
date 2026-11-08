@@ -14,6 +14,13 @@ from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
 from companion.services.automation import AutomationController
 from companion.services.gpu_router import GpuRouter
+from companion.services.ls_settings import LosslessSettingsXml
+
+
+def bind_live_title(settings):
+    """Mock settings still resolve titles like the real reader."""
+    settings.resolve_live_title = LosslessSettingsXml.resolve_live_title
+    return settings
 
 
 RTX_3090 = r"PCI\VEN_10DE&DEV_2203&SUBSYS_50901462"
@@ -59,7 +66,7 @@ def make_automation(inventory):
     watcher.check_is_lossless_scaling_running.return_value = False
     watcher.stop_lossless_scaling.return_value = True
     watcher.launch_lossless_scaling.return_value = True
-    settings = Mock()
+    settings = bind_live_title(Mock())
     automation = AutomationController(
         manager, state, watcher, gpu_router=router, lossless_settings=settings,
     )
@@ -191,7 +198,7 @@ class CalibrationExclusivityTests(unittest.TestCase):
         watcher.check_is_lossless_scaling_running.return_value = True
         watcher.stop_lossless_scaling.return_value = True
         watcher.launch_lossless_scaling.return_value = True
-        settings = Mock()
+        settings = bind_live_title(Mock())
         trigger = Mock(return_value=False)
         automation = AutomationController(
             manager, state, watcher, lossless_settings=settings,
@@ -231,7 +238,8 @@ class ScaleUntilFramesTests(unittest.TestCase):
         state = AppState()
         watcher = Mock()
         automation = AutomationController(
-            manager, state, watcher, lossless_settings=Mock())
+            manager, state, watcher,
+            lossless_settings=bind_live_title(Mock()))
         return automation
 
     def test_confirmed_scaling_accepted_without_resend(self):
@@ -292,6 +300,21 @@ class ScaleUntilFramesTests(unittest.TestCase):
         automation.process_watcher.check_is_lossless_scaling_running.return_value = False
         self.assertFalse(
             automation._wait_for_ls_ready(min_uptime_seconds=0, timeout=1))
+
+
+class LiveTitleTests(unittest.TestCase):
+    """LS renames profiles on save; route reads must follow the live title."""
+
+    def test_settings_route_survives_ls_rename(self):
+        manager = ProfileManager(Path(tempfile.mkdtemp()))
+        state = AppState()
+        automation = AutomationController(
+            manager, state, Mock(),
+            lossless_settings=bind_live_title(Mock()))
+        automation.lossless_settings.read.return_value = {"profiles": [
+            {"Title": "Default", "PreferredGpuId": "2",
+             "OutputDisplayId": "2"}]}
+        self.assertEqual(automation._settings_route("New Game"), (2, 2))
 
 
 if __name__ == "__main__":

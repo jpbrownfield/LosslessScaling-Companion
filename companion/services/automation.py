@@ -1631,12 +1631,17 @@ class AutomationController:
                  or getattr(profile, "name", None) or "Default")
         try:
             snapshot = self.lossless_settings.read()
+            live_title = self._resolve_live_title(
+                snapshot, title)
             original: Optional[tuple[int, int]] = None
-            for item in snapshot.get("profiles", []):
-                if str(item.get("Title") or "").casefold() == title.casefold():
-                    original = (int(item.get("PreferredGpuId") or 0),
-                                int(item.get("OutputDisplayId") or 0))
-                    break
+            if live_title is not None:
+                for item in snapshot.get("profiles", []) or []:
+                    if str(item.get("Title") or "") == live_title:
+                        original = (int(item.get("PreferredGpuId") or 0),
+                                    int(item.get("OutputDisplayId") or 0))
+                        break
+                if original is not None:
+                    title = live_title
         except Exception:
             original = None
         if original is None:
@@ -1790,12 +1795,17 @@ class AutomationController:
                  or getattr(default_profile, "name", None) or "Default")
         try:
             snapshot = self.lossless_settings.read()
+            live_title = self._resolve_live_title(
+                snapshot, title)
             original: Optional[tuple[int, int]] = None
-            for item in snapshot.get("profiles", []):
-                if str(item.get("Title") or "").casefold() == title.casefold():
-                    original = (int(item.get("PreferredGpuId") or 0),
-                                int(item.get("OutputDisplayId") or 0))
-                    break
+            if live_title is not None:
+                for item in snapshot.get("profiles", []) or []:
+                    if str(item.get("Title") or "") == live_title:
+                        original = (int(item.get("PreferredGpuId") or 0),
+                                    int(item.get("OutputDisplayId") or 0))
+                        break
+                if original is not None:
+                    title = live_title
         except Exception:
             original = None
         if original is None:
@@ -1936,7 +1946,13 @@ class AutomationController:
                 logger.debug("Calibration final stop failed", exc_info=True)
             try:
                 if original is not None:
-                    self.lossless_settings.update_gpu_route(title, *original)
+                    try:
+                        restore_title = self._resolve_live_title(
+                            self.lossless_settings.read(), title)
+                    except Exception:
+                        restore_title = title
+                    self.lossless_settings.update_gpu_route(
+                        restore_title or title, *original)
             except Exception:
                 logger.exception("Calibration could not restore the LS route")
             try:
@@ -2143,14 +2159,41 @@ class AutomationController:
                 ordered.append(slot)
         return ordered
 
+    def _resolve_live_title(self, snapshot: object, title: str) -> Optional[str]:
+        """Resolve a companion profile title to the live LS title.
+
+        Falls back to legacy strict matching when the settings backend
+        does not offer title resolution, so duck-typed fakes keep working.
+        """
+        try:
+            resolver = getattr(self.lossless_settings, "resolve_live_title", None)
+            if callable(resolver):
+                live = resolver(snapshot, title)
+                if isinstance(live, str) and live:
+                    return live
+                if live is None:
+                    return None
+        except Exception:
+            pass
+        profiles = snapshot.get("profiles", []) if isinstance(snapshot, dict) else []
+        for item in profiles or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("Title") or "").casefold() == str(title).casefold():
+                return str(item.get("Title"))
+        return None
+
     def _settings_route(self, title: str) -> Optional[tuple[int, int]]:
         """Read the active (GPU, display) numbers of a Settings.xml profile."""
         try:
             snapshot = self.lossless_settings.read()
         except Exception:
             return None
-        for item in snapshot.get("profiles", []):
-            if str(item.get("Title") or "").casefold() != str(title).casefold():
+        live_title = self._resolve_live_title(snapshot, title)
+        if live_title is None:
+            return None
+        for item in snapshot.get("profiles", []) or []:
+            if str(item.get("Title") or "") != live_title:
                 continue
             try:
                 gpu = int(item.get("PreferredGpuId") or 0)
