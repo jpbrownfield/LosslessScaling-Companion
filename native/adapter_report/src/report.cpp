@@ -362,11 +362,21 @@ static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion,
     const auto target = directory + L"\\" + name;
     const auto temporary = target + L".runtime-tmp";
     if (!WriteReportFile(temporary, Serialize(report))) return false;
-    for (int attempt = 0; attempt < 6; ++attempt) {
+    // CRT/Python readers do not share delete, and a reader can be descheduled
+    // while holding the old snapshot open. Keep the completed temporary file
+    // through a short bounded wait rather than dropping the refresh request
+    // after only a few scheduler ticks. Limit rename retries to 500ms of the
+    // caller's 750ms response budget.
+    const auto deadline = GetTickCount64() + 500;
+    for (;;) {
         if (MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
         const auto error = GetLastError();
-        if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) break;
-        Sleep(2);  // Readers may briefly hold a file without FILE_SHARE_DELETE.
+        // Replacing an open destination can also return ACCESS_DENIED rather
+        // than SHARING_VIOLATION. Real permission failures remain bounded too.
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION &&
+            error != ERROR_ACCESS_DENIED) break;
+        if (GetTickCount64() >= deadline) break;
+        Sleep(10);
     }
     DeleteFileW(temporary.c_str());
     return false;

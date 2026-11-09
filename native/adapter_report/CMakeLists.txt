@@ -72,7 +72,7 @@ set_target_properties(LSC_AdapterProbe PROPERTIES
 include(CTest)
 if(BUILD_TESTING)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-localappdata/LosslessScalingHelper")
-  foreach(scenario cancel in-flight reinitialize refresh)
+  foreach(scenario cancel in-flight reinitialize refresh refresh-locked)
     add_test(NAME "adapter_report_${scenario}"
       COMMAND LSC_AdapterReportLifetimeHost "${scenario}")
     set_tests_properties("adapter_report_${scenario}" PROPERTIES
