@@ -1,0 +1,10 @@
+{
+  "repository": "FriedSnowman/ls-addon-manager",
+  "tag": "build-5",
+  "commit": "417c292aefa32ef5e36696975813a24037ef2564",
+  "source_sha256": "4cafe814eaed11d0bb3440e045e2b5900888a01c5b79bed2c0b8c00d026962cc",
+  "release_sha256": "9f0dd697edb81963039d4498476c3a5f261781ee9a3e82c7bdd99fc408527626",
+  "companion_revision": 3,
+  "version": "build-5-lsc.3",
+  "bridge_protocol": 1
+}

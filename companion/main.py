@@ -175,7 +175,6 @@ class CompanionApplication:
         self._shutdown_complete = threading.Event()
         self._shutdown_watchdog_started = False
         self._instance_guard: Optional[SingleInstanceGuard] = None
-        self._last_runtime_snapshot = None
         self._native_auto_scale_enforced = False
         self._next_native_auto_scale_check = 0.0
         self.tray = CompanionTrayIcon(
@@ -190,6 +189,7 @@ class CompanionApplication:
             on_install_update_callback=self.install_update,
             proxy_menu=self.proxy_menu,
         )
+        self.server.on_runtime_changed = self.tray.refresh_state
 
     def _start_shutdown_watchdog(self) -> None:
         if self._shutdown_watchdog_started:
@@ -242,16 +242,18 @@ class CompanionApplication:
         logger.info("Installer launched; releasing LS Companion files for replacement.")
         self.request_stop()
         try:
+            from .ui.dashboard_window import close_dashboard_window
+
+            # The helper uses this same packaged executable. Release it before
+            # stopping the tray lets the parent exit and setup replace the files.
+            close_dashboard_window(wait=True)
+        except Exception:
+            logger.exception("Could not close the dashboard for the companion update")
+        try:
             if self.tray.icon:
                 self.tray.icon.stop()
         except Exception:
             logger.exception("Could not stop the tray after launching the installer")
-        try:
-            from .ui.dashboard_window import close_dashboard_window
-
-            close_dashboard_window()
-        except Exception:
-            logger.exception("Could not close the dashboard for the companion update")
 
     def _run_async_server(self):
         """Runs the asyncio WebSocket server in a dedicated thread."""
@@ -273,6 +275,13 @@ class CompanionApplication:
         finally:
             if not self.loop.is_closed():
                 self.loop.close()
+            if self.running:
+                logger.error("Companion server stopped unexpectedly; closing the app")
+                self.request_stop()
+                from .ui.dashboard_window import close_dashboard_window
+                close_dashboard_window()
+                if self.tray.icon:
+                    self.tray.icon.stop()
 
     def _run_process_monitor(self):
         """Background thread to poll foreground windows, inspect Lossless Scaling logs and overlay."""
@@ -339,21 +348,6 @@ class CompanionApplication:
                     self.automation.reconcile_pending_addon_settings()
                     self.automation.reconcile_gpu_route()
                     self.dynamic_limiter.poll()
-                snapshot = (
-                    self.state.is_scaling_active,
-                    lossless_running,
-                    self.state.current_active_profile.id if self.state.current_active_profile else None,
-                    self.state.current_foreground_process,
-                    self.state.current_scaled_target.get("processName"),
-                    tuple((p.id, p.name) for p in self.profile_manager.config.profiles),
-                    tuple(sorted(self.state.dynamic_limiter_status.items())),
-                    tuple(sorted(self.state.scaling_control_status.items())),
-                )
-                if snapshot != self._last_runtime_snapshot:
-                    self._last_runtime_snapshot = snapshot
-                    self.tray.update_menu()
-                    if self.loop and self.loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self.server.broadcast_state(), self.loop)
             except Exception as e:
                 logger.exception("Process monitor tick failed")
             time.sleep(1.0)

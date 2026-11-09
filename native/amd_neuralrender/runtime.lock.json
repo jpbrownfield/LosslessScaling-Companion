@@ -1,0 +1,119 @@
+{
+  "repository": "RedDukeDev/dlss5-nr-amd-custom",
+  "commit": "0bdcd714e82cfb9cb067bf0afd7fd6ed955f51b5",
+  "tag": "1.3.2",
+  "archive": "dlss5-nr-amd-custom.zip",
+  "archive_sha256": "bd5be02d6f76b86bcbb5a6bded8116221fea14b28f60a8abbd5c4a8455b59730",
+  "archive_size": 546644770,
+  "prefix": "dlss5-nr-amd-custom/OptiScaler/dlss5nr/",
+  "header_sha256": "7aacf56410a9135fc817ece29514500f4a96ce32eaf377ed9a203fc75414d9bf",
+  "files": {
+    "cache/ComputeCache/coverage.txt": {
+      "sha256": "1fefcdd820b507aed251aa820edb5371fff4378a254ebd51f9ff98943e9d1e05",
+      "size": 153
+    },
+    "cache/ComputeCache/zluda2.db": {
+      "sha256": "32f2c474b037b701b4e63f9c7ce778cf3ac8cad0fb29d9895fcf251f74b97c41",
+      "size": 250736640
+    },
+    "dlss5nr_runtime.dll": {
+      "sha256": "34d83b35e3dfaf0439c2d5bfc37a0f751153035ad82a0ab0891e7ebd256e25ac",
+      "size": 689152
+    },
+    "kernels/conv1x1_512.hsaco": {
+      "sha256": "9a53c0c4b0c22a1be8d794705fdf15242747742dbf612a930cc532e9bde834e6",
+      "size": 1165296
+    },
+    "kernels/ffwd_512.hsaco": {
+      "sha256": "5f997b482b4f789f6100de6239db71a97535154b4d81e0b66b3a59bf6439ce2c",
+      "size": 691720
+    },
+    "kernels/kernels.txt": {
+      "sha256": "ede182e50614c1fba513dd94e7e7f4ad3698e4885123401a429073813c504d58",
+      "size": 17142
+    },
+    "kernels/qkv_512.hsaco": {
+      "sha256": "808f4d2b43c7f7bafaea341bc1e1c80b07909953ebadd54ec9ba73a6d8e7a5ee",
+      "size": 495992
+    },
+    "kernels/swin_1h.hsaco": {
+      "sha256": "ab40b1c0ebcbf7e43b069bb69159bf56e2f09bb0c7d08c1a50aa75117a501714",
+      "size": 5996336
+    },
+    "kernels/swin_2h.hsaco": {
+      "sha256": "96c09006bb896a6ae93f1dd4695cf23cf167261f4e7028364ef804511252705a",
+      "size": 5318432
+    },
+    "kernels/swin_4h.hsaco": {
+      "sha256": "1ca5af7d20af9aa5b5172f9ef50389364e925c60be301cfb0dac5deb8af002fb",
+      "size": 4222288
+    },
+    "kernels/swin_8h.hsaco": {
+      "sha256": "cd22dd31ae6a4223c094d73bdce61b1a4214d1707115e184c3b2ac8a11649120",
+      "size": 7302736
+    },
+    "kernels/vit_attention.hsaco": {
+      "sha256": "78844e14f6869de6fe2a3c2e5a3306574241aab62bf5fc3e6da2a2892f9cfe62",
+      "size": 246072
+    },
+    "kernels/vit_ffn_expand.hsaco": {
+      "sha256": "cfe6c174c03d29e438a954cb9b52874becf78935d0f84fb900a7e36545b1f67f",
+      "size": 320440
+    },
+    "kernels/vit_gemm.hsaco": {
+      "sha256": "be4e1d846bdf40fcb936e22acb2603ff64b45d6842154cb9c58344a5ae7b65ff",
+      "size": 477728
+    },
+    "kernels/vit_qkv.hsaco": {
+      "sha256": "836a7800c76e2e7910ec14b3c3d36b93c71a66305eaedbaa7cd622090630d1df",
+      "size": 238720
+    },
+    "LICENSE": {
+      "sha256": "3f4415c19770cfe988e9a272dea54557762a3ea68aad2c419b2ab066de0bb17b",
+      "size": 1294
+    },
+    "README.md": {
+      "sha256": "3fd1c0e6e2343e2a865fe3df8a59c18be03633cfd5258b3463a3fdc61fdc967d",
+      "size": 26862
+    },
+    "THIRD_PARTY.md": {
+      "sha256": "1e8bccc4603e13161934fec085f95543d1e527c2bc24c6aedb4a434d11f555fa",
+      "size": 2596
+    },
+    "zluda/nvapi64.dll": {
+      "sha256": "4815ebad9ece1e41ef1068bd8620f9559395b31c07eb38adf6a54a424fb53444",
+      "size": 356352
+    },
+    "zluda/nvcuda.dll": {
+      "sha256": "b5f118a8f08b3789319cc61e151e1c84ff0f85dc2620a09bd51e7d877fc1ebbe",
+      "size": 450048
+    },
+    "zluda/nvngx.dll": {
+      "sha256": "5e7fa7a752ae4ff36ebeb155312f0ec3bb11f7018c2df1947262d0a390dc75ce",
+      "size": 264704
+    },
+    "zluda/zluda_nvapi.dll": {
+      "sha256": "b86425dd67abf385c58c558a17496bb6f490bff750269071da133e0f239a09f6",
+      "size": 226304
+    },
+    "zluda/zluda_real.dll": {
+      "sha256": "ee1d9215b3f2baedc8bc1ad29412b2fd3b27d15693fd3594d620c87378d14c43",
+      "size": 70823424
+    }
+  },
+  "zluda": {
+    "repository": "RedDukeDev/ZLUDA",
+    "commit": "1c46e0a6e910e5c2eb5dc9502ee1e8c934d702c4",
+    "licenses": {
+      "ZLUDA-LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "ZLUDA-LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    }
+  },
+  "model": {
+    "version": "310.9.16.0",
+    "sha256": "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f",
+    "size": 266424944
+  },
+  "source_sha256": "a851fb9cfac79ada799d006389aba7ef3a6015fb5cad7781de0982579c2a8bf9",
+  "companion_revision": 1
+}

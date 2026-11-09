@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from companion.services.benchmark_metrics import (
     read_presentmon_csv,
+    summarize_presentmon_files,
     summarize_presentmon_rows,
 )
 from companion.services.performance_benchmark import PresentMonCapture, focus_window
@@ -16,6 +17,23 @@ from scripts.benchmark_lossless_scaling import (
 
 
 class BenchmarkMetricTests(unittest.TestCase):
+    def test_process_filter_excludes_other_ls_instances_before_aggregation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            csv_file = Path(directory) / "presentmon.csv"
+            csv_file.write_text(
+                "Application,ProcessID,TimeInSeconds,DisplayedTime\n"
+                "LosslessScaling.exe,7,0,500\n"
+                "LosslessScaling.exe,8,0,5\n"
+                "LosslessScaling.exe,8,1,5\n"
+                "LosslessScaling.exe,8,2,5\n"
+                "LosslessScaling.exe,7,2,500\n", encoding="utf-8")
+            result = summarize_presentmon_files([csv_file], warmup_seconds=1, process_id=7)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["rows"], 1)
+            self.assertEqual(result[0]["process_id"], 7)
+            self.assertEqual(result[0]["metrics"]["displayed_fps"]["median"], 2)
+            self.assertEqual(summarize_presentmon_files([csv_file], process_id=9), [])
+
     def test_focus_window_retries_with_attached_windows_input_threads(self):
         native = Mock()
         native.IsWindow.return_value = True

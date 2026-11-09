@@ -49,7 +49,8 @@ from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
 from .input_simulator import InputSimulator
 from .self_update import CompanionUpdateService
-from .automatic_updates import AutomaticUpdates
+from .automatic_updates import AutomaticUpdates, newer_addon_version
+from .addon_host import runtime_status as addon_runtime_status, addon_version_key
 from .gpu_index_refresh import IdleGpuIndexRefresh
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
@@ -153,10 +154,59 @@ class CompanionWebSocketServer:
         self._active_requests = 0
         self._editing_clients = set()
         self.gpu_index_refresh = IdleGpuIndexRefresh(self)
+        self.automation.gpu_index_refresh_requested = self.gpu_index_refresh.request_refresh
         self.gpu_index_task: Optional[asyncio.Task] = None
         self.automation.profile_changes_blocked = lambda: bool(
             self._editing_clients or self._active_mutations
         )
+        self.on_runtime_changed = None
+        self._publication_task = None
+        self._publication_unsubscribers = []
+        self._config_dirty = False
+
+    def _start_state_publication(self):
+        loop = asyncio.get_running_loop()
+        self._state_changed = asyncio.Event()
+
+        def enqueue():
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(self._state_changed.set)
+
+        def config_saved():
+            # Marshal configuration publication too: tray quick-add and startup
+            # changes must not wait for process detection or another UI request.
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(mark_config_dirty)
+
+        def mark_config_dirty():
+            self._config_dirty = True
+            self.state.publish_change()
+
+        self._publication_unsubscribers = [self.state.subscribe(enqueue),
+                                           self.profile_manager.subscribe(config_saved)]
+        self._publication_task = asyncio.create_task(self._publish_state_changes())
+
+    async def _publish_state_changes(self):
+        while True:
+            await self._state_changed.wait()
+            # Coalesce a worker's related assignments into one update. This is
+            # independent of the slower process/overlay inspection loop.
+            await asyncio.sleep(0.025)
+            self._state_changed.clear()
+            config_dirty, self._config_dirty = self._config_dirty, False
+            try:
+                if self.on_runtime_changed:
+                    self.on_runtime_changed()
+                await self.broadcast_state()
+                if config_dirty and self.clients:
+                    payload = json.dumps({"type": "CONFIG_UPDATE",
+                                          "profiles": self._profile_summaries(),
+                                          "activeProfileId": self.config.active_profile_id,
+                                          "runAtStartup": self.config.run_at_startup})
+                    await asyncio.gather(*(client.send(payload) for client in tuple(self.clients)),
+                                         return_exceptions=True)
+            except Exception:
+                logger.exception("Could not publish Companion state")
 
     async def start(self) -> None:
         logger.info(f"Starting WebSocket server on {self.config.host}:{self.config.port}...")
@@ -171,12 +221,21 @@ class CompanionWebSocketServer:
             logger=logging.getLogger("LSCompanion.Server.WS"),
         )
         logging.getLogger("LSCompanion.Server.WS").setLevel(logging.WARNING)
+        self._start_state_publication()
         self.addon_update_task = asyncio.create_task(self._addon_update_loop())
         self.presentmon_detection_task = asyncio.create_task(self._detect_presentmon_on_startup())
         self.gpu_index_task = asyncio.create_task(self._gpu_index_loop())
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
 
     async def stop(self) -> None:
+        for unsubscribe in self._publication_unsubscribers:
+            unsubscribe()
+        self._publication_unsubscribers.clear()
+        if self._publication_task:
+            self._publication_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._publication_task
+            self._publication_task = None
         self.gpu_index_refresh.stop()
         if self.gpu_index_task:
             self.gpu_index_task.cancel()
@@ -259,26 +318,41 @@ class CompanionWebSocketServer:
         logger.info(f"Client connected. Total clients: {self.state.connected_clients}")
 
         # Send initial handshake / status
-        await websocket.send(json.dumps({
-            "type": "INITIAL_STATE",
-            "simulationMode": self.state.simulation_mode,
-            "isScalingActive": self.state.is_scaling_active,
-            "losslessScalingFound": self._lossless_scaling_found(),
-            "losslessScalingRunning": self.state.lossless_scaling_running,
-            "activeProfile": self._active_profile_status(),
-            "scalingTarget": self.state.current_scaled_target,
-            "dynamicLimiter": self.state.dynamic_limiter_status,
-            "scalingControl": self.state.scaling_control_status,
-            "gpuIndexMapping": self.state.gpu_mapping_status,
-            "componentOperation": self.component_operation_status,
-        }))
+        await websocket.send(json.dumps({"type": "INITIAL_STATE", **self._runtime_payload(),
+                                         "componentOperation": self.component_operation_status}))
 
+        requests = asyncio.Queue(maxsize=64)
+
+        async def consume_requests():
+            while True:
+                message = await requests.get()
+                if message is None:
+                    return
+                await self.process_message(websocket, message)
+
+        consumer = asyncio.create_task(consume_requests())
         try:
             async for message in websocket:
-                await self.process_message(websocket, message)
+                try:
+                    parsed = json.loads(message)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict) and parsed.get("type") == "PING" and parsed.get("healthcheck") is True:
+                    # Read health checks independently of ordered save/install
+                    # requests, including while they await worker threads.
+                    await websocket.send(json.dumps({"type": "PONG", "timestamp": parsed.get("timestamp")}))
+                else:
+                    await requests.put(message)
         except ConnectionClosed:
             pass
         finally:
+            # Finish the in-flight operation, but do not start queued work for
+            # a window that is gone. In particular, startup status requests may
+            # otherwise initiate downloads during teardown.
+            while not requests.empty():
+                requests.get_nowait()
+            requests.put_nowait(None)
+            await asyncio.gather(consumer, return_exceptions=True)
             if self.client_authority.get(websocket) == "dashboard" and self.proxy_menu:
                 active = self.state.current_active_profile
                 if active and self.config.addon_manager_enabled:
@@ -297,6 +371,8 @@ class CompanionWebSocketServer:
         # idle transaction owns LS. The UI remains responsive and drafts stay
         # in the browser; no request is rejected or discarded.
         while True:
+            if getattr(websocket, "closed", False) is True:
+                return
             # Claim request activity atomically against the worker's claim on
             # LS. Include reads: some inventory reads also refresh saved pins.
             with self._gpu_activity_lock:
@@ -616,6 +692,11 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({"type": "ADDON_EDITOR_CATALOG", "addons": catalog}))
                 return
 
+            if msg_type == "GET_ADDON_RUNTIME_STATUS":
+                status = await asyncio.to_thread(addon_runtime_status, self.config.lossless_scaling_exe_path)
+                await websocket.send(json.dumps({"type": "ADDON_RUNTIME_STATUS", **status}))
+                return
+
             if msg_type == "SAVE_ADDON_CONFIG":
                 profile = self.profile_manager.get_profile_by_id(str(msg.get("profileId") or ""))
                 if profile is None:
@@ -686,7 +767,7 @@ class CompanionWebSocketServer:
                 if not self.proxy_menu:
                     raise RuntimeError("Add-on menu control is unavailable")
                 if not self.config.addon_manager_enabled:
-                    raise RuntimeError("Echo LS Add-on Manager is disabled in General Settings")
+                    raise RuntimeError("Companion Addon Host is disabled in General Settings")
                 if not self.state.is_scaling_active:
                     raise RuntimeError("The add-on menu is available only while scaling")
                 result = await asyncio.to_thread(self.proxy_menu.open)
@@ -699,7 +780,7 @@ class CompanionWebSocketServer:
                 if not self.proxy_menu:
                     raise RuntimeError("Add-on menu control is unavailable")
                 if not self.config.addon_manager_enabled:
-                    raise RuntimeError("Echo LS Add-on Manager is disabled in General Settings")
+                    raise RuntimeError("Companion Addon Host is disabled in General Settings")
                 profile_id = str(msg.get("profileId") or "")
                 active = self.state.current_active_profile
                 if not active or active.id != profile_id:
@@ -1228,7 +1309,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"ls-addon-manager", "lsp-neural-render", "reshade", "special-k"}:
+                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "lsp-neural-render", "reshade", "special-k"}:
                     raise ValueError("This add-on cannot be installed automatically")
                 if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
                     raise ValueError(
@@ -1244,6 +1325,11 @@ class CompanionWebSocketServer:
                     raise ValueError(f"No downloadable stable release is available for {provider}")
                 if self.component_operation_status:
                     self.component_operation_status["version"] = str(release.get("version") or "")
+                automatic = websocket is self._automatic_update_client
+                release_version = str(release.get("version") or "")
+                if (automatic and provider == "ls-addon-manager" and self.config.addon_manager.version
+                        and not newer_addon_version(self.config.addon_manager.version, release_version)):
+                    raise ValueError("The Echo release is no longer newer than the selected version")
                 assets = list(release.get("assets") or [])
 
                 def asset_priority(asset: Dict) -> tuple:
@@ -1266,6 +1352,11 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
+                if provider in {"sm86-sr", "amd-neural-render-runtime"}:
+                    # Staging is installation-wide; opt-in and stopped deployment
+                    # remain per profile. Never change an active profile here.
+                    await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
+                    return
                 if provider == "ls-addon-manager":
                     active_profile = self.state.current_active_profile
                     if active_profile:
@@ -1457,14 +1548,17 @@ class CompanionWebSocketServer:
                         "activeProfileRedeployed": active_redeployed,
                     }))
                     return
+                updated_profiles = set()
                 for profile in self.config.profiles:
                     component = getattr(profile.graphics, provider.replace("-", "_"))
                     if component.enabled or (provider == "reshade" and profile.reshade and profile.reshade.enabled):
+                        if automatic and component.version and not newer_addon_version(component.version, release_version):
+                            continue
                         component.version = str(result.get("version") or "") or None
+                        updated_profiles.add(profile.id)
                 await asyncio.to_thread(self.profile_manager.save_config)
                 active = self.state.current_active_profile
-                if active and (getattr(active.graphics, provider.replace("-", "_")).enabled
-                               or (provider == "reshade" and active.reshade and active.reshade.enabled)):
+                if active and active.id in updated_profiles:
                     # Do not interrupt a running game just to refresh an injector.
                     # Activation after scaling stops will apply the new files.
                     getattr(active.graphics, provider.replace("-", "_")).version = str(result.get("version") or "") or None
@@ -1496,15 +1590,11 @@ class CompanionWebSocketServer:
                 }))
                 launched = await self._launch_companion_installer(version, automatic=websocket is self._automatic_update_client)
                 await websocket.send(json.dumps(launched))
-                if self.on_installer_launched:
-                    asyncio.get_running_loop().call_soon(self.on_installer_launched)
                 return
 
             if msg_type == "INSTALL_COMPANION_UPDATE":
                 result = await self._launch_companion_installer(str(msg.get("version") or ""))
                 await websocket.send(json.dumps(result))
-                if self.on_installer_launched:
-                    asyncio.get_running_loop().call_soon(self.on_installer_launched)
                 return
 
             if msg_type == "DOWNLOAD_BENCHMARK_TOOL":
@@ -1686,8 +1776,8 @@ class CompanionWebSocketServer:
                         )
                         addons = active_profile.addon_config.get("addons", {})
                         neural_enabled = bool(
-                            isinstance(addons.get("DLSS5NR01"), dict)
-                            and addons["DLSS5NR01"].get("_enabled")
+                            isinstance(addons.get("DLSSNR02"), dict)
+                            and addons["DLSSNR02"].get("_enabled")
                         )
                         graphics = dict(prof_data.get("graphics") or {})
                         neural = dict(graphics.get("neural_render") or {})
@@ -1914,6 +2004,8 @@ class CompanionWebSocketServer:
                     await self.broadcast_full_data_update()
                 return
 
+        except ConnectionClosed:
+            return
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             try:
@@ -2222,6 +2314,8 @@ class CompanionWebSocketServer:
 
     @staticmethod
     def _same_addon_version(left: str, right: str) -> bool:
+        if str(left).startswith("build-") or str(right).startswith("build-"):
+            return addon_version_key(left) == addon_version_key(right)
         def normalize(value: str):
             text = str(value or "").strip().casefold()
             numbers = tuple(int(part) for part in re.findall(r"\d+", text))
@@ -2231,7 +2325,7 @@ class CompanionWebSocketServer:
 
     async def _refresh_addon_updates(self, *, force: bool) -> Dict:
         async with self.addon_update_lock:
-            providers = ("ls-addon-manager", "lsp-neural-render", "reshade", "special-k")
+            providers = ("ls-addon-manager", "reshade", "special-k")
 
             async def check(provider: str):
                 try:
@@ -2259,13 +2353,26 @@ class CompanionWebSocketServer:
                 provider: [str(item.get("version") or "") for item in packages if item.get("provider") == provider]
                 for provider in providers
             }
+            # Staged packages and external installers are fallbacks for an
+            # unselected integration, never evidence that a pinned profile was updated.
+            selected = {provider: [] for provider in providers}
+            if self.config.addon_manager.version:
+                selected["ls-addon-manager"].append(self.config.addon_manager.version)
+            for profile in self.config.profiles:
+                for provider in ("reshade", "special-k"):
+                    component = getattr(profile.graphics, provider.replace("-", "_"))
+                    if component.enabled or (provider == "reshade" and profile.reshade and profile.reshade.enabled):
+                        # Match the resolver's selection for an unpinned profile.
+                        version = component.version or max(installed[provider], default="")
+                        if version:
+                            selected[provider].append(version)
             source_versions = {
                 "reshade": str(sources.get("reshade", {}).get("version") or ""),
                 "special-k": str(sources.get("special-k", {}).get("version") or ""),
             }
             updates = []
             labels = {
-                "ls-addon-manager": "Echo LS Add-on Manager",
+                "ls-addon-manager": "Companion Addon Host",
                 "lsp-neural-render": "LSP-NeuralRender",
                 "reshade": "ReShade Full Add-On",
                 "special-k": "Special K",
@@ -2275,17 +2382,23 @@ class CompanionWebSocketServer:
                 if not release:
                     continue
                 latest_version = str(release.get("version") or "")
-                current_versions = installed[provider]
-                if provider in source_versions and source_versions[provider]:
-                    current_versions.append(source_versions[provider])
-                if not current_versions or any(
-                    self._same_addon_version(current, latest_version) for current in current_versions
-                ):
+                current_versions = selected[provider] or (
+                    [max(installed[provider])] if installed[provider] else []
+                )
+                if not current_versions and source_versions.get(provider):
+                    current_versions = [source_versions[provider]]
+                outdated = [current for current in current_versions
+                            if not self._same_addon_version(current, latest_version)
+                            and not newer_addon_version(latest_version, current)]
+                if not outdated:
                     continue
                 updates.append({
                     "provider": provider,
                     "name": labels[provider],
-                    "currentVersion": current_versions[-1],
+                    "currentVersion": next(
+                        (current for current in outdated if newer_addon_version(current, latest_version)),
+                        outdated[0],
+                    ),
                     "latestVersion": latest_version,
                 })
 
@@ -2337,6 +2450,10 @@ class CompanionWebSocketServer:
         kwargs = {"automatic": True} if automatic else {}
         result = await self._run_background_thread(self.companion_updater.launch_installer, version, **kwargs)
         self._update_handoff = True
+        # The WebView2 helper may disconnect as soon as setup starts. Once the
+        # installer owns the handoff, shutdown must not depend on a socket send.
+        if self.on_installer_launched:
+            asyncio.get_running_loop().call_soon(self.on_installer_launched)
         return result
 
     async def _refresh_companion_update(self, *, force: bool) -> Dict:
@@ -2449,8 +2566,6 @@ class CompanionWebSocketServer:
                 else:
                     await self._run_background_thread(self.automation.end_update)
                 await self._broadcast_component_operation()
-        if self.on_installer_launched:
-            asyncio.get_running_loop().call_soon(self.on_installer_launched)
         return launched
 
     def _verified_benchmark_executable(self, provider: str) -> Optional[Path]:
@@ -2790,7 +2905,10 @@ class CompanionWebSocketServer:
         } for profile in self.profile_manager.config.profiles]
 
     def _active_profile_status(self) -> Optional[Dict]:
-        profile = self.state.current_active_profile
+        return self._active_profile_status_for(self.state.current_active_profile)
+
+    @staticmethod
+    def _active_profile_status_for(profile) -> Optional[Dict]:
         if profile is None:
             return None
         return {
@@ -2804,48 +2922,28 @@ class CompanionWebSocketServer:
         }
 
     async def send_full_data_update(self, websocket: WebSocketServerProtocol, visible_windows_only: bool = True) -> None:
-        procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
-        payload = json.dumps({
-            "type": "FULL_DATA_UPDATE",
-            **self._notifications_payload(),
-            "simulationMode": self.state.simulation_mode,
-            "processes": procs,
-            "profiles": self._profile_summaries(),
-            "activeProfileId": self.profile_manager.config.active_profile_id,
-            "activeProfile": self._active_profile_status(),
-            "isScalingActive": self.state.is_scaling_active,
-            "losslessScalingFound": self._lossless_scaling_found(),
-            "losslessScalingRunning": self.state.lossless_scaling_running,
-            "scalingTarget": self.state.current_scaled_target,
-            "controlSettings": self._control_settings_payload(),
-            "dynamicLimiter": self.state.dynamic_limiter_status,
-            "scalingControl": self.state.scaling_control_status,
-            "gpuIndexMapping": self.state.gpu_mapping_status,
-        })
-        await websocket.send(payload)
+        await websocket.send(await self._full_data_payload(visible_windows_only))
 
     async def broadcast_full_data_update(self, visible_windows_only: bool = True) -> None:
         if not self.clients:
             return
-        procs = self.process_watcher.list_running_executables(visible_windows_only=visible_windows_only) if self.process_watcher else []
-        payload = json.dumps({
-            "type": "FULL_DATA_UPDATE",
-            **self._notifications_payload(),
-            "simulationMode": self.state.simulation_mode,
-            "processes": procs,
-            "profiles": self._profile_summaries(),
-            "activeProfileId": self.profile_manager.config.active_profile_id,
-            "activeProfile": self._active_profile_status(),
-            "isScalingActive": self.state.is_scaling_active,
-            "losslessScalingFound": self._lossless_scaling_found(),
-            "losslessScalingRunning": self.state.lossless_scaling_running,
-            "scalingTarget": self.state.current_scaled_target,
-            "controlSettings": self._control_settings_payload(),
-            "dynamicLimiter": self.state.dynamic_limiter_status,
-            "scalingControl": self.state.scaling_control_status,
-            "gpuIndexMapping": self.state.gpu_mapping_status,
-        })
-        await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
+        payload = await self._full_data_payload(visible_windows_only)
+        await asyncio.gather(*[client.send(payload) for client in tuple(self.clients)], return_exceptions=True)
+
+    async def _full_data_payload(self, visible_windows_only):
+        def collect():
+            return {
+                **self._notifications_payload(),
+                "processes": self.process_watcher.list_running_executables(
+                    visible_windows_only=visible_windows_only) if self.process_watcher else [],
+                "profiles": self._profile_summaries(),
+                "activeProfileId": self.config.active_profile_id,
+                "controlSettings": self._control_settings_payload(),
+            }
+        metadata = await self._run_background_thread(collect)
+        # Capture runtime last, after slow enumeration, so a full refresh cannot
+        # overwrite a more recent live scaling update with old status.
+        return json.dumps({"type": "FULL_DATA_UPDATE", **metadata, **self._runtime_payload()})
 
     def _notifications_payload(self) -> Dict:
         try:
@@ -2955,17 +3053,23 @@ class CompanionWebSocketServer:
     async def broadcast_state(self) -> None:
         if not self.clients:
             return
-        payload = json.dumps({
-            "type": "STATE_UPDATE",
-            **self._notifications_payload(),
-            "simulationMode": self.state.simulation_mode,
-            "isScalingActive": self.state.is_scaling_active,
+        payload = json.dumps({"type": "STATE_UPDATE", **self._runtime_payload()})
+        await asyncio.gather(*[client.send(payload) for client in tuple(self.clients)], return_exceptions=True)
+
+    def _runtime_payload(self) -> Dict:
+        # No disk recovery scans, GPU enumeration, or configuration writes on
+        # this path. Those belong to their explicit status/configuration APIs.
+        revision, state = self.state.snapshot()
+        profile = state["current_active_profile"]
+        return {
+            "stateRevision": revision,
+            "simulationMode": state["simulation_mode"],
+            "isScalingActive": state["is_scaling_active"],
             "losslessScalingFound": self._lossless_scaling_found(),
-            "losslessScalingRunning": self.state.lossless_scaling_running,
-            "activeProfile": self._active_profile_status(),
-            "scalingTarget": self.state.current_scaled_target,
-            "dynamicLimiter": self.state.dynamic_limiter_status,
-            "scalingControl": self.state.scaling_control_status,
-            "gpuIndexMapping": self.state.gpu_mapping_status,
-        })
-        await asyncio.gather(*[client.send(payload) for client in self.clients], return_exceptions=True)
+            "losslessScalingRunning": state["lossless_scaling_running"],
+            "activeProfile": self._active_profile_status_for(profile),
+            "scalingTarget": state["current_scaled_target"],
+            "dynamicLimiter": state["dynamic_limiter_status"],
+            "scalingControl": state["scaling_control_status"],
+            "gpuIndexMapping": state["gpu_mapping_status"],
+        }

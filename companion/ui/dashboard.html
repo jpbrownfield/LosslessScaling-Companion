@@ -427,9 +427,13 @@
       .section-nav-link.nested { padding-left: 10px; }
       .sidebar-footer .btn { padding: 9px 4px; font-size: 10px; }
     }
+    #companionConnectionBanner { position: fixed; z-index: 100000; top: 20px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 40px)); padding: 18px 22px; border: 1px solid var(--danger); border-radius: 10px; background: var(--card-bg, #171b24); color: var(--text, #eee); box-shadow: 0 8px 40px #0008; }
+    #dashboardContent[inert] { opacity: .55; }
   </style>
 </head>
 <body>
+  <div id="companionConnectionBanner" role="alert">Connecting to Companion… Controls will be available when the connection is ready.</div>
+  <div id="dashboardContent" inert>
 
   <a class="skip-link" href="#mainContent">Skip to content</a>
   <aside class="app-sidebar" aria-label="Application sidebar">
@@ -500,7 +504,7 @@
   <aside class="runtime-status" aria-label="Companion status">
     <div id="controlSettingsStatus" class="save-feedback" role="status" aria-live="polite"></div>
     <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
-    <div id="statusPill" class="status-pill inactive" role="status" aria-live="polite">LS Inactive</div>
+    <div id="statusPill" class="status-pill inactive" role="status" aria-live="polite">Connecting to Companion…</div>
   </aside>
 
   <main id="mainContent" class="app-main" tabindex="-1">
@@ -603,9 +607,21 @@
       <div class="settings-content">
       <section id="addonUpdateNotice" class="component-update-list" aria-live="polite" hidden></section>
       <div class="settings-toolbar"><p class="item-sub" style="white-space:normal">Installed add-ons become available to every profile and load only when selected in that profile.</p><button id="refreshGraphicsBtn" class="btn btn-secondary" type="button">Refresh status</button></div>
-      <section class="addon-card addon-card-wide" style="margin-bottom:20px"><div class="addon-card-header"><div><h3>Echo LS Add-on Manager</h3><p class="addon-description">Installation-wide add-on host. Companion manages updates and swaps Echo's complete configuration with each active profile.</p></div><span class="addon-badge" data-addon-badge="ls-addon-manager">Not installed</span></div>            <div class="form-group checkbox-group section-primary-toggle"><input id="addonManagerEnabled" type="checkbox" checked><label for="addonManagerEnabled">Enable Echo LS Add-on Manager</label></div>
-            <p class="item-sub" style="white-space:normal;margin-bottom:10px">Makes Echo available to all profiles. Choose individual add-ons in each profile; open its menu here or from the tray while scaling.</p>
-<div class="addon-status" data-addon-status="ls-addon-manager">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install latest</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" hidden>Show Add-on Menu</button></div><p class="addon-description"><strong>Echo Add-on Suite</strong> includes DLSS 5 Neural Render, DLSS 4 DLAA, FSR 3, and XeSS. Install or update the manager to update these together, then select them independently in each profile.</p><p id="proxyMenuStatus" class="addon-description">The menu is available here and in the tray only while scaling.</p><p class="addon-description">By <a href="https://github.com/Echo-Storm/ls-addon-manager" target="_blank" rel="noopener noreferrer">Echo-Storm</a>, based on LosslessProxy by FrankBarretta. MIT manager; bundled runtimes retain their <a href="https://github.com/Echo-Storm/ls-addon-manager/blob/main/NOTICE.md" target="_blank" rel="noopener noreferrer">upstream notices and licenses</a>.</p></section>
+      <section class="addon-card addon-card-wide" style="margin-bottom:20px"><div class="addon-card-header"><div><h3>Companion Addon Host</h3><p class="addon-description">Installation-wide add-on host. Companion manages updates and swaps the manager's complete configuration with each active profile.</p></div><span class="addon-badge" data-addon-badge="ls-addon-manager">Not installed</span></div>            <div class="form-group checkbox-group section-primary-toggle"><input id="addonManagerEnabled" type="checkbox" checked><label for="addonManagerEnabled">Enable Companion Addon Host</label></div>
+            <p class="item-sub" style="white-space:normal;margin-bottom:10px">Makes the addon host available to all profiles. Choose individual add-ons in each profile; edit their settings in each profile. The bundled host runs without a separate window.</p>
+<div class="addon-status" data-addon-status="ls-addon-manager">Checking status...</div><div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install bundled host</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check bundled version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" hidden>Refresh Runtime Status</button></div><p class="addon-description"><strong>FriedSnowman Addon Suite</strong> includes DLSS 5 Neural Render, DLSS 4 DLAA, FSR 3, and XeSS. Install or update the manager to update these together, then select them independently in each profile.</p><p id="proxyMenuStatus" class="addon-description">Settings apply through a safe profile reload. Host updates are bundled with Companion.</p><p id="addonRuntimeStatus" class="addon-description" role="status">Runtime status is available when Lossless Scaling is running.</p><p class="addon-description">By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on LosslessProxy by FrankBarretta. MIT host; GPL-3.0-only Neural Rendering; bundled runtimes retain their <a href="https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md" target="_blank" rel="noopener noreferrer">upstream notices and licenses</a>.</p></section>
+      <section class="addon-card addon-card-wide" style="margin-bottom:20px">
+        <div class="addon-card-header"><div><h3>SM86 Super Resolution</h3><p class="addon-description">Optional community INT8 backend for RTX 30-series DLSS upscaling. Choose L-INT8 or M-INT8 under DLSS Upscaler / DLAA in each profile. Frame generation stays with Lossless Scaling.</p></div><span class="addon-badge" data-addon-badge="sm86-sr">Not installed</span></div>
+        <div class="addon-status" data-addon-status="sm86-sr">Checking status...</div>
+        <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="sm86-sr">Download SM86 SR backend</button><button class="btn btn-secondary" type="button" data-addon-check="sm86-sr">Check supported version</button></div>
+        <p class="addon-description">By <a href="https://github.com/sdli1995/dlssg_for_sm86" target="_blank" rel="noopener noreferrer">sdli1995</a>. Downloaded directly from the pinned upstream release. INT8 kernel assets retain their upstream terms. Compare against the same L/M FP16 preset; Quality and DLAA can cost more than K. Apply changes through a profile reload.</p>
+      </section>
+      <section class="addon-card addon-card-wide" style="margin-bottom:20px">
+        <div class="addon-card-header"><div><h3>AMD Neural Rendering</h3><p class="addon-description">Optional NR runtime for compatible AMD scaling GPUs. Neural Rendering follows the actual capture GPU automatically; no vendor toggle is needed. Requires Windows HIP and your imported NR model. Frame generation stays with Lossless Scaling.</p></div><span class="addon-badge" data-addon-badge="amd-neural-render-runtime">Not installed</span></div>
+        <div class="addon-status" data-addon-status="amd-neural-render-runtime">Checking status...</div>
+        <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="amd-neural-render-runtime">Download AMD NR runtime (547 MB)</button><button class="btn btn-secondary" type="button" data-addon-check="amd-neural-render-runtime">Check supported version</button></div>
+        <p class="addon-description">Runtime by <a href="https://github.com/RedDukeDev/dlss5-nr-amd-custom" target="_blank" rel="noopener noreferrer">RedDukeDev</a>; compute flow from FriedSnowman's MIT upscaler. Apply a profile after downloading. Use the original signed NR 310.9.16 model; the AMD model path can differ from NVIDIA's. AMD DLSS upscaling is not included; choose FSR, XeSS or NIS. Small Ryzen iGPUs can test capture and flow; NR inference requires supported HIP hardware.</p>
+      </section>
       <section class="settings-group">
         <h2 class="settings-group-title">Process Lasso integration</h2>
         <div class="settings-group-content">
@@ -635,7 +651,7 @@
       </section>
       <div class="addon-primary-stack">
         <section class="addon-card addon-card-wide">
-          <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. Echo supplies the ReShade input passthrough.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
+          <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">The Full Add-On build is imported from your download and deployed directly into Lossless Scaling. The addon host supplies the ReShade input passthrough.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
           <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
           <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download and install Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
           <p class="addon-description">Shader catalogs come from the same maintained feed used by ReShade Setup.</p>
@@ -644,9 +660,9 @@
             <div id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</div>
           </div>
             <div class="form-group" style="max-width:260px"><label for="reshadeOverlayHotkey">ReShade Menu Hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
-            <p class="item-sub" style="white-space:normal; margin-bottom:8px">Defaults to End. Echo's ReShade input passthrough is enabled automatically whenever the active profile uses ReShade.</p>
+            <p class="item-sub" style="white-space:normal; margin-bottom:8px">Defaults to End. the manager's ReShade input passthrough is enabled automatically whenever the active profile uses ReShade.</p>
           <div class="reshade-library">
-            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay is disabled by default. Echo enables its passthrough and the menu hotkey configured in Add-ons whenever a profile selects ReShade.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
+            <div class="reshade-library-head"><div><h3>ReShade profiles</h3><p class="item-sub" style="white-space:normal">Named LS-side configurations. The overlay is disabled by default. The addon host enables its passthrough and the menu hotkey configured in Add-ons whenever a profile selects ReShade.</p><p class="item-sub" style="white-space:normal;margin-top:5px">Sources: <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup providers</a> · <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">ReShade HDR Installer packs</a></p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import INI</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New ReShade Profile</button></div></div>
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
@@ -692,6 +708,7 @@
       </div>
       <div class="settings-content">
         <p class="profile-warning">Experimental live tests modify the real Lossless Scaling installation and settings, deploy installed add-ons, inject hotkeys, launch and scale the bundled benchmark, inspect runtime logs, and then attempt to restore the prior state.</p>
+        <p class="item-sub" style="white-space:normal">For a GPU routing problem, start scaling the affected application and run <strong>Live GPU routing: requested vs. actual GPU</strong> individually below. This check leaves scaling and settings unchanged; use Download ZIP to share its evidence.</p>
         <p class="item-sub" style="white-space:normal">The suite covers real profile create/edit/delete persistence, add-on and proxy deployment with destination hashes, foreground autoscaling, override-hotkey activation, Lossless Scaling log confirmation, ReShade runtime logs, configuration integrity, RTSS, startup, and runtime connectivity.</p>
         <div class="diagnostic-summary">
           <button id="runDiagnosticsBtn" class="btn btn-primary" type="button">Run all application tests</button>
@@ -821,8 +838,8 @@
             <div class="ls-settings-column">
               <section class="ls-settings-card">
                 <h5>Scaling</h5>
-                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeScalingType" data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR (LS built-in)</option><option value="NIS">NIS</option><option value="EchoDLSS">DLSS (Echo add-on)</option><option value="EchoFSR">FSR (Echo add-on)</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
-                <p id="profileScalingTypeHint" class="addon-description">Echo DLSS and FSR use NIS under the hood and require the corresponding Echo add-on to be installed.</p>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeScalingType" data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR (LS built-in)</option><option value="NIS">NIS</option><option value="AddonDLSS">DLSS (manager add-on)</option><option value="AddonFSR">FSR (manager add-on)</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
+                <p id="profileScalingTypeHint" class="addon-description">DLSS and FSR addons use NIS under the hood and require the corresponding manager add-on to be installed.</p>
                 <div class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
                 <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LS1Type" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
                 <div class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select data-native-key="ScalingMode" data-native-default="Auto"><option value="Auto">Auto</option><option value="Custom">Custom</option></select></div></div>
@@ -875,7 +892,7 @@
         </section>
 
         <section class="settings-group profile-settings-group">
-          <h3 class="settings-group-title">Echo Add-on Manager Configuration</h3>
+          <h3 class="settings-group-title">Addon Configuration</h3>
           <div class="settings-group-content">
           <p class="item-sub" style="white-space:normal">Configure add-ons for this profile, including while another profile is active. Optional processors start off. Changes made during scaling apply the next time scaling starts.</p>
           <div class="addon-editor-actions"><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable all processing</button><span id="addonEditorStatus" class="item-sub" role="status">Loading add-on settings...</span></div>
@@ -888,7 +905,7 @@
           <h4 style="font-size: 13px; color: var(--accent); margin-bottom: 8px;">ReShade Profile (Optional)</h4>
           <p class="profile-reshade-help">Choose a named configuration from Lossless Scaling Add-ons. Game directories are never modified.</p>
           <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
-          <p class="item-sub" style="white-space:normal;margin-top:5px">Echo's passthrough is enabled automatically whenever this profile enables ReShade.</p>
+          <p class="item-sub" style="white-space:normal;margin-top:5px">the manager's passthrough is enabled automatically whenever this profile enables ReShade.</p>
         </div>
 
         <div id="rtssProfileSection" class="integration-section">
@@ -954,7 +971,7 @@
               <p class="item-sub" style="white-space:normal;margin:-6px 0 0 24px">Creates or updates an NVIDIA application profile for LosslessScaling.exe only, and enables Special K's required flip-metering path. Global NVIDIA settings are not changed.</p>
               <p id="specialKSmoothMotionAvailability" class="item-sub" style="white-space:normal;margin:5px 0 0 24px"></p>
             </fieldset>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of Echo LS Add-on Manager. Import it once, then enable it per profile.</p>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of Companion Addon Host. Import it once, then enable it per profile.</p>
         </div>
 
       </form>
@@ -967,7 +984,7 @@
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
-        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. Echo's input passthrough uses the shortcut configured in General Settings.</p>
+        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. the manager's input passthrough uses the shortcut configured in General Settings.</p>
         <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
       </form>
@@ -998,6 +1015,7 @@
       <p class="item-sub" style="white-space:normal">The settings file is preserved until every correction is valid. Restart Companion after repair to resume automation.</p>
       <div style="display:flex;gap:8px;margin-top:12px"><button id="saveSettingRepairBtn" class="btn btn-primary" type="button">Apply correction</button><button id="cancelSettingRepairBtn" class="btn btn-secondary" type="button">Cancel</button></div>
     </div>
+  </div>
   </div>
   <script>
     let ws = null;
@@ -1161,7 +1179,7 @@
       });
       if (notificationState.restartRequired) addRow('Saved settings have been repaired. Restart Companion to resume automation.', '', null, null);
       for (const item of updates) addRow(`${item.name || item.provider}: ${item.latestVersion} is available.`, 'update', 'View update', () => {
-        openMajorDashboardPanel(document.getElementById('losslessAddonsPanel'), true);
+        openMajorDashboardPanel(settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === 'lossless-addons'), true);
       });
       if (updateNotificationsEnabled() && companionUpdateState?.updateAvailable) addRow(`LS Companion ${companionUpdateState.latestVersion} is available.`, 'update', 'View update', () => {
         openMajorDashboardPanel(document.getElementById('generalSettingsPanel'), true);
@@ -1247,11 +1265,52 @@
 
     let wsReconnectTimer = null;
     let wsIntentionalClose = false;
+    let wsHeartbeatTimer = null;
+    let wsLastReceived = 0;
+    let wsLastHeartbeatTick = 0;
+    let lastStateRevision = -1;
+
+    function setCompanionConnected(connected, message) {
+      document.getElementById('dashboardContent').inert = !connected;
+      const banner = document.getElementById('companionConnectionBanner');
+      banner.hidden = connected;
+      if (!connected) {
+        banner.textContent = message || 'Companion disconnected. Displayed status is stale. Controls are disabled while reconnecting.';
+        setRuntimeStatus('Companion disconnected', 'inactive');
+      }
+    }
+
+    function stopHeartbeat() {
+      if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+      wsHeartbeatTimer = null;
+    }
+
+    function startHeartbeat(socket) {
+      stopHeartbeat();
+      wsLastReceived = wsLastHeartbeatTick = Date.now();
+      wsHeartbeatTimer = setInterval(() => {
+        if (socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+        const now = Date.now();
+        // Background windows and system sleep can suspend JavaScript timers.
+        // Give the backend a fresh chance to respond when execution resumes.
+        if (now - wsLastHeartbeatTick > 3000) wsLastReceived = now;
+        wsLastHeartbeatTick = now;
+        if (now - wsLastReceived > 6000) {
+          setCompanionConnected(false, 'Companion is not responding. Displayed status is stale. Reconnecting…');
+          socket.close();
+          return;
+        }
+        socket.send(JSON.stringify({type: 'PING', timestamp: now, healthcheck: true}));
+      }, 1000);
+    }
+
     let dashboardSessionToken = '__COMPANION_TOKEN__';
     let dashboardSessionRefreshTask = null;
 
     function refreshDashboardSession() {
       if (dashboardSessionRefreshTask) return dashboardSessionRefreshTask;
+      stopHeartbeat();
+      setCompanionConnected(false);
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
       const previousSocket = ws;
       ws = null;
@@ -1363,30 +1422,35 @@
       try {
         wsUrl = `ws://${location.host}/ws?token=${encodeURIComponent(dashboardSessionToken)}`;
       } catch (urlError) {
-        setRuntimeStatus('LS Inactive', 'inactive');
+        setCompanionConnected(false);
         return;
       }
       try {
         ws = new WebSocket(wsUrl);
       } catch (socketError) {
-        setRuntimeStatus('LS Inactive', 'inactive');
+        setCompanionConnected(false);
         return;
       }
 
+      const socket = ws;
       ws.onerror = (event) => {
+        if (socket !== ws) return;
         // onerror carries no detail; surface where it failed so a blank
         // "Disconnected" can't hide a bad URL, CSP block, or refused port.
         try {
           console.error('[dashboard] WebSocket error', event);
         } catch (ignored) { /* console may be unavailable */ }
-        setRuntimeStatus('LS Inactive', 'inactive');
+        setCompanionConnected(false);
       };
 
       ws.onopen = () => {
-        // INITIAL_STATE will replace this neutral state with authoritative LS status.
-        setRuntimeStatus('LS Inactive', 'inactive');
+        if (socket !== ws) return;
+        // Only an authoritative state message enables the controls.
+        lastStateRevision = -1;
+        startHeartbeat(socket);
         ws.send(JSON.stringify({ type: 'GET_PROFILE_SUMMARIES' }));
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
         ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_UPDATES' }));
@@ -1400,8 +1464,15 @@
       };
 
       ws.onmessage = (event) => {
+        if (socket !== ws) return;
         try {
           const msg = JSON.parse(event.data);
+          wsLastReceived = Date.now();
+          if (msg.type === 'PONG') return;
+          if (Number.isInteger(msg.stateRevision)) {
+            if (msg.stateRevision < lastStateRevision) return;
+            lastStateRevision = msg.stateRevision;
+          }
           if (Object.prototype.hasOwnProperty.call(msg, 'simulationMode')) {
             document.getElementById('simulationBadge').hidden = !msg.simulationMode;
           }
@@ -1409,7 +1480,16 @@
           if (msg.gpuIndexMapping) {
             document.getElementById('gpuIndexRefreshStatus').textContent = msg.gpuIndexMapping.message || '';
           }
-          if (msg.type === 'PROFILE_SUMMARIES') {
+          if (msg.type === 'CONFIG_UPDATE') {
+            profiles = msg.profiles || [];
+            activeProfileId = msg.activeProfileId;
+            invalidateProfileDetails();
+            renderProfiles();
+            if (!generalSettingsSaveInFlight && controlSettings) {
+              controlSettings.runAtStartup = msg.runAtStartup;
+              document.getElementById('runAtStartup').checked = !!msg.runAtStartup;
+            }
+          } else if (msg.type === 'PROFILE_SUMMARIES') {
             profiles = msg.profiles || [];
             invalidateProfileDetails();
             renderProfiles();
@@ -1482,13 +1562,16 @@
               }
             }
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
+            setCompanionConnected(true);
             if ('componentOperation' in msg) renderComponentOperation(msg.componentOperation);
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
           } else if (msg.type === 'PROXY_MENU_OPENED') {
             const status = document.getElementById('proxyMenuStatus');
-            status.textContent = 'Echo add-on menu opened.';
+            status.textContent = 'manager add-on menu opened.';
             status.hidden = false;
+          } else if (msg.type === 'ADDON_RUNTIME_STATUS') {
+            renderAddonRuntimeStatus(msg);
           } else if (msg.type === 'ADDON_EDITOR_CATALOG') {
             addonEditorCatalog = msg.addons || [];
             renderAddonEditor();
@@ -1613,15 +1696,18 @@
             addonAutoImportInFlight.delete(msg.package.provider);
             setGraphicsStatus(`Installed ${msg.package.provider} ${msg.package.version}; it is ready for profiles.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTED') {
             setGraphicsStatus(`Selected ${msg.asset.filename}. It is now available to profiles.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
           } else if (msg.type === 'NEURAL_RENDER_BUNDLE_STAGED') {
             if (msg.runtime) {
               dlssnrRuntimes = [...dlssnrRuntimes.filter(item => item.sha256 !== msg.runtime.sha256), msg.runtime];
             }
             setGraphicsStatus(`Installed LosslessProxy ${msg.proxyPackage.version}, LSP-NeuralRender ${msg.package.version}, and verified DLSS 5 runtime ${msg.runtime.filename}.${msg.activeProfileRedeployed ? ' The active installation was replaced and Lossless Scaling was restarted.' : ' Existing NeuralRender profiles will deploy this version on their next activation.'}`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
           } else if (msg.type === 'COMPONENT_OPERATION') {
@@ -1726,9 +1812,10 @@
       };
 
       ws.onclose = (event) => {
+        if (socket !== ws) return;
+        stopHeartbeat();
+        setCompanionConnected(false);
         if (event.code === 4001) { refreshDashboardSession(); return; }
-        // Preserve an LS-only vocabulary while the companion reconnects.
-        setRuntimeStatus('LS Inactive', 'inactive');
         // Polling loops elsewhere re-request data on their own timers; only
         // schedule one reconnect. Without the guard, overlapping timers
         // opened a socket every ~3s, which is the open/close storm in the
@@ -1750,6 +1837,10 @@
       if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
+      }
+      if (msg.scalingControl?.state === 'pending') {
+        setRuntimeStatus(msg.scalingControl.message || 'Scaling command pending…', 'inactive');
+        return;
       }
       if (msg.losslessScalingFound === false) {
         setRuntimeStatus('LS Not Found', 'not-found');
@@ -1783,7 +1874,7 @@
       const button = document.getElementById('openProxyMenuBtn');
       if (!button) return;
       button.hidden = !(runtimeScalingActive && (!controlSettings || controlSettings.addonManagerEnabled !== false));
-      button.title = 'Show the running Echo LS Add-on Manager.';
+      button.title = 'Show the running Companion Addon Host.';
     }
 
     function renderUpdatePreferences() {
@@ -2081,9 +2172,9 @@
         const ids = [...new Set(Object.values(mapped))].sort();
         status.textContent = `GPU calibration complete: ${Object.keys(mapped).length} GPU(s) identified (LS GPU ${ids.join(', ')}). GPU indices are now correct.`;
       } else if (result.state === 'partial') {
-        status.textContent = `GPU calibration partial: ${Object.keys(result.mapped || {}).length} of ${result.gpuCount || '?'} GPUs identified after ${result.tried || 0} attempts. Check the log and retry.`;
+        status.textContent = `GPU calibration partial: ${Object.keys(result.mapped || {}).length} of ${result.gpuCount || '?'} GPUs identified after ${result.tried || 0} attempts. ${result.detail || 'Check the log and retry.'}`;
       } else {
-        status.textContent = `GPU calibration could not identify any GPU after ${result.tried || 0} attempts. Check the log and retry.`;
+        status.textContent = `GPU calibration could not identify any GPU after ${result.tried || 0} attempts. ${result.detail || 'Check the log and retry.'}`;
       }
     }
 
@@ -2091,11 +2182,12 @@
       graphicsPackages = msg.packages || [];
       graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
-      ['ls-addon-manager'].forEach(provider => {
+      ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime'].forEach(provider => {
         const packages = graphicsPackages.filter(item => item.provider === provider);
         const latest = packages[packages.length - 1];
         const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
         const status = document.querySelector(`[data-addon-status="${provider}"]`);
+        if (!badge || !status) return;
         badge.textContent = latest ? 'Installed' : 'Not installed';
         badge.classList.toggle('ready', !!latest);
         status.textContent = latest ? `Installed version: ${latest.version}` : 'Not installed for any profile yet.';
@@ -2388,6 +2480,7 @@
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         addonDetectionChecks[provider] += 1;
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
         if (addonDetectionChecks[provider] >= 60 && addonDetectionTimers[provider]) {
           clearInterval(addonDetectionTimers[provider]);
           delete addonDetectionTimers[provider];
@@ -2706,9 +2799,9 @@
     }
 
     function profileUpscalerChoice(nativeType, addons) {
-      if (!['NIS', 'EchoDLSS', 'EchoFSR'].includes(nativeType)) return nativeType;
-      if (addons.DLSS4DLAA?._enabled === true) return 'EchoDLSS';
-      if (addons.FSR3UPSC?._enabled === true) return 'EchoFSR';
+      if (!['NIS', 'AddonDLSS', 'AddonFSR'].includes(nativeType)) return nativeType;
+      if (addons.DLSS4DLAA?._enabled === true) return 'AddonDLSS';
+      if (addons.FSR3UPSC?._enabled === true) return 'AddonFSR';
       return 'NIS';
     }
 
@@ -2721,7 +2814,7 @@
     }
 
     function serializedScalingType(choice) {
-      return ['EchoDLSS', 'EchoFSR'].includes(choice) ? 'NIS' : choice;
+      return ['AddonDLSS', 'AddonFSR'].includes(choice) ? 'NIS' : choice;
     }
 
     function renderProfileScalingChoice() {
@@ -2730,14 +2823,14 @@
       control.value = profileUpscalerChoice(control.value, addonEditorDraft.addons);
       const hint = document.getElementById('profileScalingTypeHint');
       if (!hint) return;
-      const addonId = {EchoDLSS: 'DLSS4DLAA', EchoFSR: 'FSR3UPSC'}[control.value];
+      const addonId = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC'}[control.value];
       hint.textContent = addonId
-        ? `Uses NIS in Lossless Scaling and enables Echo's ${control.value === 'EchoDLSS' ? 'DLSS' : 'FSR'} upscaler. Fine-tune it in Echo Add-on Manager Configuration below.`
-        : 'Echo DLSS and FSR use NIS under the hood and require the corresponding Echo add-on to be installed.';
+        ? `Uses NIS in Lossless Scaling and enables the manager's ${control.value === 'AddonDLSS' ? 'DLSS' : 'FSR'} upscaler. Fine-tune it in Addon Configuration below.`
+        : 'DLSS and FSR addons use NIS under the hood and require the corresponding manager add-on to be installed.';
       if (addonId && controlSettings?.addonManagerEnabled === false) {
-        hint.textContent += ' Enable Echo LS Add-on Manager in General Settings to use this mode.';
+        hint.textContent += ' Enable Companion Addon Host in General Settings to use this mode.';
       } else if (addonId && addonEditorCatalog.find(addon => addon.id === addonId)?.installed === false) {
-        hint.textContent += ' This add-on is not installed; install/update Echo LS Add-on Manager first.';
+        hint.textContent += ' This add-on is not installed; install/update Companion Addon Host first.';
       }
     }
 
@@ -2752,7 +2845,7 @@
     }
 
     function changeProfileScalingChoice(choice) {
-      const selected = {EchoDLSS: 'DLSS4DLAA', EchoFSR: 'FSR3UPSC'}[choice] || null;
+      const selected = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC'}[choice] || null;
       setExclusiveProfileUpscaler(addonEditorDraft.addons, selected);
       document.getElementById('nativeScalingType').value = choice;
       profileUpscalerChanged();
@@ -2811,15 +2904,24 @@
         ['min', 'max', 'step'].forEach(name => { if (spec[name] !== undefined) input[name] = spec[name]; });
         if (kind === 'number' && !spec.step) input.step = 'any';
       }
-      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.updates.check'].includes(path);
+      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless'].includes(path);
+      if (path === 'addons.DLSS4DLAA.dlaaPreset' && ['L-INT8', 'M-INT8'].includes(object.companionSm86Mode)) {
+        input.disabled = true;
+        input.title = 'The selected SM86 mode pins this preset.';
+      }
       input.addEventListener('change', () => {
         if (!input.checkValidity()) { input.reportValidity(); return; }
         if (kind !== 'checkbox' && input.value === '' && spec.key) delete object[key];
         else object[key] = kind === 'checkbox'
           ? (typeof current === 'boolean' ? input.checked : input.checked ? '1' : '0')
           : (typeof current === 'number' ? Number(input.value) : input.value);
-        if (spec.key === 'modelEvery') object.defaultsVersion = '2';
         if (key === 'sharpen' && /^addons\.(DLSS4DLAA|FSR3UPSC|XESSUPSC|VSRUPSC)\./.test(path)) object.sharpenScale = '1.6';
+        if (path === 'addons.DLSS4DLAA.companionSm86Mode') {
+          const preset = {'L-INT8': '12', 'M-INT8': '13'}[input.value];
+          if (preset) { object.dlaaPreset = preset; object.scalerPerGame = '0'; }
+          renderAddonEditor();
+        }
+        if (path === 'addons.DLSS4DLAA.dlaaPreset') object.scalerPerGame = '0';
         addonEditorChanged();
       });
       label.appendChild(input);
@@ -2842,13 +2944,46 @@
       });
     }
 
+    function renderAddonRuntimeStatus(status) {
+      const output = document.getElementById('addonRuntimeStatus');
+      if (!output) return;
+      if (!status.available) { output.textContent = status.reason || 'Addon host is not running.'; return; }
+      const backend = status.neuralBackend || 'NVIDIA';
+      const neuralId = backend === 'AMD' || backend === 'unsupported' ? 'LSC-AMDNR' : 'DLSSNR02';
+      const neural = (status.addons || []).find(addon => addon.id === neuralId);
+      const times = status.metrics && status.metrics[neuralId] || {};
+      const total = ['prepare_ms', 'flow_ms', 'model_ms', 'composition_ms']
+        .reduce((sum, key) => sum + (Number.isFinite(times[key]) ? times[key] : 0), 0);
+      const state = status.startupError || (neural && (neural.error || neural.status))
+        || (neural && neural.enabled ? 'Waiting for runtime status' : 'Neural Rendering is disabled');
+      output.textContent = `${status.hostVersion} (${backend}): ${state}${backend === 'NVIDIA' && total > 0 ? ` | Last completed NR GPU stages: ${total.toFixed(2)} ms` : ''}`;
+      if (backend === 'AMD') {
+        if (Number.isFinite(times.compute_device)) output.textContent += ` | CUDA device ${times.compute_device}`;
+        const results = Number.isFinite(times.results) ? times.results : 0;
+        output.textContent += results > 0
+          ? ` | ${Number(times.inference_fps || 0).toFixed(1)} NR evaluations/s, result age ${times.result_age || 0} frames, flow ${Number(times.flow_ms || 0).toFixed(2)} ms`
+          : ' | No inference result confirmed';
+      }
+      if (status.capture && status.capture.support && status.capture.support !== 'Ready') {
+        output.textContent += ` | Capture: ${status.capture.error || status.capture.hookError || status.capture.support}`;
+      }
+      const sr = status.sm86Sr;
+      if (sr && sr.mode !== 'Off') output.textContent += ` | SM86 ${sr.mode}: ${sr.error ||
+        (sr.gateAllowed ? 'device gate accepted; frame inference unverified' : sr.loaderReady ? 'proxy loaded; awaiting device gate' : 'proxy not loaded')}`;
+      const upscaler = (status.addons || []).find(addon => addon.id === 'DLSS4DLAA');
+      if (sr && sr.mode !== 'Off' && upscaler && (upscaler.error || upscaler.status)) {
+        output.textContent += ` | DLSS upscaler: ${upscaler.error || upscaler.status}`;
+      }
+    }
+
     function renderAddonEditor() {
       const host = document.getElementById('addonEditorCards');
       if (!host) return;
       host.replaceChildren();
       const catalog = new Map(addonEditorCatalog.map(addon => [addon.id, addon]));
-      ['DLSS5NR01', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC', 'WindowedMode', 'ReShadePassthrough',
+      ['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough',
         ...Object.keys(addonEditorDraft.addons)].forEach(id => {
+        if (id === 'LSC-AdapterReport' || id === 'LSC-AMDNR') return;
         if (!catalog.has(id)) catalog.set(id, { id, name: id, fields: [] });
       });
       catalog.forEach(addon => {
@@ -2910,7 +3045,7 @@
       });
       const globalHost = document.getElementById('addonManagerFields');
       globalHost.replaceChildren();
-      addonSavedFields(globalHost, addonEditorDraft.global, 'global');
+      addonSavedFields(globalHost, addonEditorDraft.global, 'global', new Set(['companion']));
       renderProfileScalingChoice();
     }
 
@@ -3876,12 +4011,17 @@
         ws.send(JSON.stringify({ type: 'REVERT_ALL_CHANGES', confirmRevertAll: true }));
       });
     };
-    document.getElementById('refreshGraphicsBtn').onclick = () => ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+    document.getElementById('refreshGraphicsBtn').onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
+      ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
+    };
     document.getElementById('openProxyMenuBtn').onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const status = document.getElementById('proxyMenuStatus');
-      status.textContent = 'Opening Echo add-on menu...';
+      status.textContent = 'Settings apply through a safe profile reload. Host updates are bundled with Companion.';
       status.hidden = false;
-      ws.send(JSON.stringify({ type: 'OPEN_PROXY_MENU' }));
+      ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
     };
     function downloadBenchmarkTool(provider, button) {
       button.disabled = true;
@@ -3996,7 +4136,7 @@
         addonConfig.addons.ReShadePassthrough = addonConfig.addons.ReShadePassthrough || {};
         addonConfig.addons.ReShadePassthrough._enabled = true;
       }
-      const dlss5Enabled = !!(addonConfig.addons.DLSS5NR01 && addonConfig.addons.DLSS5NR01._enabled);
+      const dlss5Enabled = !!(addonConfig.addons.DLSSNR02 && addonConfig.addons.DLSSNR02._enabled);
       const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath);
       const payload = {
         type: 'SAVE_PROFILE',
@@ -4116,13 +4256,34 @@
     openMajorDashboardPanel(initialMajorPanel);
     renderProfiles();
 
-    if (new URLSearchParams(window.location.search).get('view') === 'settings') {
+    if (new URLSearchParams(window.location.search).get('view') === 'addons') {
+      openMajorDashboardPanel(settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === 'lossless-addons'), true);
+    } else if (new URLSearchParams(window.location.search).get('view') === 'settings') {
       const savedSettingsPanelId = localStorage.getItem('dashboard-last-settings-panel');
       const target = settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === savedSettingsPanelId) || generalSettingsPanel;
       openMajorDashboardPanel(target, true);
     }
 
+    window.addEventListener('companion-navigate', event => {
+      if (event.detail === 'addons') {
+        openMajorDashboardPanel(settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === 'lossless-addons'), true);
+      } else if (event.detail === 'settings') {
+        const saved = localStorage.getItem('dashboard-last-settings-panel');
+        openMajorDashboardPanel(settingsDashboardPanels.find(panel => panel.dataset.collapsibleId === saved) || generalSettingsPanel, true);
+      } else {
+        openMajorDashboardPanel(profilesPanel, true);
+      }
+    });
+
     window.addEventListener('beforeunload', () => { if (addonEditorTimer) saveAddonEditor(); });
+    setInterval(() => {
+      if (!document.hidden && ws && ws.readyState === WebSocket.OPEN
+          && (document.getElementById('profileModal').classList.contains('active')
+              || !document.getElementById('losslessAddonsPanel').hidden)) {
+        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
+      }
+    }, 2000);
+
     connectWS();
   </script>
 </body>

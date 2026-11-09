@@ -248,6 +248,7 @@ class RepairUsesReportTests(unittest.TestCase):
                 presentmon_provider=lambda: Path("pm.exe"))
             automation.set_scaling = Mock(return_value=True)
             automation._verify_active_route = Mock(return_value=True)
+            automation._wait_for_ls_ready = Mock(return_value=True)
             profile = SimpleNamespace(lossless_profile_title="Default",
                                       name="Game", id="game")
             report = {"device": {"vendorId": 4318, "deviceId": 11651},
@@ -267,6 +268,12 @@ class RepairUsesReportTests(unittest.TestCase):
                 manager.config.ls_gpu_id_map[r"PCI\VEN_10DE&DEV_2D83"], 5)
             self.assertEqual(
                 manager.config.ls_display_id_map[r"\\.\DISPLAY2"], 2)
+
+    def test_repair_search_includes_duplicate_adapter_slots(self):
+        automation, _, _, _ = make_automation([])
+        for key in ("lsAdapterNames", "enumAdapters", "enumAdapters1"):
+            with self.subTest(key=key):
+                self.assertIn(6, automation._repair_gpu_order({key: [{}] * 6}, 2))
 
 
 class AdoptAdapterReportTests(unittest.TestCase):
@@ -323,6 +330,18 @@ class AdoptAdapterReportTests(unittest.TestCase):
              patch.object(automation, "_adapter_report_process", return_value=(9999, 0)):
             self.assertIsNone(automation._adopt_adapter_report(profile))
         self.assertEqual(manager.config.ls_gpu_id_map, {})
+
+    def test_adopt_updates_full_pci_key_used_by_router(self):
+        full = r"PCI\VEN_10DE&DEV_2D83&SUBSYS_53811462"
+        automation, manager, _, _ = make_automation(
+            [{"Title": "Default", "PreferredGpuId": "6", "OutputDisplayId": "2"}],
+            gpu_map={full: 2, r"PCI\VEN_10DE&DEV_2D83": 6})
+        profile = SimpleNamespace(lossless_profile_title="Default", name="G")
+        with patch.object(automation, "_current_adapter_report", return_value=self._report(settingsGpu=6)), \
+                patch.object(automation, "_adapter_report_process", return_value=(4242, 0)):
+            self.assertEqual(automation._adopt_adapter_report(profile), "corrected")
+        from companion.services.gpu_router import _ls_id_for_device, _normalize_gpu_map
+        self.assertEqual(_ls_id_for_device(full, _normalize_gpu_map(manager.config.ls_gpu_id_map)), 6)
 
     def test_adopt_without_report_or_profile(self):
         automation, _, _, _ = make_automation(

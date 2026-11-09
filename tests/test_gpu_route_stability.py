@@ -312,10 +312,37 @@ class GpuMapFreshnessTests(unittest.TestCase):
         live = inventory_fingerprint(
             GpuRouter(lambda: adapters(), lambda hwnd: None).detect())
         automation, _ = self._controller(
-            ls_gpu_id_map={RTX_5050: 1}, ls_gpu_map_fingerprint=live)
+            ls_gpu_id_map={RTX_3090: 2, RTX_5050: 1}, ls_gpu_map_fingerprint=live)
         status = automation.gpu_map_status()
         self.assertEqual(status["state"], "ok")
+        self.assertEqual(status["mappedGpus"], 2)
+
+    def test_partial_map_is_not_reported_as_fully_valid(self):
+        from companion.services.gpu_router import inventory_fingerprint
+        live = inventory_fingerprint(GpuRouter(lambda: adapters(), lambda hwnd: None).detect())
+        automation, _ = self._controller(
+            ls_gpu_id_map={RTX_5050: 6}, ls_gpu_map_fingerprint=live)
+        status = automation.gpu_map_status()
+        self.assertEqual(status["state"], "missing")
         self.assertEqual(status["mappedGpus"], 1)
+
+    def test_aliases_do_not_inflate_mapped_gpu_count(self):
+        from companion.services.gpu_router import inventory_fingerprint
+        live = inventory_fingerprint(GpuRouter(lambda: adapters(), lambda hwnd: None).detect())
+        automation, _ = self._controller(
+            ls_gpu_id_map={RTX_5050: 6, r"PCI\VEN_10DE&DEV_2D83": 6},
+            ls_gpu_map_fingerprint=live)
+        self.assertEqual(automation.gpu_map_status()["mappedGpus"], 1)
+        self.assertEqual(automation.gpu_map_status()["state"], "missing")
+
+    def test_map_without_fingerprint_or_with_conflicting_slots_is_stale(self):
+        from companion.services.gpu_router import inventory_fingerprint
+        live = inventory_fingerprint(GpuRouter(lambda: adapters(), lambda hwnd: None).detect())
+        for mapping, fingerprint in [({RTX_3090: 1, RTX_5050: 2}, None),
+                                     ({RTX_3090: 2, RTX_5050: 2}, live)]:
+            with self.subTest(mapping=mapping, fingerprint=fingerprint):
+                automation, _ = self._controller(ls_gpu_id_map=mapping, ls_gpu_map_fingerprint=fingerprint)
+                self.assertEqual(automation.gpu_map_status()["state"], "stale")
 
     def test_status_stale_on_topology_drift(self):
         automation, _ = self._controller(
@@ -356,6 +383,7 @@ class GpuMapFreshnessTests(unittest.TestCase):
         runner._path = str
         stale = runner._gpu_routing()
         self.assertEqual(stale["status"], "fail")
+        automation.profile_manager.config.ls_gpu_id_map[RTX_3090] = 2
         automation.profile_manager.config.ls_gpu_map_fingerprint = live
         self.assertEqual(runner._gpu_routing()["status"], "pass")
 
@@ -381,6 +409,9 @@ class RouteVerifyRepairTests(unittest.TestCase):
             lossless_settings=settings,
             presentmon_provider=lambda: Path(tempfile.mkdtemp()) / "pm.exe",
         )
+        automation._wait_for_ls_ready = Mock(return_value=True)
+        automation._current_adapter_report = Mock(return_value={
+            "device": {"vendorId": 0x10DE, "deviceId": 0x2D83}})
         return automation, manager, watcher, settings
 
     def test_verification_skipped_without_provider(self):
@@ -409,6 +440,7 @@ class RouteVerifyRepairTests(unittest.TestCase):
         from unittest.mock import patch
 
         automation, _, _, _ = self._controller()
+        automation._adapter_report_process = Mock(return_value=(1, 100))
         summary = {"application": "LosslessScaling.exe", "process_id": 1,
                    "rows": 100,
                    "metrics": {"displayed_fps": {"median": 120.0}}}
@@ -421,6 +453,35 @@ class RouteVerifyRepairTests(unittest.TestCase):
              patch("companion.services.benchmark_metrics.summarize_presentmon_files",
                    return_value=[summary]):
             self.assertFalse(automation._verify_active_route())
+
+    def test_verification_ignores_output_from_another_ls_process(self):
+        automation, _, _, _ = self._controller()
+        automation._adapter_report_process = Mock(return_value=(1, 100))
+        summaries = [
+            {"application": "LosslessScaling.exe", "process_id": 99,
+             "metrics": {"displayed_fps": {"median": 120}}},
+            {"application": "LosslessScaling.exe", "process_id": 1,
+             "metrics": {"displayed_fps": {"median": 2}}}]
+        with unittest.mock.patch("companion.services.performance_benchmark.PresentMonCapture"), \
+                unittest.mock.patch("companion.services.benchmark_metrics.summarize_presentmon_files", return_value=summaries):
+            self.assertFalse(automation._verify_active_route())
+
+    def test_verification_discards_capture_if_ls_restarts_or_pid_is_reused(self):
+        automation, _, _, _ = self._controller()
+        automation._adapter_report_process = Mock(side_effect=[(1, 100), (1, 200)])
+        with unittest.mock.patch("companion.services.performance_benchmark.PresentMonCapture"), \
+                unittest.mock.patch("companion.services.benchmark_metrics.summarize_presentmon_files", return_value=[{
+                    "application": "LosslessScaling.exe", "process_id": 1,
+                    "metrics": {"displayed_fps": {"median": 120}}}]):
+            self.assertIsNone(automation._verify_active_route())
+
+    def test_reshaping_check_inspects_ls_process_instead_of_game(self):
+        automation, _, _, _ = self._controller()
+        automation._adapter_report_process = Mock(return_value=(123, 100))
+        automation._verify_active_route = Mock(return_value=True)
+        with unittest.mock.patch("companion.services.adapter_report.detect_reshaping_layers", return_value=[]) as detect:
+            automation._verify_and_repair_route(None, "test", 42, 82)
+        detect.assert_called_once_with(pid=123)
 
     def test_verify_returns_none_without_presentmon(self):
         automation, _, _, _ = self._controller()
@@ -435,12 +496,15 @@ class RouteVerifyRepairTests(unittest.TestCase):
                                   id="game")
         automation.set_scaling = Mock(return_value=True)
         automation._verify_active_route = Mock(side_effect=[False, True])
+        automation._current_adapter_report = Mock(return_value={
+            "device": {"vendorId": 0x10DE, "deviceId": 0x2D83}})
+        automation._wait_for_ls_ready = Mock(return_value=True)
         self.assertTrue(automation._repair_route(
             profile, "focus", target_pid=42, target_hwnd=82))
         # First candidate is GPU 1 on the window's display; a lost hotkey
         # looks identical to a wrong route, so one resend is attempted
         # before moving on. The resend proves frames, persisting (1, 2).
-        self.assertEqual(manager.config.ls_gpu_id_map[RTX_5050], 1)
+        self.assertEqual(manager.config.ls_gpu_id_map[r"PCI\VEN_10DE&DEV_2D83"], 1)
         self.assertEqual(manager.config.ls_display_id_map[r"\\.\DISPLAY2"], 2)
         self.assertTrue(settings.update_gpu_route.called)
         self.assertIsNotNone(manager.config.ls_gpu_map_fingerprint)
@@ -458,7 +522,7 @@ class RouteVerifyRepairTests(unittest.TestCase):
             profile, "focus", target_pid=42, target_hwnd=82))
         # First candidate stays starved through its resend, so the sweep
         # moves on; the second candidate proves frames on its resend.
-        self.assertEqual(manager.config.ls_gpu_id_map[RTX_5050], 2)
+        self.assertEqual(manager.config.ls_gpu_id_map[r"PCI\VEN_10DE&DEV_2D83"], 2)
         self.assertEqual(manager.config.ls_display_id_map[r"\\.\DISPLAY2"], 2)
         self.assertTrue(settings.update_gpu_route.called)
         self.assertIsNotNone(manager.config.ls_gpu_map_fingerprint)
@@ -484,6 +548,44 @@ class RouteVerifyRepairTests(unittest.TestCase):
         self.assertFalse(automation._verify_and_repair_route(
             None, "test", None, None))
         watcher.stop_lossless_scaling.assert_not_called()
+
+    def test_healthy_frames_on_wrong_gpu_trigger_repair(self):
+        automation, _, _, _ = self._controller(
+            preferred_scaling_gpu_device_id=RTX_5050,
+            preferred_scaling_gpu_name="NVIDIA GeForce RTX 5050")
+        automation._verify_active_route = Mock(return_value=True)
+        automation._current_adapter_report = Mock(return_value={
+            "device": {"vendorId": 0x10DE, "deviceId": 0x2203}})
+        automation._repair_route = Mock(return_value=True)
+        self.assertTrue(automation._verify_and_repair_route(None, "test", 42, 82))
+        automation._repair_route.assert_called_once_with(None, "test", 42, 82)
+
+    def test_repair_does_not_attribute_previous_process_gpu_to_new_candidate(self):
+        automation, manager, _, _ = self._controller()
+        automation._wait_for_ls_ready = Mock(return_value=True)
+        automation.set_scaling = Mock(return_value=True)
+        automation._verify_active_route = Mock(return_value=True)
+        reports = iter([{"device": {"vendorId": 0x10DE, "deviceId": 0x2D83}}])
+        automation._current_adapter_report = Mock(side_effect=lambda: next(
+            reports, {"device": {"vendorId": 0x10DE, "deviceId": 0x2203}}))
+        self.assertFalse(automation._repair_route(None, "test", 42, 82))
+        self.assertEqual(manager.config.ls_gpu_id_map, {})
+
+    def test_profile_gpu_choice_takes_precedence_over_global_pin(self):
+        automation, manager, _, _ = self._controller(
+            preferred_scaling_gpu_device_id=RTX_5050,
+            preferred_scaling_gpu_name="NVIDIA GeForce RTX 5050")
+        profile = manager.config.profiles[0]
+        profile.native_scaling_settings["PreferredGpuId"] = "1"
+        profile.preferred_gpu_device_id = RTX_3090
+        profile.preferred_gpu_name = "NVIDIA GeForce RTX 3090 Ti"
+        self.assertEqual(automation._intended_rendering_gpu(profile, RTX_5050), RTX_3090)
+
+    def test_verified_short_identity_updates_full_identity_used_for_routing(self):
+        automation, manager, _, _ = self._controller(ls_gpu_id_map={RTX_5050: 2})
+        automation._persist_verified_route(r"PCI\VEN_10DE&DEV_2D83", r"\\.\DISPLAY2", 6, 2)
+        from companion.services.gpu_router import _ls_id_for_device, _normalize_gpu_map
+        self.assertEqual(_ls_id_for_device(RTX_5050, _normalize_gpu_map(manager.config.ls_gpu_id_map)), 6)
 
 
 if __name__ == "__main__":

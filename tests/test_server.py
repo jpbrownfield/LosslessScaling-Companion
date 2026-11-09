@@ -175,7 +175,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["generation"], 7)
         self.assertTrue(result["pending"])
         self.assertEqual(saved.addon_config["addons"]["FutureAddon"]["gain"], "0.5")
-        self.assertFalse(saved.addon_config["addons"]["DLSS5NR01"]["_enabled"])
+        self.assertFalse(saved.addon_config["addons"]["DLSSNR02"]["_enabled"])
         self.assertEqual(saved.graphics.neural_render.implementation, "disabled")
         self.assertEqual(saved.auto_scale, profile.auto_scale)
         self.automation.activate_profile.assert_not_called()
@@ -189,7 +189,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.client_authority[websocket] = "dashboard"
         await self.server.process_message(websocket, json.dumps({
             "type": "SAVE_ADDON_CONFIG", "profileId": profile.id,
-            "config": {"global": {}, "addons": {"DLSS5NR01": {"_enabled": False}}},
+            "config": {"global": {}, "addons": {"DLSSNR02": {"_enabled": False}}},
         }))
         self.automation.activate_profile.assert_not_called()
         self.assertTrue(self.automation.addon_configs.has_pending(self.state.current_active_profile))
@@ -747,7 +747,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id="settingsToggleBtn"', body)
             self.assertNotIn('id="runtimeInfo"', body)
             self.assertIn('id="statusPill" class="status-pill inactive"', body)
-            self.assertIn('>LS Inactive</div>', body)
+            self.assertIn('>Connecting to Companion…</div>', body)
             self.assertIn('data-dashboard-panel="profiles"', body)
             self.assertIn('data-dashboard-panel="general"', body)
             self.assertIn('data-dashboard-panel="lossless-addons"', body)
@@ -836,8 +836,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("&& dlssnrRuntimes.length > 0", body)
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
-            self.assertIn("Echo Add-on Suite", body)
-            self.assertIn("Show Add-on Menu", body)
+            self.assertIn("FriedSnowman Addon Suite", body)
+            self.assertIn("Refresh Runtime Status", body)
             self.assertIn("Community Runtime Warning", body)
             self.assertIn("Download and install Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)

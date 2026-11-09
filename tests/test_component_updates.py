@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 import zipfile
+from websockets.exceptions import ConnectionClosedOK
 
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
@@ -77,12 +78,60 @@ class ComponentOperationTests(unittest.IsolatedAsyncioTestCase):
         self.server.release_manager.check.assert_not_called()
         self.assertIsNone(self.server.component_operation_status)
 
+    async def test_sm86_install_only_stages_and_does_not_enable_any_profile(self):
+        from companion.services import sm86_sr
+        self.server.release_manager = Mock()
+        self.server.release_manager.check.return_value = [{"version": sm86_sr.VERSION, "assets": [{"name": sm86_sr.ARCHIVE}]}]
+        self.server.release_manager.stage_release.return_value = {"provider": sm86_sr.PROVIDER, "version": sm86_sr.VERSION}
+        before = [profile.model_dump() for profile in self.manager.config.profiles]
+        await self.server.process_message(self.socket, json.dumps({"type": "INSTALL_LATEST_GRAPHICS_ADDON", "provider": "sm86-sr"}))
+        self.assertEqual([profile.model_dump() for profile in self.manager.config.profiles], before)
+        self.assertTrue(any(item["type"] == "GRAPHICS_RELEASE_STAGED" for item in self.socket.messages), self.socket.messages)
+        self.server.release_manager.stage_release.assert_called_once()
+
     async def test_tray_updates_share_the_component_install_lock(self):
         self.server.companion_updater = Mock()
         async with self.server.component_install_lock:
             with self.assertRaisesRegex(RuntimeError, "in progress"):
                 await self.server.apply_companion_update("1.0.0")
         self.server.companion_updater.download.assert_not_called()
+
+    async def test_amd_runtime_install_stages_without_changing_profiles_or_gpu_selection(self):
+        from companion.services import amd_nr
+        self.server.release_manager = Mock()
+        self.server.release_manager.check.return_value = [{"version": amd_nr.VERSION, "assets": [{"name": amd_nr.ARCHIVE}]}]
+        self.server.release_manager.stage_release.return_value = {"provider": amd_nr.PROVIDER, "version": amd_nr.VERSION}
+        before = [profile.model_dump() for profile in self.manager.config.profiles]
+        await self.server.process_message(self.socket, json.dumps({"type": "INSTALL_LATEST_GRAPHICS_ADDON", "provider": amd_nr.PROVIDER}))
+        self.assertEqual([profile.model_dump() for profile in self.manager.config.profiles], before)
+        self.assertTrue(any(item["type"] == "GRAPHICS_RELEASE_STAGED" for item in self.socket.messages), self.socket.messages)
+        self.server.release_manager.stage_release.assert_called_once()
+
+    async def assert_handoff_survives_dashboard_disconnect(self, action):
+        self.server.companion_updater = Mock()
+        self.server.companion_updater.download.return_value = {"type": "COMPANION_UPDATE_DOWNLOADED", "version": "2.0.0"}
+        self.server.companion_updater.launch_installer.return_value = {"type": "COMPANION_INSTALLER_LAUNCHED", "version": "2.0.0"}
+        self.server.on_installer_launched = Mock()
+        original_send = self.socket.send
+
+        async def disconnect_after_launch(raw):
+            if json.loads(raw)["type"] == "COMPANION_INSTALLER_LAUNCHED":
+                raise ConnectionClosedOK(None, None)
+            await original_send(raw)
+
+        self.socket.send = disconnect_after_launch
+        await self.server.process_message(self.socket, json.dumps({"type": action, "version": "2.0.0"}))
+        await asyncio.sleep(0)
+        self.server.companion_updater.launch_installer.assert_called_once_with("2.0.0")
+        self.server.on_installer_launched.assert_called_once_with()
+        self.assertTrue(self.server._update_handoff)
+        self.assertEqual(self.server.component_operation_status["phase"], "restarting")
+
+    async def test_apply_handoff_survives_dashboard_disconnect(self):
+        await self.assert_handoff_survives_dashboard_disconnect("APPLY_COMPANION_UPDATE")
+
+    async def test_cached_installer_handoff_survives_dashboard_disconnect(self):
+        await self.assert_handoff_survives_dashboard_disconnect("INSTALL_COMPANION_UPDATE")
 
     async def test_reconnected_dashboard_receives_current_progress(self):
         self.server.component_operation_status = {"type": "COMPONENT_OPERATION", "provider": "ls-addon-manager",

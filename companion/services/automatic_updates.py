@@ -8,6 +8,7 @@ import logging
 import re
 import time
 import uuid
+from .addon_host import addon_version_key
 
 logger = logging.getLogger("LSCompanion.AutoUpdates")
 AUTOMATIC_ADDONS = frozenset({"ls-addon-manager", "reshade", "special-k"})
@@ -15,6 +16,9 @@ AUTOMATIC_ADDONS = frozenset({"ls-addon-manager", "reshade", "special-k"})
 
 def newer_addon_version(current: str, latest: str) -> bool:
     """Unknown/prerelease formats stay manual rather than risk a downgrade."""
+    before_key, after_key = addon_version_key(current), addon_version_key(latest)
+    if before_key[0] == 2 or after_key[0] == 2:
+        return before_key[0] == after_key[0] == 2 and after_key > before_key
     def version(value):
         text = str(value or "").strip().removeprefix("v")
         return tuple(int(part) for part in text.split(".")) if re.fullmatch(r"\d+(?:\.\d+)+", text) else None

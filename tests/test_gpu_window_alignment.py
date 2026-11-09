@@ -36,6 +36,30 @@ def controller_for(router):
 
 
 class GpuWindowAlignmentTests(unittest.TestCase):
+    def test_profile_monitor_selects_its_gpu_before_window_is_moved(self):
+        rows = adapters()
+        for index, row in enumerate(rows, 1):
+            row["displayName"] = f"Monitor on card {index}"
+            row["displayDeviceId"] = f"MONITOR_{index}"
+        router = GpuRouter(lambda: rows, lambda hwnd: r"\\.\DISPLAY1")
+        automation, manager = controller_for(router)
+        automation.refresh_gpu_selections()
+        profile = manager.config.profiles[0]
+        profile.native_scaling_settings = {"PreferredGpuId": "0", "OutputDisplayId": "2"}
+        profile.output_display_device_id = "MONITOR_2"
+        profile.output_display_name = "Monitor on card 2"
+        route = automation._desired_gpu_route(profile, 999)
+        self.assertEqual(route["lsGpuId"], 2)
+        self.assertEqual(route["lsDisplayId"], 2)
+        self.assertEqual(route["deviceName"], r"\\.\DISPLAY2")
+        self.assertEqual(automation._intended_rendering_gpu(profile, RTX_3090), route["gpuDeviceId"])
+        # A GPU pin still takes precedence over monitor matching.
+        manager.config.preferred_scaling_gpu_device_id = RTX_3090
+        manager.config.preferred_scaling_gpu_name = "NVIDIA GeForce RTX 3090 Ti"
+        route = automation._desired_gpu_route(profile, 999)
+        self.assertEqual(route["lsGpuId"], 1)
+        self.assertEqual(route["lsDisplayId"], 2)
+
     def test_window_on_each_monitor_routes_to_that_monitors_gpu(self):
         for hwnd, display, gpu_id, gpu_name in [
             (101, r"\\.\DISPLAY1", RTX_3090, "NVIDIA GeForce RTX 3090 Ti"),

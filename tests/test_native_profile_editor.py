@@ -29,8 +29,8 @@ class NativeProfileEditorContractTests(unittest.TestCase):
 
     def test_echo_upscalers_are_distinct_from_native_fsr_and_save_as_nis(self):
         self.assertIn('<option value="FSR">FSR (LS built-in)</option>', self.html)
-        self.assertIn('<option value="EchoDLSS">DLSS (Echo add-on)</option>', self.html)
-        self.assertIn('<option value="EchoFSR">FSR (Echo add-on)</option>', self.html)
+        self.assertIn('<option value="AddonDLSS">DLSS (manager add-on)</option>', self.html)
+        self.assertIn('<option value="AddonFSR">FSR (manager add-on)</option>', self.html)
         self.assertIn("values.ScalingType = serializedScalingType(values.ScalingType)", self.html)
         self.assertIn("if (addonScalingSavePending) { scheduleProfileAutosave(0); return; }", self.html)
         self.assertIn("activeProfileSaveAddonGeneration = addonGeneration", self.html)
@@ -149,7 +149,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertNotIn('id="losslessProxyEnabled"', self.html)
         self.assertNotIn('id="echoDlssNrEnabled"', self.html)
         self.assertNotIn('id="echoReshadePassthroughEnabled"', self.html)
-        self.assertIn("Echo's passthrough is enabled automatically", self.html)
+        self.assertIn("the manager's passthrough is enabled automatically", self.html)
         self.assertNotIn("values.HdrSupport = 'false'", self.html)
         self.assertIn(
             "enabled: reshadeEnabled",
@@ -164,7 +164,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
             self.html,
         )
         self.assertIn(
-            '<h3 class="settings-group-title">Echo Add-on Manager Configuration</h3>',
+            '<h3 class="settings-group-title">Addon Configuration</h3>',
             self.html,
         )
         self.assertIn('.settings-group-title { display: flex; align-items: center;', self.html)
@@ -181,7 +181,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         echo_editor = self.html.index('id="addonEditorCards"')
         special_k = self.html.index('id="specialKSettings"', echo_editor)
         self.assertGreater(special_k, echo_editor)
-        self.assertIn("Special K is independent of Echo LS Add-on Manager", self.html)
+        self.assertIn("Special K is independent of Companion Addon Host", self.html)
         self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 1)
         self.assertNotIn('id="nvidiaRtxHdrEnabled"', self.html)
         self.assertNotIn("NVIDIA RTX HDR for Lossless Scaling", self.html)

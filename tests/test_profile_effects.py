@@ -374,7 +374,11 @@ class ProfileEffectsTests(unittest.TestCase):
                 ("focus", 42, 82),
                 ("hotkey",),
             ])
-            router.route_for_ls_ids.assert_called_once_with(2, 0)
+            # Routing and the existing runtime-verification path may each resolve
+            # this selection. Both must honor the explicitly requested GPU.
+            self.assertTrue(router.route_for_ls_ids.call_args_list)
+            self.assertTrue(all(call.args == (2, 0) and not call.kwargs
+                                for call in router.route_for_ls_ids.call_args_list))
 
     def test_active_profile_new_window_updates_xml_route_without_redeployment(self):
         with tempfile.TemporaryDirectory() as directory:

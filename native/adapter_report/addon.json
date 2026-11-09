@@ -1,6 +1,6 @@
 {
   "name": "LS Companion Adapter Report",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "LS Companion contributors",
   "description": "Reports the physical GPU Lossless Scaling renders with so the companion can route scaling without trial-and-error probing.",
   "min_host_version": "0.3.0",

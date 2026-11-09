@@ -15,6 +15,29 @@ from companion.ui.tray import CompanionTrayIcon
 
 
 class CompanionTrayIconTests(unittest.TestCase):
+    def test_published_startup_change_refreshes_the_tray_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            tray = CompanionTrayIcon(manager, AppState(), watcher, automation=Mock())
+            tray.update_menu = Mock()
+            manager.config.run_at_startup = True
+            tray.refresh_state()
+            self.assertTrue(tray._startup_enabled)
+            tray.update_menu.assert_called_once()
+
+    def test_pending_command_is_visible_before_scaling_is_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            watcher = Mock()
+            watcher.list_running_executables.return_value = []
+            state = AppState()
+            state.scaling_control_status = {"state": "pending", "message": "Waiting for scaling confirmation"}
+            tray = CompanionTrayIcon(manager, state, watcher, automation=Mock())
+            self.assertEqual(tray._build_menu().items[1].text, "Waiting for scaling confirmation")
+            self.assertFalse(state.is_scaling_active)
+
     def test_menu_refresh_is_marshaled_to_the_native_tray_thread(self):
         from pystray._util import win32
         tray = CompanionTrayIcon.__new__(CompanionTrayIcon)
@@ -350,12 +373,16 @@ class CompanionApplicationShutdownTests(unittest.TestCase):
         app = self.application_stub()
         app.request_stop = Mock()
         app.tray = Mock()
+        order = Mock()
+        order.attach_mock(close_dashboard, "close_dashboard")
+        order.attach_mock(app.tray.icon.stop, "stop_tray")
 
         app.request_update_shutdown()
 
         app.request_stop.assert_called_once_with()
         app.tray.icon.stop.assert_called_once_with()
-        close_dashboard.assert_called_once_with()
+        close_dashboard.assert_called_once_with(wait=True)
+        self.assertEqual([call[0] for call in order.mock_calls], ["close_dashboard", "stop_tray"])
 
     @patch("companion.ui.tray.open_dashboard_window")
     def test_rapid_tray_clicks_open_dashboard_once(self, open_window):

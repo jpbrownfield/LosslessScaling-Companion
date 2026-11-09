@@ -165,6 +165,12 @@ class IdleGpuIndexRefresh:
     def stop(self):
         self.stopping.set()
 
+    def request_refresh(self):
+        """A fresh runtime mismatch invalidates the periodic-check shortcut."""
+        self.pending = True
+        self.observed = None
+        self.retry_after = 0.0
+
     def status(self, state, message, **details):
         value = {"state": state, "message": message, **details}
         if value != self.server.state.gpu_mapping_status:

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(LSC_AdapterReport VERSION 1.0.0 LANGUAGES CXX)
+project(LSC_AdapterReport VERSION 1.1.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "LS Companion Adapter Report requires Windows x64")
@@ -72,7 +72,7 @@ set_target_properties(LSC_AdapterProbe PROPERTIES
 include(CTest)
 if(BUILD_TESTING)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-localappdata/LosslessScalingHelper")
-  foreach(scenario cancel in-flight reinitialize)
+  foreach(scenario cancel in-flight reinitialize refresh)
     add_test(NAME "adapter_report_${scenario}"
       COMMAND LSC_AdapterReportLifetimeHost "${scenario}")
     set_tests_properties("adapter_report_${scenario}" PROPERTIES

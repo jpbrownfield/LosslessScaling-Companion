@@ -42,54 +42,6 @@ class CountingProvider(ReleaseProvider):
 
 
 class ReleaseManagerTests(unittest.TestCase):
-    def test_echo_setup_is_expanded_once_and_preserves_upstream_notices(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            release = root / "LSAddonManager-v1.0.0-x64.zip"
-            with zipfile.ZipFile(release, "w") as bundle:
-                bundle.writestr("LSAddonManagerSetup.exe", b"setup")
-                bundle.writestr("LICENSE.txt", b"MIT")
-                bundle.writestr("NOTICE.md", b"credits")
-            staging = root / "staging"
-            staging.mkdir()
-            store = AssetStore(str(root / "store"))
-            manager = ReleaseManager(store, ProviderRegistry())
-
-            def extract(command, **_kwargs):
-                payload = Path(command[2])
-                addon = payload / "addons" / "Example"
-                addon.mkdir(parents=True)
-                (payload / "Lossless.dll").write_bytes(b"host")
-                (addon / "addon.json").write_text(
-                    '{"name":"Example"}', encoding="utf-8"
-                )
-                (addon / "Example.dll").write_bytes(b"addon")
-                return type("Result", (), {"wait": lambda self, timeout=None: 0})()
-
-            with patch.object(store, "pe_architecture", return_value="x64"), patch(
-                "companion.services.release_providers.subprocess.Popen", side_effect=extract
-            ):
-                package = manager._expand_ls_addon_manager(
-                    release,
-                    staging,
-                    "v1.0.0",
-                    {"verification": {"publisher_digest_verified": True}},
-                )
-
-            payload = Path(package["payload_path"])
-            self.assertEqual(
-                (payload / "licenses" / "LSAddonManager" / "LICENSE.txt").read_bytes(),
-                b"MIT",
-            )
-            recipe = json.loads(
-                (payload / "lossless-scaling-deployment.json").read_text(encoding="utf-8")
-            )
-            self.assertTrue(any(
-                item["destination"] == "licenses/LSAddonManager/NOTICE.md"
-                for item in recipe["files"]
-            ))
-            self.assertEqual(len(store.list_packages()), 1)
-
     def test_bundled_release_is_staged_without_a_network_download(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -157,11 +109,12 @@ class ReleaseManagerTests(unittest.TestCase):
         self.assertIsNone(provider.asset_pattern.search("PresentMon-2.4.1-x86.exe"))
         self.assertIsNone(provider.asset_pattern.search("PresentMon-v2.4.1.msi"))
 
-    def test_echo_provider_accepts_only_named_x64_release_archive(self):
+    def test_manager_provider_installs_only_the_bundled_reviewed_host(self):
+        from companion.services.release_providers import BundledAddonManagerReleaseProvider
         provider = ProviderRegistry().get("ls-addon-manager")
-        self.assertIsNotNone(provider.asset_pattern.search("LSAddonManager-v1.0.0-x64.zip"))
-        self.assertIsNone(provider.asset_pattern.search("source.zip"))
-        self.assertIsNone(provider.asset_pattern.search("LSAddonManager-v1.0.0-x86.zip"))
+        self.assertIsInstance(provider, BundledAddonManagerReleaseProvider)
+        self.assertEqual(provider.archive_name, "LSAddonManager-Companion.zip")
+        self.assertFalse(provider.allowed_hosts)
 
     def test_release_checks_use_persistent_interval_cache(self):
         with tempfile.TemporaryDirectory() as directory:

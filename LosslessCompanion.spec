@@ -35,10 +35,20 @@ native_data = [
 ]
 # Keep the archive reader's license and its dependency notices in the package.
 native_data.extend(copy_metadata("py7zr", recursive=True))
-neural_render_bundle = Path("build/native/LSP-NeuralRender.zip")
-if not neural_render_bundle.is_file():
-    raise SystemExit("Build the bundled NeuralRender archive before packaging LS Companion")
-native_data.append((str(neural_render_bundle), "addons/lsp-neural-render"))
+native_data.extend(copy_metadata("pywebview", recursive=True))
+addon_manager_bundle = Path("build/native/LSAddonManager-Companion.zip")
+if not addon_manager_bundle.is_file():
+    raise SystemExit("Run python scripts/build_addon_manager.py before packaging LS Companion")
+native_data.append((str(addon_manager_bundle), "addons/ls-addon-manager"))
+native_data.append(("native/amd_neuralrender/runtime.lock.json", "native/amd_neuralrender"))
+amd_probe = Path("build/native/LSC-AMDNR/LSC_AMDNRProbe.exe")
+if not amd_probe.is_file():
+    raise SystemExit("Build the AMD NR addon and probe before packaging LS Companion")
+native_binaries.append((str(amd_probe), "tools"))
+amd_probe_fixture = Path("build/native/LSC-AMDNR/probe-fixture/dlss5nr_runtime.dll")
+if not amd_probe_fixture.is_file():
+    raise SystemExit("Build the AMD GPU bridge test fixture before packaging LS Companion")
+native_binaries.append((str(amd_probe_fixture), "tools/probe-fixture"))
 version_metadata = Path("build/package/version.json")
 version_metadata.parent.mkdir(parents=True, exist_ok=True)
 version_metadata.write_text(
@@ -61,7 +71,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "webview.platforms.cef"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

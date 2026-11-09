@@ -49,7 +49,7 @@ class DiagnosticRunnerTests(unittest.TestCase):
         default = Profile(name="Default", is_default=True, lossless_profile_title="Native",
                           preferred_gpu_device_id="gpu-two", preferred_gpu_name="RTX 5050",
                           native_scaling_settings={"PreferredGpuId": "2", "OutputDisplayId": "1", "ScalingType": "NIS"},
-                          addon_config={"addons": {"DLSS5NR01": {"_enabled": True}}})
+                          addon_config={"addons": {"DLSSNR02": {"_enabled": True}}})
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
         runner.server = SimpleNamespace(config=AppConfig(profiles=[default]))
         profile = runner._live_test_profile("scale")

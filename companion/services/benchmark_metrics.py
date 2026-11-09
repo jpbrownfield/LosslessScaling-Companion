@@ -125,13 +125,17 @@ def summarize_presentmon_rows(
 
 
 def summarize_presentmon_files(
-    paths: Iterable[Path], *, warmup_seconds: float = 0.0
+    paths: Iterable[Path], *, warmup_seconds: float = 0.0,
+    process_id: Optional[int] = None,
 ) -> List[Dict]:
     summaries = []
     for path in sorted(paths, key=lambda item: item.name.casefold()):
-        summary = summarize_presentmon_rows(
-            read_presentmon_csv(path), warmup_seconds=warmup_seconds
-        )
+        rows = read_presentmon_csv(path)
+        if process_id is not None:
+            rows = [row for row in rows if str(row.get("ProcessID", "")).strip() == str(process_id)]
+            if not rows:
+                continue
+        summary = summarize_presentmon_rows(rows, warmup_seconds=warmup_seconds)
         summary["csv"] = str(path)
         summaries.append(summary)
     return summaries

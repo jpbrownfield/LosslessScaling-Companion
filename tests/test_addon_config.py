@@ -11,19 +11,16 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
-    def test_echo_106_features_are_opt_in_and_user_choices_survive(self):
+    def test_supported_features_are_opt_in_and_unknown_settings_survive(self):
         service = self.service()
-        profile = Profile(name="Game")
-        baseline = service.effective(profile, reshade_enabled=False)
-        for addon_id in ("ECHOFG", "GpuLimit", "Recorder", "SuperLog"):
-            self.assertIs(baseline["addons"][addon_id]["_enabled"], False)
-        profile.addon_config = {"global": {"future": {"keep": True}},
-                                "addons": {"ECHOFG": {"_enabled": True, "future": "keep"}}}
-        preserved = service.effective(profile, reshade_enabled=False)
-        self.assertTrue(preserved["addons"]["ECHOFG"]["_enabled"])
-        self.assertEqual(preserved["addons"]["ECHOFG"]["future"], "keep")
-        self.assertFalse(preserved["global"]["updates"]["check"])
-        self.assertFalse(preserved["global"]["ui"]["open_on_start"])
+        baseline = service.effective(Profile(name="Game"), reshade_enabled=False)
+        self.assertEqual(set(baseline["addons"]), {"DLSSNR02", "DLSS4DLAA", "FSR3UPSC", "XESSUPSC", "WindowedMode", "ReShadePassthrough"})
+        self.assertTrue(all(not entry["_enabled"] for entry in baseline["addons"].values()))
+        profile = Profile(name="Game", addon_config={"global": {"future": 7}, "addons": {"Future": {"_enabled": True}}})
+        result = service.effective(profile, reshade_enabled=False)
+        self.assertEqual(result["global"]["future"], 7)
+        self.assertTrue(result["addons"]["Future"]["_enabled"])
+        self.assertTrue(result["global"]["companion"]["headless"])
 
     def test_echo_attribution_is_shipped_and_visible(self):
         root = Path(__file__).resolve().parents[1]
@@ -32,7 +29,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         spec = (root / "LosslessCompanion.spec").read_text(encoding="utf-8")
         self.assertIn("Copyright (c) 2026 Echo-Storm", notice)
         self.assertIn("FrankBarretta", notice)
-        self.assertIn("Echo-Storm/ls-addon-manager/blob/main/NOTICE.md", dashboard)
+        self.assertIn("FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md", dashboard)
         self.assertIn('("THIRD_PARTY_NOTICES.md", ".")', spec)
         self.assertIn('copy_metadata("py7zr", recursive=True)', spec)
 
@@ -57,7 +54,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         self.assertEqual(result["global"]["custom"]["keep"], 7)
         self.assertEqual(result["addons"]["FutureAddon"]["setting"], "value")
         self.assertFalse(result["global"]["ui"]["open_on_start"])
-        self.assertFalse(result["global"]["updates"]["check"])
+        self.assertTrue(result["global"]["companion"]["headless"])
 
     def test_reshade_forces_echo_passthrough(self):
         profile = Profile(name="Game", reshade=ReshadeConfig(enabled=True))
@@ -75,7 +72,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         result = self.service().effective(
             profile, reshade_enabled=False
         )
-        neural = result["addons"]["DLSS5NR01"]
+        neural = result["addons"]["DLSSNR02"]
         self.assertFalse(neural["_enabled"])
 
     def test_missing_addon_entries_are_explicitly_disabled(self):
@@ -84,17 +81,17 @@ class AddonConfigServiceTests(unittest.TestCase):
         self.assertTrue(all(section["_enabled"] is False for section in result["addons"].values()))
 
     def test_internal_enabled_setting_does_not_opt_in_to_loading_an_addon(self):
-        profile = Profile(name="Game", addon_config={"addons": {"DLSS5NR01": {"enabled": True}}})
-        section = self.service().effective(profile, reshade_enabled=False)["addons"]["DLSS5NR01"]
+        profile = Profile(name="Game", addon_config={"addons": {"DLSSNR02": {"enabled": True}}})
+        section = self.service().effective(profile, reshade_enabled=False)["addons"]["DLSSNR02"]
         self.assertFalse(section["_enabled"])
         self.assertTrue(section["enabled"])
 
     def test_unconfigured_profile_does_not_inherit_enabled_default_processors(self):
         service = self.service()
         service.profile_manager.config.default_addon_config = {
-            "addons": {"DLSS5NR01": {"_enabled": True, "workingScale": "0.7"}}
+            "addons": {"DLSSNR02": {"_enabled": True, "workingScale": "0.7"}}
         }
-        neural = service.effective(Profile(name="New"), reshade_enabled=False)["addons"]["DLSS5NR01"]
+        neural = service.effective(Profile(name="New"), reshade_enabled=False)["addons"]["DLSSNR02"]
         self.assertFalse(neural["_enabled"])
         self.assertEqual(neural["workingScale"], "0.7")
 
@@ -105,14 +102,14 @@ class AddonConfigServiceTests(unittest.TestCase):
             executable = Path(directory) / "LosslessScaling.exe"
             live = Path(directory) / "addons" / "config.json"
             live.parent.mkdir()
-            live.write_text('{"addons":{"DLSS5NR01":{"_enabled":true}}}', encoding="utf-8")
-            profile = Profile(name="Game", addon_config={"addons": {"DLSS5NR01": {"_enabled": False}}})
+            live.write_text('{"addons":{"DLSSNR02":{"_enabled":true}}}', encoding="utf-8")
+            profile = Profile(name="Game", addon_config={"addons": {"DLSSNR02": {"_enabled": False}}})
             service.mark_edited(profile)
             self.assertFalse(service.capture(profile, str(executable)))
-            self.assertFalse(profile.addon_config["addons"]["DLSS5NR01"]["_enabled"])
+            self.assertFalse(profile.addon_config["addons"]["DLSSNR02"]["_enabled"])
             service.mark_applied(profile)
             self.assertTrue(service.capture(profile, str(executable)))
-            self.assertTrue(profile.addon_config["addons"]["DLSS5NR01"]["_enabled"])
+            self.assertTrue(profile.addon_config["addons"]["DLSSNR02"]["_enabled"])
 
     def test_newly_discovered_addon_is_off_even_if_upstream_defaults_it_on(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -141,12 +138,25 @@ class AddonConfigServiceTests(unittest.TestCase):
             config = service.effective(Profile(name="Game"), reshade_enabled=False)
             self.assertFalse(config["addons"]["ManualAddon"]["_enabled"])
 
+    def test_internal_gpu_reporter_is_enabled_without_exposing_a_processor_toggle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "addons/LSC-AdapterReport/addon.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('{"name":"GPU reporter"}', encoding="utf-8")
+            service = self.service()
+            catalog = service.catalog([{"provider": "ls-addon-manager", "payload_path": directory,
+                "files": [{"relative_path": "addons/LSC-AdapterReport/addon.json"}]}])
+            self.assertNotIn("LSC-AdapterReport", {item["id"] for item in catalog})
+            config = service.effective(Profile(name="Game"), reshade_enabled=False)
+            self.assertTrue(config["addons"]["LSC-AdapterReport"]["_enabled"])
+            self.assertFalse(config["addons"]["DLSSNR02"]["_enabled"])
+
     def test_existing_echo_neural_settings_are_authoritative(self):
         profile = Profile(
             name="Game",
             addon_config={
                 "global": {},
-                "addons": {"DLSS5NR01": {
+                "addons": {"DLSSNR02": {
                     "_enabled": False,
                     "workingScale": "0.73",
                     "futureSetting": "preserved",
@@ -158,7 +168,7 @@ class AddonConfigServiceTests(unittest.TestCase):
 
         neural = self.service().effective(
             profile, reshade_enabled=False
-        )["addons"]["DLSS5NR01"]
+        )["addons"]["DLSSNR02"]
 
         self.assertFalse(neural["_enabled"])
         self.assertEqual(neural["workingScale"], "0.73")
@@ -171,8 +181,8 @@ class AddonConfigServiceTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "companion" / "ui" / "dashboard.html"
         ).read_text(encoding="utf-8")
         self.assertIn('id="addonManagerEnabled"', dashboard)
-        self.assertIn("Show Add-on Menu", dashboard)
-        self.assertIn("Echo Add-on Manager Configuration", dashboard)
+        self.assertIn("Refresh Runtime Status", dashboard)
+        self.assertIn("Addon Configuration", dashboard)
         self.assertIn('id="addonEditorCards"', dashboard)
         self.assertNotIn('id="echoConfigJson"', dashboard)
 

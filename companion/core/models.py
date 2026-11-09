@@ -111,9 +111,9 @@ class GraphicsStackConfig(BaseModel):
     def enforce_neural_proxy_dependency(cls, value):
         """Retain the hook for old settings without restoring retired dependencies.
 
-        Echo bundles DLSS5NR01 itself, so these legacy package flags are no
+        The manager bundles DLSSNR02 itself, so these legacy package flags are no
         longer deployment dependencies. They remain normalized for settings
-        compatibility and are ignored by the Echo deployment path.
+        compatibility and are ignored by the manager deployment path.
         """
         if not isinstance(value, dict):
             return value
@@ -280,8 +280,8 @@ class Profile(BaseModel):
     graphics: GraphicsStackConfig = Field(default_factory=GraphicsStackConfig)
     rtss: RtssLimiterConfig = Field(default_factory=RtssLimiterConfig)
     reshade: Optional[ReshadeConfig] = None
-    # Echo LS Add-on Manager owns this document at runtime. Companion keeps a
-    # complete copy per profile so settings changed in Echo's UI follow that
+    # Companion Addon Host owns this document at runtime. Companion keeps a
+    # complete copy per profile so settings changed in the addon host follow that
     # profile without discarding settings it does not understand.
     addon_config: Dict[str, Any] = Field(default_factory=dict)
     dll_overrides: List[DllOverrideConfig] = Field(default_factory=list)
@@ -369,6 +369,9 @@ class AppConfig(BaseModel):
     # Keys are PCI device IDs (case-insensitive; VEN/DEV prefix also matches);
     # values are LS GPU IDs. Empty means "GDI enumeration order" (legacy).
     ls_gpu_id_map: Dict[str, int] = Field(default_factory=dict)
+    # Latest observed owner of each explicit LS index, including wrong routes
+    # discovered during a targeted correction. Retain aliases and provenance.
+    ls_gpu_index_observations: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Keys are Windows display device names (\\.\DISPLAYx, case-insensitive);
     # values are LS output display IDs. Same calibration source as the GPU map.
     ls_display_id_map: Dict[str, int] = Field(default_factory=dict)

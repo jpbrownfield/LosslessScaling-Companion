@@ -142,10 +142,10 @@ class ProxyTrayMenuTests(unittest.TestCase):
             tray = CompanionTrayIcon(manager, state, watcher, automation=Mock(), proxy_menu=controller)
 
             labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
-            self.assertNotIn("Show Add-on Menu", labels)
+            self.assertNotIn("Open Addon Settings", labels)
             state.is_scaling_active = True
             labels = [item.text for item in tray._build_menu().items if hasattr(item, "text")]
-            self.assertIn("Show Add-on Menu", labels)
+            self.assertIn("Open Addon Settings", labels)
 
 
 if __name__ == "__main__":

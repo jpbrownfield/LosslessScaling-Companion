@@ -1,0 +1,10 @@
+{
+  "name": "Companion AMD Neural Rendering",
+  "version": "0.1.0",
+  "author": "LS Companion; RedDukeDev runtime; FriedSnowman/Echo-Storm flow",
+  "description": "Automatic AMD real-frame NR backend. Selected by the actual scaling adapter; requires the separately installed AMD runtime and user model.",
+  "dll": "LSC_AMDNR.dll",
+  "min_host_version": "1.4.0",
+  "enabled_by_default": false,
+  "requires_restart": true
+}

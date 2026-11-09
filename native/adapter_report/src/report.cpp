@@ -347,8 +347,9 @@ std::string CollectAdapterSnapshot(bool readLsNames, const std::string& requestI
     return Serialize(report);
 }
 
-static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion) {
+static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion, const char* requestId) {
     auto report = CollectReport(d3d11Device, hostVersion);
+    if (requestId) report.requestId = requestId;
     wchar_t localAppData[32768]{};
     DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
                                            ARRAYSIZE(localAppData));
@@ -358,20 +359,30 @@ static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion)
     CreateDirectoryW(directory.c_str(), nullptr);
     wchar_t name[64]{};
     swprintf_s(name, L"ls-adapter-report-%u.json", report.pid);
-    return WriteReportFile(directory + L"\\" + name, Serialize(report));
+    const auto target = directory + L"\\" + name;
+    const auto temporary = target + L".runtime-tmp";
+    if (!WriteReportFile(temporary, Serialize(report))) return false;
+    for (int attempt = 0; attempt < 6; ++attempt) {
+        if (MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+        const auto error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) break;
+        Sleep(2);  // Readers may briefly hold a file without FILE_SHARE_DELETE.
+    }
+    DeleteFileW(temporary.c_str());
+    return false;
 }
 
-bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion) {
+bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion, const char* requestId) {
     // Reporting must not unwind an allocation/string exception into the host
     // or terminate the process from the native worker entry point.
     try {
-        return WriteAdapterReportImpl(d3d11Device, hostVersion);
+        return WriteAdapterReportImpl(d3d11Device, hostVersion, requestId);
     } catch (...) {
         return false;
     }
 }
 
-bool ReportHostAdapter(void* host, bool allowEmptyReport) noexcept {
+bool ReportHostAdapter(void* host, bool allowEmptyReport, const char* requestId) noexcept {
     // No C++ objects with destructors here so SEH stays legal. The lifecycle
     // owner joins this call before permitting the host to be destroyed.
     ID3D11Device* retained = nullptr;
@@ -385,7 +396,7 @@ bool ReportHostAdapter(void* host, bool allowEmptyReport) noexcept {
         }
         if (retained || allowEmptyReport) {
             const auto version = api ? api->GetHostVersion() : 0;
-            written = WriteAdapterReport(retained, version);
+            written = WriteAdapterReport(retained, version, requestId);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         written = false;
@@ -402,11 +413,28 @@ bool ReportHostAdapter(void* host, bool allowEmptyReport) noexcept {
 
 DWORD WINAPI ReportRetryThread(void* argument) {
     const auto* context = static_cast<const ReportRetryContext*>(argument);
-    for (int attempt = 0; attempt < 10; ++attempt) {
-        if (WaitForSingleObject(context->stop, 3000) != WAIT_TIMEOUT) return 0;
-        if (ReportHostAdapter(context->host)) return 0;
+    int retries = 10;
+    const bool canRefresh = context->refresh && context->request;
+    const HANDLE events[] = {context->stop, context->refresh};
+    for (;;) {
+        const DWORD timeout = retries ? 3000 : INFINITE;
+        const auto result = canRefresh ? WaitForMultipleObjects(2, events, FALSE, timeout)
+                                       : WaitForSingleObject(context->stop, timeout);
+        if (result == WAIT_OBJECT_0 || result == WAIT_FAILED) return 0;
+        if (canRefresh && result == WAIT_OBJECT_0 + 1) {
+            RuntimeReportRequest request = *context->request;
+            bool valid = request.version == 1 && request.requestId[64] == '\0';
+            for (int i = 0; i < 64 && valid; ++i) {
+                const char c = request.requestId[i];
+                valid = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }
+            if (valid) ReportHostAdapter(context->host, true, request.requestId);
+        } else if (result == WAIT_TIMEOUT) {
+            --retries;
+            if (ReportHostAdapter(context->host)) retries = 0;
+        }
+        if (!canRefresh && !retries) return 0;
     }
-    return 0;
 }
 
 }  // namespace lsc

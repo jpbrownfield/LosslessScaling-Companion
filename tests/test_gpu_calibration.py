@@ -76,6 +76,7 @@ def make_automation(inventory):
     automation.window_manager.move_window_to_display.return_value = True
     automation.activate_profile = Mock()
     automation.set_scaling = Mock(return_value=True)
+    automation._wait_for_ls_ready = Mock(return_value=True)
     return automation, manager, state, watcher, settings
 
 
@@ -127,8 +128,15 @@ class CalibrateGpuMapTests(unittest.TestCase):
         workload.write_bytes(b"fake")
         settings.read.return_value = settings_snapshot(manager)
         settings.update_gpu_route.return_value = True
-        # First LS id starves, second flows for each physical GPU.
-        automation._verify_active_route = Mock(side_effect=[False, True, False, True])
+        # Both slots produce frames, but each renders on a different GPU.
+        automation._verify_active_route = Mock(return_value=True)
+        def current_report():
+            if not settings.update_gpu_route.call_args:
+                return None
+            slot = settings.update_gpu_route.call_args.args[1]
+            return {"device": {"vendorId": 0x10DE,
+                               "deviceId": 0x2203 if slot == 1 else 0x2D83}}
+        automation._current_adapter_report = Mock(side_effect=current_report)
         progress_calls = []
 
         fake_process = Mock()
@@ -155,6 +163,8 @@ class CalibrateGpuMapTests(unittest.TestCase):
         stored = dict(manager.config.ls_gpu_id_map or {})
         self.assertIn(RTX_3090, stored)
         self.assertIn(RTX_5050, stored)
+        self.assertEqual(stored[RTX_3090], 1)
+        self.assertEqual(stored[RTX_5050], 2)
         self.assertIsNotNone(manager.config.ls_gpu_map_fingerprint)
         # Original Default route restored after the sweep.
         restored = [call for call in settings.update_gpu_route.call_args_list
@@ -186,6 +196,50 @@ class CalibrateGpuMapTests(unittest.TestCase):
 
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["mapped"], {})
+
+    def run_flowing_calibration(self, report_for_slot, initial_report=None):
+        inventory = two_gpu_inventory()
+        automation, manager, _, _, settings = make_automation(inventory)
+        automation.presentmon_provider = lambda: Path("PresentMon.exe")
+        workload = manager.config_dir / "LSBenchmark.exe"
+        workload.write_bytes(b"fake")
+        settings.read.return_value = settings_snapshot(manager)
+        settings.update_gpu_route.return_value = True
+        automation._verify_active_route = Mock(return_value=True)
+
+        def report():
+            if not settings.update_gpu_route.call_args:
+                return initial_report
+            return report_for_slot(settings.update_gpu_route.call_args.args[1])
+
+        automation._current_adapter_report = Mock(side_effect=report)
+        with patch.object(GpuRouter, "detect", return_value=inventory), \
+                patch("subprocess.Popen"), \
+                patch("companion.services.performance_benchmark.find_largest_window", return_value=9876), \
+                patch("companion.services.performance_benchmark.focus_window", return_value=True):
+            result = automation.calibrate_gpu_map(workload)
+        return result, manager
+
+    def test_frames_on_3090_never_validate_5050(self):
+        result, manager = self.run_flowing_calibration(
+            lambda slot: {"device": {"vendorId": 0x10DE, "deviceId": 0x2203}})
+        self.assertEqual(result["state"], "partial")
+        self.assertEqual(result["mapped"], {RTX_3090: 1})
+        self.assertNotIn(RTX_5050, manager.config.ls_gpu_id_map)
+
+    def test_frames_without_device_report_do_not_change_map(self):
+        result, manager = self.run_flowing_calibration(lambda slot: None)
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(manager.config.ls_gpu_id_map, {})
+
+    def test_duplicate_3090_entries_do_not_hide_5050_at_slot_six(self):
+        names = ["NVIDIA GeForce RTX 3090 Ti"] * 5 + ["NVIDIA GeForce RTX 5050"]
+        result, manager = self.run_flowing_calibration(
+            lambda slot: {"device": {"vendorId": 0x10DE,
+                                    "deviceId": 0x2D83 if slot == 6 else 0x2203}},
+            initial_report={"lsAdapterNames": names})
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual(manager.config.ls_gpu_id_map[RTX_5050], 6)
 
 
 class CalibrationExclusivityTests(unittest.TestCase):

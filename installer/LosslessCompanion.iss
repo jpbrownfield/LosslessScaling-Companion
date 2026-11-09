@@ -23,6 +23,7 @@ UninstallDisplayIcon={app}\LosslessCompanion.exe
 
 [Files]
 Source: "..\dist\LosslessCompanion\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\build\package\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 
 [Tasks]
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
@@ -50,6 +51,34 @@ function CloseHandle(Handle: THandle): Boolean;
 function IsAutomaticUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:AUTOMATICUPDATE|0}') = '1';
+end;
+
+function WebView2Installed: Boolean;
+var
+  Version: String;
+  Key: String;
+begin
+  Key := 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result := (RegQueryStringValue(HKLM32, Key, 'pv', Version) and
+    (Version <> '') and (Version <> '0.0.0.0')) or
+    (RegQueryStringValue(HKCU, Key, 'pv', Version) and
+    (Version <> '') and (Version <> '0.0.0.0'));
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  if WebView2Installed then exit;
+  ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+  if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    Result := 'Could not start the Microsoft Edge WebView2 Runtime installer.';
+    exit;
+  end;
+  if not WebView2Installed then
+    Result := 'The dashboard requires Microsoft Edge WebView2 Runtime. Connect to the internet and retry, or install the Runtime from Microsoft before continuing.';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

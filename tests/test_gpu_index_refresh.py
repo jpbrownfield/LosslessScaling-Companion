@@ -127,6 +127,19 @@ class IdleRefreshTests(unittest.TestCase):
         self.config.ls_gpu_id_map[GPU_A] = 4
         self.assertEqual(self.plan()["mapping"][GPU_A], 4)
 
+    def test_runtime_mismatch_forces_refresh_even_before_periodic_deadline(self):
+        self.service.pending = False
+        self.service.observed = "old observation"
+        self.service.next_check = self.now + refresh.CHECK_SECONDS
+        self.service.retry_after = self.now + 300
+        self.service.request_refresh()
+        self.assertTrue(self.service.pending)
+        self.assertIsNone(self.service.observed)
+        self.assertEqual(self.service.retry_after, 0)
+        with patch.object(self.service, "_remap") as remap:
+            self.service.check()
+        remap.assert_called_once()
+
     def test_unknown_numeric_identity_is_not_inferred_from_shifted_number(self):
         self.config.ls_gpu_id_map = {}
         self.profile.preferred_gpu_device_id = self.profile.preferred_gpu_name = None

@@ -23,6 +23,8 @@ from urllib.parse import urlparse
 
 from .asset_store import AssetStore, UnsafeAssetError
 from .external_process import external_dll_search
+from .addon_host import MANAGED_HOST_VERSION, MANAGED_HOST_ARCHIVE
+from . import sm86_sr, amd_nr
 
 
 USER_AGENT = "LosslessScalingHelper/1.0 (+local companion)"
@@ -132,6 +134,27 @@ class BundledArchiveReleaseProvider(ReleaseProvider):
         )]
 
 
+class BundledAddonManagerReleaseProvider(BundledArchiveReleaseProvider):
+    """Only Companion-reviewed host builds may replace the headless integration."""
+
+    cache_identity = MANAGED_HOST_VERSION
+
+    def __init__(self):
+        super().__init__("ls-addon-manager", MANAGED_HOST_ARCHIVE)
+
+    def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
+        archive = self.archive_path()
+        return [ReleaseInfo(
+            provider=self.provider_id, version=MANAGED_HOST_VERSION,
+            name="Companion Addon Host (FriedSnowman build-5)",
+            published_at=None, prerelease=False,
+            html_url="https://github.com/FriedSnowman/ls-addon-manager/releases/tag/build-5",
+            notes="Pinned upstream addon suite with Companion's headless host and status bridge. Updated with Companion.",
+            assets=[ReleaseAsset(name=self.archive_name, url=f"bundled://{self.archive_name}",
+                                 size=archive.stat().st_size, digest=f"sha256:{AssetStore.sha256(archive)}")],
+        )]
+
+
 def _request_json(url: str) -> object:
     parsed = urlparse(url)
     headers = (
@@ -204,6 +227,35 @@ class GitHubReleaseProvider(ReleaseProvider):
                 )
             )
         return releases
+
+
+class Sm86SrReleaseProvider(ReleaseProvider):
+    """Review/pin new binaries before making them available to Companion."""
+    provider_id = sm86_sr.PROVIDER
+    allowed_hosts = GitHubReleaseProvider.allowed_hosts
+    cache_identity = sm86_sr.ARCHIVE_SHA256
+
+    def list_releases(self, *, channel="stable"):
+        return [ReleaseInfo(provider=self.provider_id, version=sm86_sr.VERSION,
+            name="SM86 Super Resolution (L/M INT8)", published_at=None, prerelease=False,
+            html_url=f"https://github.com/sdli1995/dlssg_for_sm86/releases/tag/{sm86_sr.VERSION}",
+            notes="Optional community SR backend. Companion deploys only SR; frame generation and architecture spoofing stay off.",
+            assets=[ReleaseAsset(name=sm86_sr.ARCHIVE, url=sm86_sr.URL, size=88819934,
+                                 digest=f"sha256:{sm86_sr.ARCHIVE_SHA256}")])]
+
+
+class AmdNrReleaseProvider(ReleaseProvider):
+    provider_id = amd_nr.PROVIDER
+    allowed_hosts = GitHubReleaseProvider.allowed_hosts
+    cache_identity = amd_nr.ARCHIVE_SHA256
+
+    def list_releases(self, *, channel="stable"):
+        return [ReleaseInfo(provider=self.provider_id, version=amd_nr.VERSION,
+            name="AMD Neural Rendering runtime", published_at=None, prerelease=False,
+            html_url=f"https://github.com/{amd_nr.LOCK['repository']}/releases/tag/{amd_nr.VERSION}",
+            notes="Optional AMD NR backend. Requires compatible AMD hardware, Windows HIP and your imported NR model. Companion excludes game proxies and FG.",
+            assets=[ReleaseAsset(name=amd_nr.ARCHIVE, url=amd_nr.URL, size=amd_nr.LOCK["archive_size"],
+                                 digest=f"sha256:{amd_nr.ARCHIVE_SHA256}")])]
 
 
 class GitLabReleaseProvider(ReleaseProvider):
@@ -392,11 +444,9 @@ class ProviderRegistry:
             "lossless-proxy": GitHubReleaseProvider(
                 "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
             ),
-            "ls-addon-manager": GitHubReleaseProvider(
-                "ls-addon-manager",
-                "Echo-Storm/ls-addon-manager",
-                r"^LSAddonManager-.*-x64\.zip$",
-            ),
+            "ls-addon-manager": BundledAddonManagerReleaseProvider(),
+            "sm86-sr": Sm86SrReleaseProvider(),
+            amd_nr.PROVIDER: AmdNrReleaseProvider(),
             "lsp-neural-render": BundledArchiveReleaseProvider(
                 "lsp-neural-render", "LSP-NeuralRender.zip"
             ),
@@ -455,6 +505,8 @@ class ReleaseManager:
         if channel not in {"stable", "prerelease"}:
             raise ValueError("Unsupported release channel")
         key = f"{provider_id}:{channel}"
+        if getattr(provider, "cache_identity", None):
+            key += ":" + provider.cache_identity
         with self._cache_lock:
             cache = self._read_cache()
             cached = cache["entries"].get(key)
@@ -608,11 +660,7 @@ class ReleaseManager:
                 size=destination.stat().st_size,
             )
             progress("staging", received, total)
-            if provider_id == "ls-addon-manager":
-                result = self._expand_ls_addon_manager(
-                    destination, staging, version, metadata
-                )
-            elif provider_id in {"reshade", "special-k"}:
+            if provider_id in {"reshade", "special-k"}:
                 result = self._stage_graphics_runtime(destination, staging, provider_id, version, metadata)
             elif zipfile.is_zipfile(destination):
                 result = self.store.import_release_archive(
@@ -689,140 +737,3 @@ class ReleaseManager:
         package["source"]["download"] = metadata
         AssetStore._atomic_json(Path(package["payload_path"]).parent / "package.json", package)
         return package
-
-    def _expand_ls_addon_manager(
-        self,
-        release_archive: Path,
-        staging: Path,
-        version: str,
-        source_metadata: Dict,
-    ) -> Dict:
-        """Run Echo's verified self-extractor and stage its actual payload.
-
-        Echo intentionally ships the payload only inside Setup. ``--extract``
-        is its documented, non-installing mode; the result is then brought
-        back through AssetStore's normal archive quarantine and hashing path.
-        """
-        if not zipfile.is_zipfile(release_archive):
-            raise UnsafeAssetError("Echo's official x64 release asset must be a ZIP archive")
-        setup_dir = staging / "echo-setup"
-        setup_dir.mkdir()
-        with zipfile.ZipFile(release_archive) as bundle:
-            members = bundle.infolist()
-            if (
-                len(members) > 256
-                or sum(item.file_size for item in members) > 1024 * 1024 * 1024
-            ):
-                raise UnsafeAssetError("Echo release archive exceeds the extraction limits")
-            safe_members = [(item, self.store._safe_zip_member(item)) for item in members]
-            setup_members = [
-                (item, relative)
-                for item, relative in safe_members
-                if relative.name.casefold() == "lsaddonmanagersetup.exe" and not item.is_dir()
-            ]
-            if len(setup_members) != 1:
-                raise UnsafeAssetError("Echo release must contain one LSAddonManagerSetup.exe")
-            documentation = {
-                relative.name.casefold(): (relative.name, item.filename)
-                for item, relative in safe_members
-                if len(relative.parts) == 1
-                and relative.name.casefold() in {"license.txt", "notice.md"}
-                and not item.is_dir()
-            }
-            if set(documentation) != {"license.txt", "notice.md"}:
-                raise UnsafeAssetError("Echo release must include its LICENSE.txt and NOTICE.md")
-            member, relative = setup_members[0]
-            setup = setup_dir / relative.name
-            with bundle.open(member) as source, setup.open("wb") as output:
-                shutil.copyfileobj(source, output)
-        setups = [setup]
-        if len(setups) != 1 or self.store.pe_architecture(setups[0]) != "x64":
-            raise UnsafeAssetError("Echo release must contain one x64 LSAddonManagerSetup.exe")
-        extracted = staging / "echo-payload"
-        log_path = staging / "echo-extract.log"
-        with external_dll_search():
-            process = subprocess.Popen(
-                [
-                    str(setups[0]), "--extract", str(extracted), "--no-remember",
-                    "--log", str(log_path),
-                ],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        try:
-            exit_code = process.wait(timeout=180)
-        except BaseException:
-            process.kill()
-            process.wait()
-            raise
-        if exit_code != 0:
-            detail = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
-            raise UnsafeAssetError(
-                f"Echo Setup could not extract its managed payload (exit {exit_code}): {detail[-500:]}"
-            )
-        host = extracted / "Lossless.dll"
-        addons = extracted / "addons"
-        if self.store.pe_architecture(host) != "x64" or not addons.is_dir():
-            raise UnsafeAssetError("Echo Setup extracted an invalid add-on-manager payload")
-
-        license_dir = extracted / "licenses" / "LSAddonManager"
-        license_dir.mkdir(parents=True)
-        with zipfile.ZipFile(release_archive) as bundle:
-            for output_name, member_name in documentation.values():
-                destination = license_dir / output_name
-                with bundle.open(member_name) as source, destination.open("wb") as output:
-                    shutil.copyfileobj(source, output)
-
-        manifests = list(addons.glob("*/addon.json"))
-        if not manifests:
-            raise UnsafeAssetError("Echo Setup did not extract any add-on manifests")
-        for manifest in manifests:
-            try:
-                addon = json.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise UnsafeAssetError(
-                    f"Echo extracted an invalid {manifest.name}: {error}"
-                ) from error
-            if not isinstance(addon, dict) or not (addon.get("id") or addon.get("name")):
-                raise UnsafeAssetError(f"Echo extracted an incomplete manifest: {manifest.parent.name}")
-
-        deployment = []
-        for item in sorted(path for path in extracted.rglob("*") if path.is_file()):
-            relative = item.relative_to(extracted).as_posix()
-            if relative.casefold() == "addons/config.json":
-                continue
-            if (
-                relative.casefold() == "lossless.dll"
-                or relative.casefold().startswith("addons/")
-                or relative.casefold().startswith("licenses/lsaddonmanager/")
-                or relative.casefold() in {"manager-icon.ico", "manager-icon.png"}
-            ):
-                deployment.append({
-                    "source": relative,
-                    "destination": relative,
-                    "role": (
-                        "addon_manager_host"
-                        if relative.casefold() == "lossless.dll"
-                        else "lossless_addon"
-                        if relative.casefold().startswith("addons/")
-                        else "addon_manager_support"
-                    ),
-                })
-        recipe = extracted / "lossless-scaling-deployment.json"
-        recipe.write_text(
-            json.dumps({"schema_version": 1, "files": deployment}, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        archive = staging / "echo-managed-payload.zip"
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            for item in sorted(path for path in extracted.rglob("*") if path.is_file()):
-                bundle.write(item, item.relative_to(extracted).as_posix())
-        expanded_metadata = dict(source_metadata)
-        expanded_metadata["kind"] = "verified-setup-extraction"
-        expanded_metadata["release_archive_sha256"] = self.store.sha256(release_archive)
-        expanded_metadata["setup_executable_sha256"] = self.store.sha256(setups[0])
-        return self.store.import_release_archive(
-            str(archive),
-            provider="ls-addon-manager",
-            version=version,
-            source_metadata=expanded_metadata,
-        )

@@ -12,9 +12,9 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Confirms the resulting scaling state from Lossless Scaling's overlay instead of treating successful keyboard input as proof of activation.
    - Keeps an application scaled when focus changes. A configured game can explicitly take precedence over an actively scaled browser profile.
    - Starts LS with a bundled, process-specific startup-window guard to suppress dashboard flashes without hiding its scaling overlay. The guard expires after startup so the dashboard can still be opened manually.
-   - Offers DLSS and FSR Echo add-ons in the profile's Scaling Type list. These choices save native NIS plus the matching add-on configuration together, disable competing upscalers, and remain distinct from LS's built-in FSR.
+   - Offers DLSS and FSR manager add-ons in the profile's Scaling Type list. These choices save native NIS plus the matching add-on configuration together, disable competing upscalers, and remain distinct from LS's built-in FSR.
    - Refreshes GPU identities at startup and before routing. Profile GPU/display numbers are remapped using saved device identity, PCI model or an unambiguous friendly name; the inventory history is persisted. Unrecoverable legacy numeric-only overrides follow General Settings rather than binding to an arbitrary GPU. An unavailable explicit General Settings GPU is reported instead of silently switching to Auto. Native LS routing is updated through the normal safe profile-activation path, not by restarting scaling just to refresh the inventory.
-   - Keeps readable per-profile JSON snapshots under `%LOCALAPPDATA%\LosslessScalingHelper\profile-settings\<profile-id>.json`, with friendly setting labels, GPU/display names, device identities and resolved IDs. Snapshots follow profile edits, renames and hardware remapping; unchanged files are not rewritten. The main `settings.json` remains authoritative, and revision checks prevent a stale snapshot from undoing newer settings. Missing or ambiguous legacy identity records fall back to General Settings. Echo's existing per-profile add-on JSON remains separate.
+   - Keeps readable per-profile JSON snapshots under `%LOCALAPPDATA%\LosslessScalingHelper\profile-settings\<profile-id>.json`, with friendly setting labels, GPU/display names, device identities and resolved IDs. Snapshots follow profile edits, renames and hardware remapping; unchanged files are not rewritten. The main `settings.json` remains authoritative, and revision checks prevent a stale snapshot from undoing newer settings. Missing or ambiguous legacy identity records fall back to General Settings. The per-profile add-on JSON remains separate.
 
 2. **Native Win32 Input Injection (`ctypes` + `SendInput`):**
    - Synthesizes scan-code keyboard input through the Windows input API.
@@ -35,12 +35,12 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
    - Game executable paths are used only for foreground profile detection.
-   - Downloads Echo LS Add-on Manager only from its official release feed, expands its verified x64 Setup payload, and deploys it transactionally.
-   - Saves a default Echo configuration plus one complete configuration per profile. Built-in profile controls edit these files without loading Echo's native window, including for inactive profiles.
+   - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion headless/status bridge. Deployment is transactional; addon-host updates ship with Companion.
+   - Saves one complete addon configuration per profile. Built-in controls edit inactive and active profiles; active changes apply through the safe stopped-process reload workflow.
    - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; ReShade input passthrough is enabled automatically when needed.
    - Add-on edits made during scaling are saved immediately and deployed after scaling stops. Unknown saved settings remain available in the editor and are preserved.
    - Keeps bounded runtime logs in `%LOCALAPPDATA%\LosslessScalingHelper\logs\companion.log` and includes the recent log tail in diagnostic downloads.
-   - Archives recognized LosslessProxy-era add-on folders before the first Echo deployment and leaves unknown third-party folders untouched.
+   - Archives recognized LosslessProxy-era add-on folders before the first addon-host deployment and leaves unknown third-party folders untouched.
 
 6. **Windows System Tray UI:**
    - Opens the Profiles dashboard or jumps directly to its Settings view.
@@ -106,6 +106,12 @@ Open a PowerShell terminal in the project directory:
 ```powershell
 pip install -r companion/requirements.txt
 ```
+
+The desktop dashboard uses Python's pywebview with Microsoft Edge WebView2
+Runtime. The Windows installer installs the Runtime when needed (internet is
+required only if it is missing). For source runs, install the
+[WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+if it is not already present.
 
 ### 2. Start the Python Companion
 
@@ -193,10 +199,14 @@ has not created `Settings.xml` yet, the companion retries the backup when the fi
 appears. No native profile setting is changed until the user changes an
 auto-saved General Setting.
 
-The tray opens one dedicated app-style Edge or Chrome window, re-focusing the
-existing dashboard instead of opening duplicates (and falling back to the default
-browser if neither is available). The window and tray share the LS Companion
-lightning icon. Its collapsible settings panels remember their expanded state.
+The tray opens one Python-owned WebView2 window, re-focusing the existing dashboard
+instead of opening duplicates. Closing the window leaves the tray running; exiting
+or crashing the companion also closes the dashboard host. Runtime changes are
+pushed to the tray and dashboard without waiting for the process-monitor tick.
+Disconnected or unresponsive backends show a stale-status warning and disable
+dashboard controls until an authoritative state arrives. The window and tray share
+the LS Companion lightning icon in packaged builds. Its collapsible settings
+panels remember their expanded state.
 By default, the dashboard follows the activation hotkey configured in Lossless
 Scaling. The General Settings section's Scaling Behavior group controls automatic
 profile scaling and the optional hotkey override. It also controls an elevated
@@ -215,13 +225,42 @@ on the scaled target's monitor and restores only those windows when scaling stop
 Lossless Scaling, the target application's other windows, the companion, shell
 windows, tool windows, and windows already minimized by the user are excluded.
 
-Echo LS Add-on Manager supplies and updates its Neural Rendering add-on, but it
-does not distribute NVIDIA's `nvngx_dlssnr.dll` model runtime. Companion keeps a
-user-selected, validated x64 copy of that runtime and deploys it beside
-`LosslessScaling.exe` whenever the profile's Echo configuration enables
-`DLSS5NR01`. For the active profile, the profile editor hosts Echo's actual
-native control-panel window and captures its live configuration back into that
-profile when the panel detaches or scaling stops.
+On NVIDIA capture GPUs, the Companion Addon Host uses FriedSnowman's `DLSSNR02` implementation, including
+NVIDIA Optical Flow, current-frame NR before LSFG, and SDR/scRGB composition.
+Choose **Install bundled host** in Add-ons, import your own x64
+`nvngx_dlssnr.dll`, and enable Neural Rendering in the desired profile. All
+optional processing starts disabled. The supported configuration is LS 3.2.2.0
+(the original DLL hash is checked), WGC, LSFG 3 or FG Off; FG Off requires Scaling
+Off or NIS. Unknown LS builds and model failures can pause capture. Disable NR
+and reload the profile or restart LS to recover.
+
+AMD capture GPUs automatically use the separate experimental AMD NR addon.
+Download **AMD Neural Rendering** in Add-ons, install Windows HIP 7, and use the
+original NR 310.9.16 model matching the pinned runtime. The AMD model path can
+differ from NVIDIA's patched model path. Compute flow and shared GPU textures
+feed the asynchronous NR runtime; LS owns frame generation. AMD DLSS SR/RR is
+not included: use FSR, XeSS or NIS. Adapter/model failures preserve the original
+capture. Adapter-map-to-compute selection, hardware support, Ryzen iGPU test commands
+and update notes are in [`native/amd_neuralrender/README.md`](native/amd_neuralrender/README.md).
+
+The dashboard displays real host/addon status and the last completed GPU timings
+through a bounded local pipe. There is no separate manager window in Companion
+mode. Telemetry does not establish displayed FPS or prove scaling is active.
+There is no migration from Echo settings. See the pinned source, build procedure,
+protocol and future-upgrade checklist in
+[`native/addon_manager/BRIDGING.md`](native/addon_manager/BRIDGING.md).
+
+For DLSS upscaling, each profile's **DLSS Upscaler / DLAA** card exposes the
+standard Auto/default/E/J/L/M presets. The separate **SM86 optimized Super
+Resolution** dropdown offers **L-INT8** and **M-INT8** from sdli1995's backend.
+Download its pinned package using **Add-ons → SM86 Super Resolution**, update the
+bundled host, enable the DLSS upscaler, and select the desired INT8 mode. It pins
+L or M and applies on a stopped profile reload. Off uses NVIDIA's ordinary
+runtime. The optional SR files use a private directory; its FG features and
+architecture spoofing are disabled. This targets RTX 30-series GPUs and does
+not change DLSS 5 NR's model selection. Hardware activation, image quality and
+speed must be checked on the selected GPU; the dashboard's proxy-loaded status
+alone is not proof of INT8 inference. See the bridge notes for its log location.
 
 ### Graphics stack compatibility evaluation
 
@@ -293,7 +332,7 @@ Use `--benchmark-exe` to substitute another windowed workload; the visual marker
 measurement is unavailable for generic executables.
 
 The **Lossless Scaling Add-ons** settings panel stages verified packages for
-Echo LS Add-on Manager, its bundled add-on suite, ReShade, and Special K.
+Companion Addon Host, its bundled add-on suite, ReShade, and Special K.
 Staged packages are loaded only when selected in a profile's LS Graphics Stack.
 The source and MIT notices for Companion's maintained ReShade bridge are under
 `native/`; release builds compile and embed it rather than downloading the
@@ -381,13 +420,20 @@ scaling, profile editors, diagnostics, and pending edits to finish. During the
 update, the dashboard shows progress and blocks edits; hotkeys, foreground
 automation, and server-side mutations are paused as well. A failed download or
 verification releases the lock and can be retried manually; automatic retries
-back off for an hour. Installed Echo, ReShade, and Special K updates use their
+back off for an hour. Installed addon-host, ReShade, and Special K updates use their
 existing verified release pipeline without enabling disabled integrations.
+Checks use the versions selected by enabled profiles; merely downloading an
+installer or staging a package does not mark those profiles as updated.
+Automatic installs preserve newer and prerelease profile selections.
 Community runtimes requiring a separate approval remain manual.
 
 Automatic Companion updates download the stable GitHub release installer and
 checksum, verify the staged installer again before launching, and use a silent
-installation in the current app directory. The installer waits for the old
+installation in the current app directory. Verified cached installers are reused,
+including after a restart, without downloading them again. The WebView2 dashboard
+helper exits before Companion releases its executable for replacement; closing
+or disconnecting the dashboard cannot cancel an accepted installer handoff.
+The installer waits for the old
 process to exit before replacing files and reopens Companion on success, without
 rebooting Windows. If setup aborts, it attempts to reopen the previous executable;
 a persisted retry cooldown prevents repeated restart attempts. Installer logs remain under the configuration directory's
@@ -403,7 +449,7 @@ lock prevents overlapping downloads/installs across dashboards and tray actions;
 controls remain disabled through verification and installation. ReShade Setup
 and Special K archives are extracted without running their installers. Their
 profile updates wait until scaling stops before replacing active injector files.
-Echo's existing installer flow may still restart LS when updating its host.
+The addon-host update flow may still restart LS when updating its host.
 
 Opening Companion's Windows shortcut again opens or focuses the existing
 dashboard instead of starting a second tray instance. Special K uses an LS-only
@@ -411,31 +457,22 @@ dashboard instead of starting a second tray instance. Special K uses an LS-only
 games' shared Special K settings are not changed. Existing LS processes need a
 restart for that environment/configuration change to take effect.
 
-Echo compatibility reviewed against [v1.0.6](https://github.com/Echo-Storm/ls-addon-manager/releases/tag/v1.0.6):
-the `addons/config.json` structure remains compatible and its additive 1.4 API
-retains the 1.x compatibility guarantee for our existing bridge. EchoFG, GPU
-limit, recorder and Super Log are opt-in in Companion (explicit saved choices
-are preserved); Echo's separate updater stays disabled. The Super Log shortcut
-is now Ctrl+Shift+F11, so avoid assigning that combination elsewhere if enabling
-it. Upstream still documents dual-GPU/device-reset and shutdown risks in its
-[review](https://github.com/Echo-Storm/ls-addon-manager/blob/v1.0.6/handoff/sweep-2026-10-26.md).
-This is a source/API review, not live validation of 1.0.6 scaling performance.
+The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 2.
+The build verifies source/release archive digests, compiles the host, and retains
+the release's unchanged NR/upscaler binaries, corresponding source and licences.
+Run `python scripts/build_addon_manager.py` before packaging. Companion's controls
+use the new NR schema directly; Echo-only processors are not included.
 
-Diagnostics recognize Echo's explicit crash records and report the actual neural
-processing GPU separately from its preflight/UI device. Temporary live-test
-profiles inherit the default profile's GPU/display identities without enabling
-its add-ons; injector restoration refuses to run until LS has stopped. Scaling
-confirmation accepts fresh Echo Core status events with a verified target HWND;
-countdowns, temporary pauses, old logs and general add-on messages do not count
-as completed toggles. Tray artwork/menu writes run on the native tray thread.
+Host status comes from the loaded LS process and is checked against its PID,
+creation time and a fresh sample. The host's capture diagnostics are advisory;
+scaling confirmation continues to use native LS log/window evidence. The
+headless host is pinned for the process lifetime and settings use stopped reloads.
+GPU image quality and performance require live validation on supported hardware;
+the synthetic smoke test validates startup, IPC and shutdown only.
 
-Packaged launches of LS and Echo Setup temporarily clear PyInstaller's private
-DLL search directory and restore it after process creation, so those external
-programs can resolve their own runtime dependencies. See
+Packaged launches of LS temporarily clear PyInstaller's private DLL search
+directory so external programs resolve their own runtime dependencies. See
 [PyInstaller's external-program guidance](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#launching-external-programs-from-the-frozen-application).
-This addresses the private DLL-path contamination observed in diagnostics, but
-does not establish that the Echo/ReShade access violation is resolved; rerun the
-live diagnostics after updating.
 
 The build intentionally uses PyInstaller's one-folder mode. PyInstaller advises
 against granting administrator privileges to one-file bundles because they unpack
@@ -475,11 +512,12 @@ the existing CI release workflow; it does not guarantee the build will pass.
 
 ## Third-party attribution
 
-Echo LS Add-on Manager is maintained by Echo-Storm and began as LosslessProxy
-by FrankBarretta. It is downloaded as a separate MIT-licensed component, and
-its bundled runtimes remain subject to their included licenses. See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and Echo's
-[upstream notice](https://github.com/Echo-Storm/ls-addon-manager/blob/main/NOTICE.md).
+The addon host is based on FriedSnowman's fork of Echo-Storm's manager, originally
+LosslessProxy by FrankBarretta. The host is MIT; the replacement Neural Rendering
+addon is GPL-3.0-only. Matching NR source and our patched host source ship with
+the package. Other runtimes retain their own licences. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
+[upstream notice](https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md).
 
 ---
 
@@ -502,7 +540,7 @@ restart on Chrome extension JavaScript/CSS/HTML changes as well. Press Ctrl+C in
 the watcher terminal to stop both the watcher and its companion child.
 
 The implementation plan for hotkey ownership, native profile imports, the profile
-editor, verified Echo/ReShade/Special K acquisition and updates, asset
+editor, verified addon-host/ReShade/Special K acquisition and updates, asset
 storage, and transactional deployment is documented in
 [`docs/managed-profile-and-assets-roadmap.md`](docs/managed-profile-and-assets-roadmap.md).
 
@@ -514,7 +552,7 @@ the companion-hosted dashboard origin. Ordinary web-page origins are rejected.
 `companion/services/runtime_cache.py` is a staging prototype, not yet connected
 to normal Lossless Scaling launches. It requires an explicit, verified pristine
 file manifest rather than copying an already modified Steam installation.
-Echo runtimes receive a private `Lossless.dll` manager and
+Addon runtimes receive a private `Lossless.dll` manager and
 `Lossless_original.dll` engine; vanilla runtimes retain the original
 `Lossless.dll`. DLLs and per-profile INI/JSON files are real copies, not links.
 

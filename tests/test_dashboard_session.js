@@ -21,6 +21,7 @@ function session(tokens) {
     fetch: async (url, options) => { requests.push({url, options}); return {ok: true, text: async () => tokens.shift()}; },
     DOMParser: class { parseFromString(token) { return {querySelector() { return {getAttribute: () => token}; }}; } },
     connectWS() { connections++; }, renderNotificationBell() {}, clearTimeout() {},
+    stopHeartbeat() {}, setCompanionConnected() {},
     setTimeout(callback, delay) { pending.push({callback, delay}); return pending.length; },
   });
   vm.runInContext(code, context);

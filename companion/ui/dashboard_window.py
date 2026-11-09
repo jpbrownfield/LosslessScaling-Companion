@@ -1,139 +1,129 @@
-"""Launch the local dashboard as an app-style desktop window."""
+"""Own a WebView2 dashboard helper without borrowing a browser process."""
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
+import json
 import logging
 import os
-import ctypes
-import threading
-import time
-from ctypes import wintypes
 from pathlib import Path
-import shutil
 import subprocess
-import webbrowser
-from typing import Optional, Set
-
-import psutil
-
+import sys
+import threading
+from typing import Optional
 
 logger = logging.getLogger("LSCompanion.DashboardWindow")
-
-_BROWSER_NAMES = {"msedge.exe", "chrome.exe"}
-_WM_CLOSE = 0x0010
-
-_cached_hwnd: Optional[int] = None
-_cached_browser: Optional[str] = None
-_browser_cache_checked = False
-
-# Serializes concurrent open requests (e.g. rapid tray clicks) so only one
-# browser launch happens; double-checked focus runs inside the lock.
-_open_lock = threading.Lock()
-_last_launch_at = 0.0
-LAUNCH_DEBOUNCE_SECONDS = 2.5
+_open_lock = threading.RLock()
+_host = None
 
 
-def _browser_profile_directory() -> Path:
-    local_root = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(local_root) / "LosslessScalingHelper" / "DashboardBrowser"
+class DashboardHost:
+    def __init__(self):
+        self.hwnd = None
+        self.error = None
+        self.ready = threading.Event()
+        self._write_lock = threading.Lock()
+        command = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            command.append(str(Path(__file__).resolve().parents[2] / "run_companion.py"))
+        command.append("--dashboard-host")
+        self.process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+            close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        threading.Thread(target=self._read_events, daemon=True, name="DashboardEvents").start()
 
-
-def _dashboard_browser_processes() -> Set[int]:
-    """Find the dedicated browser instance, including its child processes."""
-    marker = str(_browser_profile_directory().resolve()).casefold()
-    pids: Set[int] = set()
-    roots = []
-    for process in psutil.process_iter(["name", "cmdline"]):
+    def _read_events(self):
         try:
-            if (process.info.get("name") or "").casefold() not in _BROWSER_NAMES:
-                continue
-            command = " ".join(process.info.get("cmdline") or []).casefold()
-            if marker in command:
-                roots.append(process)
-                pids.add(process.pid)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    for process in roots:
+            for line in self.process.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("event") == "ready":
+                    self.hwnd = int(event["hwnd"])
+                    self.ready.set()
+                elif event.get("event") == "error":
+                    self.error = str(event.get("message"))
+                    logger.error("Dashboard could not start: %s", self.error)
+                    self.ready.set()
+                    if os.name == "nt":
+                        ctypes.windll.user32.MessageBoxW(None, self.error, "LS Companion dashboard", 0x10)
+        finally:
+            self.ready.set()
+            self.process.stdout.close()
+
+    def send(self, command):
+        with self._write_lock:
+            if self.process.poll() is not None:
+                return False
+            try:
+                self.process.stdin.write(json.dumps(command) + "\n")
+                self.process.stdin.flush()
+                return True
+            except (OSError, ValueError):
+                return False
+
+    def close(self, *, wait=False):
+        # EOF is the lifetime contract. Windows also closes our handles after
+        # a fatal crash, so this works without running a cleanup handler.
+        with self._write_lock:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+        if wait:
+            self._reap()
+        else:
+            threading.Thread(target=self._reap, daemon=True, name="DashboardClose").start()
+
+    def _reap(self):
         try:
-            pids.update(child.pid for child in process.children(recursive=True))
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    return pids
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
 
 
-def _dashboard_window_handles() -> list[int]:
-    """Return visible windows owned by the dedicated dashboard browser profile."""
-    if os.name != "nt":
-        return []
-    pids = _dashboard_browser_processes()
-    if not pids:
-        return []
-    user32 = ctypes.windll.user32
-    found: list[int] = []
+def open_dashboard_window(url: str) -> bool:
+    global _host
+    with _open_lock:
+        try:
+            if _host is not None and _host.send({"command": "open", "url": url}):
+                return True
+            if _host is not None:
+                _host.close()
+            _host = DashboardHost()
+            return _host.send({"command": "open", "url": url})
+        except OSError:
+            logger.exception("Could not launch the Python dashboard host")
+            return False
 
-    def callback(hwnd, _extra):
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in pids and user32.IsWindowVisible(hwnd):
-            found.append(hwnd)
+
+def close_dashboard_window(*, wait: bool = False) -> bool:
+    global _host
+    with _open_lock:
+        if _host is None:
+            return False
+        host, _host = _host, None
+        if wait:
+            host.close(wait=True)
+        else:
+            host.close()
         return True
-
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-    # Keep a live reference to the thunk for the duration of the
-    # enumeration; passing a temporary lets GC free it mid-callback
-    # and AV the interpreter (0xc0000005 in python312.dll).
-    dashboard_callback_ref = callback_type(callback)
-    user32.EnumWindows(dashboard_callback_ref, 0)
-    return found
-
-
-def _focus_cached_dashboard() -> bool:
-    """Fast O(1) path: validate the last known hwnd without scanning processes."""
-    global _cached_hwnd
-    if not _cached_hwnd or os.name != "nt":
-        return False
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = int(_cached_hwnd)
-        if user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd):
-            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            user32.SetForegroundWindow(hwnd)
-            return True
-    except Exception:
-        pass
-    _cached_hwnd = None
-    return False
-
-
-def _focus_existing_dashboard() -> bool:
-    if os.name != "nt":
-        return False
-    global _cached_hwnd
-    found = _dashboard_window_handles()
-    if not found:
-        return False
-    user32 = ctypes.windll.user32
-    hwnd = found[0]
-    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    user32.SetForegroundWindow(hwnd)
-    _cached_hwnd = hwnd
-    return True
 
 
 def dashboard_window_handle() -> Optional[int]:
-    """Return the dedicated app window that can host native child controls."""
-    handles = _dashboard_window_handles()
-    if not handles:
-        return None
-    if os.name == "nt":
-        foreground = int(ctypes.windll.user32.GetForegroundWindow() or 0)
-        if foreground in handles:
-            return foreground
-    return handles[0]
+    with _open_lock:
+        if _host is None or _host.process.poll() is not None:
+            return None
+        return _host.hwnd
 
 
 def dashboard_css_rect_to_client_pixels(rect: dict) -> Optional[tuple[int, int, int, int, int]]:
-    """Map a browser viewport CSS rectangle into its native client pixels."""
+    """Map the embedded viewport's CSS rectangle into native client pixels."""
     hwnd = dashboard_window_handle()
     if not hwnd or os.name != "nt":
         return None
@@ -146,104 +136,7 @@ def dashboard_css_rect_to_client_pixels(rect: dict) -> Optional[tuple[int, int, 
         return None
     scale_x = max(1, client.right - client.left) / viewport_width
     scale_y = max(1, client.bottom - client.top) / viewport_height
-    return (
-        hwnd,
-        round(float(rect.get("left") or 0) * scale_x),
-        round(float(rect.get("top") or 0) * scale_y),
-        max(1, round(float(rect.get("width") or 0) * scale_x)),
-        max(1, round(float(rect.get("height") or 0) * scale_y)),
-    )
-
-
-def close_dashboard_window() -> bool:
-    """Request that every dedicated dashboard app window close normally."""
-    global _cached_hwnd, _last_launch_at
-    _cached_hwnd = None
-    _last_launch_at = 0.0
-    if os.name != "nt":
-        return False
-    handles = _dashboard_window_handles()
-    if not handles:
-        return False
-    user32 = ctypes.windll.user32
-    for hwnd in handles:
-        user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
-    logger.info("Requested close for %s dashboard window(s)", len(handles))
-    return True
-
-
-def _find_app_browser() -> Optional[str]:
-    """Return an installed Chromium browser that supports ``--app`` windows."""
-    global _cached_browser, _browser_cache_checked
-    if _browser_cache_checked:
-        return _cached_browser
-    for command in ("msedge.exe", "chrome.exe"):
-        executable = shutil.which(command)
-        if executable:
-            _cached_browser = executable
-            _browser_cache_checked = True
-            return executable
-
-    roots = [
-        os.environ.get("PROGRAMFILES"),
-        os.environ.get("PROGRAMFILES(X86)"),
-        os.environ.get("LOCALAPPDATA"),
-    ]
-    relative_paths = (
-        Path("Microsoft/Edge/Application/msedge.exe"),
-        Path("Google/Chrome/Application/chrome.exe"),
-    )
-    for root in filter(None, roots):
-        for relative_path in relative_paths:
-            candidate = Path(root) / relative_path
-            if candidate.is_file():
-                _cached_browser = str(candidate)
-                _browser_cache_checked = True
-                return str(candidate)
-    _browser_cache_checked = True
-    return None
-
-
-def open_dashboard_window(url: str) -> bool:
-    """Focus the one dashboard app window or create it without browser chrome.
-
-    Idempotent under concurrency: rapid repeated calls (e.g. tray
-    double-clicks) focus the existing window or collapse into a single
-    in-flight browser launch instead of opening duplicates.
-    """
-    if _focus_cached_dashboard():
-        return True
-    with _open_lock:
-        global _last_launch_at
-        # Re-check inside the lock: a sibling click may have focused or
-        # launched while this call was waiting.
-        if _focus_cached_dashboard():
-            return True
-        if _focus_existing_dashboard():
-            return True
-        now = time.monotonic()
-        if now - _last_launch_at < LAUNCH_DEBOUNCE_SECONDS:
-            # A launch is already in flight but its window has not appeared
-            # yet; do not start another one.
-            return True
-        browser = _find_app_browser()
-        if browser:
-            try:
-                profile_directory = _browser_profile_directory()
-                subprocess.Popen(
-                    [
-                        browser,
-                        f"--app={url}",
-                        "--window-size=1180,820",
-                        f"--user-data-dir={profile_directory}",
-                        "--no-first-run",
-                    ],
-                    close_fds=True,
-                )
-                _last_launch_at = now
-                return True
-            except OSError:
-                logger.exception("Could not launch the dashboard app window with %s", browser)
-
-    logger.warning("No app-mode browser was found; opening the dashboard normally")
-    return bool(webbrowser.open(url, new=1))
+    return (hwnd, round(float(rect.get("left") or 0) * scale_x),
+            round(float(rect.get("top") or 0) * scale_y),
+            max(1, round(float(rect.get("width") or 0) * scale_x)),
+            max(1, round(float(rect.get("height") or 0) * scale_y)))

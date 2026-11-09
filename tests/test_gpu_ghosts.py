@@ -131,7 +131,7 @@ class GhostVerificationTests(unittest.TestCase):
     def test_map_status_reports_ghost_signature(self):
         inv = inventory({"VEN_10DE&DEV_2203": 5, "VEN_10DE&DEV_2D83": 1})
         automation, manager, _state = make_automation(inv)
-        manager.config.ls_gpu_id_map = {"x": 1}
+        manager.config.ls_gpu_id_map = {RTX_3090: 1, RTX_5050: 2}
         recorded = inventory_fingerprint(inv)
         manager.config.ls_gpu_map_fingerprint = recorded
         status = automation.gpu_map_status()
@@ -142,7 +142,7 @@ class GhostVerificationTests(unittest.TestCase):
     def test_ghost_change_forces_reverification_once(self):
         inv = inventory({"VEN_10DE&DEV_2203": 5, "VEN_10DE&DEV_2D83": 1})
         automation, manager, state = make_automation(inv)
-        manager.config.ls_gpu_id_map = {"x": 1}
+        manager.config.ls_gpu_id_map = {RTX_3090: 1, RTX_5050: 2}
         manager.config.ls_gpu_map_fingerprint = inventory_fingerprint(inv)
         state.current_gpu_route_key = "2:2:disp"
         automation._last_verified_route_key = "2:2:disp"
@@ -155,7 +155,7 @@ class GhostVerificationTests(unittest.TestCase):
 
     def test_no_ghosts_no_extra_verification(self):
         automation, manager, state = make_automation(inventory())
-        manager.config.ls_gpu_id_map = {"x": 1}
+        manager.config.ls_gpu_id_map = {RTX_3090: 1, RTX_5050: 2}
         manager.config.ls_gpu_map_fingerprint = inventory_fingerprint(
             inventory())
         state.current_gpu_route_key = "2:2:disp"

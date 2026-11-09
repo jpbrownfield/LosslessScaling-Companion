@@ -11,29 +11,11 @@ jobs:
   build:
     name: Build Windows x64
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Check out official NVIDIA DLSS SDK build files
-        uses: actions/checkout@v4
-        with:
-          repository: NVIDIA/DLSS
-          ref: 374959484e79a640feaba44c93ac8cfb0a03f5b5
-          path: .deps/nvidia-dlss
-          fetch-depth: 1
-          sparse-checkout-cone-mode: false
-          sparse-checkout: |
-            include/nvsdk_ngx.h
-            include/nvsdk_ngx_defs.h
-            include/nvsdk_ngx_defs_dlssd.h
-            include/nvsdk_ngx_helpers.h
-            include/nvsdk_ngx_helpers_dlssd.h
-            include/nvsdk_ngx_params.h
-            lib/Windows_x86_64/x64/nvsdk_ngx_s.lib
-            LICENSE.txt
 
       - name: Resolve embedded application version
         shell: pwsh
@@ -85,6 +67,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Update maintenance UI tests failed" }
           node tests/test_dashboard_session.js
           if ($LASTEXITCODE -ne 0) { throw "Dashboard session renewal tests failed" }
+          node tests/test_dashboard_connection.js
+          if ($LASTEXITCODE -ne 0) { throw "Dashboard connection health tests failed" }
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -143,58 +127,14 @@ jobs:
           python -m unittest tests.test_startup_guard
           if ($LASTEXITCODE -ne 0) { throw "Startup guard tests failed" }
 
-      - name: Stage official NVIDIA NGX build dependency
+      - name: Build Companion addon host from pinned FriedSnowman sources
         shell: pwsh
         run: |
-          $sdk = Resolve-Path -LiteralPath ".deps/nvidia-dlss" -ErrorAction Stop
-          $target = "native/lsp_neuralrender/external/ngx"
-          New-Item -ItemType Directory -Force "$target/include", "$target/lib" | Out-Null
-          $headers = @(
-            "nvsdk_ngx.h",
-            "nvsdk_ngx_defs.h",
-            "nvsdk_ngx_defs_dlssd.h",
-            "nvsdk_ngx_helpers.h",
-            "nvsdk_ngx_helpers_dlssd.h",
-            "nvsdk_ngx_params.h"
-          )
-          foreach ($header in $headers) {
-            Copy-Item -LiteralPath "$sdk/include/$header" -Destination "$target/include/$header"
-          }
-          Copy-Item -LiteralPath "$sdk/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib" `
-            -Destination "$target/lib/nvsdk_ngx_s.lib"
-
-      - name: Build experimental NeuralRender add-on
-        shell: pwsh
-        run: |
-          cmake -S native/lsp_neuralrender -B build/lsp_neuralrender -A x64
-          cmake --build build/lsp_neuralrender --config Release
-          ctest --test-dir build/lsp_neuralrender -C Release --output-on-failure
-          if ($LASTEXITCODE -ne 0) { throw "NeuralRender shader/policy tests failed" }
-          $release = "build/lsp_neuralrender/Release"
-          $required = @(
-            "LSP_NeuralRender.dll",
-            "nvngx.dll_lspnr.dll",
-            "lspnr_harness.exe",
-            "lspnr_hosttest.exe",
-            "lspnr_shader_policy_test.exe"
-          )
-          foreach ($file in $required) {
-            $path = Join-Path $release $file
-            if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
-              throw "NeuralRender build output is missing or empty: $path"
-            }
-          }
-          $bundle = "build/native/LSP-NeuralRender"
-          New-Item -ItemType Directory -Force $bundle, "$bundle/tools" | Out-Null
-          Copy-Item -LiteralPath "$release/LSP_NeuralRender.dll", "$release/nvngx.dll_lspnr.dll" `
-            -Destination $bundle
-          Copy-Item -LiteralPath "native/lsp_neuralrender/addon.json", `
-            "native/lsp_neuralrender/LICENSE", "native/lsp_neuralrender/UPSTREAM.md" `
-            -Destination $bundle
-          Copy-Item -LiteralPath "$release/lspnr_harness.exe", "$release/lspnr_hosttest.exe", `
-            "$release/lspnr_shader_policy_test.exe" `
-            -Destination "$bundle/tools"
-          Compress-Archive -LiteralPath $bundle -DestinationPath "build/native/LSP-NeuralRender.zip" -Force
+          python scripts/build_addon_manager.py
+          if ($LASTEXITCODE -ne 0) { throw "Companion addon host build failed" }
+          $env:LSC_TEST_ADDON_HOST = "1"
+          python -m pytest -q tests/test_addon_host.py tests/test_amd_nr.py
+          if ($LASTEXITCODE -ne 0) { throw "Companion addon host tests failed" }
 
       - name: Compile executable
         shell: pwsh
@@ -211,6 +151,8 @@ jobs:
           $benchmark = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSBenchmark.exe" -ErrorAction Stop
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_StartupGuard.dll" -ErrorAction Stop | Out-Null
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_AdapterProbe.exe" -ErrorAction Stop | Out-Null
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_AMDNRProbe.exe" -ErrorAction Stop | Out-Null
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/native/amd_neuralrender/runtime.lock.json" -ErrorAction Stop | Out-Null
           if ((Get-Item -LiteralPath $benchmark).Length -le 0) {
             throw "Embedded benchmark executable is empty"
           }
@@ -219,9 +161,9 @@ jobs:
             throw "Embedded ReShade bridge is empty"
           }
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/LSP-ReShade/addon.json" -ErrorAction Stop | Out-Null
-          $neuralBundle = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/lsp-neural-render/LSP-NeuralRender.zip" -ErrorAction Stop
+          $neuralBundle = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/addons/ls-addon-manager/LSAddonManager-Companion.zip" -ErrorAction Stop
           if ((Get-Item -LiteralPath $neuralBundle).Length -le 0) {
-            throw "Embedded NeuralRender bundle is empty"
+            throw "Embedded Companion addon host bundle is empty"
           }
           Write-Host "Built $executable ($size bytes)"
 
@@ -244,14 +186,6 @@ jobs:
         with:
           name: LosslessCompanion-windows-x64-${{ github.sha }}
           path: dist/LosslessCompanion/
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload experimental NeuralRender build
-        uses: actions/upload-artifact@v4
-        with:
-          name: LSP-NeuralRender-windows-x64-${{ github.sha }}
-          path: build/native/LSP-NeuralRender/
           if-no-files-found: error
           retention-days: 30
 
@@ -281,6 +215,13 @@ jobs:
       - name: Build and verify updater installer
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force build/package | Out-Null
+          $webviewBootstrapper = "build/package/MicrosoftEdgeWebview2Setup.exe"
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $webviewBootstrapper
+          $signature = Get-AuthenticodeSignature -LiteralPath $webviewBootstrapper
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation(,|$)') {
+            throw "WebView2 bootstrapper does not have a valid Microsoft signature"
+          }
           choco install innosetup --no-progress -y
           $compiler = Get-ChildItem -Path "${env:ProgramFiles(x86)}/Inno Setup*/ISCC.exe", "$env:ProgramFiles/Inno Setup*/ISCC.exe" -ErrorAction SilentlyContinue |
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName

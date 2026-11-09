@@ -51,6 +51,7 @@ BROWSER_DEFAULT_PROFILE_NAME = "Browser Default"
 class ProfileManager:
     def __init__(self, config_dir: Optional[Path] = None):
         self._lock = threading.RLock()
+        self._save_listeners = set()
         self.validation_issues = []
         self.repair_session = False
         self._repair_data = None
@@ -291,6 +292,21 @@ class ProfileManager:
                 # A failed optional snapshot must not invalidate the successfully
                 # saved main configuration or cause load_config to reset it.
                 logger.exception("Settings saved, but profile JSON snapshots could not be synchronized; retrying on the next save")
+        with self._lock:
+            listeners = tuple(self._save_listeners)
+        for callback in listeners:
+            try:
+                callback()
+            except Exception:
+                logger.exception("Settings subscriber failed")
+
+    def subscribe(self, callback):
+        with self._lock:
+            self._save_listeners.add(callback)
+        def unsubscribe():
+            with self._lock:
+                self._save_listeners.discard(callback)
+        return unsubscribe
 
     def repair_setting(self, path: list, value) -> None:
         with self._lock:

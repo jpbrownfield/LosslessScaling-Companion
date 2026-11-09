@@ -39,6 +39,7 @@ class DiagnosticRunner:
     """Exercise fundamental paths against the installed application and LS host."""
 
     DEPENDENCIES = {
+        "gpu_route_validation": ("configuration",),
         "profile_integrity": ("configuration",),
         "profile_matching": ("profile_integrity",),
         "profile_persistence_behavior": ("configuration",),
@@ -63,8 +64,9 @@ class DiagnosticRunner:
         "runtime": ("configuration",),
     }
     LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
+    READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation"}
     ALWAYS_RUN_AFTER_DEPENDENCIES = {
-        "reshade_runtime", "proxy_reshade", "proxy_neural_render",
+        "reshade_runtime", "proxy_reshade", "proxy_neural_render", "gpu_route_validation",
     }
 
     def __init__(self, server):
@@ -94,6 +96,7 @@ class DiagnosticRunner:
     def _tests(self) -> Iterable[tuple[str, str, Callable[[], Dict]]]:
         return (
             ("configuration", "Configuration schema and persistence", self._configuration),
+            ("gpu_route_validation", "Live GPU routing: requested vs. actual GPU", self._gpu_route_validation),
             ("profile_integrity", "Profile IDs, defaults, and targets", self._profile_integrity),
             ("profile_matching", "Application and browser profile matching", self._profile_matching),
             ("profile_persistence_behavior", "Profile create, save, reload, and match behavior", self._profile_persistence_behavior),
@@ -218,8 +221,8 @@ class DiagnosticRunner:
             )
 
         reset_result = (
-            self._result("pass", "Read-only Lilium diagnostic; Lossless Scaling was not reset.")
-            if selected_test == "reshade_lilium"
+            self._result("pass", "Read-only diagnostic; Lossless Scaling was not reset.")
+            if selected_test in self.READ_ONLY_TESTS
             else self._reset_lossless_folder(initial_ls_running)
         )
         reset_result.update({"id": "environment_reset", "name": "Lossless Scaling folder reset"})
@@ -601,7 +604,7 @@ class DiagnosticRunner:
                 profile = base("echo-neural")
                 profile.graphics.neural_render.implementation = "lsp_neural_render"
                 profile.graphics.neural_render.runtime_asset_sha256 = str(runtime["sha256"])
-                profile.addon_config["addons"]["DLSS5NR01"] = {"_enabled": True, "workingScale": "0.5"}
+                profile.addon_config["addons"]["DLSSNR02"] = {"_enabled": True, "scalePercent": "50"}
                 profiles.append(profile)
         return profiles
 
@@ -1597,6 +1600,114 @@ class DiagnosticRunner:
             passed = deployed and restored
             return self._result("pass" if passed else "fail", "Transactional deployment replaced, verified, and restored an existing DLL in an isolated Lossless Scaling fixture." if passed else "Transactional deployment behavior failed.", deployedAndVerified=deployed, originalRestored=restored)
 
+    def _gpu_route_validation(self) -> Dict:
+        """Capture a running misroute without correcting it or restarting LS."""
+        from .adapter_report import device_pci, same_device, settings_route_for
+
+        automation, state, config = self.server.automation, self.server.state, self.server.config
+        profile = state.current_active_profile
+        active = bool(state.is_scaling_active and not state.simulation_mode)
+        hwnd = state.scaling_target_hwnd if active else None
+        target_pid, toggled_at = state.scaling_target_pid, state.last_scale_toggle_time
+        errors, warnings = [], []
+
+        def collect(step, function, fallback=None):
+            try:
+                return function()
+            except Exception as error:
+                errors.append({"step": step, "error": f"{type(error).__name__}: {error}"})
+                return fallback
+
+        instance = collect("configuredProcess", automation._adapter_report_process)
+        inventory = collect("inventory", automation.gpu_router.detect, {})
+        window_route = collect("applicationMonitor", lambda: automation.gpu_router.route_for_window(hwnd)) if hwnd else None
+        planned = collect("plannedRoute", lambda: automation._desired_gpu_route(
+            profile, hwnd, refresh_selections=False), {})
+        expected_gpu = collect("requestedGpu", lambda: automation._intended_rendering_gpu(
+            profile, (window_route or {}).get("gpuDeviceId")))
+        map_status = collect("mapStatus", automation.gpu_map_status, {})
+        title = (getattr(profile, "lossless_profile_title", None)
+                 or getattr(profile, "name", None) or "Default")
+        native_route = collect("nativeSettingsRoute", lambda: automation._settings_route(title, include_auto=True))
+        flowing = collect("frameCapture", automation._verify_active_route) if active and instance else None
+        report = collect("adapterReport", automation._current_adapter_report)
+        report_matches = bool(instance and report and report.get("pid") == instance[0])
+        actual_gpu = device_pci(report) if report_matches else None
+        final_instance = collect("configuredProcessAfterCapture", automation._adapter_report_process)
+        stable = bool(instance and instance == final_instance)
+        session_stable = bool(active and state.is_scaling_active
+                              and state.scaling_target_hwnd == hwnd
+                              and state.scaling_target_pid == target_pid
+                              and state.last_scale_toggle_time == toggled_at
+                              and state.current_active_profile is profile)
+        gpu_matches = same_device(expected_gpu, actual_gpu) if expected_gpu and actual_gpu else None
+        planned_ids = (int(planned.get("lsGpuId") or 0), int(planned.get("lsDisplayId") or 0))
+        indexes_match = tuple(native_route) == planned_ids if native_route and planned_ids[0] else None
+        failures = []
+        if active and stable and session_stable:
+            if gpu_matches is False:
+                failures.append("LS renders on a different GPU than the requested selection")
+            if indexes_match is False:
+                failures.append("LS Settings.xml GPU/output indexes differ from the planned route")
+            if flowing is False:
+                failures.append("The configured LS process is not producing healthy frame output")
+        if state.simulation_mode:
+            warnings.append("Simulation mode cannot verify the live rendering GPU")
+        elif not active:
+            warnings.append("Start scaling the affected application, then run this individual test again")
+        if not stable or (active and not session_stable):
+            warnings.append("LS or its scaling target changed during collection, or the configured LS process is not running; rerun")
+        if not report_matches:
+            warnings.append("No fresh adapter report matched the configured LS process; rendering GPU remains unverified")
+        elif not actual_gpu:
+            warnings.append("The current adapter report has no rendering device; enable the Adapter Report add-on for GPU proof")
+        if not expected_gpu:
+            warnings.append("The requested physical GPU could not be resolved")
+        if active and flowing is None:
+            warnings.append("Frame output could not be verified; check PresentMon availability")
+        if active and indexes_match is None:
+            warnings.append("The native profile indexes could not be compared with the planned route")
+        if map_status.get("state") in {"missing", "stale"}:
+            warnings.append("The saved GPU map is missing, incomplete, stale, or conflicting")
+        # Preserve duplicate adapter entries and ordering. Raw DXGI positions
+        # are evidence, never accepted as proof of the LS dropdown indexes.
+        report_fields = ("schema", "pid", "hasDevice", "device", "deviceOutputs",
+                         "enumAdapters", "enumAdapters1", "lsAdapterNames",
+                         "deviceIndexAdapters", "deviceIndexAdapters1")
+        evidence = {key: report.get(key) for key in report_fields if key in report} if report else {}
+        if report:
+            evidence["path"] = self._path(report.get("_path", ""))
+            evidence["profileSettingsIds"] = settings_route_for(report, title)
+        checks = {"activeScaling": active, "sameProcessThroughoutCapture": stable,
+                  "sameScalingTargetThroughoutCapture": session_stable,
+                  "reportMatchesConfiguredProcess": report_matches,
+                  "renderingGpuMatchesRequestedGpu": gpu_matches,
+                  "nativeIndexesMatchPlannedRoute": indexes_match, "framesFlowing": flowing}
+        status = "fail" if failures or errors else "warn" if warnings else "pass"
+        summary = ("; ".join(failures) if failures else
+                   "GPU evidence collection encountered an error; inspect the diagnostic log." if errors else
+                   "GPU routing remains unverified: " + warnings[0] if warnings else
+                   "The running LS process renders on the requested GPU, with matching profile indexes and healthy frames.")
+        return self._result(
+            status, summary, readOnly=True, checks=checks, failures=failures, warnings=warnings, errors=errors,
+            selection={"autoMatchApplicationMonitor": config.auto_route_gpu_to_display,
+                       "defaultGpuDeviceId": config.preferred_scaling_gpu_device_id,
+                       "defaultGpuName": config.preferred_scaling_gpu_name,
+                       "profileGpuDeviceId": getattr(profile, "preferred_gpu_device_id", None),
+                       "profileGpuName": getattr(profile, "preferred_gpu_name", None),
+                       "profileNativeSettings": {key: (getattr(profile, "native_scaling_settings", {}) or {}).get(key)
+                                                 for key in ("PreferredGpuId", "OutputDisplayId")}},
+            configuredExecutable=self._path(config.lossless_scaling_exe_path),
+            processBefore=instance, processAfter=final_instance, targetPid=target_pid, targetHwnd=hwnd,
+            currentGpuRouteKey=state.current_gpu_route_key, scalingControl=state.scaling_control_status,
+            requestedGpuDeviceId=expected_gpu, actualGpuDeviceId=actual_gpu,
+            applicationMonitor=window_route, plannedRoute=planned, nativeProfileRoute=native_route,
+            mapStatus=map_status, idleMappingStatus=state.gpu_mapping_status,
+            savedGpuMap=dict(config.ls_gpu_id_map), previousGpuMap=dict(config.ls_gpu_id_map_previous),
+            gpuIndexObservations=dict(config.ls_gpu_index_observations),
+            savedDisplayMap=dict(config.ls_display_id_map), inventory=inventory, adapterReport=evidence,
+        )
+
     def _gpu_routing(self) -> Dict:
         status = self.server.automation.gpu_map_status()
         route = self.server.automation._desired_gpu_route(None, None)
@@ -1635,14 +1746,14 @@ class DiagnosticRunner:
         if state == "stale":
             return self._result(
                 "fail",
-                "The GPU topology changed since calibration; recalibrate with "
+                "The GPU map is stale or contains conflicting slots; recalibrate with "
                 "run_monitor_benchmarks.py --calibrate before trusting LS GPU routes.",
                 **details,
             )
         if state == "missing":
             return self._result(
                 "warn",
-                "Multiple GPUs with no calibrated LS GPU map; routes use "
+                "Multiple GPUs with a missing or incomplete LS GPU map; unmapped routes use "
                 "enumeration order until run_monitor_benchmarks.py --calibrate runs.",
                 **details,
             )

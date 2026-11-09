@@ -2,11 +2,14 @@
 // No Lossless Scaling process, scaling hotkeys, or D3D device is needed.
 #include <windows.h>
 #include <lsproxy/addon_exports.h>
+#include "report.h"
 
 #include <atomic>
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <fstream>
+#include <cstring>
 
 namespace {
 class TestHost final : public IHost {
@@ -79,7 +82,50 @@ int wmain(int argc, wchar_t** argv) {
     if (!Check(first.entered && first.resume && second.entered && second.resume,
                "could not create fixture events")) return 1;
 
-    if (mode == L"cancel") {
+    if (mode == L"listen") {
+        initialize(&first, nullptr, nullptr, nullptr, nullptr);
+        printf("READY %lu\n", GetCurrentProcessId());
+        fflush(stdout);
+        getchar();
+        shutdown();
+        first.alive = false;
+        if (!Unload(module)) return 1;
+    } else if (mode == L"refresh") {
+        initialize(&first, nullptr, nullptr, nullptr, nullptr);
+        const auto suffix = std::to_wstring(GetCurrentProcessId());
+        const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE,
+            (L"Local\\LSCAdapterReportRefresh-" + suffix).c_str());
+        const HANDLE mapping = OpenFileMappingW(FILE_MAP_WRITE, FALSE,
+            (L"Local\\LSCAdapterReportRequest-" + suffix).c_str());
+        auto* request = mapping ? static_cast<lsc::RuntimeReportRequest*>(
+            MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(lsc::RuntimeReportRequest))) : nullptr;
+        if (!Check(event && request, "runtime request endpoint unavailable")) return 1;
+        wchar_t local[32768]{};
+        GetEnvironmentVariableW(L"LOCALAPPDATA", local, ARRAYSIZE(local));
+        const auto file = std::wstring(local) + L"\\LosslessScalingHelper\\diagnostics\\ls-adapter-report-" + suffix + L".json";
+        bool matched = true;
+        for (char token : {'a', 'b'}) {
+            request->version = 1;
+            memset(request->requestId, token, 64);
+            request->requestId[64] = 0;
+            SetEvent(event);
+            bool found = false;
+            for (int attempt = 0; attempt < 100 && !found; ++attempt) {
+                std::ifstream input(file.c_str());
+                const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+                input.close();
+                found = json.find("\"requestId\":\"" + std::string(64, token) + "\"") != std::string::npos;
+                if (!found) Sleep(10);
+            }
+            matched = matched && found;
+        }
+        UnmapViewOfFile(request);
+        CloseHandle(mapping);
+        CloseHandle(event);
+        shutdown();
+        first.alive = false;
+        if (!Check(matched, "fresh report did not acknowledge both unique requests") || !Unload(module)) return 1;
+    } else if (mode == L"cancel") {
         // Warm DXGI's own caches before measuring our event/thread handles.
         initialize(&first, nullptr, nullptr, nullptr, nullptr);
         shutdown();

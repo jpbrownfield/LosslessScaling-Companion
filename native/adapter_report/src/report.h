@@ -62,19 +62,31 @@ std::string CollectAdapterSnapshot(bool readLsNames = false, const std::string& 
 
 // Gathers the report and writes ls-adapter-report-<pid>.json under the
 // companion diagnostics directory. Never throws; best effort only.
-bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion);
+bool WriteAdapterReport(void* d3d11Device, std::uint32_t hostVersion, const char* requestId = nullptr);
+
+// Shared request mailbox. Set the event only after writing this entire packet.
+// A random 64-hex nonce ties the response to one activation, not just a PID.
+struct RuntimeReportRequest {
+    std::uint32_t version;
+    char requestId[65];
+};
+static_assert(sizeof(RuntimeReportRequest) == 72);
 
 // The owner keeps this context and its stop event alive until the worker joins.
 struct ReportRetryContext {
     void* host = nullptr;
     HANDLE stop = nullptr;
+    HANDLE refresh = nullptr;
+    HANDLE requestMapping = nullptr;
+    const RuntimeReportRequest* request = nullptr;
 };
 
 // Keeps a COM reference to any returned device until report collection finishes.
 // Returns true only after a report containing a device was written.
-bool ReportHostAdapter(void* host, bool allowEmptyReport = false) noexcept;
+bool ReportHostAdapter(void* host, bool allowEmptyReport = false, const char* requestId = nullptr) noexcept;
 
-// Waits interruptibly for a device, for at most ~30s. The host must call
+// Retries startup for ~30s, then sleeps until a refresh request or shutdown.
+// No polling or per-frame callbacks after startup. The host must call
 // AddonShutdown before destroying IHost or unloading this DLL.
 DWORD WINAPI ReportRetryThread(void* context);
 

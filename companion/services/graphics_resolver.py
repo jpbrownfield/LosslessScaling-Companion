@@ -12,6 +12,8 @@ from ..core.models import ManagedPackageConfig, Profile, SpecialKConfig
 from .asset_store import AssetStore
 from .input_simulator import InputSimulator
 from .deployment_manager import DeploymentManager
+from .addon_host import addon_version_key
+from . import sm86_sr, amd_nr
 
 
 class GraphicsResolutionError(RuntimeError):
@@ -107,7 +109,7 @@ class GraphicsResolver:
         if not candidates:
             requested = config.version or "an installed version"
             raise GraphicsResolutionError(f"{provider} requires {requested}; stage it before applying")
-        candidates.sort(key=lambda item: str(item.get("version") or ""), reverse=True)
+        candidates.sort(key=lambda item: addon_version_key(item.get("version")), reverse=True)
         return candidates[0]
 
     def _neural_package(self, config: ManagedPackageConfig) -> Optional[Dict]:
@@ -510,9 +512,11 @@ class GraphicsResolver:
                 for item in manager_files
             ):
                 raise GraphicsResolutionError(
-                    "Echo LS Add-on Manager package has no Lossless.dll deployment entry"
+                    "Companion Addon Host package has no Lossless.dll deployment entry"
                 )
             files.extend(manager_files)
+            files.extend(sm86_sr.deployment_files(self.store, profile, host_version=manager_package["version"]))
+            files.extend(amd_nr.deployment_files(self.store, profile, host_version=manager_package["version"]))
             files.append(
                 {
                     "relative_path": "Lossless_original.dll",
@@ -522,7 +526,7 @@ class GraphicsResolver:
                 }
             )
 
-            # Echo includes its maintained DLSS 5 Neural Render add-on and its
+            # The host includes its maintained DLSS 5 Neural Render add-on and its
             # ReShade passthrough as first-class components. Do not deploy the
             # retired LosslessProxy folders or Companion's old input bridge.
             reshade_selected = bool(profile.reshade and profile.reshade.enabled)

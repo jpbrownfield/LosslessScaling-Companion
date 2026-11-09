@@ -2,6 +2,7 @@
 #include <lsproxy/addon_exports.h>
 
 #include <windows.h>
+#include <string>
 
 namespace {
 SRWLOCK lifecycle = SRWLOCK_INIT;
@@ -18,6 +19,9 @@ void StopReporter() {
         worker = nullptr;
     }
     if (context.stop) CloseHandle(context.stop);
+    if (context.request) UnmapViewOfFile(context.request);
+    if (context.requestMapping) CloseHandle(context.requestMapping);
+    if (context.refresh) CloseHandle(context.refresh);
     context = {};
 }
 }  // namespace
@@ -39,6 +43,15 @@ LSPROXY_EXPORT void AddonInitialize(
         // LS can replace its initial device while scaling initializes.
         context.host = host;
         context.stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        const auto suffix = std::to_wstring(GetCurrentProcessId());
+        context.refresh = CreateEventW(nullptr, FALSE, FALSE,
+            (L"Local\\LSCAdapterReportRefresh-" + suffix).c_str());
+        context.requestMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+            0, sizeof(lsc::RuntimeReportRequest), (L"Local\\LSCAdapterReportRequest-" + suffix).c_str());
+        if (context.requestMapping) {
+            context.request = static_cast<const lsc::RuntimeReportRequest*>(
+                MapViewOfFile(context.requestMapping, FILE_MAP_READ, 0, 0, sizeof(lsc::RuntimeReportRequest)));
+        }
         if (context.stop) {
             worker = CreateThread(nullptr, 0, lsc::ReportRetryThread, &context, 0, nullptr);
         }
@@ -62,7 +75,7 @@ LSPROXY_EXPORT const char* GetAddonName() {
 }
 
 LSPROXY_EXPORT const char* GetAddonVersion() {
-    return "1.0.0";
+    return "1.1.0";
 }
 
 LSPROXY_EXPORT const char* GetAddonAuthor() {

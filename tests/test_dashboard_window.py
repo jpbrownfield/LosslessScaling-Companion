@@ -1,127 +1,103 @@
+import io
+import json
+import queue
+import subprocess
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from companion.ui.dashboard_window import (
-    close_dashboard_window,
-    dashboard_css_rect_to_client_pixels,
-    open_dashboard_window,
-)
+from companion.ui import dashboard_window as dashboard
+from companion.ui.dashboard_host import _dashboard_url, _read_commands
 
 
 class DashboardWindowTests(unittest.TestCase):
     def setUp(self):
-        import companion.ui.dashboard_window as dashboard_window
+        self.host_patch = patch.object(dashboard, "_host", None)
+        self.host_patch.start()
+        self.addCleanup(self.host_patch.stop)
 
-        dashboard_window._last_launch_at = 0.0
-        dashboard_window._cached_hwnd = None
-        # Never focus or close the user's actual dashboard during unit tests.
-        # Cases that need native handles provide their own explicit fixtures.
-        handles = patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[])
-        handles.start()
-        self.addCleanup(handles.stop)
-
-    def tearDown(self):
-        import companion.ui.dashboard_window as dashboard_window
-
-        dashboard_window._last_launch_at = 0.0
-        dashboard_window._cached_hwnd = None
-
-    @patch("companion.ui.dashboard_window.subprocess.Popen")
-    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
-    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
-    def test_opens_dashboard_in_app_mode(self, _find_browser, _focus, popen):
-        url = "http://127.0.0.1:24892/dashboard"
-
-        self.assertTrue(open_dashboard_window(url))
-
-        args = popen.call_args.args[0]
-        self.assertEqual(args[0], "C:/Edge/msedge.exe")
-        self.assertIn(f"--app={url}", args)
-        self.assertTrue(any(arg.startswith("--user-data-dir=") for arg in args))
-
-    @patch("companion.ui.dashboard_window.subprocess.Popen")
-    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=True)
-    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
-    def test_focuses_existing_dashboard_instead_of_opening_another(self, _find_browser, _focus, popen):
-        self.assertTrue(open_dashboard_window("http://127.0.0.1:24892/dashboard"))
-        popen.assert_not_called()
-
-    @patch("companion.ui.dashboard_window.subprocess.Popen")
-    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
-    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
-    def test_rapid_opens_collapse_into_a_single_launch(self, _find_browser, _focus, popen):
-        import threading
-        import companion.ui.dashboard_window as dashboard_window
-
-        dashboard_window._last_launch_at = 0.0
-        url = "http://127.0.0.1:24892/dashboard"
-        threads = [threading.Thread(target=open_dashboard_window, args=(url,))
-                   for _ in range(5)]
+    @patch.object(dashboard, "DashboardHost")
+    def test_repeated_and_concurrent_opens_reuse_the_host(self, host_class):
+        host_class.return_value.send.return_value = True
+        threads = [threading.Thread(target=dashboard.open_dashboard_window,
+                                    args=("http://127.0.0.1:24892/dashboard",)) for _ in range(8)]
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=5.0)
-        self.assertEqual(popen.call_count, 1)
+            thread.join(2)
+        host_class.assert_called_once()
+        self.assertEqual(host_class.return_value.send.call_count, 8)
 
-    @patch("companion.ui.dashboard_window.subprocess.Popen")
-    @patch("companion.ui.dashboard_window._focus_existing_dashboard", return_value=False)
-    @patch("companion.ui.dashboard_window._find_app_browser", return_value="C:/Edge/msedge.exe")
-    def test_open_after_close_launches_again(self, _find_browser, _focus, popen):
-        import companion.ui.dashboard_window as dashboard_window
+    @patch.object(dashboard, "DashboardHost")
+    def test_close_and_reopen_launches_new_host(self, host_class):
+        first, second = Mock(), Mock()
+        host_class.side_effect = [first, second]
+        dashboard.open_dashboard_window("http://127.0.0.1:24892/dashboard")
+        self.assertTrue(dashboard.close_dashboard_window())
+        first.close.assert_called_once()
+        self.assertFalse(dashboard.close_dashboard_window())
+        dashboard.open_dashboard_window("http://127.0.0.1:24892/dashboard?view=settings")
+        second.send.assert_called_once_with({"command": "open", "url": "http://127.0.0.1:24892/dashboard?view=settings"})
 
-        dashboard_window._last_launch_at = 0.0
-        url = "http://127.0.0.1:24892/dashboard"
-        self.assertTrue(open_dashboard_window(url))
-        self.assertEqual(popen.call_count, 1)
-        close_dashboard_window()
-        self.assertTrue(open_dashboard_window(url))
-        self.assertEqual(popen.call_count, 2)
+    @patch.object(dashboard, "DashboardHost")
+    def test_dead_host_is_replaced(self, host_class):
+        old = Mock()
+        old.send.return_value = False
+        dashboard._host = old
+        self.assertTrue(dashboard.open_dashboard_window("http://127.0.0.1:24892/dashboard"))
+        old.close.assert_called_once()
+        host_class.assert_called_once()
 
-    @patch("companion.ui.dashboard_window.webbrowser.open", return_value=True)
-    @patch("companion.ui.dashboard_window._find_app_browser", return_value=None)
-    def test_falls_back_to_default_browser(self, _find_browser, browser_open):
-        url = "http://127.0.0.1:24892/dashboard"
-        with patch("companion.ui.dashboard_window._focus_cached_dashboard",
-                   return_value=False), patch(
-                       "companion.ui.dashboard_window._focus_existing_dashboard",
-                       return_value=False):
-            self.assertTrue(open_dashboard_window(url))
+    @patch.object(dashboard, "threading")
+    @patch.object(dashboard.subprocess, "Popen")
+    def test_host_uses_owned_pipes_and_sends_url_outside_command_line(self, popen, _threading):
+        popen.return_value.poll.return_value = None
+        host = dashboard.DashboardHost()
+        self.assertIn("--dashboard-host", popen.call_args.args[0])
+        self.assertTrue(popen.call_args.kwargs["close_fds"])
+        host.send({"command": "open", "url": "http://127.0.0.1:24892/dashboard"})
+        popen.return_value.stdin.flush.assert_called_once()
+        host.close()
+        popen.return_value.stdin.close.assert_called_once()
 
-        browser_open.assert_called_once_with(url, new=1)
+    def test_lifetime_pipe_eof_exits_even_without_a_gui(self):
+        commands = queue.Queue()
+        exited = Mock()
+        _read_commands(io.StringIO(json.dumps({"command": "open", "url": "local"}) + "\n"), commands, exited)
+        self.assertEqual(commands.get_nowait()["command"], "open")
+        exited.assert_called_once_with(0)
 
-    @patch("companion.ui.dashboard_window.ctypes.windll.user32")
-    @patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[101, 202])
-    @patch("companion.ui.dashboard_window.os.name", "nt")
-    def test_closes_all_dedicated_dashboard_windows(self, _handles, user32):
-        self.assertTrue(close_dashboard_window())
+    @patch.object(dashboard, "threading")
+    @patch.object(dashboard.subprocess, "Popen")
+    def test_update_close_waits_for_host_and_kills_it_if_it_hangs(self, popen, threads):
+        host = dashboard.DashboardHost()
+        dashboard._host = host
+        popen.return_value.wait.side_effect = [subprocess.TimeoutExpired("dashboard", 3), 0]
+        threads.Thread.reset_mock()
 
-        self.assertEqual(
-            user32.PostMessageW.call_args_list,
-            [unittest.mock.call(101, 0x0010, 0, 0), unittest.mock.call(202, 0x0010, 0, 0)],
-        )
+        self.assertTrue(dashboard.close_dashboard_window(wait=True))
 
-    @patch("companion.ui.dashboard_window._dashboard_window_handles", return_value=[])
-    @patch("companion.ui.dashboard_window.os.name", "nt")
-    def test_close_returns_false_when_dashboard_is_not_open(self, _handles):
-        self.assertFalse(close_dashboard_window())
+        popen.return_value.stdin.close.assert_called_once_with()
+        self.assertEqual(popen.return_value.wait.call_args_list[0].kwargs, {"timeout": 3})
+        popen.return_value.kill.assert_called_once_with()
+        self.assertEqual(popen.return_value.wait.call_count, 2)
+        threads.Thread.assert_not_called()
+        self.assertIsNone(dashboard._host)
 
-    @patch("companion.ui.dashboard_window.dashboard_window_handle", return_value=101)
-    @patch("companion.ui.dashboard_window.os.name", "nt")
-    @patch("companion.ui.dashboard_window.ctypes.windll.user32")
-    def test_maps_browser_css_rect_to_native_client_pixels(self, user32, _handle):
-        def fill_client_rect(_hwnd, pointer):
-            pointer._obj.right = 1200
-            pointer._obj.bottom = 900
+    def test_accepts_only_local_dashboard(self):
+        _dashboard_url("http://127.0.0.1:24892/dashboard?view=settings")
+        for url in ["https://example.com/dashboard", "file:///dashboard", "http://127.0.0.1:24892/other"]:
+            with self.assertRaises(ValueError):
+                _dashboard_url(url)
+
+    @patch.object(dashboard, "dashboard_window_handle", return_value=101)
+    @patch.object(dashboard.ctypes.windll, "user32")
+    def test_maps_css_rect_to_native_client_pixels(self, user32, _handle):
+        def fill(_hwnd, pointer):
+            pointer._obj.right, pointer._obj.bottom = 1200, 900
             return 1
-
-        user32.GetClientRect.side_effect = fill_client_rect
-        result = dashboard_css_rect_to_client_pixels({
+        user32.GetClientRect.side_effect = fill
+        self.assertEqual(dashboard.dashboard_css_rect_to_client_pixels({
             "left": 100, "top": 50, "width": 400, "height": 300,
             "viewportWidth": 1000, "viewportHeight": 750,
-        })
-
-        self.assertEqual(result, (101, 120, 60, 480, 360))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        }), (101, 120, 60, 480, 360))

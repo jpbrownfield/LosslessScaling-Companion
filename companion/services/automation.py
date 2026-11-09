@@ -6,6 +6,7 @@ import logging
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, TYPE_CHECKING
 
@@ -104,8 +105,11 @@ class AutomationController:
                 self.profile_manager.config.overlay_indicator_enabled),
         )
         self._verifying_route = False
+        self._targeted_gpu_test_active = False
+        self._gpu_index_test_retry_after: Dict[tuple, float] = {}
         self._last_verified_route_key: Optional[str] = None
         self._last_verified_ghost_signature = ""
+        self.gpu_index_refresh_requested: Optional[Callable[[], None]] = None
         self.reshade_profiles = ReshadeProfileService(profile_manager)
         self.addon_configs = AddonConfigService(profile_manager)
         self._last_gpu_route_relaunch_at: float = 0.0
@@ -138,6 +142,9 @@ class AutomationController:
                 reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
                 hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
             )
+            from . import amd_nr
+            if amd_nr.enabled(profile.addon_config):
+                amd_nr.prepare_cache(self.asset_store, self.profile_manager.config_dir)
         files = self.graphics_resolver.resolve(
             profile,
             lossless_scaling_exe=self.profile_manager.config.lossless_scaling_exe_path,
@@ -356,6 +363,7 @@ class AutomationController:
             if (
                 active
                 and target_hwnd
+                and not self._targeted_gpu_test_active
             ):
                 profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(selected)
                 if profile_gpu_id or profile_display_id:
@@ -386,6 +394,7 @@ class AutomationController:
             if (
                 active
                 and target_hwnd
+                and not self._targeted_gpu_test_active
                 and self.profile_manager.config.snap_near_fullscreen_windows_to_monitor
                 and self._profile_allows_monitor_edge_snap(selected)
             ):
@@ -433,7 +442,7 @@ class AutomationController:
                     try:
                         # A deferred edit must never focus the game over a
                         # dashboard/editor the user returned to during reload.
-                        if reason == "profile_edit":
+                        if reason == "profile_edit" or self._targeted_gpu_test_active:
                             verified = self.process_watcher.maintain_scaling_target_foreground(
                                 target_pid, target_hwnd
                             )
@@ -514,13 +523,14 @@ class AutomationController:
                         logger.exception("Could not initialize Lossless Scaling confirmation")
                         self._set_control_status("error", "Could not initialize Lossless Scaling confirmation")
                         return False
-                if active and reason == "profile_edit" and (
+                if active and (reason == "profile_edit" or self._targeted_gpu_test_active) and (
                     self.profile_changes_blocked()
                     or not self.process_watcher.maintain_scaling_target_foreground(target_pid, target_hwnd)
                 ):
                     if self.scaling_confirmation_end is not None:
                         self.scaling_confirmation_end()
-                    self._set_control_status("idle", "Profile applied; scaling waits for a manual restart after focus changed")
+                    self._set_control_status("idle", "GPU testing stopped after focus changed" if self._targeted_gpu_test_active
+                                             else "Profile applied; scaling waits for a manual restart after focus changed")
                     return False
                 emitted = trigger_hotkey(
                     modifiers=hotkey.modifiers,
@@ -646,18 +656,15 @@ class AutomationController:
                 if self.process_watcher:
                     self.process_watcher.invalidate_foreground_cache()
             if active and not self._verifying_route:
-                adopted = None
                 try:
-                    adopted = self._adopt_adapter_report(selected)
+                    gpu_verification = self._verify_gpu_after_scaling(selected, target_hwnd)
+                    if gpu_verification in {"failed", "cancelled"}:
+                        return False
                 except Exception:
-                    logger.debug("Adapter report adoption skipped", exc_info=True)
-                if adopted == "corrected":
-                    self._enforce_intended_route(
-                        selected, reason, target_pid, target_hwnd)
-                if self._route_verification_due():
-                    self._verify_and_repair_route(
-                        selected, reason, target_pid, target_hwnd)
-            if active:
+                    logger.debug("Post-scale GPU verification unavailable", exc_info=True)
+            if self._targeted_gpu_test_active:
+                self.overlay_indicator.set_border("pending", anchor_hwnd=target_hwnd, immediate=True)
+            elif active:
                 label = (selected.name if selected
                          else f"PID {target_pid}" if target_pid else "game")
                 try:
@@ -1260,9 +1267,11 @@ class AutomationController:
             return profile
 
     def _desired_gpu_route(
-        self, profile: Optional[Profile], target_hwnd: Optional[int]
+        self, profile: Optional[Profile], target_hwnd: Optional[int], *,
+        refresh_selections: bool = True,
     ) -> Dict:
-        self.refresh_gpu_selections()
+        if refresh_selections:
+            self.refresh_gpu_selections()
         profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(profile)
         config = self.profile_manager.config
         # An explicit preferred-GPU pin is user intent: honor it instead of
@@ -1307,7 +1316,9 @@ class AutomationController:
             selected = self.gpu_router.route_for_ls_ids(
                 profile_gpu_id, profile_display_id
             )
-            if profile_gpu_id:
+            if profile_gpu_id or (follow_window and profile_display_id):
+                # The profile can move the app to a different monitor. Match
+                # that monitor's GPU, rather than its pre-move window location.
                 route["lsGpuId"] = selected["lsGpuId"]
                 route["gpuDeviceId"] = selected["gpuDeviceId"]
                 route["gpuName"] = selected.get("gpuName")
@@ -1317,6 +1328,10 @@ class AutomationController:
         return route
 
     def refresh_gpu_selections(self, inventory=None):
+        if self._targeted_gpu_test_active:
+            # Dashboard snapshots may read progress while the test owns the
+            # controller lock. Do not remap profiles or block those snapshots.
+            return inventory if inventory is not None else self.gpu_router.detect()
         with self._lock:
             if inventory is None:
                 inventory = self.gpu_router.detect()
@@ -1366,7 +1381,7 @@ class AutomationController:
         calibration yet), or unnecessary (zero/one GPU: enumeration order is
         unambiguous). Callers should fail loudly on stale and warn on missing.
         """
-        from .gpu_router import inventory_fingerprint
+        from .gpu_router import inventory_fingerprint, _ls_id_for_device, _normalize_gpu_map
 
         inventory = self.gpu_router.detect()
         live = inventory_fingerprint(inventory)
@@ -1374,11 +1389,19 @@ class AutomationController:
         config = self.profile_manager.config
         stored = dict(getattr(config, "ls_gpu_id_map", None) or {})
         recorded = getattr(config, "ls_gpu_map_fingerprint", None)
+        normalized = _normalize_gpu_map(stored)
+        slots = [_ls_id_for_device(gpu.get("deviceId", ""), normalized)
+                 for gpu in inventory.get("gpus", [])]
+        mapped_count = sum(slot is not None for slot in slots)
         if gpu_count < 2:
             state = "unnecessary"
         elif not stored:
             state = "missing"
-        elif recorded and recorded != live:
+        elif not recorded or recorded != live:
+            state = "stale"
+        elif mapped_count != gpu_count:
+            state = "missing"
+        elif len(set(slots)) != gpu_count:
             state = "stale"
         else:
             state = "ok"
@@ -1391,7 +1414,7 @@ class AutomationController:
             "gpuCount": gpu_count,
             "liveFingerprint": live,
             "recordedFingerprint": recorded,
-            "mappedGpus": len(stored),
+            "mappedGpus": mapped_count,
             "ghostSignature": ghost_signature(counts),
             "ghosts": ghosts,
         }
@@ -1441,9 +1464,10 @@ class AutomationController:
         """Capture a few seconds of LS output; True=flowing, False=starved."""
         try:
             executable = self.presentmon_provider()
+            instance = self._adapter_report_process()
         except Exception:
             return None
-        if not executable:
+        if not executable or not instance:
             return None
         try:
             from .benchmark_metrics import summarize_presentmon_files
@@ -1467,14 +1491,17 @@ class AutomationController:
                     except Exception:
                         pass
                 summaries = summarize_presentmon_files(
-                    sorted(run_dir.glob("presentmon*.csv")), warmup_seconds=1.0)
+                    sorted(run_dir.glob("presentmon*.csv")), warmup_seconds=1.0,
+                    process_id=instance[0])
+                if self._adapter_report_process() != instance:
+                    return None
         except Exception as error:
             logger.debug("Route verification capture failed (%s)", error)
             return None
         target = next(
             (item for item in summaries
              if str(item.get("application") or "").casefold()
-             == "losslessscaling.exe"),
+             == "losslessscaling.exe" and item.get("process_id") == instance[0]),
             None,
         )
         if target is None:
@@ -1492,8 +1519,9 @@ class AutomationController:
         try:
             from . import adapter_report as adapter_report_module
 
-            layers = adapter_report_module.detect_reshaping_layers(
-                pid=target_pid)
+            instance = self._adapter_report_process()
+            layers = (adapter_report_module.detect_reshaping_layers(pid=instance[0])
+                      if instance else [])
         except Exception:
             layers = []
         if layers:
@@ -1504,14 +1532,24 @@ class AutomationController:
             )
         health = self._verify_active_route()
         if health is True:
+            # A healthy stream can still be rendered by the wrong card. Keep
+            # the saved hardware choice authoritative when a device is known.
+            actual_gpu = self._rendering_gpu()
+            window_route = self.gpu_router.route_for_window(target_hwnd) if target_hwnd else None
+            expected_gpu = self._intended_rendering_gpu(profile, (window_route or {}).get("gpuDeviceId"))
+            if actual_gpu and expected_gpu:
+                from .adapter_report import same_device
+                if not same_device(actual_gpu, expected_gpu):
+                    logger.error("Scaling produces frames on %s instead of requested %s",
+                                 actual_gpu, expected_gpu)
+                    health = False
+        if health is True:
             self._note_route_verified(self.state.current_gpu_route_key,
                                       self._ghost_signature_now())
             return True
         if health is None:
             return True
-        logger.error(
-            "Scaling is active but Lossless Scaling emits no frames; "
-            "the LS GPU route is likely wrong for this machine.")
+        logger.error("Lossless Scaling is starved or renders on the wrong GPU; attempting route repair")
         if self.state.benchmark_mode_active:
             return False
         self._verifying_route = True
@@ -1647,6 +1685,7 @@ class AutomationController:
         if original is None:
             logger.error("Route repair cannot read the current LS route")
             return False
+        expected_gpu = self._intended_rendering_gpu(profile, window_gpu)
         tried = 0
         for ls_display in ordered_displays:
             if tried >= self.ROUTE_REPAIR_BUDGET:
@@ -1680,16 +1719,18 @@ class AutomationController:
                 except Exception:
                     logger.exception("Route repair attempt failed")
                     continue
-                device_pci = None
-                try:
-                    from . import adapter_report as adapter_report_module
-
-                    device_pci = adapter_report_module.device_pci(
-                        adapter_report) if adapter_report else None
-                except Exception:
-                    device_pci = None
+                # Every candidate restarts LS. Only the new process's device
+                # report can identify the GPU that produced these frames.
+                device_pci = self._rendering_gpu()
+                if not device_pci:
+                    logger.warning("Route produced frames but its rendering GPU is unverified; not saving it")
+                    continue
+                if expected_gpu and not adapter_report_module.same_device(device_pci, expected_gpu):
+                    logger.warning("Route renders on %s instead of requested %s; not saving it",
+                                   device_pci, expected_gpu)
+                    continue
                 self._persist_verified_route(
-                    device_pci or window_gpu, window_device,
+                    device_pci, window_device,
                     ls_gpu, ls_display)
                 return True
         logger.error("Route repair exhausted %d candidates without LS output",
@@ -1713,8 +1754,13 @@ class AutomationController:
 
         config = self.profile_manager.config
         if window_gpu:
+            from .adapter_report import same_device
+
             config.ls_gpu_id_map_previous = dict(config.ls_gpu_id_map or {})
-            config.ls_gpu_id_map = dict(config.ls_gpu_id_map or {})
+            config.ls_gpu_id_map = {
+                key: ls_gpu if same_device(key, window_gpu) else slot
+                for key, slot in (config.ls_gpu_id_map or {}).items()
+            }
             config.ls_gpu_id_map[window_gpu] = ls_gpu
         if window_device:
             config.ls_display_id_map_previous = dict(
@@ -1741,7 +1787,8 @@ class AutomationController:
 
         Launches the benchmark workload as a scaling target, places it on each
         physical GPU's display in turn, and sweeps LS GPU ids until PresentMon
-        proves Lossless Scaling emits frames. Winners persist through
+        proves Lossless Scaling emits frames and its current device report
+        identifies the requested physical GPU. Winners persist through
         _persist_verified_route, so later scaling resolves stable PCI
         identities instead of today's volatile numbers. The Default profile's
         original route is always restored and Lossless Scaling is left as
@@ -1765,6 +1812,7 @@ class AutomationController:
             raise RuntimeError("GPU calibration requires the desktop process watcher")
         if self.state.is_scaling_active:
             raise RuntimeError("Stop the current scaling session before calibrating GPUs")
+        self._gpu_index_test_retry_after.clear()
         try:
             inventory = self.gpu_router.detect()
         except Exception as error:
@@ -1821,6 +1869,7 @@ class AutomationController:
             self.process_watcher.check_is_lossless_scaling_running())
         workload = None
         mapped: Dict[str, int] = {}
+        missing_device_report = False
         tried = 0
         budget = self.ROUTE_REPAIR_BUDGET * max(1, len(gpus))
         self._verifying_route = True
@@ -1905,6 +1954,12 @@ class AutomationController:
                     except Exception:
                         logger.exception("GPU calibration attempt failed")
                         continue
+                    # A window on the 5050's monitor can still be scaled by the
+                    # 3090. Frame output proves health, never hardware identity.
+                    # Read before stopping scaling, while the device is alive.
+                    rendered_gpu = self._rendering_gpu() if healthy else None
+                    if healthy and not rendered_gpu:
+                        missing_device_report = True
                     try:
                         if self.state.is_scaling_active:
                             self.set_scaling(
@@ -1915,6 +1970,10 @@ class AutomationController:
                         logger.debug("Calibration probe stop failed",
                                      exc_info=True)
                     if healthy:
+                        if not rendered_gpu or not adapter_report_module.same_device(pci, rendered_gpu):
+                            notify("unverified", f"{gpu_name}: LS GPU {ls_gpu} produced frames "
+                                   f"but rendered on {rendered_gpu or 'an unknown GPU'}; selection not saved")
+                            continue
                         self._persist_verified_route(
                             pci, window_device, ls_gpu, ls_display)
                         mapped[pci] = ls_gpu
@@ -1932,6 +1991,8 @@ class AutomationController:
                    f"{tried} attempt(s)")
             return {"state": state, "gpuCount": len(gpus), "mapped": mapped,
                     "tried": tried,
+                    "detail": ("LS rendering GPU report is unavailable; enable the Adapter Report add-on and retry."
+                               if missing_device_report and state != "ok" else ""),
                     "fingerprint": getattr(
                         self.profile_manager.config,
                         "ls_gpu_map_fingerprint", None)}
@@ -1945,6 +2006,11 @@ class AutomationController:
             except Exception:
                 logger.debug("Calibration final stop failed", exc_info=True)
             try:
+                # LS saves its in-memory settings on exit. Close it before
+                # restoring XML, otherwise it can overwrite the restored route.
+                if self.process_watcher.check_is_lossless_scaling_running():
+                    if not self.process_watcher.stop_lossless_scaling():
+                        raise RuntimeError("LS must stop before restoring its GPU route")
                 if original is not None:
                     try:
                         restore_title = self._resolve_live_title(
@@ -1956,8 +2022,6 @@ class AutomationController:
             except Exception:
                 logger.exception("Calibration could not restore the LS route")
             try:
-                if self.process_watcher.check_is_lossless_scaling_running():
-                    self.process_watcher.stop_lossless_scaling()
                 if was_running:
                     self.process_watcher.launch_lossless_scaling(force=True)
             except Exception:
@@ -2154,7 +2218,16 @@ class AutomationController:
                     adapter_report_module.candidate_gpu_ids(report, title))
             except Exception:
                 pass
-        for slot in range(1, max(1, gpu_count) + 1):
+        # Physical GPU count is not LS's dropdown length: virtual/duplicate
+        # adapters can put a second card at slot 6 (or higher). Raw arrays are
+        # only a search bound, never evidence that a particular slot is a GPU.
+        slot_count = max(1, gpu_count)
+        if isinstance(report, dict):
+            for key in ("lsAdapterNames", "enumAdapters", "enumAdapters1"):
+                rows = report.get(key)
+                if isinstance(rows, list) and len(rows) <= 256:
+                    slot_count = max(slot_count, len(rows))
+        for slot in range(1, slot_count + 1):
             if slot not in ordered:
                 ordered.append(slot)
         return ordered
@@ -2183,7 +2256,7 @@ class AutomationController:
                 return str(item.get("Title"))
         return None
 
-    def _settings_route(self, title: str) -> Optional[tuple[int, int]]:
+    def _settings_route(self, title: str, *, include_auto: bool = False) -> Optional[tuple[int, int]]:
         """Read the active (GPU, display) numbers of a Settings.xml profile."""
         try:
             snapshot = self.lossless_settings.read()
@@ -2200,7 +2273,7 @@ class AutomationController:
                 disp = int(item.get("OutputDisplayId") or 0)
             except (TypeError, ValueError):
                 return None
-            return (gpu, disp) if gpu > 0 else None
+            return (gpu, disp) if gpu > 0 or (include_auto and gpu == 0) else None
         return None
 
     def _adapter_report_process(self):
@@ -2215,7 +2288,241 @@ class AutomationController:
         return load_latest(report_directory(self.profile_manager.config_dir),
                            pid=instance[0], created_after=instance[1])
 
-    def _adopt_adapter_report(self, profile: Optional[Profile]) -> Optional[str]:
+    def _rendering_gpu(self) -> Optional[str]:
+        """Physical GPU from the configured LS process, never its target monitor."""
+        from .adapter_report import device_pci
+
+        try:
+            report = self._current_adapter_report()
+            return device_pci(report) if report else None
+        except Exception:
+            logger.debug("Rendering GPU report unavailable", exc_info=True)
+            return None
+
+    def _intended_rendering_gpu(self, profile, window_gpu=None) -> Optional[str]:
+        """Resolve profile choice, then global pin, then automatic monitor GPU."""
+        values = getattr(profile, "native_scaling_settings", {}) or {}
+        try:
+            slot = max(0, int(values.get("PreferredGpuId") or 0))
+        except (TypeError, ValueError):
+            slot = 0
+        if slot:
+            device_id = getattr(profile, "preferred_gpu_device_id", None)
+            name = getattr(profile, "preferred_gpu_name", None)
+            if device_id or name:
+                return self.gpu_router.route_for_gpu(device_id, name).get("gpuDeviceId")
+            return self.gpu_router.route_for_ls_ids(slot, 0).get("gpuDeviceId")
+        config = self.profile_manager.config
+        if config.preferred_scaling_gpu_device_id or config.preferred_scaling_gpu_name:
+            return self.gpu_router.route_for_gpu(
+                config.preferred_scaling_gpu_device_id,
+                config.preferred_scaling_gpu_name).get("gpuDeviceId")
+        if config.auto_route_gpu_to_display:
+            try:
+                display_slot = max(0, int(values.get("OutputDisplayId") or 0))
+            except (TypeError, ValueError):
+                display_slot = 0
+            if display_slot:
+                return self.gpu_router.route_for_ls_ids(0, display_slot).get("gpuDeviceId")
+        return window_gpu
+
+    def _verify_gpu_after_scaling(self, profile: Optional[Profile], target_hwnd: Optional[int]) -> str:
+        """Read the loaded DLL once per activation; only mismatches request remapping."""
+        from .adapter_report import device_pci, request_runtime_report, same_device, report_directory
+
+        self.state.gpu_mapping_status = {
+            "state": "runtime_unverified", "message": "Last scaling event: no fresh DLL GPU proof; automatic calibration was not run"}
+        instance = self._adapter_report_process()
+        window = self.gpu_router.route_for_window(target_hwnd) if target_hwnd else None
+        expected = self._intended_rendering_gpu(profile, (window or {}).get("gpuDeviceId"))
+        report = (request_runtime_report(report_directory(self.profile_manager.config_dir), instance,
+                                        process_check=self._adapter_report_process) if instance else None)
+        actual = device_pci(report) if instance and report and report.get("pid") == instance[0] else None
+        window_after = self.gpu_router.route_for_window(target_hwnd) if target_hwnd else None
+        if (not actual or not expected or self._adapter_report_process() != instance
+                or (window or {}).get("deviceName") != (window_after or {}).get("deviceName")):
+            return "unverified"
+        if not same_device(actual, expected):
+            logger.error("Post-scale DLL check: requested %s, LS renders on %s; testing the current target's GPU indexes", expected, actual)
+            return self._correct_current_gpu_index(profile, target_hwnd, expected, report)
+        self._adopt_adapter_report(profile, report=report)
+        self.state.gpu_mapping_status = {
+            "state": "runtime_verified", "message": "Last scaling event: the DLL confirmed the requested rendering GPU",
+            "requestedGpu": expected, "actualGpu": actual, "pid": instance[0]}
+        return "verified"
+
+    def _record_gpu_index_observation(self, index: int, report: Dict, expected: str,
+                                      run_id: str, source: str) -> None:
+        """Persist evidence without asserting anything about untested indexes."""
+        from .adapter_report import device_pci, same_device
+
+        actual = device_pci(report)
+        if not actual:
+            return
+        config = self.profile_manager.config
+        config.ls_gpu_index_observations[str(index)] = {
+            "gpuDeviceId": actual, "gpuName": (report.get("device") or {}).get("description"),
+            "requestedGpuDeviceId": expected, "source": source, "runId": run_id,
+            "pid": report.get("pid"), "requestId": report.get("requestId"), "observedAt": time.time(),
+        }
+        if index > 0:
+            # Remove claims directly contradicted by this observation. Keep a
+            # previously proven alias for the same GPU as its preferred slot.
+            mapping = {key: slot for key, slot in config.ls_gpu_id_map.items()
+                       if slot != index or same_device(key, actual)}
+            aliases = {key: slot for key, slot in mapping.items() if same_device(key, actual)}
+            preferred = next((slot for slot in aliases.values()
+                              if config.ls_gpu_index_observations.get(str(slot), {}).get("runId") == run_id
+                              and same_device(config.ls_gpu_index_observations[str(slot)].get("gpuDeviceId"), actual)), index)
+            for key in aliases:
+                mapping[key] = preferred
+            # Prefer the full Windows identity when it unambiguously matches.
+            matches = [gpu for gpu in self.gpu_router.detect().get("gpus", [])
+                       if same_device(gpu.get("deviceId"), actual)]
+            mapping[matches[0]["deviceId"] if len(matches) == 1 else actual] = preferred
+            config.ls_gpu_id_map = mapping
+        self.profile_manager.save_config()
+        logger.info("GPU index observation (%s): LS GPU %s -> %s; requested %s; run %s",
+                    source, index, actual, expected, run_id)
+
+    def _correct_current_gpu_index(self, profile: Optional[Profile], target_hwnd: Optional[int],
+                                   expected: str, initial_report: Dict) -> str:
+        """Restart only this scaling target, stopping at the first proven GPU match."""
+        from .adapter_report import device_pci, request_runtime_report, report_directory, same_device
+
+        with self._lock:
+            watcher = self.process_watcher
+            target_pid = self.state.scaling_target_pid
+            retry_key = (target_pid, target_hwnd, expected)
+            if (not watcher or not target_pid or not target_hwnd or self.state.benchmark_mode_active
+                    or time.monotonic() < self._gpu_index_test_retry_after.get(retry_key, 0)):
+                self.state.gpu_mapping_status = {"state": "error", "message": "GPU testing could not safely start; retry after stopping other tests or recalibrate manually"}
+                self.overlay_indicator.log("GPU testing unavailable; recalibrate manually", kind="error", anchor_hwnd=target_hwnd)
+                if watcher and target_pid and target_hwnd and not self.state.benchmark_mode_active:
+                    self.set_scaling(False, profile, reason="gpu_calibration_targeted_backoff", force=True,
+                                     target_pid=target_pid, target_hwnd=target_hwnd, park_runtime_on_stop=False)
+                return "failed"
+            title = (getattr(profile, "lossless_profile_title", None)
+                     or getattr(profile, "name", None) or "Default")
+            original = self._settings_route(title, include_auto=True)
+            if original is None:
+                self.state.gpu_mapping_status = {"state": "error", "message": "Cannot read the active LS profile indexes; GPU testing was not started"}
+                self.overlay_indicator.log("Cannot read LS GPU indexes", kind="error", anchor_hwnd=target_hwnd)
+                return "failed"
+            old_verifying, old_mapping = self._verifying_route, self.state.gpu_mapping_in_progress
+            old_benchmark = self.state.benchmark_mode_active
+            run_id = uuid.uuid4().hex
+            config = self.profile_manager.config
+            config.ls_gpu_id_map_previous = dict(config.ls_gpu_id_map)
+            found = False
+            cancelled = False
+            error_message = "No tested index selected the requested GPU"
+            initial_display = (self.gpu_router.route_for_window(target_hwnd) or {}).get("deviceName")
+            attempted = []
+
+            def stop_host():
+                if self.state.is_scaling_active:
+                    self.set_scaling(False, profile, reason="gpu_calibration_targeted_stop", force=True,
+                                     target_pid=target_pid, target_hwnd=target_hwnd, park_runtime_on_stop=False)
+                if watcher.check_is_lossless_scaling_running() and not watcher.stop_lossless_scaling():
+                    raise RuntimeError("LS could not stop; its settings were preserved")
+                if watcher.check_is_lossless_scaling_running():
+                    raise RuntimeError("LS is still running; its settings were preserved")
+                self.state.mark_scaling_toggled(False)
+                self.state.scaling_target_pid = self.state.scaling_target_hwnd = None
+                self.state.scaling_owner_profile_id = None
+                self.state.scaling_trigger = None
+                self.state.scaling_target_verified_for_minimization = False
+
+            def target_ready():
+                return (watcher.maintain_scaling_target_foreground(target_pid, target_hwnd)
+                        and (self.gpu_router.route_for_window(target_hwnd) or {}).get("deviceName") == initial_display)
+
+            self._verifying_route = self._targeted_gpu_test_active = True
+            self.state.benchmark_mode_active = self.state.gpu_mapping_in_progress = True
+            try:
+                self.overlay_indicator.log("GPU recalibration underway", kind="armed", anchor_hwnd=target_hwnd)
+                self.overlay_indicator.set_border("pending", anchor_hwnd=target_hwnd, immediate=True)
+                self._record_gpu_index_observation(original[0], initial_report, expected, run_id, "initial_mismatch")
+                candidates = self._repair_gpu_order(initial_report, len(self.gpu_router.detect().get("gpus", [])), title)
+                for index in candidates:
+                    if index == original[0]:
+                        continue
+                    stop_host()
+                    if not target_ready():
+                        cancelled = True
+                        raise RuntimeError("GPU testing stopped because the application closed or focus changed")
+                    self.state.gpu_mapping_status = {"state": "testing", "message": f"GPU recalibration underway: trying LS index {index}",
+                                                     "requestedGpu": expected, "initialGpuId": original[0], "testingGpuId": index}
+                    self.overlay_indicator.log(f"GPU recalibration underway: index {index}", kind="armed", anchor_hwnd=target_hwnd)
+                    attempted.append(index)
+                    logger.info("Targeted GPU test %s: trying index %s on PID %s / HWND %s", run_id, index, target_pid, target_hwnd)
+                    if not self.lossless_settings.update_gpu_route(title, index, original[1]):
+                        raise RuntimeError("The LS GPU index could not be written")
+                    if not watcher.launch_lossless_scaling(force=True):
+                        continue
+                    self._last_gpu_route_relaunch_at = time.monotonic()
+                    if not self._wait_for_ls_ready():
+                        continue
+                    if not target_ready():
+                        cancelled = True
+                        raise RuntimeError("GPU testing stopped because focus changed")
+                    if not self.set_scaling(True, profile, reason="gpu_calibration_targeted", force=True,
+                                            target_pid=target_pid, target_hwnd=target_hwnd, park_runtime_on_stop=False):
+                        logger.warning("Targeted GPU test %s: index %s did not confirm scaling", run_id, index)
+                        continue
+                    instance = self._adapter_report_process()
+                    report = request_runtime_report(report_directory(self.profile_manager.config_dir), instance,
+                        process_check=self._adapter_report_process) if instance else None
+                    actual = device_pci(report) if report and report.get("pid") == instance[0] else None
+                    if not actual or self._adapter_report_process() != instance:
+                        logger.warning("Targeted GPU test %s: no fresh DLL GPU proof for index %s", run_id, index)
+                        continue
+                    if not target_ready() or not self.state.is_scaling_active:
+                        cancelled = True
+                        raise RuntimeError("GPU testing stopped because the scaling target changed")
+                    correct = same_device(actual, expected)
+                    self._record_gpu_index_observation(index, report, expected, run_id, "correct" if correct else "trial_mismatch")
+                    if not correct:
+                        continue
+                    if profile and int(profile.native_scaling_settings.get("PreferredGpuId") or 0) > 0:
+                        profile.native_scaling_settings["PreferredGpuId"] = str(index)
+                        self.profile_manager.save_config()
+                    window = self.gpu_router.route_for_window(target_hwnd) or {}
+                    self.state.current_gpu_route_key = self._gpu_route_key({
+                        "lsGpuId": index, "lsDisplayId": original[1], "deviceName": window.get("deviceName", "")})
+                    self.state.gpu_mapping_status = {"state": "runtime_corrected", "message": f"GPU testing complete: LS index {original[0]} was incorrect; index {index} selects the requested GPU. Other GPUs were not actively calibrated.",
+                        "initialGpuId": original[0], "correctedGpuId": index, "requestedGpu": expected,
+                        "initialActualGpu": device_pci(initial_report), "testedGpuIds": attempted, "runId": run_id}
+                    self.overlay_indicator.log(f"GPU corrected: index {original[0]} to {index}", kind="ok", anchor_hwnd=target_hwnd)
+                    found = True
+                    return "corrected"
+            except Exception as error:
+                error_message = str(error)
+                logger.exception("Targeted GPU index testing stopped")
+            finally:
+                if not found:
+                    try:
+                        stop_host()
+                        self.lossless_settings.update_gpu_route(title, *original)
+                        watcher.launch_lossless_scaling(force=True)
+                    except Exception as error:
+                        error_message += f"; cleanup: {error}"
+                        logger.exception("Targeted GPU testing cleanup failed")
+                    self._gpu_index_test_retry_after[retry_key] = time.monotonic() + 60
+                    self.state.gpu_mapping_status = {"state": "cancelled" if cancelled else "error", "message": error_message,
+                        "initialGpuId": original[0], "requestedGpu": expected, "testedGpuIds": attempted, "runId": run_id}
+                    self._set_control_status("idle" if cancelled else "error", error_message)
+                    self.overlay_indicator.log("GPU testing cancelled" if cancelled else "GPU testing failed; recalibrate manually",
+                                               kind="error", anchor_hwnd=target_hwnd)
+                    self.overlay_indicator.set_border(None)
+                self._targeted_gpu_test_active = False
+                self._verifying_route = old_verifying
+                self.state.benchmark_mode_active = old_benchmark
+                self.state.gpu_mapping_in_progress = old_mapping
+            return "cancelled" if cancelled else "failed"
+
+    def _adopt_adapter_report(self, profile: Optional[Profile], *, report: Optional[Dict] = None) -> Optional[str]:
         """Silent per-scale check: adopt the in-LS adapter report.
 
         The report names the physical GPU LS actually renders with, so the
@@ -2229,7 +2536,8 @@ class AutomationController:
         except Exception:
             return None
         try:
-            report = self._current_adapter_report()
+            if report is None:
+                report = self._current_adapter_report()
         except Exception:
             return None
         if not report:
@@ -2258,18 +2566,16 @@ class AutomationController:
         mapping = dict(getattr(config, "ls_gpu_id_map", None) or {})
         result = "confirmed"
         changed = False
-        if not any(adapter_report_module.same_device(key, device_pci)
-                   and slot == settings_gpu
-                   for key, slot in mapping.items()):
-            known = {key: slot for key, slot in mapping.items()
-                     if adapter_report_module.same_device(key, device_pci)}
-            if known and all(slot == settings_gpu for slot in known.values()):
-                logger.debug("Adapter report confirms LS GPU %s is %s",
-                             settings_gpu, device_pci)
-            else:
-                logger.info("Adapter report remaps LS GPU %s to %s",
-                            settings_gpu, device_pci)
+        known = {key: slot for key, slot in mapping.items()
+                 if adapter_report_module.same_device(key, device_pci)}
+        if not known or any(slot != settings_gpu for slot in known.values()):
+            logger.info("Adapter report remaps LS GPU %s to %s",
+                        settings_gpu, device_pci)
             config.ls_gpu_id_map_previous = dict(mapping)
+            # Exact full PCI keys take precedence over VEN/DEV aliases in the
+            # router. Update those aliases too, or this correction has no effect.
+            mapping = {key: settings_gpu if adapter_report_module.same_device(key, device_pci) else slot
+                       for key, slot in mapping.items()}
             mapping[device_pci] = settings_gpu
             config.ls_gpu_id_map = mapping
             changed = True

@@ -11,12 +11,101 @@ from __future__ import annotations
 import json
 import os
 import time
+import secrets
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
 REPORT_PREFIX = "ls-adapter-report-"
 REPORT_SUFFIX = ".json"
 REPORT_MAX_AGE_SECONDS = 24 * 3600
+
+
+@contextmanager
+def _runtime_request(pid: int, token: str):
+    """Signal the loaded reporter; never inject or load a DLL into LS."""
+    import ctypes
+    import struct
+    from ctypes import wintypes
+
+    kernel = None
+    handles = []
+    view = None
+    locked = False
+    available = False
+    try:
+        if os.name == "nt":
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            for name, arguments, result in (
+                ("OpenEventW", [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR], wintypes.HANDLE),
+                ("OpenFileMappingW", [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR], wintypes.HANDLE),
+                ("CreateMutexW", [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR], wintypes.HANDLE),
+                ("WaitForSingleObject", [wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+                ("MapViewOfFile", [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t], ctypes.c_void_p),
+                ("SetEvent", [wintypes.HANDLE], wintypes.BOOL),
+                ("ReleaseMutex", [wintypes.HANDLE], wintypes.BOOL),
+                ("UnmapViewOfFile", [ctypes.c_void_p], wintypes.BOOL),
+                ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
+            ):
+                function = getattr(kernel, name)
+                function.argtypes, function.restype = arguments, result
+            event = kernel.OpenEventW(2, False, f"Local\\LSCAdapterReportRefresh-{pid}")
+            if event:
+                handles.append(event)
+                mapping = kernel.OpenFileMappingW(2, False, f"Local\\LSCAdapterReportRequest-{pid}")
+                if mapping:
+                    handles.append(mapping)
+                    mutex = kernel.CreateMutexW(None, False, f"Local\\LSCAdapterReportClient-{pid}")
+                    if mutex:
+                        handles.append(mutex)
+                        locked = kernel.WaitForSingleObject(mutex, 50) in (0, 128)
+                        if locked:
+                            view = kernel.MapViewOfFile(mapping, 2, 0, 0, 72)
+                            if view:
+                                packet = struct.pack("<I65s3x", 1, token.encode("ascii"))
+                                ctypes.memmove(view, packet, len(packet))
+                                available = bool(kernel.SetEvent(event))
+    except (OSError, AttributeError, ValueError):
+        available = False
+    try:
+        yield available
+    finally:
+        if kernel:
+            if view:
+                kernel.UnmapViewOfFile(view)
+            if locked:
+                kernel.ReleaseMutex(mutex)
+            for handle in reversed(handles):
+                kernel.CloseHandle(handle)
+
+
+def request_runtime_report(directory, instance, *, process_check, timeout=0.75):
+    """Fresh, nonce-matched device evidence for one configured LS activation.
+
+    No renderer, benchmark, hotkey, or process restart. Older/unloaded reporters
+    return None immediately; a loaded reporter has a short bounded response wait.
+    """
+    pid, created = instance
+    token = secrets.token_hex(32)
+    directories = [Path(directory)]
+    default = report_directory()
+    if default not in directories:
+        directories.append(default)
+    with _runtime_request(pid, token) as available:
+        if not available:
+            return None
+        deadline = time.monotonic() + max(0, timeout)
+        while True:
+            if process_check() != instance:
+                return None
+            for location in directories:
+                report = load_latest(location, pid=pid, created_after=created, max_age_seconds=15)
+                if (report and report.get("pid") == pid and report.get("requestId") == token
+                        and process_check() == instance):
+                    return report
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.01)
 
 
 def report_directory(config_dir: Optional[object] = None) -> Path:
@@ -194,7 +283,7 @@ def detect_reshaping_layers(pid: Optional[int] = None,
                             process: object = None) -> List[str]:
     """Best-effort list of graphics-shaping modules loaded into LS.
 
-    Special K, ReShade, and the Echo add-on manager can reorder the adapter
+    Special K, ReShade, and the manager add-on manager can reorder the adapter
     list LS itself sees, which invalidates host-side enumeration guesses.
     A plain system dxgi.dll is normal and never reported; only LS-directory
     copies and known hook DLLs are.

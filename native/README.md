@@ -1,3 +1,10 @@
+The production addon host is built from pinned FriedSnowman sources by
+`python scripts/build_addon_manager.py`. See
+[`addon_manager/BRIDGING.md`](addon_manager/BRIDGING.md) for the exact overlay,
+licences, protocol, validation limits and upstream upgrade procedure. The older
+`lsp_neuralrender` tree is retained for historical experiments and is no longer
+built or bundled by the Windows application workflow.
+
 # Bundled native components
 
 `startup_guard` is Companion's own small Windows x64 DLL. Companion registers a
@@ -79,11 +86,22 @@ official `NVIDIA/DLSS` repository at a pinned commit, keeps them outside release
 artifacts, and uploads a separate `LSP-NeuralRender-windows-x64-*` artifact. That
 artifact does not contain `nvngx_dlssnr.dll` or any neural model/runtime.
 
-adapter_report is a tiny diagnostics add-on for the same host ABI. On load it records the physical GPU the host renders with (via GetD3D11Device), both DXGI adapter enumerations, the rendering adapter's attached outputs, and the active numeric route from Settings.xml, then writes ls-adapter-report-<pid>.json under the companion diagnostics directory. The companion matches the device by PCI identity and derives LS numeric IDs from the in-process enumeration instead of trial scaling.
+adapter_report is a diagnostics add-on for the same host ABI. On load it records the physical GPU the host renders with (via GetD3D11Device), both DXGI adapter enumerations, the rendering adapter's attached outputs, and the saved numeric routes from Settings.xml, then writes ls-adapter-report-<pid>.json under the companion diagnostics directory. Raw DXGI indexes are search evidence; LS's own adapter-name list remains the authority for its dropdown indexes.
+
+Version 1.1.0 adds an on-demand runtime report. After each confirmed scaling activation, Companion signals the already-loaded DLL through a PID-specific event and shared-memory request mailbox. A random nonce, configured-process identity, and process birth time prevent an earlier report from passing as current proof. The reporter retains the existing D3D device while reading its adapter; it creates no rendering device, benchmark workload, scaling hotkey, or per-frame callback. Its worker sleeps between requests after the bounded startup retries.
+
+A matching physical GPU skips PresentMon and automatic calibration. A confirmed mismatch displays a GPU-testing overlay and stops scaling the current application. Companion restarts LS with candidate GPU indexes, preserves the output-display index, and asks the DLL for fresh evidence after each confirmed activation. The first index selecting the requested GPU stays active; no other GPUs are actively calibrated. Both the initial incorrect index and every subsequent proven index are saved in `ls_gpu_index_observations`, with their actual GPU identities and request provenance, and exported by the live GPU diagnostic. A failed or cancelled search leaves scaling off and restores the original native profile indexes while LS is stopped. Missing initial DLL evidence never starts testing. Install/load the updated adapter-report add-on in the existing compatible LosslessProxy/Echo host to enable this path; Companion does not inject it into another process.
 
 ```powershell
 cmake -S native/adapter_report -B build/adapter_report -A x64
 cmake --build build/adapter_report --config Release
+ctest --test-dir build/adapter_report -C Release --output-on-failure
 ```
 
 The off-LS fixture (LSC_AdapterReportHost.exe) drives the real DLL entry point against a real D3D11 device: `.\LSC_AdapterReportHost.exe <adapter-index>`. Python coverage lives in tests/test_adapter_report.py (reader) and tests/test_adapter_report_host.py (fixture, skips when the DLL was not built).
+
+The separate [AMD Neural Rendering addon](amd_neuralrender/README.md) is built
+with the Companion host by `python scripts/build_addon_manager.py`. It routes
+verified captures automatically from the actual GPU, reuses MIT compute flow,
+and calls the optional pinned AMD runtime's D3D12 C API. Its standalone probe
+tests compute flow and D3D11/D3D12 sharing without loading a neural model.

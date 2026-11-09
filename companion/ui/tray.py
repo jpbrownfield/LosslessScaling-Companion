@@ -84,6 +84,7 @@ class CompanionTrayIcon:
                 self._startup_enabled = self.startup_manager.is_enabled()
             except Exception:
                 logger.exception("Could not query the startup task for the tray menu")
+        self.profile_manager.config.run_at_startup = self._startup_enabled
         self._startup_change_running = False
         self._update_check_running = False
         self._animation_stop = threading.Event()
@@ -311,12 +312,8 @@ class CompanionTrayIcon:
             f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=settings")
 
     def _open_proxy_menu(self, icon, menu_item):
-        if not self.proxy_menu:
-            self._notify("Add-on menu control is unavailable.")
-            return
-        result = self.proxy_menu.open()
-        if not result.get("opened"):
-            self._notify(str(result.get("reason") or "Could not open the add-on menu."))
+        self._request_dashboard_open(
+            f"http://{self.profile_manager.config.host}:{self.profile_manager.config.port}/dashboard?view=addons")
 
     def _notify(self, message: str) -> None:
         try:
@@ -468,6 +465,9 @@ class CompanionTrayIcon:
             if self.state.is_scaling_active
             else [item(self._runtime_status_label(), None, enabled=False)]
         )
+        if self.state.scaling_control_status.get("state") == "pending":
+            status_items.insert(0, item(self.state.scaling_control_status.get("message")
+                                        or "Scaling command pending", None, enabled=False))
         menu_items = [
             item("LS Companion", None, enabled=False),
             *status_items,
@@ -482,7 +482,7 @@ class CompanionTrayIcon:
             and self.profile_manager.config.addon_manager_enabled
             and self.state.is_scaling_active
         ):
-            menu_items.append(item("Show Add-on Menu", self._open_proxy_menu))
+            menu_items.append(item("Open Addon Settings", self._open_proxy_menu))
         menu_items.extend([
             Menu.SEPARATOR,
             item(
@@ -542,6 +542,10 @@ class CompanionTrayIcon:
         self._pending_menu_refresh = True
         if not self._post_tray_update(self.WM_REFRESH_MENU):
             self._update_menu_now()
+
+    def refresh_state(self) -> None:
+        self._startup_enabled = bool(self.profile_manager.config.run_at_startup)
+        self.update_menu()
 
     def _post_tray_update(self, message):
         hwnd = getattr(self.icon, "_hwnd", None) if self.icon else None

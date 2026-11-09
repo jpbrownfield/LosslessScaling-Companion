@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from companion.services.asset_store import UnsafeAssetError
 from companion.services.self_update import (
@@ -130,6 +130,62 @@ class CompanionUpdateServiceTests(unittest.TestCase):
 
         self.assertEqual(progress[0], (0, len(installer)))
         self.assertEqual(progress[-1], (len(installer), len(installer)))
+
+    def test_verified_cached_installer_is_reused_offline_after_service_restart(self):
+        installer = b"verified cached installer"
+        digest = hashlib.sha256(installer).hexdigest()
+        manager = Mock()
+        manager.check.return_value = [self.release()]
+
+        def open_url(request, timeout=60):
+            content = f"{digest}  {INSTALLER_NAME}".encode() if request.full_url.endswith('.sha256') else installer
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "companion.services.self_update.urllib.request.urlopen", side_effect=open_url
+        ) as network:
+            original = CompanionUpdateService(manager, Path(directory), enabled=True)
+            downloaded = original.download("2.0.0")
+            restarted = CompanionUpdateService(manager, Path(directory), enabled=True)
+            self.assertTrue(restarted.check()["downloaded"])
+            manager.check.reset_mock()
+            manager.check.side_effect = OSError("Network unavailable")
+            network.reset_mock()
+            network.side_effect = OSError("Network unavailable")
+
+            self.assertEqual(restarted.download("v2.0.0"), downloaded)
+            manager.check.assert_not_called()
+            network.assert_not_called()
+            with patch("companion.services.self_update.ctypes.windll.shell32.ShellExecuteW", return_value=42) as launch:
+                restarted.launch_installer("2.0.0", automatic=True)
+            self.assertIn("/AUTOMATICUPDATE=1", launch.call_args.args[3])
+
+    def test_tampered_cache_is_not_reported_or_reused_and_can_be_downloaded_again(self):
+        installer = b"verified cached installer"
+        digest = hashlib.sha256(installer).hexdigest()
+        manager = Mock()
+        manager.check.return_value = [self.release()]
+
+        def open_url(request, timeout=60):
+            content = f"{digest}  {INSTALLER_NAME}".encode() if request.full_url.endswith('.sha256') else installer
+            return FakeResponse(request.full_url, content)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "companion.services.self_update.urllib.request.urlopen", side_effect=open_url
+        ) as network:
+            service = CompanionUpdateService(manager, Path(directory), enabled=True)
+            service.download("2.0.0")
+            cached = Path(directory) / "updates" / "2.0.0" / INSTALLER_NAME
+            cached.write_bytes(b"tampered")
+            self.assertFalse(service.check()["downloaded"])
+            with patch("companion.services.self_update.ctypes.windll.shell32.ShellExecuteW") as launch:
+                with self.assertRaisesRegex(UnsafeAssetError, "changed after verification"):
+                    service.launch_installer("2.0.0")
+                launch.assert_not_called()
+            network.reset_mock()
+            self.assertEqual(service.download("2.0.0")["sha256"], digest)
+            self.assertEqual(network.call_count, 2)
+            self.assertEqual(cached.read_bytes(), installer)
 
     def test_automatic_installer_waits_for_exit_keeps_install_directory_and_never_reboots(self):
         installer = b"verified automatic update"

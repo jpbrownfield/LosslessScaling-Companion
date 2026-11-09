@@ -40,7 +40,6 @@ class CompanionUpdateService:
         self.root = Path(config_dir) / "updates"
         self.enabled = bool(getattr(sys, "frozen", False)) if enabled is None else enabled
         self._lock = threading.RLock()
-        self._downloaded: Optional[Dict] = None
 
     def automatic_retry_allowed(self, version: str) -> bool:
         try:
@@ -55,6 +54,32 @@ class CompanionUpdateService:
             (item for item in release.get("assets") or [] if item.get("name") == name),
             None,
         )
+
+    def _verified_installer(self, version: str) -> tuple[Path, Dict]:
+        normalized = str(version or "").strip().removeprefix("v")
+        if stable_version_tuple(normalized) is None:
+            raise UnsafeAssetError("A stable companion version is required")
+        directory = (self.root / normalized).resolve()
+        receipt_path = directory / "update.json"
+        if directory.parent != self.root.resolve() or not receipt_path.is_file():
+            raise UnsafeAssetError("Verified companion installer is unavailable")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (not isinstance(receipt, dict) or receipt.get("version") != normalized
+                or receipt.get("filename") != INSTALLER_NAME):
+            raise UnsafeAssetError("Companion installer receipt does not match the requested version")
+        installer = (directory / INSTALLER_NAME).resolve()
+        if installer.parent != directory or not installer.is_file():
+            raise UnsafeAssetError("Verified companion installer is unavailable")
+        if AssetStore.sha256(installer).casefold() != str(receipt.get("sha256") or "").casefold():
+            raise UnsafeAssetError("Companion installer changed after verification")
+        return installer, receipt
+
+    def _cached_receipt(self, version: str) -> Optional[Dict]:
+        with self._lock:
+            try:
+                return self._verified_installer(version)[1]
+            except (OSError, ValueError, TypeError):
+                return None
 
     def check(self, *, force: bool = False) -> Dict:
         if not self.enabled:
@@ -91,12 +116,7 @@ class CompanionUpdateService:
             "updateAvailable": update_available,
             "releaseUrl": latest.get("html_url") if latest else None,
             "releaseNotes": latest.get("notes") if latest else None,
-            "downloaded": bool(
-                self._downloaded
-                and latest
-                and self._downloaded.get("version") == str(latest.get("version") or "").removeprefix("v")
-                and Path(str(self._downloaded.get("path") or "")).is_file()
-            ),
+            "downloaded": bool(latest and self._cached_receipt(str(latest.get("version") or ""))),
             "supported": True,
         }
 
@@ -151,10 +171,18 @@ class CompanionUpdateService:
         with self._lock:
             if not self.enabled:
                 raise RuntimeError("Companion updates are available only in packaged builds")
-            releases = self.release_manager.check("companion", channel="stable", force=True)
             normalized = str(version or "").strip().removeprefix("v")
             if stable_version_tuple(normalized) is None:
                 raise ValueError("A stable companion version is required")
+            cached = self._cached_receipt(normalized)
+            if cached:
+                return {
+                    "type": "COMPANION_UPDATE_DOWNLOADED",
+                    "version": normalized,
+                    "sha256": cached["sha256"],
+                    "filename": INSTALLER_NAME,
+                }
+            releases = self.release_manager.check("companion", channel="stable", force=True)
             release = next(
                 (item for item in releases if str(item.get("version") or "").removeprefix("v") == normalized),
                 None,
@@ -190,7 +218,6 @@ class CompanionUpdateService:
                 "releaseUrl": release.get("html_url"),
             }
             AssetStore._atomic_json(destination_dir / "update.json", receipt)
-            self._downloaded = receipt
             return {
                 "type": "COMPANION_UPDATE_DOWNLOADED",
                 "version": normalized,
@@ -203,17 +230,8 @@ class CompanionUpdateService:
             if not self.enabled:
                 raise RuntimeError("Companion updates are available only in packaged builds")
             normalized = str(version or "").strip().removeprefix("v")
-            directory = (self.root / normalized).resolve()
-            receipt_path = directory / "update.json"
-            if directory.parent != self.root.resolve() or not receipt_path.is_file():
-                raise UnsafeAssetError("Verified companion installer is unavailable")
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            installer = (directory / INSTALLER_NAME).resolve()
-            if installer.parent != directory or not installer.is_file():
-                raise UnsafeAssetError("Verified companion installer is unavailable")
-            digest = AssetStore.sha256(installer)
-            if digest.casefold() != str(receipt.get("sha256") or "").casefold():
-                raise UnsafeAssetError("Companion installer changed after verification")
+            installer, _receipt = self._verified_installer(normalized)
+            directory = installer.parent
             options = [
                 "/SP-", "/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS",
             ]

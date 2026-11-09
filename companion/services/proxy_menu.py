@@ -1,4 +1,4 @@
-"""Visibility and foreground control for Echo LS Add-on Manager."""
+"""Visibility and foreground control for Companion Addon Host."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ class AddonManagerMenuController:
         if not windows:
             return {
                 "opened": False,
-                "reason": "The Echo add-on menu is not running. Enable Add-on Manager, then restart Lossless Scaling.",
+                "reason": "The manager add-on menu is not running. Enable Add-on Manager, then restart Lossless Scaling.",
             }
 
         hwnd = windows[0]
@@ -137,7 +137,7 @@ class AddonManagerMenuController:
         show_window(hwnd, self.SW_RESTORE)
         user32.BringWindowToTop(hwnd)
         focused = bool(user32.SetForegroundWindow(hwnd))
-        logger.info("Opened Echo LS Add-on Manager (HWND %s)", hwnd)
+        logger.info("Opened Companion Addon Host (HWND %s)", hwnd)
         return {"opened": True, "focused": focused, "hwnd": hwnd}
 
     @staticmethod
@@ -250,7 +250,7 @@ class AddonManagerMenuController:
             self._visible_requested = not hide
             if not hide:
                 user32.ShowWindow(hwnd, self.SW_RESTORE)
-            logger.info("Detached Echo LS Add-on Manager (HWND %s)", hwnd)
+            logger.info("Detached Companion Addon Host (HWND %s)", hwnd)
             return True
 
 

@@ -41,6 +41,14 @@ def _ensure_admin():
         print(f"UAC elevation declined ({error}); continuing non-elevated.", file=sys.stderr)
 
 
+# Dispatch before elevation, binary synchronization, or importing the engine.
+if __name__ == "__main__" and "--dashboard-host" in sys.argv:
+    from companion.ui.dashboard_host import run
+    # pywebview's command dispatcher can be waiting on the control queue after
+    # the last native window closes. Do not keep an invisible helper alive while
+    # Python waits for GUI/CLR threads during interpreter shutdown.
+    os._exit(run())
+
 _ensure_admin()
 
 # Add workspace directory to sys.path
