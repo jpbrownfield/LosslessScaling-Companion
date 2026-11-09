@@ -1,0 +1,2 @@
+# These upstream files are SHA-256 pinned; preserve their exact bytes on checkout.
+/native/amd_neuralrender/vendor/* -text
