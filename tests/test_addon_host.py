@@ -123,9 +123,10 @@ class NativeAddonHostTests(unittest.TestCase):
                         self.assertEqual(status["startupError"], "", status.get("components"))
                         self.assertEqual(status["components"][0]["id"], "custom-fixture")
                         self.assertTrue(status["components"][0]["loaded"])
-                        self.assertEqual(Path(status["components"][0]["path"]), component)
-                        loaded = {Path(item.path) for item in psutil.Process(process.pid).memory_maps()}
-                        self.assertIn(component, loaded)
+                        # Windows temp paths may use an 8.3 alias such as RUNNER~1.
+                        self.assertTrue(Path(status["components"][0]["path"]).samefile(component))
+                        loaded = {Path(item.path).resolve() for item in psutil.Process(process.pid).memory_maps()}
+                        self.assertIn(component.resolve(), loaded)
                     else:
                         self.assertTrue(status["startupError"])
                         self.assertFalse(any(item["loaded"] for item in status["components"]))
