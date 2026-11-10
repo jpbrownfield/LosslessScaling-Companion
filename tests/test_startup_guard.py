@@ -13,6 +13,11 @@ from companion.services import startup_guard
 
 
 class StartupGuardTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.object(startup_guard, "launch_environment", return_value=(os.environ.copy(), None, None))
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def tearDown(self):
         startup_guard._libraries.clear()
 
@@ -86,6 +91,10 @@ class NativeStartupGuardTests(unittest.TestCase):
             report = json.loads((Path(directory) / f"ls-adapter-report-{pid}.json").read_text(encoding="utf-8"))
             self.assertEqual(report["pid"], pid)
             self.assertEqual(report["requestId"], token)
+            idle = json.loads((Path(directory) / f"ls-idle-adapter-report-{pid}.json").read_text(encoding="utf-8"))
+            self.assertEqual(idle["requestId"], token)
+            self.assertEqual(idle["lsAdapterStatus"], "ok")
+            self.assertEqual(idle["lsAdapterError"], 0)
             self.assertEqual(report["lsAdapterNames"], ["NVIDIA GeForce RTX 3090"] * 2 + ["NVIDIA GeForce RTX 5050", "Test GPU \u03a9"])
             self.assertFalse(report["hasDevice"])
             self.assertTrue(report["enumAdapters"])

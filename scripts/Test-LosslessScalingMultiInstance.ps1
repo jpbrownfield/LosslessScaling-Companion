@@ -22,6 +22,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Mode -ne 'Inventory') {
+    throw 'The experimental multi-instance launcher uses environment-only AppData isolation and is disabled. Use Companion managed runtime startup with its mandatory known-folder bootstrap.'
+}
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $windowProbe = Join-Path $PSScriptRoot 'ls_window_target.py'
 $sourceExe = (Resolve-Path -LiteralPath $LosslessScalingExe).Path

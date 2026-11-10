@@ -121,7 +121,9 @@ class GlobalHotkeyListener:
 
     def _dispatch(self) -> None:
         if not self._callback_lock.acquire(blocking=False):
+            logger.info("Override hotkey ignored while the previous activation is in progress")
             return
+        logger.info("Override hotkey received; scheduling activation")
         # WM_HOTKEY arrives while the triggering keys may still be physically
         # held. Without a release window, the hidden LS hotkey can be emitted
         # as (for example) Alt+F24 instead of F24 and be ignored.

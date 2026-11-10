@@ -40,6 +40,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; ReShade input passthrough is enabled automatically when needed.
    - Add-on edits made during scaling are saved immediately and deployed after scaling stops. Unknown saved settings remain available in the editor and are preserved.
    - Keeps bounded runtime logs in `%LOCALAPPDATA%\LosslessScalingHelper\logs\companion.log` and includes the recent log tail in diagnostic downloads.
+   - **Debug → Log** shows timestamped Info, Warning, and Error activity, including automatic scaling decisions, target verification, hotkeys, confirmation failures, GPU routing, deployments, updates, and diagnostics. Search or filter by level, pause the view, follow new entries, or download the shown entries. The live view retains up to 1,000 entries from the last 24 hours of the session. The plain-text file retains complete entries from the last 24 hours across restarts, capped at 10 MiB by dropping the oldest entries. Age cleanup runs at startup, while writing, and once per minute while idle.
    - Archives recognized LosslessProxy-era add-on folders before the first addon-host deployment and leaves unknown third-party folders untouched.
 
 6. **Windows System Tray UI:**
@@ -192,12 +193,25 @@ report that local validation is needed and retain saved selections. See the
 [local GPU mapping validation guide](docs/idle-gpu-mapping-handoff.md) for the
 remaining live LS checks, including Parsec/Vibeshine display changes.
 
-On initialization, the companion creates an untouched, one-time
-`Settings.xml.bak` beside `Settings.xml`. If the source XML is invalid or the
-backup cannot be created, native settings writes fail closed. If Lossless Scaling
-has not created `Settings.xml` yet, the companion retries the backup when the file
-appears. No native profile setting is changed until the user changes an
-auto-saved General Setting.
+Companion requires a separate copy of Lossless Scaling under
+`%LOCALAPPDATA%\LosslessScalingHelper\runtime\lossless-scaling\installations\<generation>\app`.
+The detected Steam installation is read only. Files are copied, never hard-linked.
+LS updates create a new generation while preserving Companion's private settings.
+The source path is remembered separately from the managed executable path.
+
+Companion imports the existing XML once into
+`runtime\lossless-scaling\data\LocalAppData\Lossless Scaling\Settings.xml`
+under its configuration folder. It disables native auto-start/elevation in that
+copy and creates `Settings.xml.bak` beside the private XML. Neither settings edits,
+backup restoration, diagnostics nor add-on deployment may target the live XML or
+source installation. Existing changes made by older builds are not restored automatically.
+
+A mandatory .NET startup hook installs process-local Windows known-folder
+redirection before LS enters Main, then verifies the same folder API LS uses.
+Companion requires a nonce- and PID-matched receipt before accepting startup.
+Missing bootstrap files, unsupported LS builds and unverified isolation stop
+startup. Directly opening the cloned executable without Companion's launch
+contract also stops before Main; launch the clone through Companion.
 
 The tray opens one Python-owned WebView2 window, re-focusing the existing dashboard
 instead of opening duplicates. Closing the window leaves the tray running; exiting
@@ -452,16 +466,29 @@ profile updates wait until scaling stops before replacing active injector files.
 The addon-host update flow may still restart LS when updating its host.
 
 Opening Companion's Windows shortcut again opens or focuses the existing
-dashboard instead of starting a second tray instance. Special K uses an LS-only
-`SPECIALK_PATH` and private OSD config to hide its HUD and startup banner; other
-games' shared Special K settings are not changed. Existing LS processes need a
-restart for that environment/configuration change to take effect.
+dashboard instead of starting a second tray instance. Special K uses its private
+component folder and `Global` configuration to hide its HUD and startup banner.
+Its explicit injection mode selects D3D11 through the clone's `SpecialK.d3d11`
+marker. Changes require restarting the managed LS process.
 
-The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 2.
+The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 4.
 The build verifies source/release archive digests, compiles the host, and retains
 the release's unchanged NR/upscaler binaries, corresponding source and licences.
 Run `python scripts/build_addon_manager.py` before packaging. Companion's controls
 use the new NR schema directly; Echo-only processors are not included.
+
+The existing host remains the engine integration. ReShade, Special K and custom
+DLLs are explicitly loaded by that host from full paths beneath
+`.companion/components/`, with identities and SHA-256 hashes declared in
+`.companion/components.json`. The startup hook initializes selected components
+before LS can create graphics devices. ReShade and Special K do not occupy
+`dxgi.dll`, `d3d11.dll` or another Windows proxy filename. Conflicting loaded
+copies and invalid component plans stop startup. Native host add-ons continue to
+use their SDK manifests. Build the private-settings bootstrap with
+`python scripts/build_runtime_isolation.py` before packaging (requires the .NET SDK).
+DLL filenames are stable: `ReShade64.dll`, `SpecialK64.dll`, and custom slots
+`LSC_CustomAddon1.dll`, `LSC_CustomAddon2.dll`, etc. Updating a binary changes its
+manifest checksum without changing its slot name.
 
 Host status comes from the loaded LS process and is checked against its PID,
 creation time and a fresh sample. The host's capture diagnostics are advisory;
@@ -549,6 +576,10 @@ the companion-hosted dashboard origin. Ordinary web-page origins are rejected.
 
 ### Experimental cached runtime
 
+The application uses `managed_runtime.py` for the mandatory installation copy
+and private settings described above. The separate recipe cache below remains
+experimental.
+
 `companion/services/runtime_cache.py` is a staging prototype, not yet connected
 to normal Lossless Scaling launches. It requires an explicit, verified pristine
 file manifest rather than copying an already modified Steam installation.
@@ -574,14 +605,10 @@ python -m pytest tests/test_runtime_cache.py -q
 
 ### Experimental multi-instance probe
 
-The Windows-only probe clones an installed Lossless Scaling directory into two
-temporary layouts, gives each process a separate `LOCALAPPDATA` environment and
-hotkey, launches both copies, and records process/window/settings evidence. It
-does not modify the source installation. By default it stops only the processes
-it launched and removes its temporary copies. The cloned settings disable native
-Auto Scale and `StartAsAdmin` so those features do not race or relaunch the
-controlled hotkey test; run the terminal elevated yourself if all tested targets
-also run elevated.
+The older Windows-only probe supports read-only inventory. Its `Launch` and
+`Full` modes are disabled because overriding environment variables alone does
+not redirect the Windows known-folder API used by LS. Production launches use
+Companion's mandatory managed runtime and verified startup hook.
 
 Start with the non-mutating inventory:
 
@@ -591,30 +618,5 @@ Start with the non-mutating inventory:
   -Mode Inventory
 ```
 
-Test whether two cloned instances remain alive, retaining the report and clones:
-
-```powershell
-.\scripts\Test-LosslessScalingMultiInstance.ps1 `
-  -LosslessScalingExe 'D:\SteamLibrary\steamapps\common\Lossless Scaling\LosslessScaling.exe' `
-  -Mode Launch -KeepArtifacts
-```
-
-To test targeting, obtain the two application PIDs from Task Manager or
-`Get-Process`, then use `Full` mode. The helper focuses and verifies each target
-window before sending its assigned hotkey; if Windows refuses the focus change,
-no input is sent.
-
-```powershell
-.\scripts\Test-LosslessScalingMultiInstance.ps1 `
-  -LosslessScalingExe 'D:\SteamLibrary\steamapps\common\Lossless Scaling\LosslessScaling.exe' `
-  -Mode Full -TargetAProcessId 1234 -TargetBProcessId 5678 `
-  -HotkeyA 'ctrl+alt+f23' -HotkeyB 'ctrl+alt+f24' `
-  -KeepArtifacts
-```
-
-Optional `-InstanceAOverlayDirectory` and `-InstanceBOverlayDirectory` values
-overlay instance-specific DLL/ReShade files onto each cloned application folder.
-The probe cannot guarantee that Lossless Scaling honors the overridden AppData
-environment; compare the isolated settings evidence and the real settings hash
-in the generated `test-results/ls-multi-instance-*.json` report before relying
-on that isolation.
+Native isolation and pre-Main component loading are tested by
+`tests/test_managed_runtime.py`; build instructions are in `native/README.md`.

@@ -68,13 +68,13 @@ def prepare(source: Path):
                  '        // or destroy GPU resources while Windows holds the loader lock.\n'
                  '        if (reserved && lsc::IsHeadless()) { g_manager.release(); return TRUE; }\n'
                  '        g_manager->Stop();\n        g_manager.reset();')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
-                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp)\n'
+                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp)\n'
                      'foreach(test_target eam_uipreview eam_coretest eam_sampletest eam_guitest eam_captureprobe)\n'
-                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp)\n'
+                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp)\n'
                      '  target_compile_definitions(${test_target} PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
                      'endforeach()\n'
                      'target_compile_definitions(Lossless PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'

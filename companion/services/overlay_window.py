@@ -1,16 +1,16 @@
-"""Win32 presenter: scrolling-log pill plus a status border with a calm
+"""Win32 presenter: individual fading cards plus a status border with a calm
 traveling glow.
-Two click-through topmost windows, zero injection, zero hooks:
-* pill - terminal-style lines anchored to the target window's top-right;
-* border - a thin (~6px) frame drawn just inside the target window's edges,
+Click-through topmost windows, zero injection, zero hooks:
+* toasts - rounded cards anchored to the target window's top-right;
+* border - a rounded 8px ribbon drawn just inside the target window's edges,
   so it never spills onto a neighboring monitor. While scaling is pending
   the frame is blue, while active it is burgundy. A continuous gradient
   ribbon, a softer opposing highlight, and gentle breathing run on a
   presenter-side clock; state colors ease into one another without flashing.
 
-Both windows are plain opaque popups shaped with window regions (no
-layered windows: UpdateLayeredWindow proved unreliable on multi-GPU /
-virtual-display systems, failing silently with error 87).
+Cards use ordinary GDI painting with scalar window opacity; the border
+stays opaque. Window regions provide rounded silhouettes. This avoids
+UpdateLayeredWindow, which failed on multi-GPU / virtual-display systems.
 
 Never steals focus (NOACTIVATE everywhere, SW_SHOWNOACTIVATE, no foreground
 calls). Any failure permanently disables the presenter so overlays can never
@@ -24,7 +24,10 @@ import math
 import threading
 import time as _time
 from ctypes import wintypes
+from functools import lru_cache
 from typing import Dict, List, Optional
+from .toast_stack import (ToastStack, TOAST_WIDTH, TOAST_HEIGHT, TOAST_RADIUS,
+                         MAX_TOASTS)
 
 logger = logging.getLogger("LSCompanion.OverlayWindow")
 
@@ -34,21 +37,22 @@ def _pump_idle_wait(seconds: float) -> None:
     module unpatched by tests that mock time.sleep elsewhere."""
     _time.sleep(seconds)
 
-WIDTH = 440
-LINE_HEIGHT = 28
-PAD_TOP = 12
-PAD_LEFT = 44
-MAX_DRAWN_LINES = 5
-HEIGHT = PAD_TOP * 2 + LINE_HEIGHT * MAX_DRAWN_LINES
-BORDER_PX = 6
+WIDTH = TOAST_WIDTH
+HEIGHT = TOAST_HEIGHT
+HEADER_WIDTH = 156
+HEADER_HEIGHT = 32
+HEADER_GAP = 8
+BORDER_PX = 8
+BORDER_RADIUS = 24
 BORDER_ANIM_MS = 16
 BORDER_LAP_SECONDS = 5.2
 BORDER_BREATHE_SECONDS = 4.8
 BORDER_COLOR_SECONDS = 0.32
-BORDER_GRADIENT_STEPS = 96
+BORDER_GRADIENT_STEPS = 128
 BORDER_TIMER_ID = 1
+TOAST_TIMER_ID = 2
 
-BG_COLOR = (24, 24, 24)
+BG_COLOR = (24, 28, 36)
 TEXT_COLOR = (235, 235, 235)
 PENDING_COLOR = (26, 120, 255)
 ACTIVE_COLOR = (145, 24, 62)
@@ -58,8 +62,9 @@ WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOPMOST = 0x00000008
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
 SWP_NOZORDER = 0x0004
-SWP_NOSIZE = 0x0000
+SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
 SW_HIDE = 0
@@ -113,8 +118,59 @@ class _GradientVertex(ctypes.Structure):
                 ("blue", ctypes.c_ushort), ("alpha", ctypes.c_ushort)]
 
 
-class _GradientRect(ctypes.Structure):
-    _fields_ = [("first", ctypes.c_ulong), ("second", ctypes.c_ulong)]
+class _GradientTriangle(ctypes.Structure):
+    _fields_ = [("first", ctypes.c_ulong), ("second", ctypes.c_ulong),
+                ("third", ctypes.c_ulong)]
+
+
+@lru_cache(maxsize=8)
+def _border_mesh(width: int, height: int):
+    """A closed rounded path, with shared vertices through every corner.
+
+    Position follows distance around the whole perimeter, so the highlight
+    keeps traveling through corners rather than restarting on each edge.
+    Cache geometry across animation frames; only vertex colors change.
+    """
+    radius = min(BORDER_RADIUS, width / 2, height / 2)
+    perimeter = 2 * (width + height - 4 * radius) + 2 * math.pi * radius
+    samples = []
+    distance = 0.0
+    for start, end, center, angle, normal in (
+            ((radius, 0), (width - radius, 0), (width - radius, radius), -math.pi / 2, (0, 1)),
+            ((width, radius), (width, height - radius), (width - radius, height - radius), 0, (-1, 0)),
+            ((width - radius, height), (radius, height), (radius, height - radius), math.pi / 2, (0, -1)),
+            ((0, height - radius), (0, radius), (radius, radius), math.pi, (1, 0))):
+        length = math.hypot(end[0] - start[0], end[1] - start[1])
+        steps = max(1, math.ceil(BORDER_GRADIENT_STEPS * length / perimeter))
+        for step in range(steps):
+            fraction = step / steps
+            samples.append(((distance + length * fraction) / perimeter,
+                            start[0] + (end[0] - start[0]) * fraction,
+                            start[1] + (end[1] - start[1]) * fraction, *normal))
+        distance += length
+        length = math.pi * radius / 2
+        # Short arc segments keep the rounded silhouette smooth at any size.
+        steps = max(16, math.ceil(length / 2))
+        for step in range(steps):
+            theta = angle + math.pi / 2 * step / steps
+            x, y = math.cos(theta), math.sin(theta)
+            samples.append(((distance + length * step / steps) / perimeter,
+                            center[0] + radius * x, center[1] + radius * y, -x, -y))
+        distance += length
+    samples.append((1.0, *samples[0][1:]))
+    # Soft shoulders around a wider luminous core. Extend the mesh slightly
+    # past the clipping region to avoid unpainted pixels at its raster edge.
+    bands = ((-1, 0.42), (1, 0.65), (3, 0.95), (5, 1.0), (7, 0.65), (BORDER_PX + 1, 0.42))
+    points = tuple((round(x + nx * depth), round(y + ny * depth), shade)
+                   for _, x, y, nx, ny in samples for depth, shade in bands)
+    triangles = []
+    for index in range(len(samples) - 1):
+        for band in range(len(bands) - 1):
+            a = index * len(bands) + band
+            b = a + len(bands)
+            triangles.extend((_GradientTriangle(a, b, a + 1),
+                              _GradientTriangle(a + 1, b, b + 1)))
+    return samples, points, (_GradientTriangle * len(triangles))(*triangles)
 
 
 def _border_tint(start: tuple, target: tuple, elapsed: float) -> tuple:
@@ -193,6 +249,11 @@ def _user32():
         u.SetWindowRgn.restype = ctypes.c_int
         u.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
         u.ShowWindow.restype = ctypes.c_bool
+        u.SetLayeredWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                                ctypes.c_ubyte, ctypes.c_ulong]
+        u.SetLayeredWindowAttributes.restype = wintypes.BOOL
+        u.UnregisterClassW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+        u.UnregisterClassW.restype = wintypes.BOOL
         u.InvalidateRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                      ctypes.c_bool]
         u.InvalidateRect.restype = ctypes.c_bool
@@ -260,6 +321,12 @@ def _user32():
         g = gdi32
         g.DeleteDC.argtypes = [ctypes.c_void_p]
         g.DeleteDC.restype = ctypes.c_bool
+        g.SaveDC.argtypes = [ctypes.c_void_p]
+        g.SaveDC.restype = ctypes.c_int
+        g.RestoreDC.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        g.RestoreDC.restype = wintypes.BOOL
+        g.ExtSelectClipRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        g.ExtSelectClipRgn.restype = ctypes.c_int
         g.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
         g.CreateCompatibleDC.restype = ctypes.c_void_p
         g.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
@@ -292,7 +359,7 @@ def _user32():
         g.DeleteObject.argtypes = [ctypes.c_void_p]
         g.DeleteObject.restype = ctypes.c_bool
         msimg32.GradientFill.argtypes = [ctypes.c_void_p, ctypes.POINTER(_GradientVertex),
-                                        ctypes.c_ulong, ctypes.POINTER(_GradientRect),
+                                        ctypes.c_ulong, ctypes.POINTER(_GradientTriangle),
                                         ctypes.c_ulong, ctypes.c_ulong]
         msimg32.GradientFill.restype = wintypes.BOOL
         _api = {"user32": u, "gdi32": g, "kernel32": kernel32,
@@ -330,10 +397,11 @@ def describe_window(hwnd: int):
 
 
 class Win32OverlayPresenter:
-    """Callable presenter driving the pill and border windows."""
+    """Callable presenter driving independent toast cards and the border."""
 
     PILL_CLASS = "LSCompanionOverlay"
     BORDER_CLASS = "LSCompanionOverlayBorder"
+    HEADER_CLASS = "LSCompanionOverlayHeader"
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -341,6 +409,9 @@ class Win32OverlayPresenter:
         self._reported_failure = False
         self._hwnd = None
         self._border_hwnd = None
+        self._header_hwnd = None
+        self._header_visible = False
+        self._header_icon = None
         self._thread = None
         self._thread_id = None
         self._pending = None
@@ -349,7 +420,14 @@ class Win32OverlayPresenter:
         self._border_visible = False
         self._pill_rgn = None
         self._border_rgn = None
-        self._pill_lines: List[Dict] = []
+        self._toast_stack = ToastStack()
+        self._toast_hwnds = []
+        self._toast_slots = {}
+        self._toast_lines = {}
+        self._toast_shown = set()
+        self._toast_origin = None
+        self._toast_timer = False
+        self._classes = []
         self._border_color: Optional[tuple] = None
         self._border_timer = False
         self._border_anim_t0 = 0.0
@@ -357,6 +435,7 @@ class Win32OverlayPresenter:
         self._border_color_t0 = 0.0
         self._border_geometry = None
         self._border_buffer = None
+        self._border_clip = None
         try:
             self._user32, self._gdi32, self._kernel32 = _handles()
         except Exception:
@@ -408,7 +487,6 @@ class Win32OverlayPresenter:
             with self._lock:
                 thread, self._thread = self._thread, None
                 self._thread_id = None
-                self._pill_lines = []
                 self._border_color = None
                 self._border_geometry = None
                 self._pending = None
@@ -425,22 +503,35 @@ class Win32OverlayPresenter:
         """Destroy pump-owned windows; runs only on the pump thread."""
         try:
             self._release_border_buffer()
+            self._stop_toast_timer()
             with self._lock:
-                pill, border = self._hwnd, self._border_hwnd
+                handles = [*self._toast_hwnds, self._header_hwnd, self._border_hwnd]
+                self._toast_hwnds = []
+                self._toast_slots.clear()
+                self._toast_lines.clear()
+                self._toast_shown.clear()
+                self._toast_stack.clear()
+                self._pill_visible = False
+                self._header_hwnd = None
+                self._header_visible = False
+                self._header_icon = None
                 self._border_geometry = None
                 self._hwnd = None
                 self._border_hwnd = None
-                self._pill_lines = []
                 self._border_color = None
                 self._pending = None
                 self._has_pending = False
-            for handle in (pill, border):
+            for handle in handles:
                 if handle:
                     try:
                         if self._user32.IsWindow(ctypes.c_void_p(handle)):
                             self._user32.DestroyWindow(ctypes.c_void_p(handle))
                     except Exception:
                         pass
+            module = self._kernel32.GetModuleHandleW(None)
+            for class_name in self._classes:
+                self._user32.UnregisterClassW(class_name, module)
+            self._classes.clear()
         except Exception:
             pass
 
@@ -503,7 +594,8 @@ class Win32OverlayPresenter:
             self._border_timer = False
 
     # -- windows ------------------------------------------------------------
-    def _make_window(self, class_name: str) -> Optional[int]:
+    def _make_window(self, class_name: str, layered: bool = False,
+                     width: int = WIDTH, height: int = HEIGHT) -> Optional[int]:
         def _handler(hwnd, message, wparam, lparam):
             try:
                 if message == WM_DESTROY:
@@ -515,6 +607,8 @@ class Win32OverlayPresenter:
                         ctypes.c_void_p(lparam or 0))
                 if message == WM_TIMER:
                     try:
+                        if wparam == TOAST_TIMER_ID and self._toast_timer and hwnd == self._hwnd:
+                            self._animate_toasts()
                         if (wparam == BORDER_TIMER_ID
                                 and self._border_timer
                                 and self._border_hwnd
@@ -522,7 +616,7 @@ class Win32OverlayPresenter:
                             self._user32.InvalidateRect(
                                 ctypes.c_void_p(hwnd), None, False)
                     except Exception:
-                        pass
+                        self._note_failure("animation_timer")
                     return 0
                 if message == WM_PAINT:
                     self._paint_window(hwnd)
@@ -538,6 +632,9 @@ class Win32OverlayPresenter:
             if not hasattr(self, "_procs"):
                 self._procs = []
             self._procs.append(proc)
+            # Each registered callback belongs to this presenter. Never reuse
+            # a previous presenter's class and its possibly released callback.
+            class_name = f"{class_name}_{id(self):x}_{len(self._procs)}"
             module = self._kernel32.GetModuleHandleW(None)
             wnd_class = _WndClassEx()
             wnd_class.cbSize = ctypes.sizeof(_WndClassEx)
@@ -547,11 +644,12 @@ class Win32OverlayPresenter:
             registered = self._user32.RegisterClassExW(ctypes.byref(wnd_class))
             if not registered and ctypes.get_last_error() != 1410:
                 return None
+            self._classes.append(class_name)
             hwnd = self._user32.CreateWindowExW(
                 WS_EX_TRANSPARENT | WS_EX_TOPMOST |
-                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | (WS_EX_LAYERED if layered else 0),
                 class_name, "LS Companion", WS_POPUP,
-                0, 0, WIDTH, HEIGHT, None, None, module, None)
+                0, 0, width, height, None, None, module, None)
             if not hwnd:
                 return None
             return hwnd
@@ -567,10 +665,12 @@ class Win32OverlayPresenter:
                 if not hdc:
                     return
                 with self._lock:
-                    pill_lines = list(self._pill_lines)
+                    toast_line = self._toast_lines.get(hwnd)
                     border_color = self._border_color
-                if hwnd == self._hwnd:
-                    self._paint_pill(hdc, pill_lines)
+                if hwnd == self._header_hwnd:
+                    self._paint_header(hdc)
+                elif toast_line is not None:
+                    self._paint_pill(hdc, [toast_line])
                 elif hwnd == self._border_hwnd and border_color is not None:
                     self._paint_border_frame(hdc, hwnd, border_color)
             finally:
@@ -584,6 +684,9 @@ class Win32OverlayPresenter:
 
     def _release_border_buffer(self) -> None:
         buffer, self._border_buffer = self._border_buffer, None
+        clip, self._border_clip = self._border_clip, None
+        if clip:
+            self._gdi32.DeleteObject(clip)
         if buffer:
             dc, bitmap, original, _width, _height = buffer
             self._gdi32.SelectObject(dc, original)
@@ -605,40 +708,36 @@ class Win32OverlayPresenter:
                 self._gdi32.DeleteDC(dc)
             raise OSError("Could not create the border back buffer")
         self._border_buffer = (dc, bitmap, original, width, height)
+        self._border_clip = self._rounded_border_region(width, height)
         return dc
 
+    def _rounded_border_region(self, width: int, height: int):
+        radius = min(BORDER_RADIUS, width // 2, height // 2)
+        outer = self._gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                             2 * radius, 2 * radius)
+        inner = self._gdi32.CreateRoundRectRgn(
+            BORDER_PX, BORDER_PX, width - BORDER_PX + 1, height - BORDER_PX + 1,
+            2 * (radius - BORDER_PX), 2 * (radius - BORDER_PX))
+        try:
+            if not outer or not inner or not self._gdi32.CombineRgn(outer, outer, inner, 3):
+                raise OSError("Could not create the rounded border shape")
+            result, outer = outer, None
+            return result
+        finally:
+            for region in (outer, inner):
+                if region:
+                    self._gdi32.DeleteObject(region)
+
     def _border_gradients(self, width: int, height: int, color: tuple, elapsed: float):
-        # One native GradientFill call per orientation; no per-dot brushes.
-        groups = [([], []), ([], [])]
-        perimeter = 2.0 * (width + height)
-        offset = 0
-        for side, length in enumerate((width, height, width, height)):
-            vertices, rectangles = groups[side % 2]
-            steps = max(1, round(BORDER_GRADIENT_STEPS * length / perimeter))
-            points = [round(length * i / steps) for i in range(steps + 1)]
-            colors = [_border_light(color, (offset + point) / perimeter, elapsed)
-                      for point in points]
-            for i in range(steps):
-                start, end = points[i:i + 2]
-                for low, high, shade in ((0, 2, 0.38), (2, 4, 1.0), (4, 6, 0.24)):
-                    first, last = colors[i], colors[i + 1]
-                    if side == 0:
-                        box = (start, low, end, high)
-                    elif side == 1:
-                        box = (width - high, start, width - low, end)
-                    elif side == 2:
-                        box = (width - end, height - high, width - start, height - low)
-                        first, last = last, first
-                    else:
-                        box = (low, height - end, high, height - start)
-                        first, last = last, first
-                    index = len(vertices)
-                    for x, y, tint in ((box[0], box[1], first), (box[2], box[3], last)):
-                        channels = [round(channel * shade) << 8 for channel in tint]
-                        vertices.append(_GradientVertex(x, y, *channels, 0))
-                    rectangles.append(_GradientRect(index, index + 1))
-            offset += length
-        return groups
+        samples, points, triangles = _border_mesh(width, height)
+        vertices = []
+        bands = len(points) // len(samples)
+        for index, (position, *_geometry) in enumerate(samples):
+            tint = _border_light(color, position, elapsed)
+            for x, y, shade in points[index * bands:(index + 1) * bands]:
+                channels = [round(channel * shade) << 8 for channel in tint]
+                vertices.append(_GradientVertex(x, y, *channels, 0))
+        return (_GradientVertex * len(vertices))(*vertices), triangles
 
     def _paint_border_frame(self, hdc, hwnd: int, color: tuple) -> None:
         """Draw the continuous shaded ribbon offscreen, then copy its thin edges."""
@@ -660,22 +759,27 @@ class Win32OverlayPresenter:
                 return
             memory = self._border_back_buffer(hdc, total_w, total_h)
             gradient = _user32()["msimg32"].GradientFill
-            for orientation, (vertices, rectangles) in enumerate(
-                    self._border_gradients(total_w, total_h, tint, elapsed)):
-                vertex_buffer = (_GradientVertex * len(vertices))(*vertices)
-                mesh_buffer = (_GradientRect * len(rectangles))(*rectangles)
-                if not gradient(memory, vertex_buffer, len(vertices), mesh_buffer,
-                                len(rectangles), orientation):
-                    raise OSError("Could not paint the border gradient")
-            # Keep memory traffic proportional to the six-pixel frame even on
-            # 4K displays; the application's center is never copied or painted.
-            for x, y, width, height in (
-                    (0, 0, total_w, BORDER_PX),
-                    (0, total_h - BORDER_PX, total_w, BORDER_PX),
-                    (0, BORDER_PX, BORDER_PX, total_h - 2 * BORDER_PX),
-                    (total_w - BORDER_PX, BORDER_PX, BORDER_PX, total_h - 2 * BORDER_PX)):
-                if not self._gdi32.BitBlt(hdc, x, y, width, height, memory, x, y, 0x00CC0020):
-                    raise OSError("Could not present the border frame")
+            vertices, triangles = self._border_gradients(total_w, total_h, tint, elapsed)
+            if not gradient(memory, vertices, len(vertices), triangles, len(triangles), 2):
+                raise OSError("Could not paint the border gradient")
+            saved = self._gdi32.SaveDC(hdc)
+            if not saved:
+                raise OSError("Could not save the border drawing context")
+            try:
+                if not self._gdi32.ExtSelectClipRgn(hdc, self._border_clip, 1):
+                    raise OSError("Could not clip the rounded border")
+                # Copy only the perimeter strips; clipping keeps the rounded
+                # corners and the application's center entirely untouched.
+                edge = min(BORDER_RADIUS, total_w // 2, total_h // 2)
+                for x, y, width, height in (
+                        (0, 0, total_w, edge),
+                        (0, total_h - edge, total_w, edge),
+                        (0, edge, edge, total_h - 2 * edge),
+                        (total_w - edge, edge, edge, total_h - 2 * edge)):
+                    if not self._gdi32.BitBlt(hdc, x, y, width, height, memory, x, y, 0x00CC0020):
+                        raise OSError("Could not present the border frame")
+            finally:
+                self._gdi32.RestoreDC(hdc, saved)
         except Exception:
             self._note_failure("paint_border_frame")
 
@@ -702,7 +806,24 @@ class Win32OverlayPresenter:
 
     def _create_windows(self) -> bool:
         try:
-            self._hwnd = self._make_window(self.PILL_CLASS)
+            for _ in range(MAX_TOASTS):
+                hwnd = self._make_window(self.PILL_CLASS, layered=True)
+                if not hwnd:
+                    return False
+                self._toast_hwnds.append(hwnd)
+                rounded = self._gdi32.CreateRoundRectRgn(
+                    0, 0, WIDTH + 1, HEIGHT + 1, 2 * TOAST_RADIUS, 2 * TOAST_RADIUS)
+                if not self._set_region(hwnd, "_pill_rgn", rounded):
+                    return False
+            self._hwnd = self._toast_hwnds[0]
+            self._header_hwnd = self._make_window(
+                self.HEADER_CLASS, layered=True, width=HEADER_WIDTH, height=HEADER_HEIGHT)
+            if not self._header_hwnd:
+                return False
+            rounded = self._gdi32.CreateRoundRectRgn(
+                0, 0, HEADER_WIDTH + 1, HEADER_HEIGHT + 1, 20, 20)
+            if not self._set_region(self._header_hwnd, "_header_rgn", rounded):
+                return False
             self._border_hwnd = self._make_window(self.BORDER_CLASS)
             return bool(self._hwnd and self._border_hwnd)
         except Exception:
@@ -722,18 +843,20 @@ class Win32OverlayPresenter:
             lines = has_pending.get("lines") or []
             border = has_pending.get("border")
             pulse = bool(has_pending.get("pulse"))
-            anchor = has_pending.get("border_anchor_hwnd",
-                                     has_pending.get("anchor_hwnd"))
-            try:
-                anchor = int(anchor) if anchor else None
-            except (TypeError, ValueError):
-                anchor = None
+            def window_handle(value):
+                try:
+                    return int(value) if value else None
+                except (TypeError, ValueError):
+                    return None
+
+            anchor = window_handle(has_pending.get("anchor_hwnd"))
+            border_anchor = window_handle(has_pending.get("border_anchor_hwnd", anchor))
             if lines:
                 self._draw_pill(lines, anchor)
             else:
                 self._hide_pill()
-            if border in _BORDER_COLORS and anchor:
-                self._draw_border(border, anchor, pulse)
+            if border in _BORDER_COLORS and border_anchor:
+                self._draw_border(border, border_anchor, pulse)
             else:
                 self._hide_border()
         except Exception:
@@ -745,8 +868,14 @@ class Win32OverlayPresenter:
 
     def _hide_pill(self) -> None:
         try:
-            if self._hwnd and self._pill_visible:
-                self._user32.ShowWindow(ctypes.c_void_p(self._hwnd), SW_HIDE)
+            self._stop_toast_timer()
+            self._hide_header()
+            for hwnd in self._toast_shown:
+                self._user32.ShowWindow(ctypes.c_void_p(hwnd), SW_HIDE)
+            self._toast_shown.clear()
+            self._toast_slots.clear()
+            self._toast_lines.clear()
+            self._toast_stack.clear()
             self._pill_visible = False
         except Exception:
             pass
@@ -769,50 +898,151 @@ class Win32OverlayPresenter:
 
     def _draw_pill(self, lines: List[Dict], anchor: Optional[int]) -> None:
         try:
-            shown = lines[-MAX_DRAWN_LINES:]
-            while len(shown) < MAX_DRAWN_LINES:
-                shown = [{"text": "", "accent": (0, 0, 0)}] + shown
-            with self._lock:
-                self._pill_lines = [dict(item) for item in shown]
+            now = _time.monotonic()
+            self._toast_stack.sync(lines, now)
             self._place_pill(anchor)
-            rounded = self._gdi32.CreateRoundRectRgn(
-                0, 0, WIDTH + 1, HEIGHT + 1, 22, 22)
-            self._set_region(self._hwnd, "_pill_rgn", rounded)
-            self._user32.InvalidateRect(ctypes.c_void_p(self._hwnd), None,
-                                        True)
-            self._user32.ShowWindow(ctypes.c_void_p(self._hwnd), SW_SHOWNOACTIVATE)
-            self._pill_visible = True
+            self._animate_toasts(now)
+            if self._toast_stack.toasts and not self._toast_timer:
+                self._toast_timer = bool(self._user32.SetTimer(
+                    ctypes.c_void_p(self._hwnd), ctypes.c_void_p(TOAST_TIMER_ID),
+                    BORDER_ANIM_MS, None))
+                if not self._toast_timer:
+                    raise OSError("Could not start the toast animation timer")
         except Exception:
             self._note_failure("draw_pill")
 
-    def _paint_pill(self, memory, lines: List[Dict]) -> None:
+    def _stop_toast_timer(self) -> None:
+        if self._toast_timer and self._hwnd:
+            self._user32.KillTimer(ctypes.c_void_p(self._hwnd),
+                                   ctypes.c_void_p(TOAST_TIMER_ID))
+        self._toast_timer = False
+
+    def _animate_toasts(self, now: Optional[float] = None) -> None:
+        """Fade and slide cards on the window thread, independently of status updates."""
+        now = _time.monotonic() if now is None else now
+        toasts = self._toast_stack.frames(now)
+        keys = {toast.key for toast in toasts}
+        for key in list(self._toast_slots):
+            if key not in keys:
+                hwnd = self._toast_slots.pop(key)
+                self._user32.ShowWindow(ctypes.c_void_p(hwnd), SW_HIDE)
+                self._toast_shown.discard(hwnd)
+                self._toast_lines.pop(hwnd, None)
+        for toast in toasts:
+            hwnd = self._toast_slots.get(toast.key)
+            if hwnd is None:
+                used = set(self._toast_slots.values())
+                hwnd = next(handle for handle in self._toast_hwnds if handle not in used)
+                self._toast_slots[toast.key] = hwnd
+                self._toast_lines[hwnd] = toast.line
+                self._user32.InvalidateRect(ctypes.c_void_p(hwnd), None, False)
+            if self._toast_origin is None:
+                self._user32.ShowWindow(ctypes.c_void_p(hwnd), SW_HIDE)
+                self._toast_shown.discard(hwnd)
+                continue
+            x, y = self._toast_origin
+            self._user32.SetWindowPos(ctypes.c_void_p(hwnd), None,
+                                      x, round(y + toast.y(now)), 0, 0,
+                                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
+            if not self._user32.SetLayeredWindowAttributes(
+                    ctypes.c_void_p(hwnd), 0, toast.alpha(now), 2):  # LWA_ALPHA
+                raise OSError("Could not set toast opacity")
+            if hwnd not in self._toast_shown:
+                self._user32.ShowWindow(ctypes.c_void_p(hwnd), SW_SHOWNOACTIVATE)
+                self._toast_shown.add(hwnd)
+        self._pill_visible = bool(self._toast_shown)
+        if self._pill_visible:
+            x, y = self._toast_origin
+            self._user32.SetWindowPos(
+                ctypes.c_void_p(self._header_hwnd), None,
+                x + WIDTH - HEADER_WIDTH, y - HEADER_HEIGHT - HEADER_GAP, 0, 0,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
+            if not self._user32.SetLayeredWindowAttributes(
+                    ctypes.c_void_p(self._header_hwnd), 0,
+                    max(toast.alpha(now) for toast in toasts), 2):
+                raise OSError("Could not set overlay header opacity")
+            if not self._header_visible:
+                self._user32.InvalidateRect(ctypes.c_void_p(self._header_hwnd), None, False)
+                self._user32.ShowWindow(ctypes.c_void_p(self._header_hwnd), SW_SHOWNOACTIVATE)
+                self._header_visible = True
+        else:
+            self._hide_header()
+        if not toasts:
+            self._stop_toast_timer()
+
+    def _hide_header(self) -> None:
+        if self._header_hwnd and self._header_visible:
+            self._user32.ShowWindow(ctypes.c_void_p(self._header_hwnd), SW_HIDE)
+        self._header_visible = False
+
+    def _paint_card(self, memory, width: int, height: int, radius: int) -> None:
         bg_brush = self._gdi32.CreateSolidBrush(self._rgb(BG_COLOR))
-        font = self._gdi32.CreateFontW(
-            -14, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        outline = self._gdi32.CreateSolidBrush(self._rgb((47, 54, 67)))
+        inner = self._gdi32.CreateRoundRectRgn(
+            1, 1, width - 1, height - 1, 2 * radius - 2, 2 * radius - 2)
         try:
-            full_rect = _Rect(0, 0, WIDTH, HEIGHT)
-            self._user32.FillRect(memory, ctypes.byref(full_rect), bg_brush)
-            self._gdi32.SelectObject(memory, font)
+            self._user32.FillRect(memory, ctypes.byref(_Rect(0, 0, width, height)), outline)
+            self._gdi32.FillRgn(memory, inner, bg_brush)
+        finally:
+            for handle in (inner, bg_brush, outline):
+                self._gdi32.DeleteObject(handle)
+
+    def _paint_header(self, memory) -> None:
+        self._paint_card(memory, HEADER_WIDTH, HEADER_HEIGHT, 10)
+        if self._header_icon is None:
+            from PIL import Image, ImageWin
+            from ..ui.icons import create_lightning_icon
+
+            icon = create_lightning_icon(96, 96).resize((24, 24), Image.Resampling.LANCZOS)
+            background = Image.new("RGBA", icon.size, (*BG_COLOR, 255))
+            background.alpha_composite(icon)
+            self._header_icon = ImageWin.Dib(background.convert("RGB"))
+        self._header_icon.draw(memory, (8, 4, 32, 28))
+        font = self._gdi32.CreateFontW(
+            -13, 0, 0, 0, 600, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        previous_font = self._gdi32.SelectObject(memory, font)
+        try:
             self._gdi32.SetBkMode(memory, TRANSPARENT)
-            for index, line in enumerate(lines):
+            self._gdi32.SetTextColor(memory, self._rgb(TEXT_COLOR))
+            rect = _Rect(39, 0, HEADER_WIDTH - 8, HEADER_HEIGHT)
+            self._user32.DrawTextW(memory, "LS Companion", -1, ctypes.byref(rect),
+                                   DT_SINGLELINE | 0x0004)
+        finally:
+            if previous_font:
+                self._gdi32.SelectObject(memory, previous_font)
+            self._gdi32.DeleteObject(font)
+
+    def _paint_pill(self, memory, lines: List[Dict]) -> None:
+        self._paint_card(memory, WIDTH, HEIGHT, TOAST_RADIUS)
+        font = self._gdi32.CreateFontW(
+            -15, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        previous_font = None
+        try:
+            previous_font = self._gdi32.SelectObject(memory, font)
+            self._gdi32.SetBkMode(memory, TRANSPARENT)
+            for line in lines[:1]:
                 text = str(line.get("text") or "")
                 if not text:
                     continue
-                y = PAD_TOP + index * LINE_HEIGHT
                 bullet = self._gdi32.CreateSolidBrush(
                     self._rgb(line.get("accent") or (128, 128, 128)))
                 try:
-                    dot = _Rect(20, y + 7, 30, y + 17)
-                    self._user32.FillRect(memory, ctypes.byref(dot), bullet)
+                    dot = self._gdi32.CreateRoundRectRgn(17, 22, 25, 30, 8, 8)
+                    try:
+                        self._gdi32.FillRgn(memory, dot, bullet)
+                    finally:
+                        self._gdi32.DeleteObject(dot)
                 finally:
                     self._gdi32.DeleteObject(bullet)
                 self._gdi32.SetTextColor(memory, self._rgb(TEXT_COLOR))
-                rect = _Rect(38, y, WIDTH - 14, y + LINE_HEIGHT)
+                rect = _Rect(38, 0, WIDTH - 16, HEIGHT)
                 self._user32.DrawTextW(
                     memory, text, -1, ctypes.byref(rect),
-                    DT_SINGLELINE | DT_END_ELLIPSIS)
+                    DT_SINGLELINE | DT_END_ELLIPSIS | 0x0004)  # DT_VCENTER
         finally:
-            for handle in (font, bg_brush):
+            if previous_font:
+                self._gdi32.SelectObject(memory, previous_font)
+            for handle in (font,):
                 try:
                     self._gdi32.DeleteObject(handle)
                 except Exception:
@@ -820,6 +1050,7 @@ class Win32OverlayPresenter:
 
     def _place_pill(self, anchor: Optional[int]) -> None:
         try:
+            self._toast_origin = None
             placed = False
             if anchor:
                 rect = _Rect()
@@ -846,9 +1077,7 @@ class Win32OverlayPresenter:
                     y = work.top + 48
                 else:
                     x, y = 64, 64
-            self._user32.SetWindowPos(
-                ctypes.c_void_p(self._hwnd), None, int(x), int(y),
-                0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
+            self._toast_origin = (int(x), int(y))
         except Exception:
             pass
 
@@ -879,16 +1108,7 @@ class Win32OverlayPresenter:
                 rect.left, rect.top, width, height,
                 SWP_NOZORDER | SWP_NOACTIVATE)
             if self._border_geometry != (width, height):
-                outer = self._gdi32.CreateRectRgn(0, 0, width, height)
-                inner = self._gdi32.CreateRectRgn(
-                    BORDER_PX, BORDER_PX, width - BORDER_PX,
-                    height - BORDER_PX)
-                frame = self._gdi32.CreateRectRgn(0, 0, 1, 1)
-                try:
-                    self._gdi32.CombineRgn(frame, outer, inner, 3)  # RGN_DIFF
-                finally:
-                    for handle in (outer, inner):
-                        self._gdi32.DeleteObject(handle)
+                frame = self._rounded_border_region(width, height)
                 if not self._set_region(self._border_hwnd, "_border_rgn", frame):
                     raise OSError("Could not apply the border window shape")
                 self._border_geometry = (width, height)

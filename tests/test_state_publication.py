@@ -75,6 +75,17 @@ class StatePublicationTests(unittest.IsolatedAsyncioTestCase):
         finally:
             self.state.gpu_mapping_in_progress = False
 
+    async def test_log_reads_bypass_a_waiting_gpu_request(self):
+        self.state.gpu_mapping_in_progress = True
+        await self.socket.send(json.dumps({"type": "GET_PROFILE_SUMMARIES"}))
+        await self.socket.send(json.dumps({"type": "GET_RUNTIME_LOGS"}))
+        try:
+            logs = await self.receive("RUNTIME_LOGS")
+            self.assertTrue(logs["reset"])
+            self.assertIsInstance(logs["entries"], list)
+        finally:
+            self.state.gpu_mapping_in_progress = False
+
 
 class AppStateTests(unittest.TestCase):
     def test_unchanged_values_do_not_publish_and_snapshot_is_independent(self):

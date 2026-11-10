@@ -108,6 +108,7 @@ struct Session {
     HANDLE thread = nullptr;
     DWORD pid = 0;
     DWORD error = ERROR_SUCCESS;
+    std::vector<wchar_t> environment_override;
 };
 
 DWORD RunGuardImpl(void* argument) {
@@ -117,7 +118,7 @@ DWORD RunGuardImpl(void* argument) {
     const auto directory = path.substr(0, slash);
     const auto specialKRoot = directory + L"\\.companion-special-k";
     const bool localSpecialK = GetFileAttributesW((specialKRoot + L"\\Global\\osd.ini").c_str()) != INVALID_FILE_ATTRIBUTES;
-    LPWCH inherited = GetEnvironmentStringsW();
+    LPWCH inherited = state->environment_override.empty() ? GetEnvironmentStringsW() : state->environment_override.data();
     if (!inherited) {
         state->error = GetLastError();
         SetEvent(state->ready);
@@ -132,7 +133,7 @@ DWORD RunGuardImpl(void* argument) {
             !_wcsnicmp(item, L"LSC_ADAPTER_REPORT_TOKEN=", 25)) continue;
         environment.insert(environment.end(), item, item + wcslen(item) + 1);
     }
-    FreeEnvironmentStringsW(inherited);
+    if (state->environment_override.empty()) FreeEnvironmentStringsW(inherited);
     const auto marker = std::wstring(kDeadline) + L"=" + std::to_wstring(GetTickCount64() + state->duration);
     environment.insert(environment.end(), marker.c_str(), marker.c_str() + marker.size() + 1);
     if (localSpecialK) {
@@ -225,7 +226,8 @@ extern "C" __declspec(dllexport) void WINAPI LSCReleaseStartupGuard(void* sessio
 
 BOOL LaunchHiddenImpl(
     const wchar_t* executable, DWORD duration, DWORD* pid, void** session,
-    const wchar_t* report_directory = L"", const wchar_t* report_token = L"") {
+    const wchar_t* report_directory = L"", const wchar_t* report_token = L"",
+    const wchar_t* environment = nullptr, DWORD environment_size = 0) {
     launch_stage = L"validate";
     if (!executable || !pid || !session || duration < 100 || duration > 30000) {
         SetLastError(ERROR_INVALID_PARAMETER);
@@ -244,6 +246,7 @@ BOOL LaunchHiddenImpl(
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
         return FALSE;
     }
+    if (environment) state->environment_override.assign(environment, environment + environment_size);
     launch_stage = L"install_process_event_hook";
     state->ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     state->stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -295,6 +298,18 @@ extern "C" __declspec(dllexport) BOOL WINAPI LSCLaunchHiddenWithReport(
 
 extern "C" __declspec(dllexport) const wchar_t* WINAPI LSCStartupGuardLastStage() {
     return launch_stage;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI LSCLaunchHiddenWithEnvironment(
+    const wchar_t* executable, DWORD duration, const wchar_t* environment, DWORD environment_size,
+    const wchar_t* report_directory, const wchar_t* report_token, DWORD* pid, void** session) {
+    if (!environment || environment_size < 2 || environment_size > 1024 * 1024 ||
+            environment[environment_size - 1] || environment[environment_size - 2] || !report_directory || !report_token) {
+        SetLastError(ERROR_INVALID_PARAMETER); return FALSE;
+    }
+    try {
+        return LaunchHiddenImpl(executable, duration, pid, session, report_directory, report_token, environment, environment_size);
+    } catch (...) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

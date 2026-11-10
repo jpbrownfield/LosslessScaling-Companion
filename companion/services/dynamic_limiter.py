@@ -522,6 +522,11 @@ class DynamicLimiterController:
         )
 
     def _set_status(self, state: str, message: str, profile: Optional[Profile] = None, **values) -> dict:
+        previous = self.state.dynamic_limiter_status or {}
+        if (previous.get("state"), previous.get("message"), previous.get("profileId")) != (
+                state, message, profile.id if profile else None):
+            logger.log(logging.ERROR if state == "error" else logging.WARNING if state in {"warning", "unavailable"} else logging.INFO,
+                       "RTSS limiter [%s] %s (profile=%s)", state, message, profile.name if profile else "none")
         payload = {
             "state": state,
             "message": message,

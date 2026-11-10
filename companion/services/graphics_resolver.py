@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -474,6 +475,57 @@ class GraphicsResolver:
             "[OVERLAY]\nTutorialProgress=4\nShowForceLoadEffectsButton=0\n",
         )
 
+    def _explicit_components(self, profile: Profile, files: List[Dict]) -> List[Dict]:
+        """Declare named payloads for the host, independent of Windows proxy slots."""
+        components = []
+        custom_digests = set()
+        # In injection mode Special K caches an application INI in its own
+        # Profiles directory and reads Global defaults only for a new profile.
+        # A settings-specific root prevents that cache masking a profile edit.
+        special_k_recipe = sorted((item["relative_path"], AssetStore.sha256(Path(item["source_path"])))
+                                  for item in files if str(item.get("source_package", "")).startswith("special-k/")
+                                  or item.get("role") == "special_k_config")
+        special_k_root = ".companion/components/special-k/" + hashlib.sha256(json.dumps(special_k_recipe).encode()).hexdigest()[:16]
+        for item in files:
+            package = str(item.get("source_package") or "")
+            path = Path(item["relative_path"])
+            if path.suffix.casefold() != ".dll":
+                continue
+            component = "reshade" if package.startswith("reshade/") else "special-k" if package.startswith("special-k/") else None
+            if item.get("role") == "custom_dll":
+                if path.name.casefold() == "lossless.dll":
+                    raise GraphicsResolutionError("A custom DLL cannot replace the Companion host")
+                digest = AssetStore.sha256(Path(item["source_path"]))
+                if digest in custom_digests:
+                    raise GraphicsResolutionError("The same custom DLL is selected more than once")
+                custom_digests.add(digest)
+                # Slot names remain stable when a DLL's contents are updated.
+                component = f"custom-{len(custom_digests)}"
+            if component is None:
+                continue
+            filename = "ReShade64.dll" if component == "reshade" else "SpecialK64.dll" if component == "special-k" else f"LSC_CustomAddon{len(custom_digests)}.dll"
+            destination = f"{special_k_root}/{filename}" if component == "special-k" else f".companion/components/{component}/{filename}"
+            item["relative_path"] = destination
+            components.append({"id": component, "path": destination,
+                               "sha256": AssetStore.sha256(Path(item["source_path"]))})
+        if len({item["id"] for item in components}) != len(components):
+            raise GraphicsResolutionError("A component recipe declares multiple runtime entry DLLs")
+        # Special K's explicit injection mode uses this API-selection marker.
+        if any(item["id"] == "special-k" for item in components):
+            for item in files:
+                if item["relative_path"].casefold() == "dxgi.ini":
+                    item["relative_path"] = f"{special_k_root}/Global/default_SpecialK.ini"
+                elif item["relative_path"].casefold() == ".companion-special-k/global/osd.ini":
+                    item["relative_path"] = f"{special_k_root}/Global/osd.ini"
+            marker = self.store.write_generated_text(profile.id, "SpecialK.d3d11", "")
+            files.append({"relative_path": "SpecialK.d3d11", "source_path": str(marker),
+                          "role": "special_k_config", "source_package": "generated/special-k-config"})
+        components.sort(key=lambda item: (item["id"] != "special-k", item["id"]))
+        manifest = self.store.write_generated_text(profile.id, "components.json", json.dumps({"schema": 1, "components": components}, indent=2))
+        files.append({"relative_path": ".companion/components.json", "source_path": str(manifest),
+                      "role": "component_load_manifest", "source_package": "generated/host-components"})
+        return files
+
     def resolve(
         self,
         profile: Optional[Profile],
@@ -501,6 +553,11 @@ class GraphicsResolver:
             )
 
         graphics = profile.graphics
+        if addon_manager_enabled is False and (
+            graphics.reshade.enabled or graphics.special_k.enabled
+            or any(override.enabled for override in profile.dll_overrides)
+        ):
+            raise GraphicsResolutionError("Enable the Companion Addon Host to load ReShade, Special K or custom DLLs")
         if addon_manager_enabled is True:
             manager_package = self._package(
                 "ls-addon-manager",
@@ -574,7 +631,7 @@ class GraphicsResolver:
                     "role": "neural_runtime",
                     "source_package": f"manual-import/{neural.runtime_asset_sha256}",
                 })
-            return files
+            return self._explicit_components(profile, files)
 
         proxy_package = (
             self._package("lossless-proxy", graphics.lossless_proxy)

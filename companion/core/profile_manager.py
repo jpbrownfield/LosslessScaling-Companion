@@ -249,6 +249,7 @@ class ProfileManager:
                 data = json.load(f)
             config = AppConfig.model_validate(data)
         except json.JSONDecodeError as error:
+            logger.error("Saved settings contain invalid JSON; automation paused for repair: %s", error)
             self._repair_source = self.config_file.read_bytes()
             self.repair_session = True
             self.validation_issues = [{
@@ -258,6 +259,7 @@ class ProfileManager:
             }]
             return self._get_default_config()
         except ValidationError as error:
+            logger.error("Saved settings failed validation; automation paused for repair: %s", error)
             self._repair_data = copy.deepcopy(data)
             self._repair_source = self.config_file.read_bytes()
             self.repair_session = True
@@ -286,6 +288,7 @@ class ProfileManager:
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(self.config.model_dump(), f, indent=2)
             os.replace(temp_file, self.config_file)
+            logger.info("Saved companion settings (%d profiles): %s", len(self.config.profiles), self.config_file)
             try:
                 self.profile_settings.sync(self.config.profiles)
             except (OSError, ValueError):

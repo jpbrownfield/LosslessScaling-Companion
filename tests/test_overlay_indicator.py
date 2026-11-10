@@ -1,4 +1,4 @@
-"""Overlay pill + border: log terminal, game-like gating, wiring."""
+"""Toast cards and border: lifetimes, game-like gating, wiring."""
 import ctypes
 import sys
 import tempfile
@@ -64,19 +64,28 @@ class OverlayStateTests(unittest.TestCase):
         state = OverlayState()
         state.log("first", now=100.0)
         state.log("second", now=101.0)
-        state.tick(now=101.9)
+        state.tick(now=104.9)
         self.assertEqual([item.text for item in state.current],
                          ["first", "second"])
-        state.tick(now=102.1)
+        state.tick(now=105.1)
         self.assertEqual([item.text for item in state.current], ["second"])
 
-    def test_errors_linger_longer(self):
+    def test_errors_also_last_five_seconds(self):
         state = OverlayState()
         state.log("boom", kind="error", now=100.0)
-        state.tick(now=103.5)
+        state.tick(now=104.9)
         self.assertEqual(len(state.current), 1)
-        state.tick(now=104.5)
+        state.tick(now=105.0)
         self.assertEqual(state.current, [])
+
+    def test_identical_messages_have_distinct_lifetimes(self):
+        state = OverlayState()
+        state.log("Scaling stopped", now=100.0)
+        state.log("Scaling stopped", now=101.0)
+        first, second = state.current
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual((first.created_at, first.expires_at), (100.0, 105.0))
+        self.assertEqual((second.created_at, second.expires_at), (101.0, 106.0))
 
     def test_max_five_lines(self):
         state = OverlayState()
@@ -156,6 +165,44 @@ class FocusSafetyTests(unittest.TestCase):
 
 
 class OverlayWiringTests(unittest.TestCase):
+    def test_detection_precedes_setup_and_scaling_with_or_without_host_restart(self):
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                automation, manager, script = make_automation(disable_native_auto_scale=True)
+                manager.config.lossless_scaling_exe_path = "C:/LS/LosslessScaling.exe"
+                manager.config.global_hotkey.activation_delay_ms = 0
+                automation.state.auto_scale_enabled = True
+                automation.process_watcher.target_is_foreground.return_value = True
+                automation.resolve_deployment_files = Mock(return_value=[])
+                automation._desired_gpu_route = Mock(return_value=None)
+                automation.deployment_manager.needs_change.return_value = restart
+                profile = Profile(id="game", name="The Game", auto_scale=True,
+                                  addon_config={"global": {"auto_load": True}})
+
+                def scale(*_args, **_kwargs):
+                    automation.overlay_indicator.log("Scaling started: The Game", kind="ok")
+                    automation.overlay_indicator.set_border("active", anchor_hwnd=82)
+                    return True
+
+                automation.set_scaling = Mock(side_effect=scale)
+                automation.activate_profile(profile, target_pid=42, target_hwnd=82, source="process match")
+                automation.set_scaling.assert_called_once()
+                messages = list(dict.fromkeys(script.lines()))
+                self.assertEqual(messages[:2], [
+                    "Game window detected: The Game (process match)",
+                    "Configuring for profile: The Game (auto-scale on focus)",
+                ])
+                self.assertLess(messages.index("Applying addon configuration"),
+                                messages.index("Scaling started: The Game"))
+                self.assertEqual(script.borders()[-1], "active")
+
+    def test_failed_setup_clears_pending_border(self):
+        automation, _, _ = make_automation(disable_native_auto_scale=True)
+        automation._apply_profile_transition = Mock(side_effect=RuntimeError("Deployment failed"))
+        profile = Profile(id="game", name="The Game", auto_scale=True)
+        automation.activate_profile(profile, target_pid=42, target_hwnd=82)
+        self.assertIsNone(automation.overlay_indicator._state.border.state)
+
     def test_activate_logs_detection_and_config(self):
         automation, _, script = make_automation()
         previous = Profile(id="a", name="Browser", auto_scale=False)
@@ -305,6 +352,21 @@ class OverlayHygieneTests(unittest.TestCase):
         indicator.tick(now=100.6)
         self.assertGreater(len(seen), first)
 
+    def test_toast_keeps_target_window_on_heartbeat(self):
+        seen = []
+        indicator = OverlayIndicator(presenter=seen.append)
+        indicator.log("targeted toast", anchor_hwnd=77, now=100.0)
+        indicator.tick(now=100.6)
+        self.assertEqual(seen[-1]["anchor_hwnd"], 77)
+
+    def test_hide_clears_toast_target(self):
+        seen = []
+        indicator = OverlayIndicator(presenter=seen.append)
+        indicator.log("targeted toast", anchor_hwnd=77, now=100.0)
+        indicator.hide()
+        indicator.log("untargeted toast", now=101.0)
+        self.assertIsNone(seen[-1]["anchor_hwnd"])
+
 
 @unittest.skipUnless(sys.platform == "win32", "Win32 overlay windows")
 class OverlayWin32VisibilityTests(unittest.TestCase):
@@ -312,6 +374,25 @@ class OverlayWin32VisibilityTests(unittest.TestCase):
     (bad class registration, font signature, missing blend constants, and
     UpdateLayeredWindow error 87). This test creates the real windows and
     asserts they become visible; the opaque rewrite must keep it green."""
+
+    def test_toast_and_border_use_their_own_anchors(self):
+        from companion.services.overlay_window import Win32OverlayPresenter
+
+        presenter = Win32OverlayPresenter()
+        presenter._draw_pill = Mock()
+        presenter._draw_border = Mock()
+        presenter._hide_border = Mock()
+        for border, border_anchor in ((None, None), ("active", 88)):
+            presenter._pending = {
+                "lines": [{"text": "targeted toast"}],
+                "anchor_hwnd": 77,
+                "border": border,
+                "border_anchor_hwnd": border_anchor,
+            }
+            presenter._has_pending = True
+            presenter._apply_pending()
+            self.assertEqual(presenter._draw_pill.call_args.args[1], 77)
+        self.assertEqual(presenter._draw_border.call_args.args[1], 88)
 
     def test_pill_and_border_become_visible(self):
         from companion.services import overlay_window as overlay_window
@@ -325,6 +406,11 @@ class OverlayWin32VisibilityTests(unittest.TestCase):
             self.assertTrue(presenter._pill_visible)
             self.assertTrue(bool(user32.IsWindowVisible(
                 ctypes.c_void_p(presenter._hwnd))))
+            rect = overlay_window._Rect()
+            self.assertTrue(presenter._user32.GetWindowRect(
+                ctypes.c_void_p(presenter._hwnd), ctypes.byref(rect)))
+            self.assertEqual((rect.right - rect.left, rect.bottom - rect.top),
+                             (overlay_window.WIDTH, overlay_window.HEIGHT))
             presenter._draw_border(
                 "pending", int(user32.GetDesktopWindow()), False)
             self.assertTrue(presenter._border_visible)

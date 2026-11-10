@@ -5,13 +5,75 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from companion.core.models import AppConfig, Profile
+from companion.core.models import AppConfig, Profile, ReshadeConfig
 from companion.core.state import AppState
 
 from companion.services.diagnostic_runner import DiagnosticRunner
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_reshade_requires_deployed_module_and_fresh_runtime_initialization(self):
+        root = Path("diagnostic-ls").resolve()
+        profile = Profile(name="ReShade", reshade=ReshadeConfig(enabled=True))
+        files = [{"relative_path": "dxgi.dll", "source_package": "reshade/6.8/hash"}]
+        logs = {"LSAddonManager.log": "Addon Manager for Lossless Scaling Build 5 starting",
+                "ReShade.log": "Recreated runtime environment on runtime 000001234567 ('ReShade.ini')."}
+        checks = DiagnosticRunner._addon_runtime_checks(profile, root, files,
+            [str(Path("C:/Windows/System32/dxgi.dll"))], logs)
+        self.assertFalse(checks["reshadeModulesLoaded"])
+        checks = DiagnosticRunner._addon_runtime_checks(profile, root, files, [str(root / "dxgi.dll")], logs)
+        self.assertTrue(all(checks.values()))
+        logs["ReShade.log"] = "Initializing crosire's ReShade version 6.8"
+        checks = DiagnosticRunner._addon_runtime_checks(profile, root, files, [str(root / "dxgi.dll")], logs)
+        self.assertFalse(checks["reshadeRuntimeInitialized"])
+
+    def test_special_k_requires_its_module_and_own_runtime_evidence(self):
+        root = Path("diagnostic-ls").resolve()
+        profile = Profile(name="Special K")
+        profile.graphics.special_k.enabled = True
+        files = [{"relative_path": "dxgi.dll", "source_package": "special-k/1/hash"}]
+        logs = {"LSAddonManager.log": "Addon Manager for Lossless Scaling Build 5 starting"}
+        checks = DiagnosticRunner._addon_runtime_checks(profile, root, files, [str(root / "dxgi.dll")], logs)
+        self.assertFalse(checks["specialKRuntimeInitialized"])
+        logs["dxgi.log"] = "Special K initialized"
+        self.assertTrue(all(DiagnosticRunner._addon_runtime_checks(profile, root, files,
+            [str(root / "dxgi.dll")], logs).values()))
+
+    def test_current_neural_recipe_requires_processed_frames_and_healthy_telemetry(self):
+        root = Path("diagnostic-ls").resolve()
+        profile = Profile(name="NR")
+        profile.graphics.neural_render.implementation = "lsp_neural_render"
+        files = [{"relative_path": name, "source_package": "ls-addon-manager/build-5/hash"}
+                 for name in ("addons/DLSSNR02/DLSSNR02.dll", "addons/DLSSNR02/NeuralRendering_nvngx.dll")]
+        files.append({"relative_path": "nvngx_dlssnr.dll", "role": "neural_runtime"})
+        modules = [str(root / item["relative_path"]) for item in files]
+        logs = {"LSAddonManager.log": "Addon Manager for Lossless Scaling Build 5 starting"}
+        telemetry = {"available": True, "addons": [{"id": "DLSSNR02", "loaded": True, "enabled": True}],
+                     "capture": {"captures": 10}, "metrics": {"DLSSNR02": {"accepted": 5, "model_ms": 2.0}}}
+        check = lambda: DiagnosticRunner._addon_runtime_checks(profile, root, files, modules, logs, telemetry)
+        self.assertTrue(all(check().values()))
+        telemetry["metrics"]["DLSSNR02"]["accepted"] = 0
+        self.assertFalse(check()["neuralFramesProcessed"])
+        telemetry["addons"][0]["faulted"] = True
+        self.assertFalse(check()["neuralAddonHealthy"])
+        modules.pop()
+        self.assertFalse(check()["neuralModulesLoaded"])
+
+    def test_saved_gpu_map_does_not_hide_failed_idle_discovery(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(
+            state=AppState(), profile_manager=SimpleNamespace(config_dir=Path("missing")),
+            automation=Mock(),
+        )
+        runner.server.automation.gpu_map_status.return_value = {"state": "ok"}
+        runner.server.automation._desired_gpu_route.return_value = {}
+        runner.server.state.gpu_mapping_status = {"state": "error", "message": "empty adapter names"}
+        with patch("companion.services.adapter_report.load_latest", return_value=None):
+            result = runner._gpu_routing()
+        self.assertEqual(result["status"], "warn")
+        self.assertFalse(result["details"]["liveRoutingVerified"])
+        self.assertEqual(result["details"]["evidenceScope"], "saved_map_consistency")
+
     def test_live_cleanup_does_not_restore_files_when_host_will_not_stop(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

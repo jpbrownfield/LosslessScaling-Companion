@@ -150,19 +150,37 @@ def load_latest(directory: Path, pid: Optional[int] = None,
     return None
 
 
+def load_idle_report(directory: Path, pid: int, created_after: float) -> Optional[Dict]:
+    """Read the startup probe's separate result, untouched by runtime refreshes."""
+    path = Path(directory) / f"ls-idle-adapter-report-{pid}.json"
+    try:
+        stat = path.stat()
+        if stat.st_mtime < created_after or stat.st_size > 1024 * 1024:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("schema") == 1 and payload.get("pid") == pid:
+            return {**payload, "_path": str(path)}
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def configured_process(executable):
     """Resolve the configured LS instance, never an unrelated same-name copy."""
     import psutil
     if not executable:
         return None
     wanted = str(Path(executable).resolve()).casefold()
-    for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+    for process in psutil.process_iter():
         try:
-            if (str(process.info.get("name") or "").casefold() == "losslessscaling.exe"
-                    and process.info.get("exe")
-                    and str(Path(process.info["exe"]).resolve()).casefold() == wanted):
-                return (process.pid, process.info["create_time"])
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            # process_iter caches Process objects; another thread can replace
+            # their .info with a different set of attributes at any time.
+            info = process.as_dict(attrs=["name", "exe"])
+            if (str(info.get("name") or "").casefold() == "losslessscaling.exe"
+                    and info.get("exe")
+                    and str(Path(info["exe"]).resolve()).casefold() == wanted):
+                return (process.pid, process.create_time())
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
             continue
     return None
 

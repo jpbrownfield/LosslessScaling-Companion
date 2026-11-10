@@ -53,6 +53,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             names = {profile["name"] for profile in first["profiles"]}
             self.assertEqual(len(first["profiles"]), 3)
             self.assertEqual(len(second["profiles"]), 3)
+            self.assertTrue(all(profile["builtin"] for profile in first["profiles"]))
             self.assertIn("Basic Sharpening (Low Cost)", names)
             self.assertIn("SDR to HDR (Low Cost)", names)
             self.assertIn("Sharpening + SDR to HDR (Low Cost)", names)

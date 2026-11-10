@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -90,6 +91,10 @@ class AssetStore:
             "outcome": str(outcome),
             **details,
         }
+        logging.getLogger("LSCompanion.Assets").log(
+            logging.INFO if outcome == "success" else logging.ERROR,
+            "%s [%s]: %s", event, outcome, json.dumps(details, sort_keys=True, default=str),
+        )
         try:
             encoded = json.dumps(record, sort_keys=True, default=str) + "\n"
             with _AUDIT_LOCK:
@@ -100,7 +105,7 @@ class AssetStore:
                     os.fsync(stream.fileno())
         except OSError:
             # Deployment rollback and integrity checks remain the source of truth.
-            pass
+            logging.getLogger("LSCompanion.Assets").warning("Could not persist audit receipt for %s", event, exc_info=True)
 
     @staticmethod
     def pe_architecture(path: Path) -> Optional[str]:

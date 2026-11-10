@@ -49,6 +49,24 @@ def fixture(path, **overrides):
 
 
 class AdapterReportTests(unittest.TestCase):
+    def test_process_identity_uses_private_metadata_despite_overwritten_shared_info(self):
+        executable = Path("LosslessScaling.exe").resolve()
+        process = Mock(pid=42, info={"name": "unrelated.exe"})
+        process.as_dict.return_value = {"name": "LosslessScaling.exe", "exe": str(executable)}
+        process.create_time.return_value = 123.5
+        with patch("psutil.process_iter", return_value=[process]):
+            self.assertEqual(adapter_report.configured_process(executable), (42, 123.5))
+        process.as_dict.assert_called_once_with(attrs=["name", "exe"])
+
+    def test_process_identity_skips_inaccessible_and_foreign_same_name_instances(self):
+        import psutil
+        blocked, foreign = Mock(), Mock()
+        blocked.as_dict.side_effect = psutil.AccessDenied(1)
+        foreign.as_dict.return_value = {"name": "LosslessScaling.exe", "exe": str(Path("other/LosslessScaling.exe").resolve())}
+        with patch("psutil.process_iter", return_value=[blocked, foreign]):
+            self.assertIsNone(adapter_report.configured_process("LosslessScaling.exe"))
+        foreign.create_time.assert_not_called()
+
     def test_load_latest_prefers_newest_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

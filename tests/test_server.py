@@ -71,6 +71,75 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    async def test_profile_icons_are_authenticated_and_bound_to_saved_profile_ids(self):
+        profile = self.manager.create_profile_from_process("Game.exe", "Existing game")
+        with patch.object(self.server.profile_icons, "png", return_value=b"png") as extract:
+            forbidden = await self.server.process_http_request(f"/profile-icon/{profile.id}.png", {})
+            self.assertEqual(forbidden[0], 403)
+            missing = await self.server.process_http_request(
+                f"/profile-icon/missing.png?token={self.server.dashboard_token}&path=C:/secret.exe", {})
+            self.assertEqual(missing[0], 404)
+            extract.assert_not_called()
+            response = await self.server.process_http_request(
+                f"/profile-icon/{profile.id}.png?token={self.server.dashboard_token}", {})
+            self.assertEqual(response[0], 200)
+            self.assertEqual(dict(response[1])["Content-Type"], "image/png")
+            self.assertEqual(response[2], b"png")
+            self.assertEqual(extract.call_args.args[0].id, profile.id)
+
+    async def test_profile_icons_run_outside_event_loop_and_missing_icons_use_fallback(self):
+        profile = self.manager.create_profile_from_process("Game.exe", "Existing game")
+        main_thread = threading.get_ident()
+        workers = []
+        def extract(*args):
+            workers.append(threading.get_ident())
+            return None
+        with patch.object(self.server.profile_icons, "png", side_effect=extract):
+            response = await self.server.process_http_request(
+                f"/profile-icon/{profile.id}.png?token={self.server.dashboard_token}", {})
+        self.assertEqual(response[0], 404)
+        self.assertNotEqual(workers, [main_thread])
+        self.assertEqual(len(workers), 1)
+
+    async def test_existing_profile_icon_version_changes_when_its_target_changes(self):
+        profile = self.manager.create_profile_from_process("Game.exe", "Existing game")
+        def version():
+            return next(item["iconVersion"] for item in self.server._profile_summaries() if item["id"] == profile.id)
+        before = version()
+        profile.target_executable_path = "C:/Games/Another.exe"
+        self.assertNotEqual(version(), before)
+
+    async def test_runtime_logs_require_dashboard_authority(self):
+        for authority in ("readonly", "extension"):
+            websocket = self.FakeWebSocket()
+            self.server.client_authority[websocket] = authority
+            await self.server.process_message(websocket, '{"type":"GET_RUNTIME_LOGS"}')
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            self.assertNotIn("entries", json.loads(websocket.messages[-1]))
+
+    async def test_runtime_logs_remain_readable_during_gpu_mapping_and_updates(self):
+        import logging
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.state.gpu_mapping_in_progress = True
+        self.state.update_in_progress = True
+        logging.getLogger("LSCompanion.ServerTest").warning("test GPU target unavailable")
+        await asyncio.wait_for(self.server.process_message(websocket, '{"type":"GET_RUNTIME_LOGS"}'), 1)
+        result = json.loads(websocket.messages[-1])
+        self.assertEqual(result["type"], "RUNTIME_LOGS")
+        self.assertTrue(any(entry["message"] == "test GPU target unavailable" for entry in result["entries"]))
+        self.assertIn("companion.log", result["path"])
+        await self.server.process_message(websocket, json.dumps({"type": "GET_RUNTIME_LOGS", "since": result["cursor"], "session": result["session"]}))
+        self.assertEqual(json.loads(websocket.messages[-1])["entries"], [])
+        self.assertEqual(self.server._active_requests, 0)
+
+    async def test_runtime_logs_reject_invalid_cursors(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        for value in (-1, "100", True):
+            await self.server.process_message(websocket, json.dumps({"type": "GET_RUNTIME_LOGS", "since": value}))
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+
     async def test_editor_request_waits_for_idle_gpu_transaction_without_losing_message(self):
         from unittest.mock import AsyncMock
         websocket = self.FakeWebSocket()
@@ -287,6 +356,43 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.reshade_profiles.sync_all_configs.assert_called_once_with()
         self.server.hotkey_listener.refresh.assert_called_once_with()
 
+    async def test_general_overlay_toggle_persists_and_preserves_omitted_preference(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.automation.overlay_indicator = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        for fields, expected in (({"overlayIndicatorEnabled": False}, False),
+                                 ({}, False), ({"overlayIndicatorEnabled": True}, True)):
+            await self.server.process_message(websocket, json.dumps({
+                "type": "SAVE_GENERAL_SETTINGS", "runAtStartup": False, **fields,
+            }))
+            response = json.loads(websocket.messages[-1])
+            self.assertEqual(response["type"], "GENERAL_SETTINGS_SAVED")
+            self.assertEqual(response["controlSettings"]["overlayIndicatorEnabled"], expected)
+            self.assertEqual(ProfileManager(self.manager.config_dir).config.overlay_indicator_enabled, expected)
+        self.assertEqual(self.automation.overlay_indicator.tick.call_count, 3)
+
+    async def test_general_gpu_edit_applies_route_once_and_unrelated_saves_do_not_reload(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.automation.apply_general_gpu_settings = Mock()
+        self.automation.gpu_router.detect = Mock(return_value={
+            "gpus": [{"deviceId": "5050", "name": "RTX 5050", "lsGpuId": 6}],
+            "displays": [], "hasNvidia": True,
+        })
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        message = {"type": "SAVE_GENERAL_SETTINGS", "autoRouteGpuToDisplay": False,
+                   "preferredScalingGpuDeviceId": "5050", "preferredScalingGpuName": "RTX 5050"}
+        await self.server.process_message(websocket, json.dumps(message))
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "GENERAL_SETTINGS_SAVED")
+        self.automation.apply_general_gpu_settings.assert_called_once_with()
+        await self.server.process_message(websocket, json.dumps(message))
+        self.automation.apply_general_gpu_settings.assert_called_once_with()
+        message.update(autoRouteGpuToDisplay=True)
+        await self.server.process_message(websocket, json.dumps(message))
+        self.assertEqual(self.automation.apply_general_gpu_settings.call_count, 2)
+        self.assertIsNone(self.manager.config.preferred_scaling_gpu_device_id)
+
     def test_benchmark_requires_embedded_workload_and_verified_presentmon(self):
         payload = Path(self.temp_dir.name) / "benchmark-tools"
         payload.mkdir()
@@ -376,6 +482,16 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         payloads = [json.loads(message) for message in websocket.messages]
         self.assertTrue(any(item.get("running") is True for item in payloads))
         self.assertIn(expected, payloads)
+
+    async def test_live_diagnostics_do_not_take_over_a_running_benchmark(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.state.benchmark_mode_active = True
+        self.server.diagnostic_runner.run = Mock()
+        await self.server.process_message(websocket, json.dumps({"type": "RUN_DIAGNOSTICS"}))
+        self.assertIsNone(self.server.diagnostics_task)
+        self.server.diagnostic_runner.run.assert_not_called()
+        self.assertIn("finish before running live diagnostics", websocket.messages[-1])
 
     async def test_diagnostic_archive_download_requires_dashboard_token(self):
         self.server.diagnostic_runner.root.mkdir(parents=True)
@@ -839,7 +955,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("FriedSnowman Addon Suite", body)
             self.assertIn("Refresh Runtime Status", body)
             self.assertIn("Community Runtime Warning", body)
-            self.assertIn("Download and install Full Add-On build", body)
+            self.assertIn("Download Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)
             self.assertIn('data-addon-download="special-k"', body)
             self.assertNotIn('data-addon-import=', body)

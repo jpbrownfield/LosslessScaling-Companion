@@ -11,6 +11,26 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_hidden_controls_replace_unsafe_saved_values_without_enabling_processors(self):
+        from companion.services.addon_schema import ADDONS, MANAGED_DEFAULTS
+
+        saved = {addon_id: dict.fromkeys(defaults, "unexpected")
+                 for addon_id, defaults in MANAGED_DEFAULTS.items()}
+        saved["DLSSNR02"].update(_enabled=True, intensity="0.7", futureTuning="keep")
+        profile = Profile(name="Imported", addon_config={"addons": saved})
+        result = self.service().effective(profile, reshade_enabled=False)["addons"]
+        for addon_id, defaults in MANAGED_DEFAULTS.items():
+            for key, value in defaults.items():
+                self.assertEqual(result[addon_id][key], value)
+                field = next(f for addon in ADDONS if addon["id"] == addon_id
+                             for f in addon["fields"] if f["key"] == key)
+                self.assertTrue(field["hidden"])
+        self.assertTrue(result["DLSSNR02"]["_enabled"])
+        self.assertFalse(result["FSR3UPSC"]["_enabled"])
+        self.assertEqual(result["DLSSNR02"]["intensity"], "0.7")
+        self.assertEqual(result["DLSSNR02"]["futureTuning"], "keep")
+        self.assertEqual(profile.addon_config["addons"]["DLSSNR02"]["enabled"], "unexpected")
+
     def test_supported_features_are_opt_in_and_unknown_settings_survive(self):
         service = self.service()
         baseline = service.effective(Profile(name="Game"), reshade_enabled=False)
@@ -181,8 +201,8 @@ class AddonConfigServiceTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "companion" / "ui" / "dashboard.html"
         ).read_text(encoding="utf-8")
         self.assertIn('id="addonManagerEnabled"', dashboard)
-        self.assertIn("Refresh Runtime Status", dashboard)
-        self.assertIn("Addon Configuration", dashboard)
+        self.assertIn("Refresh runtime", dashboard)
+        self.assertIn("Add-ons for this profile", dashboard)
         self.assertIn('id="addonEditorCards"', dashboard)
         self.assertNotIn('id="echoConfigJson"', dashboard)
 

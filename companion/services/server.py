@@ -48,10 +48,12 @@ from .gpu_selections import match_device
 from .dynamic_limiter import DynamicLimiterController
 from .diagnostic_runner import DiagnosticRunner
 from .input_simulator import InputSimulator
+from .runtime_logging import runtime_log_buffer
 from .self_update import CompanionUpdateService
 from .automatic_updates import AutomaticUpdates, newer_addon_version
 from .addon_host import runtime_status as addon_runtime_status, addon_version_key
 from .gpu_index_refresh import IdleGpuIndexRefresh
+from .profile_icons import ProfileIconService
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
 from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels
@@ -94,6 +96,7 @@ class CompanionWebSocketServer:
         proxy_menu=None,
     ):
         self.profile_manager = profile_manager
+        self.runtime_logs = runtime_log_buffer()
         self.state = state
         self.process_watcher = process_watcher
         self.automation = automation or AutomationController(
@@ -117,6 +120,7 @@ class CompanionWebSocketServer:
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
         self.server = None
         self.dashboard_token = secrets.token_urlsafe(32)
+        self.profile_icons = ProfileIconService()
         self.client_authority: Dict[WebSocketServerProtocol, str] = {}
         self.addon_update_task: Optional[asyncio.Task] = None
         self.presentmon_detection_task: Optional[asyncio.Task] = None
@@ -341,6 +345,9 @@ class CompanionWebSocketServer:
                     # Read health checks independently of ordered save/install
                     # requests, including while they await worker threads.
                     await websocket.send(json.dumps({"type": "PONG", "timestamp": parsed.get("timestamp")}))
+                elif isinstance(parsed, dict) and parsed.get("type") == "GET_RUNTIME_LOGS":
+                    # Logs stay readable while diagnostics/install requests own the queue.
+                    await self._process_message(websocket, message)
                 else:
                     await requests.put(message)
         except ConnectionClosed:
@@ -367,6 +374,12 @@ class CompanionWebSocketServer:
             logger.info(f"Client disconnected. Total clients: {self.state.connected_clients}")
 
     async def process_message(self, websocket: WebSocketServerProtocol, raw_message: str) -> None:
+        try:
+            parsed = json.loads(raw_message)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("type") == "GET_RUNTIME_LOGS":
+            return await self._process_message(websocket, raw_message)
         # Keep incoming editor/save/install requests in order while the short
         # idle transaction owns LS. The UI remains responsive and drafts stay
         # in the browser; no request is rejected or discarded.
@@ -479,6 +492,7 @@ class CompanionWebSocketServer:
             msg_type = msg.get("type")
 
             dashboard_messages = {
+                "GET_RUNTIME_LOGS",
                 "UPDATE_LOSSLESS_PROFILE", "SET_EDITOR_ACTIVITY",
                 "IMPORT_LOSSLESS_PROFILE",
                 "SET_ACTIVE_PROFILE",
@@ -523,6 +537,17 @@ class CompanionWebSocketServer:
                 raise PermissionError("Dashboard capability token required")
             if msg_type in extension_messages and authority not in {"dashboard", "extension"}:
                 raise PermissionError("Automation messages require an authorized local client")
+
+            if msg_type == "GET_RUNTIME_LOGS":
+                since = msg.get("since", 0)
+                if type(since) is not int or since < 0:
+                    raise ValueError("Log cursor must be a non-negative integer")
+                await websocket.send(json.dumps({"type": "RUNTIME_LOGS", **self.runtime_logs.snapshot(since, msg.get("session", "")),
+                    "path": str(self.profile_manager.config_dir / "logs" / "companion.log")}))
+                return
+            if (isinstance(msg_type, str) and not msg_type.startswith("GET_")
+                    and msg_type not in {"PING", "SET_EDITOR_ACTIVITY", "EMBED_ADDON_MENU", "DETACH_ADDON_MENU"}):
+                logger.info("Received %s request from %s", msg_type, authority)
 
             if msg_type == "GET_NOTIFICATIONS":
                 await websocket.send(json.dumps({"type": "NOTIFICATIONS", **self._notifications_payload()}))
@@ -876,6 +901,9 @@ class CompanionWebSocketServer:
                 available = {item["id"] for item in self.diagnostic_runner.catalog()}
                 if selected_test is not None and selected_test not in available:
                     raise ValueError("Unknown application test")
+                if (selected_test not in self.diagnostic_runner.READ_ONLY_TESTS
+                        and self.state.benchmark_mode_active):
+                    raise RuntimeError("Wait for the benchmark or GPU calibration to finish before running live diagnostics")
                 self._diagnostics_selected_test = selected_test
                 self.diagnostics_task = asyncio.create_task(self._run_diagnostics(selected_test))
                 await websocket.send(json.dumps({
@@ -1074,6 +1102,11 @@ class CompanionWebSocketServer:
                         raise ValueError("Select a currently detected GPU")
                     requested_gpu_id = str(resolved.get("deviceId") or "")
                     requested_gpu_name = str(resolved.get("name") or "")
+                gpu_settings_changed = (
+                    self.config.preferred_scaling_gpu_device_id,
+                    self.config.preferred_scaling_gpu_name,
+                    self.config.auto_route_gpu_to_display,
+                ) != (requested_gpu_id, requested_gpu_name, requested_auto_route)
                 requested_rtx_hdr = bool(msg.get("nvidiaRtxHdrEnabled", False))
                 if requested_rtx_hdr and not gpu_inventory.get("hasNvidia"):
                     raise ValueError("NVIDIA RTX HDR requires a detected NVIDIA GPU")
@@ -1238,6 +1271,9 @@ class CompanionWebSocketServer:
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get("minimizeOtherWindowsOnScale", False)
                 )
+                self.config.overlay_indicator_enabled = bool(
+                    msg.get("overlayIndicatorEnabled", self.config.overlay_indicator_enabled)
+                )
                 self.config.process_lasso_performance_mode_scaling = bool(
                     msg.get("processLassoPerformanceModeScaling", False)
                 )
@@ -1251,6 +1287,9 @@ class CompanionWebSocketServer:
                 self.config.rtss_default_gpu_target_percent = requested_gpu_target
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                self.automation.overlay_indicator.tick()
+                if gpu_settings_changed:
+                    await asyncio.to_thread(self.automation.apply_general_gpu_settings)
                 if (
                     previous_addon_manager_enabled != requested_addon_manager_enabled
                     and self.state.current_active_profile
@@ -2007,7 +2046,7 @@ class CompanionWebSocketServer:
         except ConnectionClosed:
             return
         except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
+            logger.error("Request %s failed: %s", msg.get("type") if isinstance(msg, dict) else "invalid message", e, exc_info=True)
             try:
                 context = msg if isinstance(msg, dict) else {}
                 profile_data = context.get("profile") or {}
@@ -2143,6 +2182,24 @@ class CompanionWebSocketServer:
         """Serve the dashboard from the WebSocket server's trusted origin."""
         parsed = urlsplit(path)
         request_path = parsed.path
+        if request_path.startswith("/profile-icon/") and request_path.endswith(".png"):
+            token = parse_qs(parsed.query).get("token", [""])[0]
+            if not token.isascii() or not secrets.compare_digest(token, self.dashboard_token):
+                return HTTPStatus.FORBIDDEN, [("Content-Type", "text/plain")], b"Forbidden"
+            profile_id = request_path[len("/profile-icon/"):-4]
+            profile = self.profile_manager.get_profile_by_id(profile_id)
+            body = await asyncio.to_thread(
+                self.profile_icons.png, profile.model_copy(), self.config.lossless_scaling_exe_path,
+            ) if profile else None
+            if not body:
+                return HTTPStatus.NOT_FOUND, [("Content-Type", "text/plain"),
+                                              ("Cache-Control", "private, max-age=30")], b"No application icon"
+            return HTTPStatus.OK, [
+                ("Content-Type", "image/png"),
+                ("Content-Length", str(len(body))),
+                ("Cache-Control", "private, max-age=300"),
+                ("X-Content-Type-Options", "nosniff"),
+            ], body
         if request_path == "/diagnostics/download":
             token = parse_qs(parsed.query).get("token", [""])[0]
             archive_path = self._last_diagnostics_archive
@@ -2897,6 +2954,7 @@ class CompanionWebSocketServer:
             "target_executable_path": profile.target_executable_path,
             "target_processes": profile.target_processes,
             "target_executable_paths": profile.target_executable_paths,
+            "iconVersion": self.profile_icons.version(profile, self.config.lossless_scaling_exe_path),
             "rtss": {
                 "enabled": profile.rtss.enabled,
                 "framerate_limit": profile.rtss.framerate_limit,

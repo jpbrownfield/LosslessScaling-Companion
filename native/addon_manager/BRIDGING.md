@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Initial baseline: **build-5**, commit
-`417c292aefa32ef5e36696975813a24037ef2564`; Companion revision **3**. This replaces
+`417c292aefa32ef5e36696975813a24037ef2564`; Companion revision **4**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -28,6 +28,18 @@ not replace our host with an unreviewed upstream release. New upstream versions
 are incorporated by rebuilding and releasing Companion.
 
 ## Deliberate patch surface
+
+Revision 4 adds `component_loader.{h,cpp}` and the exported
+`LSCInitializeComponents` entry point. The mandatory managed startup hook calls
+it before LS Main and graphics initialization. The loader validates the complete
+`.companion/components.json` plan before loading, including SHA-256, unique
+identities and canonical paths beneath `.companion/components`. It uses
+`LoadLibraryExW` with explicit paths, checks already loaded copies, pins selected
+modules and publishes load/error evidence in host status. ReShade, Special K and
+custom modules use this route; the existing SDK add-on loader is unchanged.
+The host's `Lossless.dll` engine forwarding remains in use. Deployments target
+only Companion's managed LS copy and private settings; see
+`native/runtime_isolation` for the pre-Main folder redirection.
 
 `prepare.py` applies exact, unique anchors and refuses upstream drift. It adds
 the files `companion_bridge.{h,cpp}`, the host target's source/version
@@ -77,6 +89,23 @@ prevents upstream's stock fallback on rejected devices from appearing as INT8.
 or image-quality claim is inferred from successfully loading a DLL.
 
 ## Control and telemetry contract
+
+The profile editor's presentation and vendor requirements live in
+`companion/services/addon_schema.py`. NVIDIA-exclusive SR and NR flow/HDR/picture
+groups require a detected NVIDIA GPU; AMD inference/model controls require AMD.
+Use the full physical GPU inventory, allowing both on mixed systems. Logical NR,
+FSR and XeSS remain shared. These editor gates do not change capture-adapter
+routing or certify model/HIP compatibility.
+
+`MANAGED_DEFAULTS` in that schema hides redundant processing/comparison switches,
+automatic masking, AMD blocking/history/blending experiments, experimental FSR
+frame generation and ReShade input housekeeping. `AddonConfigService.effective`
+applies those safe values even to existing/imported configurations. NR processing
+and result application stay on, automatic masking stays on, AMD stays asynchronous
+without experimental history/blending, and LS owns frame generation. The actual
+add-on `_enabled` flags remain profile-owned. Review this small defaults table and
+vendor metadata when incorporating upstream settings changes; hidden keys remain
+known to the editor so they cannot resurface as unknown saved settings.
 
 Companion's profile editor owns `addons/config.json`. NR uses **DLSSNR02** and its
 upstream string-valued settings. Image processors are explicitly opt-in. The

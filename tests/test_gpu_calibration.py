@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from companion.core.profile_manager import ProfileManager
@@ -282,6 +283,36 @@ class CalibrationExclusivityTests(unittest.TestCase):
         automation.set_scaling(False, reason="focus", force=True)
         # A graceful stop still emits the toggle hotkey while flagged.
         trigger.assert_called_once()
+
+    def test_diagnostics_can_start_only_their_own_window_and_profile(self):
+        for reason in ("focus", "override_hotkey", "experimental_addon_test:diagnostic"):
+            automation, state, trigger = self.make_guarded_automation()
+            profile = automation.profile_manager.config.profiles[0]
+            state.diagnostic_scaling_target = (42, 82, profile.id)
+            automation.set_scaling(True, profile, reason=reason, force=True, target_pid=42, target_hwnd=82)
+            trigger.assert_called_once()
+
+    def test_diagnostic_ownership_does_not_allow_other_targets_or_requests(self):
+        for pid, hwnd, profile_id, reason in (
+            (43, 82, "same", "focus"), (42, 83, "same", "override_hotkey"),
+            (42, 82, "other", "focus"), (42, 82, "same", "manual"),
+        ):
+            automation, state, trigger = self.make_guarded_automation()
+            profile = automation.profile_manager.config.profiles[0]
+            state.diagnostic_scaling_target = (42, 82, profile.id if profile_id == "same" else "different")
+            self.assertFalse(automation.set_scaling(True, profile, reason=reason, force=True, target_pid=pid, target_hwnd=hwnd))
+            trigger.assert_not_called()
+
+    def test_override_on_unrelated_window_does_not_apply_a_profile_during_diagnostics(self):
+        automation, state, trigger = self.make_guarded_automation()
+        automation.profile_manager.config.override_lossless_hotkey = True
+        profile = automation.profile_manager.config.profiles[0]
+        state.diagnostic_scaling_target = (42, 82, profile.id)
+        automation.process_watcher.get_foreground_window_info.return_value = SimpleNamespace(pid=43, hwnd=83)
+        automation.activate_profile = Mock()
+        self.assertFalse(automation.handle_override_hotkey())
+        automation.activate_profile.assert_not_called()
+        trigger.assert_not_called()
 
 
 class ScaleUntilFramesTests(unittest.TestCase):

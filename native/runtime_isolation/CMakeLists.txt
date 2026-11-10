@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.20)
+project(LSC_RuntimeIsolation LANGUAGES C CXX)
+if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "Runtime isolation requires Windows x64")
+endif()
+include(FetchContent)
+FetchContent_Declare(minhook GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
+  GIT_TAG c3fcafdc10146beb5919319d0683e44e3c30d537)
+FetchContent_MakeAvailable(minhook)
+add_library(LSC_RuntimeIsolation SHARED isolation.cpp)
+target_compile_features(LSC_RuntimeIsolation PRIVATE cxx_std_17)
+target_compile_definitions(LSC_RuntimeIsolation PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(LSC_RuntimeIsolation PRIVATE minhook shell32 ole32)
+set_property(TARGET LSC_RuntimeIsolation PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_property(TARGET minhook PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_target_properties(LSC_RuntimeIsolation PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../build/native/runtime-isolation")

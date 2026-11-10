@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("LSCompanion")
 
 from .core.profile_manager import ProfileManager
-from .services.runtime_logging import configure_runtime_logging
+from .services.runtime_logging import configure_runtime_logging, runtime_log_buffer, maintain_runtime_logs
 from .core.state import AppState
 from .services.server import CompanionWebSocketServer
 from .services.process_watcher import ProcessWatcher
@@ -37,6 +37,7 @@ from .services.dynamic_limiter import DynamicLimiterController
 from .services.hotkey_listener import GlobalHotkeyListener
 from .services.single_instance import SingleInstanceGuard
 from .services.lossless_locator import find_lossless_scaling_executable
+from .services.managed_runtime import ManagedRuntime
 from .services.proxy_menu import AddonManagerMenuController
 from .ui.tray import CompanionTrayIcon
 from .services.simulation_adapters import (
@@ -59,16 +60,32 @@ class CompanionApplication:
     SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
     def __init__(self, config_dir: Optional[Path] = None):
+        runtime_log_buffer()
         self.simulation_mode = simulation_mode_enabled()
         self.profile_manager = ProfileManager(config_dir)
+        try:
+            log_path = configure_runtime_logging(self.profile_manager.config_dir)
+            logger.info("Companion session starting (simulation=%s); persistent log: %s", self.simulation_mode, log_path)
+        except OSError:
+            logger.exception("Could not open the persistent Companion log; live Log remains available")
+        self.asset_store = AssetStore(self.profile_manager.config.asset_store_path)
         if not self.simulation_mode:
             detected_lossless = find_lossless_scaling_executable(
-                self.profile_manager.config.lossless_scaling_exe_path
+                self.profile_manager.config.lossless_source_exe_path
+                or self.profile_manager.config.lossless_scaling_exe_path
             )
-            if detected_lossless and str(detected_lossless) != self.profile_manager.config.lossless_scaling_exe_path:
-                logger.info("Detected Lossless Scaling at %s", detected_lossless)
-                self.profile_manager.config.lossless_scaling_exe_path = str(detected_lossless)
-                self.profile_manager.save_config()
+            if not detected_lossless:
+                raise RuntimeError("Install Lossless Scaling before starting Companion's managed runtime")
+            runtime = ManagedRuntime(self.profile_manager.config_dir)
+            executable = runtime.prepare(
+                detected_lossless, self.asset_store,
+                seed_settings=(Path(self.profile_manager.config.lossless_settings_xml_path)
+                               if self.profile_manager.config.lossless_settings_xml_path else None),
+            )
+            self.profile_manager.config.lossless_source_exe_path = str(detected_lossless)
+            runtime.bind(self.profile_manager, executable, self.asset_store)
+            self.profile_manager.save_config()
+            logger.info("Managed LS ready: source=%s; clone=%s; private settings=%s", detected_lossless, executable, runtime.settings)
         self.state = AppState()
         self.state.simulation_mode = self.simulation_mode
         self.state.auto_scale_enabled = (
@@ -91,7 +108,6 @@ class CompanionApplication:
             lossless_settings=self.ls_settings,
             proxy_menu=self.proxy_menu,
         )
-        self.asset_store = AssetStore(self.profile_manager.config.asset_store_path)
         self.release_manager = ReleaseManager(
             self.asset_store,
             check_interval_hours=self.profile_manager.config.update_check_interval_hours,
@@ -259,6 +275,11 @@ class CompanionApplication:
         """Runs the asyncio WebSocket server in a dedicated thread."""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
+        def report_async_failure(loop, context):
+            error = context.get("exception")
+            logger.error("Background async task failed: %s", context.get("message", "unknown failure"),
+                         exc_info=(type(error), error, error.__traceback__) if error else None)
+        self.loop.set_exception_handler(report_async_failure)
 
         async def _main_loop():
             await self.server.start()
@@ -288,6 +309,7 @@ class CompanionApplication:
         logger.info("Starting background process and window monitor...")
         while self.running:
             try:
+                maintain_runtime_logs()
                 if self._instance_guard and self._instance_guard.consume_dashboard_request():
                     self.tray._open_dashboard(None, None)
                 if (self.profile_manager.repair_session or self.state.update_in_progress
@@ -458,8 +480,17 @@ class CompanionApplication:
 
 
 def main():
-    app = CompanionApplication()
-    app.start()
+    runtime_log_buffer()
+    def report_thread_failure(args):
+        logger.error("Background thread %s failed", args.thread.name if args.thread else "unknown",
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = report_thread_failure
+    try:
+        app = CompanionApplication()
+        app.start()
+    except Exception:
+        logger.exception("Companion failed to start or stopped unexpectedly")
+        raise
 
 
 if __name__ == "__main__":

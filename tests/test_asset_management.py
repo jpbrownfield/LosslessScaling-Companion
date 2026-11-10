@@ -440,6 +440,94 @@ class DeploymentManagerTests(unittest.TestCase):
 
 
 class GraphicsResolverTests(unittest.TestCase):
+    def test_custom_component_does_not_retain_a_windows_proxy_basename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "selected.dll"
+            source.write_bytes(self._x64_pe(b"custom"))
+            store = AssetStore(str(root / "store"))
+            plan = GraphicsResolver(store)._explicit_components(Profile(name="Custom"), [{
+                "relative_path": "dxgi.dll", "source_path": str(source), "role": "custom_dll"}])
+            entry = next(item for item in plan if item["role"] == "custom_dll")
+            self.assertEqual(Path(entry["relative_path"]).name, "LSC_CustomAddon1.dll")
+            self.assertNotEqual(Path(entry["relative_path"]).name, "dxgi.dll")
+            manifest = next(item for item in plan if item["role"] == "component_load_manifest")
+            self.assertEqual(json.loads(Path(manifest["source_path"]).read_text())["components"][0]["path"], entry["relative_path"])
+
+    def test_custom_component_names_stay_stable_across_binary_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "selected.dll"
+            second = root / "other.dll"
+            source.write_bytes(self._x64_pe(b"original"))
+            second.write_bytes(self._x64_pe(b"other"))
+            resolver = GraphicsResolver(AssetStore(str(root / "store")))
+            profile = Profile(name="Stable names")
+
+            def resolve():
+                plan = resolver._explicit_components(profile, [
+                    {"relative_path": "dxgi.dll", "source_path": str(source), "role": "custom_dll"},
+                    {"relative_path": "d3d11.dll", "source_path": str(second), "role": "custom_dll"}])
+                manifest = next(item for item in plan if item["role"] == "component_load_manifest")
+                return json.loads(Path(manifest["source_path"]).read_text())["components"]
+
+            original = resolve()
+            source.write_bytes(self._x64_pe(b"updated"))
+            updated = resolve()
+            self.assertEqual([item["path"] for item in original], [item["path"] for item in updated])
+            self.assertEqual([Path(item["path"]).name for item in updated], ["LSC_CustomAddon1.dll", "LSC_CustomAddon2.dll"])
+            self.assertNotEqual(original[0]["sha256"], updated[0]["sha256"])
+            self.assertEqual(original[1]["sha256"], updated[1]["sha256"])
+
+    def test_duplicate_custom_binary_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "selected.dll"
+            source.write_bytes(self._x64_pe(b"same binary"))
+            resolver = GraphicsResolver(AssetStore(str(root / "store")))
+            with self.assertRaisesRegex(GraphicsResolutionError, "same custom DLL"):
+                resolver._explicit_components(Profile(name="Duplicate"), [
+                    {"relative_path": name, "source_path": str(source), "role": "custom_dll"}
+                    for name in ("dxgi.dll", "d3d11.dll")])
+
+    def test_host_components_keep_both_injectors_out_of_windows_proxy_slots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AssetStore(str(root / "store"))
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            (root / "Lossless.dll").write_bytes(self._x64_pe(b"original"))
+            for provider, filename in (("ls-addon-manager", "Lossless.dll"),
+                                       ("reshade", "ReShade64.dll"), ("special-k", "SpecialK64.dll")):
+                self._package(store, root, provider, "v1", {
+                    filename: self._x64_pe(provider.encode()),
+                    "lossless-scaling-deployment.json": json.dumps({"schema_version": 1, "files": [{
+                        "source": filename, "destination": "Lossless.dll" if provider == "ls-addon-manager" else "dxgi.dll",
+                        "role": "addon_manager_host" if provider == "ls-addon-manager" else "injector"}]}),
+                })
+            profile = Profile.model_validate({"name": "Both components", "reshade": {"enabled": True},
+                "graphics": {"reshade": {"enabled": True}, "special_k": {"enabled": True}}})
+            plan = GraphicsResolver(store).resolve(profile, lossless_scaling_exe=str(executable),
+                addon_manager_enabled=True, addon_manager_config=ManagedPackageConfig(enabled=True, version="v1"))
+            paths = {item["relative_path"] for item in plan}
+            self.assertNotIn("dxgi.dll", paths)
+            self.assertIn(".companion/components/reshade/ReShade64.dll", paths)
+            special_k = next(path for path in paths if path.endswith("/SpecialK64.dll"))
+            special_k_root = special_k.rsplit("/", 1)[0]
+            self.assertTrue(special_k_root.startswith(".companion/components/special-k/"))
+            self.assertIn(f"{special_k_root}/Global/default_SpecialK.ini", paths)
+            self.assertIn(f"{special_k_root}/Global/osd.ini", paths)
+            manifest = next(item for item in plan if item["role"] == "component_load_manifest")
+            components = json.loads(Path(manifest["source_path"]).read_text())["components"]
+            self.assertEqual([item["id"] for item in components], ["special-k", "reshade"])
+            for entry in components:
+                item = next(item for item in plan if item["relative_path"] == entry["path"])
+                self.assertEqual(entry["sha256"], store.sha256(Path(item["source_path"])))
+            profile.graphics.special_k.hdr_peak_brightness_nits = 1200
+            changed = GraphicsResolver(store).resolve(profile, lossless_scaling_exe=str(executable),
+                addon_manager_enabled=True, addon_manager_config=ManagedPackageConfig(enabled=True, version="v1"))
+            self.assertNotEqual(special_k, next(item["relative_path"] for item in changed if item["relative_path"].endswith("/SpecialK64.dll")))
+
     def test_bundled_neural_fork_overrides_legacy_profile_version_pin(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

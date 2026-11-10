@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import re
 from pathlib import Path
@@ -124,6 +125,8 @@ class RtssProfileManager:
         profile.rtss.managed_install_path = str(root)
         profile.rtss.original_values = original
         self._notify_rtss(root)
+        logging.getLogger("LSCompanion.RTSS").info("Applied %s FPS cap to %s using %s (profile=%s, path=%s)",
+                                                 values["Limit"], process_name, profile.rtss.limit_method, profile.name, profile_path)
         return profile_path
 
     def remove_profile(self, profile: Profile, configured_path: Optional[str] = None) -> bool:
@@ -152,6 +155,8 @@ class RtssProfileManager:
                 )
             self._atomic_write(profile_path, text)
         self._notify_rtss(root)
+        logging.getLogger("LSCompanion.RTSS").info("Restored RTSS settings for %s (profile=%s, path=%s)",
+                                                 process_name, profile.name, profile_path)
         return True
 
     @staticmethod

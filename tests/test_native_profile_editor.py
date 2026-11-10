@@ -29,7 +29,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
 
     def test_echo_upscalers_are_distinct_from_native_fsr_and_save_as_nis(self):
         self.assertIn('<option value="FSR">FSR (LS built-in)</option>', self.html)
-        self.assertIn('<option value="AddonDLSS">DLSS (manager add-on)</option>', self.html)
+        self.assertIn('<option value="AddonDLSS" data-addon-vendor="NVIDIA">DLSS (manager add-on)</option>', self.html)
         self.assertIn('<option value="AddonFSR">FSR (manager add-on)</option>', self.html)
         self.assertIn("values.ScalingType = serializedScalingType(values.ScalingType)", self.html)
         self.assertIn("if (addonScalingSavePending) { scheduleProfileAutosave(0); return; }", self.html)
@@ -149,7 +149,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertNotIn('id="losslessProxyEnabled"', self.html)
         self.assertNotIn('id="echoDlssNrEnabled"', self.html)
         self.assertNotIn('id="echoReshadePassthroughEnabled"', self.html)
-        self.assertIn("the manager's passthrough is enabled automatically", self.html)
+        self.assertIn("Menu input is enabled automatically when a preset is selected.", self.html)
         self.assertNotIn("values.HdrSupport = 'false'", self.html)
         self.assertIn(
             "enabled: reshadeEnabled",
@@ -157,18 +157,15 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         )
         self.assertIn("implementation: dlss5Enabled ? 'lsp_neural_render' : 'disabled'", self.html)
 
-    def test_profile_headers_are_always_visible_settings_groups(self):
-        self.assertEqual(self.html.count('<section class="settings-group profile-settings-group">'), 2)
-        self.assertIn(
-            '<h3 class="settings-group-title">Lossless Scaling Profile Settings</h3>',
-            self.html,
-        )
-        self.assertIn(
-            '<h3 class="settings-group-title">Addon Configuration</h3>',
-            self.html,
-        )
-        self.assertIn('.settings-group-title { display: flex; align-items: center;', self.html)
-        self.assertNotIn('<details class="settings-group', self.html)
+    def test_major_profile_panels_have_native_disclosures_and_header_navigation(self):
+        panels = re.findall(r'<details id="(profile\w+Panel)" class="settings-group profile-settings-group profile-major-panel"', self.html)
+        self.assertEqual(len(panels), 6)
+        for panel_id in panels:
+            self.assertIn(f'data-profile-section-link="{panel_id}" aria-controls="{panel_id}"', self.html)
+        self.assertIn('<summary class="settings-group-title">Lossless Scaling Profile Settings</summary>', self.html)
+        self.assertIn('<summary class="settings-group-title">Add-ons for this profile</summary>', self.html)
+        self.assertIn('aria-label="Profile settings sections"', self.html)
+        self.assertIn('revealProfileSetting(node)', self.html)
 
     def test_legacy_neural_render_profile_controls_are_removed(self):
         self.assertNotIn('id="dlss5Enabled"', self.html)

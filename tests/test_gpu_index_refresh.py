@@ -254,6 +254,36 @@ class IdleRefreshTests(unittest.TestCase):
             self.now += 300
             self.service.check()
             self.assertEqual(slow.call_count, 2)
+            self.assertEqual(self.server.state.gpu_mapping_status["retrySeconds"], 600)
+            self.now += 300
+            self.service.check()
+            self.assertEqual(slow.call_count, 2)
+
+    def test_idle_probe_result_survives_runtime_report_overwrite(self):
+        directory = self.manager.config_dir / "diagnostics"
+        directory.mkdir(exist_ok=True)
+        token = "ab" * 32
+        snapshot = dict(report(), requestId=token, lsAdapterStatus="ok")
+        (directory / "ls-idle-adapter-report-42.json").write_text(json.dumps(snapshot))
+        (directory / "ls-adapter-report-42.json").write_text(json.dumps(dict(report(), requestId="", lsAdapterNames=[])))
+        self.service.process_lookup = lambda _: (42, time.time())
+        with patch.object(refresh.secrets, "token_hex", return_value=token), \
+                patch.object(refresh.startup_guard, "launch_hidden", return_value=42):
+            self.assertEqual(self.service._launch_probe(self.exe)["lsAdapterNames"], snapshot["lsAdapterNames"])
+        self.assertEqual(self.service.last_probe_evidence["stage"], "complete")
+
+    def test_failed_native_probe_reports_stage_without_waiting_for_timeout(self):
+        token = "ab" * 32
+        self.service.process_lookup = lambda _: (42, time.time())
+        failed = dict(report(), requestId=token, lsAdapterNames=[], lsAdapterStatus="export_unavailable", lsAdapterError=127)
+        with patch.object(refresh.secrets, "token_hex", return_value=token), \
+                patch.object(refresh.startup_guard, "launch_hidden", return_value=42), \
+                patch.object(adapter_report, "load_idle_report", return_value=failed), \
+                patch.object(self.service.stopping, "wait") as wait:
+            with self.assertRaisesRegex(RuntimeError, "export_unavailable"):
+                self.service._launch_probe(self.exe)
+        wait.assert_not_called()
+        self.assertEqual(self.service.last_probe_evidence["nativeError"], 127)
 
     def test_reordered_second_ls_report_rolls_back_xml_and_helper_map(self):
         before = self.settings.path.read_bytes()

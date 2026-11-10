@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import threading
 from .external_process import external_dll_search
+from .managed_runtime import launch_environment, await_isolation
 
 logger = logging.getLogger(__name__)
 _libraries: dict[Path, object] = {}
@@ -41,6 +42,7 @@ def launch_hidden(executable: Path, *, duration_ms: int = 6000,
     module while its short-lived window subclass is installed.
     """
     path = guard_path()
+    environment, receipt, token = launch_environment(executable)
     if not path.is_file():
         logger.warning("Startup guard DLL unavailable; using post-show hiding: %s", path)
         return None
@@ -60,7 +62,17 @@ def launch_hidden(executable: Path, *, duration_ms: int = 6000,
         pid = wintypes.DWORD()
         session = ctypes.c_void_p()
         with external_dll_search():
-            if adapter_report_dir is not None:
+            if receipt is not None:
+                launch = library.LSCLaunchHiddenWithEnvironment
+                launch.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR, wintypes.DWORD,
+                                   wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD),
+                                   ctypes.POINTER(ctypes.c_void_p)]
+                launch.restype = wintypes.BOOL
+                block = "\0".join(f"{key}={value}" for key, value in sorted(environment.items(), key=lambda pair: pair[0].casefold())) + "\0\0"
+                launched = launch(str(executable.resolve()), duration_ms, block, len(block),
+                                  str(adapter_report_dir or environment["LSC_ADAPTER_REPORT_DIR"]), probe_token or "",
+                                  ctypes.byref(pid), ctypes.byref(session))
+            elif adapter_report_dir is not None:
                 probe = library.LSCLaunchHiddenWithReport
                 probe.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR,
                                   wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD),
@@ -81,6 +93,12 @@ def launch_hidden(executable: Path, *, duration_ms: int = 6000,
 
     def release() -> None:
         library.LSCReleaseStartupGuard(session)
+
+    try:
+        await_isolation(pid.value, receipt, token)
+    except Exception:
+        release()
+        raise
 
     try:
         timer = threading.Timer((duration_ms + 1000) / 1000, release)

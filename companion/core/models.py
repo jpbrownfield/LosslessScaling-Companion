@@ -355,6 +355,9 @@ class AppConfig(BaseModel):
     # activation hotkey configured in Lossless Scaling.
     hotkey_sync_mode: Literal["helper_controls_lossless", "follow_lossless", "warn_only"] = "follow_lossless"
     lossless_settings_xml_path: Optional[str] = None
+    # Discovered installation is an import source; executable/settings above
+    # are rebound to the mandatory private runtime before production services.
+    lossless_source_exe_path: Optional[str] = None
     asset_store_path: Optional[str] = None
     update_check_interval_hours: int = Field(default=24, ge=1, le=720)
     notify_on_updates: bool = True

@@ -1,5 +1,7 @@
 import tempfile
+import json
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -14,6 +16,27 @@ from companion.services.reshade_manager import ReshadeManager
 
 
 class ProfileEffectsTests(unittest.TestCase):
+    @staticmethod
+    def _stage_component_host(automation, root):
+        (root / "Lossless.dll").write_bytes(b"original engine fixture")
+        image = bytearray(0x86)
+        image[:2] = b"MZ"
+        image[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        image[0x80:0x84] = b"PE\0\0"
+        image[0x84:0x86] = (0x8664).to_bytes(2, "little")
+        for provider, filename in (("ls-addon-manager", "Lossless.dll"), ("reshade", "ReShade64.dll")):
+            archive = root / (provider + "-fixture.zip")
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr(filename, bytes(image) + provider.encode())
+                bundle.writestr("lossless-scaling-deployment.json", json.dumps({"schema_version": 1, "files": [{
+                    "source": filename, "destination": "Lossless.dll" if provider == "ls-addon-manager" else "dxgi.dll",
+                    "role": "addon_manager_host" if provider == "ls-addon-manager" else "injector"}]}))
+            automation.asset_store.import_release_archive(str(archive), provider=provider, version="build-5-lsc.4", source_metadata={})
+
+    @staticmethod
+    def _custom_component(root):
+        return next(root.glob(".companion/components/custom-*/*.dll"), None)
+
     class FakeProcessWatcher:
         def __init__(self, events, running=True):
             self.events = events
@@ -544,22 +567,25 @@ class ProfileEffectsTests(unittest.TestCase):
             manager.config.lossless_scaling_exe_path = str(lossless_dir / "LosslessScaling.exe")
             state = AppState()
             automation = AutomationController(manager, state)
+            self._stage_component_host(automation, lossless_dir)
             automation.activate_profile(profile, profile.target_executable_path)
 
             self.assertTrue(state.is_scaling_active)
-            self.assertEqual((lossless_dir / "dxgi.dll").read_bytes(), b"mod")
+            component = self._custom_component(lossless_dir)
+            self.assertEqual(component.read_bytes(), b"mod")
+            self.assertFalse((lossless_dir / "dxgi.dll").exists())
             reload_reshade.assert_called_once_with("Home")
             trigger_hotkey.assert_called_once()
 
             # Losing focus no longer de-scales or unloads the active profile.
             automation.activate_profile(None)
             self.assertTrue(state.is_scaling_active)
-            self.assertTrue((lossless_dir / "dxgi.dll").exists())
+            self.assertTrue(component.exists())
 
             automation.set_scaling(False, profile, reason="test_cleanup")
             automation.activate_profile(None, force=True)
             self.assertFalse(state.is_scaling_active)
-            self.assertFalse((lossless_dir / "dxgi.dll").exists())
+            self.assertFalse(component.exists())
             self.assertIn("CurrentPresetPath=old.ini", reshade_ini.read_text(encoding="utf-8"))
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True)
@@ -1003,6 +1029,7 @@ class ProfileEffectsTests(unittest.TestCase):
             manager = ProfileManager(root / "config")
             manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
             automation = AutomationController(manager, AppState(), watcher)
+            self._stage_component_host(automation, root)
             from companion.services.overlay_indicator import (
                 OverlayIndicator, null_presenter)
             automation.overlay_indicator = OverlayIndicator(
@@ -1010,7 +1037,7 @@ class ProfileEffectsTests(unittest.TestCase):
             automation.activate_profile(profile)
 
             self.assertEqual(events, [])
-            self.assertFalse((root / "dxgi.dll").exists())
+            self.assertIsNone(self._custom_component(root))
             self.assertEqual(
                 automation.state.current_active_profile.id, profile.id)
             self.assertTrue(automation._live_deployment_stale(profile))
@@ -1036,6 +1063,7 @@ class ProfileEffectsTests(unittest.TestCase):
             manager = ProfileManager(root / "config")
             manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
             automation = AutomationController(manager, AppState(), watcher)
+            self._stage_component_host(automation, root)
             from companion.services.overlay_indicator import (
                 OverlayIndicator, null_presenter)
             automation.overlay_indicator = OverlayIndicator(
@@ -1046,7 +1074,8 @@ class ProfileEffectsTests(unittest.TestCase):
             automation.activate_profile(profile, force=True, for_scaling=True)
 
             self.assertEqual(events, ["stop", ("launch", True)])
-            self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
+            self.assertEqual(self._custom_component(root).read_bytes(), b"managed")
+            self.assertFalse((root / "dxgi.dll").exists())
             self.assertFalse(automation._live_deployment_stale(profile))
 
     def test_explicit_activate_restarts_idle_lossless_scaling(self):
@@ -1071,13 +1100,15 @@ class ProfileEffectsTests(unittest.TestCase):
             manager = ProfileManager(root / "config")
             manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
             automation = AutomationController(manager, AppState(), watcher)
+            self._stage_component_host(automation, root)
             from companion.services.overlay_indicator import (
                 OverlayIndicator, null_presenter)
             automation.overlay_indicator = OverlayIndicator(
                 presenter=null_presenter())
             automation.activate_profile(profile, force=True)
 
-            self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
+            self.assertEqual(self._custom_component(root).read_bytes(), b"managed")
+            self.assertFalse((root / "dxgi.dll").exists())
         self.assertEqual(events, ["stop", ("launch", True)])
 
     def test_auto_scale_profile_restarts_idle_lossless_scaling(self):        # Focusing a game profile with focus auto-scale enabled needs the
@@ -1106,6 +1137,7 @@ class ProfileEffectsTests(unittest.TestCase):
             state = AppState()
             state.auto_scale_enabled = True
             automation = AutomationController(manager, state, watcher)
+            self._stage_component_host(automation, root)
             from companion.services.overlay_indicator import (
                 OverlayIndicator, null_presenter)
             automation.overlay_indicator = OverlayIndicator(
@@ -1114,7 +1146,8 @@ class ProfileEffectsTests(unittest.TestCase):
                     AutomationController, "_trigger_profile_runtime_actions"):
                 automation.activate_profile(profile)
 
-            self.assertEqual((root / "dxgi.dll").read_bytes(), b"managed")
+            self.assertEqual(self._custom_component(root).read_bytes(), b"managed")
+            self.assertFalse((root / "dxgi.dll").exists())
         self.assertEqual(events, ["stop", ("launch", True)])
 
     def test_scaling_target_closed_ends_session(self):

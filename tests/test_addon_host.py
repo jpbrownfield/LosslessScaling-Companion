@@ -77,6 +77,65 @@ class AddonHostTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_ADDON_HOST") == "1",
                      "Set LSC_TEST_ADDON_HOST=1 after building the real native host")
 class NativeAddonHostTests(unittest.TestCase):
+    def test_explicit_component_loads_with_arbitrary_filename_and_rejects_bad_plans(self):
+        import hashlib
+        import psutil
+        archive = ROOT / "build/native" / MANAGED_HOST_ARCHIVE
+        harness = ROOT / "build/native/addon-host-smoke"
+        for scenario in ("valid", "hash-mismatch", "escape", "duplicate"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shutil.copy2(harness / "lsc_headless_smoke.exe", root / "LosslessScaling.exe")
+                shutil.copy2(harness / "Lossless_original.dll", root / "Lossless_original.dll")
+                with zipfile.ZipFile(archive) as bundle:
+                    bundle.extract("Lossless.dll", root)
+                (root / "addons").mkdir()
+                (root / "addons/config.json").write_text(json.dumps({
+                    "global": {"auto_load": True, "companion": {"headless": True}}, "addons": {}}))
+                relative = ".companion/components/custom/any-name-we-choose.dll"
+                component = root / relative
+                component.parent.mkdir(parents=True)
+                shutil.copy2(harness / "Lossless_original.dll", component)
+                digest = hashlib.sha256(component.read_bytes()).hexdigest()
+                entry = {"id": "custom-fixture", "path": relative, "sha256": digest}
+                if scenario == "hash-mismatch":
+                    entry["sha256"] = "0" * 64
+                if scenario == "escape":
+                    entry["path"] = "Lossless_original.dll"
+                entries = [entry, entry] if scenario == "duplicate" else [entry]
+                (root / ".companion/components.json").write_text(json.dumps({"schema": 1, "components": entries}))
+                process = subprocess.Popen([str(root / "LosslessScaling.exe")], cwd=root,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    env={**os.environ, "LOCALAPPDATA": str(root / "local-app-data")})
+                try:
+                    instance = (process.pid, psutil.Process(process.pid).create_time())
+                    deadline = time.monotonic() + 30
+                    status = None
+                    while time.monotonic() < deadline and process.poll() is None:
+                        try:
+                            status = validate_status(_read_pipe(process.pid), instance)
+                            break
+                        except (OSError, ValueError):
+                            time.sleep(0.05)
+                    self.assertIsNotNone(status, "The real host did not publish component status")
+                    if scenario == "valid":
+                        self.assertEqual(status["startupError"], "", status.get("components"))
+                        self.assertEqual(status["components"][0]["id"], "custom-fixture")
+                        self.assertTrue(status["components"][0]["loaded"])
+                        self.assertEqual(Path(status["components"][0]["path"]), component)
+                        loaded = {Path(item.path) for item in psutil.Process(process.pid).memory_maps()}
+                        self.assertIn(component, loaded)
+                    else:
+                        self.assertTrue(status["startupError"])
+                        self.assertFalse(any(item["loaded"] for item in status["components"]))
+                    process.communicate(b"\n", timeout=10)
+                    self.assertEqual(process.returncode, 0)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate(timeout=10)
+
     @unittest.skipUnless(os.environ.get("LSC_TEST_SM86_SR_ARCHIVE"), "Set LSC_TEST_SM86_SR_ARCHIVE to the pinned SM86 ZIP for optional loader integration tests")
     def test_private_sm86_proxy_redirects_sr_and_stays_unloaded_when_off(self):
         import psutil

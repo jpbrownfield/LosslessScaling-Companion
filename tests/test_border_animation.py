@@ -28,11 +28,40 @@ class BorderAnimationTests(unittest.TestCase):
                 self.assertTrue(min(start, end) <= channel <= max(start, end))
 
     def test_gradient_structures_match_native_abi(self):
-        from companion.services.overlay_window import _GradientVertex, _GradientRect
+        from companion.services.overlay_window import _GradientVertex, _GradientTriangle
         self.assertEqual(ctypes.sizeof(_GradientVertex), 16)
-        self.assertEqual(ctypes.sizeof(_GradientRect), 8)
+        self.assertEqual(ctypes.sizeof(_GradientTriangle), 12)
         self.assertEqual(_GradientVertex.red.offset, 8)
         self.assertEqual(_GradientVertex.alpha.offset, 14)
+
+    def test_rounded_region_has_connected_corners_and_wider_stroke(self):
+        from companion.services import overlay_window as overlay
+
+        presenter = overlay.Win32OverlayPresenter()
+        gdi = presenter._gdi32
+        gdi.PtInRegion.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        gdi.PtInRegion.restype = ctypes.c_bool
+        region = presenter._rounded_border_region(640, 360)
+        try:
+            for point in ((320, 7), (7, 180), (10, 10), (630, 10), (630, 350), (10, 350)):
+                self.assertTrue(gdi.PtInRegion(region, *point), point)
+            for point in ((0, 0), (639, 0), (639, 359), (0, 359), (320, 8), (320, 180)):
+                self.assertFalse(gdi.PtInRegion(region, *point), point)
+        finally:
+            gdi.DeleteObject(region)
+
+    def test_mesh_closes_without_position_or_color_seams(self):
+        from companion.services import overlay_window as overlay
+
+        presenter = overlay.Win32OverlayPresenter()
+        for width, height in ((120, 120), (640, 360), (3840, 2160)):
+            samples, points, _triangles = overlay._border_mesh(width, height)
+            self.assertEqual(samples[0][1:], samples[-1][1:])
+            self.assertEqual(points[:6], points[-6:])
+            self.assertTrue(all(a[0] < b[0] for a, b in zip(samples, samples[1:])))
+            vertices, _triangles = presenter._border_gradients(width, height, overlay.PENDING_COLOR, 1.2)
+            self.assertEqual(b"".join(bytes(vertex) for vertex in vertices[:6]),
+                             b"".join(bytes(vertex) for vertex in vertices[-6:]))
 
     def test_native_animation_preserves_center_and_releases_gdi_resources(self):
         from companion.services import overlay_window as overlay
@@ -61,6 +90,14 @@ class BorderAnimationTests(unittest.TestCase):
             with patch.object(overlay._time, "monotonic", return_value=100):
                 presenter._paint_border_frame(target, hwnd, overlay.PENDING_COLOR)
             self.assertTrue(presenter._usable)
+            for x, y in ((0, 0), (639, 0), (639, 359), (0, 359)):
+                self.assertEqual(gdi32.GetPixel(target, x, y), center)
+            # Check every segment around the entire ribbon, including arcs:
+            # shared vertices must leave no black gaps between the four sides.
+            path_samples, _points, _triangles = overlay._border_mesh(640, 360)
+            for _position, x, y, nx, ny in path_samples:
+                pixel = gdi32.GetPixel(target, round(x + nx * 4), round(y + ny * 4))
+                self.assertNotIn(pixel, (0, center), (x, y))
             warm_handles = user32.GetGuiResources(ctypes.c_void_p(-1), 0)
             for frame in range(90):
                 with patch.object(overlay._time, "monotonic", return_value=100 + frame / 30):
@@ -76,7 +113,7 @@ class BorderAnimationTests(unittest.TestCase):
             self.assertTrue(presenter._usable)
             self.assertEqual(user32.GetGuiResources(ctypes.c_void_p(-1), 0), warm_handles)
             presenter._release_border_buffer()
-            self.assertEqual(user32.GetGuiResources(ctypes.c_void_p(-1), 0), warm_handles - 2)
+            self.assertEqual(user32.GetGuiResources(ctypes.c_void_p(-1), 0), warm_handles - 3)
         finally:
             presenter._release_border_buffer()
             gdi32.SelectObject(target, original)

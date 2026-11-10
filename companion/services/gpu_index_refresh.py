@@ -21,6 +21,7 @@ from .gpu_selections import match_device
 
 logger = logging.getLogger("LSCompanion.GpuIndexRefresh")
 CHECK_SECONDS = 3 * 3600
+MAX_RETRY_SECONDS = 3 * 3600
 # Inspected managed UI: cdecl GetAdapterNames() -> owned BSTR; Split(';',
 # RemoveEmptyEntries); Auto inserted at index zero; SelectedIndex saved verbatim.
 SUPPORTED_UI_HASHES = {"e4ea2dbb1371ea1920d73c87202f19b6f095ef6f521a8a7a139d19f34f1fe866"}
@@ -161,6 +162,8 @@ class IdleGpuIndexRefresh:
         self.process_instance = None
         self.pending = True
         self.stopping = threading.Event()
+        self.failure_count = 0
+        self.last_probe_evidence = {}
 
     def stop(self):
         self.stopping.set()
@@ -170,6 +173,7 @@ class IdleGpuIndexRefresh:
         self.pending = True
         self.observed = None
         self.retry_after = 0.0
+        self.failure_count = 0
 
     def status(self, state, message, **details):
         value = {"state": state, "message": message, **details}
@@ -273,11 +277,14 @@ class IdleGpuIndexRefresh:
                     with server._gpu_activity_lock:
                         server.state.gpu_mapping_in_progress = False
             self.fingerprint, self.pending = signature, False
+            self.failure_count = 0
             self.process_instance = self.process_lookup(executable)
         except Exception as error:
             logger.exception("Idle GPU index refresh failed")
-            self.status("error", str(error))
-            self.retry_after = self.clock() + 300
+            self.failure_count += 1
+            delay = min(300 * 2 ** min(self.failure_count - 1, 6), MAX_RETRY_SECONDS)
+            self.status("error", str(error), retrySeconds=delay, probeEvidence=dict(self.last_probe_evidence))
+            self.retry_after = self.clock() + delay
             self.observed = None
             self.pending = True
 
@@ -296,21 +303,40 @@ class IdleGpuIndexRefresh:
         directory.mkdir(parents=True, exist_ok=True)
         token = secrets.token_hex(32)
         started = time.time()
+        self.last_probe_evidence = {"stage": "launch", "directory": str(directory)}
         pid = startup_guard.launch_hidden(executable, adapter_report_dir=directory, probe_token=token)
         if pid is None:
             raise RuntimeError("Could not launch idle LS adapter discovery")
         deadline = time.monotonic() + 9
+        self.last_probe_evidence.update(stage="waiting_for_report", pid=pid)
         while time.monotonic() < deadline:
             if self.stopping.is_set():
                 raise RuntimeError("GPU index refresh cancelled during shutdown")
-            report = adapter_report.load_latest(directory, pid=pid, max_age_seconds=15, created_after=started - 2)
+            report = adapter_report.load_idle_report(directory, pid, started - 2)
+            if report is None:
+                report = adapter_report.load_latest(directory, pid=pid, max_age_seconds=15, created_after=started - 2)
             instance = self.process_lookup(executable)
+            if report:
+                self.last_probe_evidence.update(
+                    stage=report.get("lsAdapterStatus", "legacy_report"),
+                    reportPid=report.get("pid"), nonceMatches=report.get("requestId") == token,
+                    processMatches=bool(instance and instance[0] == pid and instance[1] >= started - 2),
+                    adapterNameCount=len(report.get("lsAdapterNames") or []),
+                    nativeError=report.get("lsAdapterError", 0),
+                )
             if (report and report.get("requestId") == token and int(report.get("pid") or 0) == pid
                     and instance and instance[0] == pid and instance[1] >= started - 2
                     and report.get("lsAdapterNames")):
+                self.last_probe_evidence["stage"] = "complete"
                 return report
+            if (report and report.get("requestId") == token and instance and instance[0] == pid
+                    and report.get("lsAdapterStatus") in {"engine_not_loaded", "export_unavailable", "getter_exception", "empty", "collection_exception"}):
+                break
             self.stopping.wait(0.1)
-        raise RuntimeError("No fresh PID-matched LS adapter list arrived; saved GPU selections were preserved")
+        raise RuntimeError(
+            "No fresh PID-matched LS adapter list arrived; saved GPU selections were preserved. "
+            f"Probe evidence: {self.last_probe_evidence}"
+        )
 
     def _stop(self):
         if not self.idle(cleanup=True) or not self.server.process_watcher.stop_lossless_scaling():

@@ -31,6 +31,7 @@ from .deployment_manager import DeploymentManager
 from .input_simulator import InputSimulator
 from .graphics_source_importer import GraphicsSourceImporter
 from .reshade_manager import ReshadeManager
+from .addon_host import addon_version_key, runtime_status
 
 logger = logging.getLogger("LSCompanion.Diagnostics")
 
@@ -168,6 +169,11 @@ class DiagnosticRunner:
         yield str(path)
 
     def run(self, selected_test: Optional[str] = None) -> Dict:
+        runtime = getattr(self.server.profile_manager, "managed_runtime", None)
+        if runtime is not None:
+            runtime.validate(Path(self.server.config.lossless_scaling_exe_path))
+            if Path(self.server.ls_settings.path).resolve() != runtime.settings.resolve():
+                raise RuntimeError("Diagnostics require the managed runtime's private Settings.xml")
         # Each button press must execute a fresh live workflow and collect new log deltas.
         self._live_scaling_results = None
         self._live_addon_result = None
@@ -188,6 +194,7 @@ class DiagnosticRunner:
             and self.server.process_watcher.check_is_lossless_scaling_running()
         )
         for test_id, name, function in self._execution_plan(selected_test):
+            logger.info("Diagnostic starting: %s (%s)", name, test_id)
             failed_dependencies = [
                 dependency for dependency in self.DEPENDENCIES.get(test_id, ())
                 if result_by_id.get(dependency, {}).get("status") == "fail"
@@ -214,6 +221,8 @@ class DiagnosticRunner:
                     result["status"] = "fail"
                     result["summary"] += " The post-test Lossless Scaling folder reset failed."
             result.update({"id": test_id, "name": name})
+            logger.log(logging.ERROR if result["status"] == "fail" else logging.WARNING if result["status"] == "warn" else logging.INFO,
+                       "Diagnostic %s [%s]: %s", test_id, result["status"], result.get("summary", ""))
             results.append(result)
             result_by_id[test_id] = result
             (session / f"{test_id}.log").write_text(
@@ -243,6 +252,12 @@ class DiagnosticRunner:
                 "platform": platform.platform(),
                 "frozenBuild": bool(getattr(sys, "frozen", False)),
                 "simulationMode": bool(self.server.state.simulation_mode),
+                "managedRuntime": ({
+                    "sourceExecutable": self._path(self.server.config.lossless_source_exe_path),
+                    "managedExecutable": self._path(self.server.config.lossless_scaling_exe_path),
+                    "privateSettings": self._path(runtime.settings),
+                    "launchIsolationRequired": True,
+                } if runtime is not None else None),
             },
             "counts": counts,
             "selectedTest": selected_test,
@@ -566,7 +581,7 @@ class DiagnosticRunner:
         for package in self.server.asset_store.list_packages():
             provider = str(package.get("provider") or "")
             current = packages.get(provider)
-            if current is None or str(package.get("version") or "") > str(current.get("version") or ""):
+            if current is None or addon_version_key(package.get("version")) > addon_version_key(current.get("version")):
                 packages[provider] = package
 
         def base(label: str) -> Profile:
@@ -676,6 +691,8 @@ class DiagnosticRunner:
         addon_manager_config_was_enabled = bool(getattr(getattr(self.server.config, "addon_manager", None), "enabled", True))
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         settings_path = self.server.ls_settings.path
+        from .managed_runtime import assert_private_settings
+        assert_private_settings(settings_path)
         settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
         checks = []
         failures = []
@@ -729,6 +746,8 @@ class DiagnosticRunner:
                 }
                 loaded_modules: List[str] = []
                 module_inspection_error: Optional[str] = None
+                runtime_checks: Dict = {}
+                host_telemetry: Dict = {}
                 try:
                     if self.server.process_watcher.check_is_lossless_scaling_running():
                         try:
@@ -785,6 +804,7 @@ class DiagnosticRunner:
                     time.sleep(1.5)
                     focus_window(hwnd)
                     self.server.state.current_active_profile = profile
+                    self.server.state.diagnostic_scaling_target = (workload_process.pid, hwnd, profile.id)
                     activation_attempts = 1
                     scaled = self.server.automation.set_scaling(
                         True,
@@ -809,32 +829,19 @@ class DiagnosticRunner:
                         profile.graphics.reshade.enabled
                         or (profile.reshade and profile.reshade.enabled)
                     )
-                    echo_selected = True
-
                     def addon_runtime_ready() -> bool:
-                        nonlocal loaded_modules, module_inspection_error, runtime_evidence
+                        nonlocal loaded_modules, module_inspection_error, runtime_evidence, runtime_checks, host_telemetry
                         loaded_modules, module_inspection_error = self._lossless_loaded_modules(executable)
                         current_paths = self._runtime_log_paths(executable.parent)
                         current_delta = self._log_delta(runtime_snapshot, current_paths)
                         runtime_evidence = self._runtime_log_evidence(current_delta)
-                        module_names = {Path(item).name.casefold() for item in loaded_modules}
                         if neural_render_selected:
-                            return (
-                                {"dlss5nr01.dll", "nvngx.dll_dlss5nr01.dll", "nvngx_dlssnr.dll"}
-                                <= module_names
-                                and runtime_evidence["addonManagerStarted"]
-                                and runtime_evidence["neuralEngineReady"]
-                                and runtime_evidence["neuralModelPrepared"]
-                                and runtime_evidence["neuralTapObserved"]
-                            )
-                        if reshade_selected:
-                            return (
-                                "dxgi.dll" in module_names
-                                and runtime_evidence["addonManagerStarted"]
-                            )
-                        if echo_selected:
-                            return runtime_evidence["addonManagerStarted"]
-                        return bool(current_delta)
+                            host_telemetry = runtime_status(str(executable))
+                        runtime_checks = self._addon_runtime_checks(
+                            profile, executable.parent, manifest.get("files", []), loaded_modules,
+                            current_delta, host_telemetry,
+                        )
+                        return all(runtime_checks.values())
 
                     addon_ready = self._wait_until(
                         addon_runtime_ready, 12.0 if active_observed else 2.0, interval=0.4
@@ -893,6 +900,8 @@ class DiagnosticRunner:
                         "loadedModules": [self._path(item) for item in loaded_modules],
                         "moduleInspectionError": module_inspection_error,
                         "addonRuntimeReady": addon_ready,
+                        "runtimeChecks": runtime_checks,
+                        "hostTelemetry": host_telemetry,
                         "activationAttempts": activation_attempts,
                         "expectedLosslessProxyVersion": expected_proxy_version,
                         "reportedLosslessProxyVersion": reported_proxy_version,
@@ -934,6 +943,7 @@ class DiagnosticRunner:
         except Exception as error:
             failures.append({"profile": "test setup", "error": str(error)})
         finally:
+            self.server.state.diagnostic_scaling_target = None
             if workload_process and workload_process.poll() is None:
                 workload_process.terminate()
                 try:
@@ -1060,6 +1070,60 @@ class DiagnosticRunner:
         return sorted(set(name.strip() for name in names))
 
     @staticmethod
+    def _addon_runtime_checks(profile, directory, files, loaded_modules, logs, telemetry=None) -> Dict[str, bool]:
+        """Validate selected components against deployed paths, never system DLL names."""
+        evidence = DiagnosticRunner._runtime_log_evidence(logs)
+        checks = {"addonManagerStarted": evidence["addonManagerStarted"]}
+        loaded = {str(Path(path).resolve()).casefold() for path in loaded_modules}
+        reshade = bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled))
+        special_k = profile.graphics.special_k.enabled
+        neural = profile.graphics.neural_render.implementation == "lsp_neural_render"
+        for component, selected in (("reshade", reshade), ("special-k", special_k), ("neural", neural)):
+            if not selected:
+                continue
+            paths = []
+            for item in files:
+                path = directory / item["relative_path"]
+                source = str(item.get("source_package") or "")
+                relative = path.relative_to(directory).as_posix().casefold()
+                if path.suffix.casefold() == ".dll" and (
+                    (component != "neural" and source.startswith(component + "/"))
+                    or (component == "neural" and (
+                        item.get("role") == "neural_runtime" or relative.startswith("addons/dlssnr02/")
+                    ))
+                ):
+                    paths.append(path)
+            checks[component + "ModulesLoaded"] = bool(paths) and all(
+                str(path.resolve()).casefold() in loaded for path in paths
+            )
+        if reshade:
+            checks["reshadeRuntimeInitialized"] = bool(re.search(
+                r"(?:Successfully initialized|Initialized|Created|Recreated)\s+[^\r\n]*runtime\b|Successfully compiled\b",
+                "\n".join(value for name, value in logs.items() if Path(name).name.casefold() == "reshade.log"),
+                re.IGNORECASE,
+            ))
+        if special_k:
+            checks["specialKRuntimeInitialized"] = any(
+                re.search(r"\bSpecial\s*K\b", value, re.IGNORECASE)
+                for name, value in logs.items() if Path(name).name.casefold() != "lsaddonmanager.log"
+            )
+        if neural:
+            status = telemetry or {}
+            addon = next((item for item in status.get("addons", []) if item.get("id") == "DLSSNR02"), {})
+            metrics = status.get("metrics", {}).get("DLSSNR02", {})
+            checks["neuralAddonHealthy"] = bool(
+                status.get("available") and not status.get("startupError")
+                and addon.get("loaded") and addon.get("enabled")
+                and not addon.get("faulted") and not addon.get("error")
+                and addon.get("level", 0) < 2
+            )
+            checks["neuralFramesProcessed"] = bool(
+                metrics.get("accepted", 0) > 0 and metrics.get("model_ms", 0) > 0
+                and status.get("capture", {}).get("captures", 0) > 0
+            )
+        return checks
+
+    @staticmethod
     def _runtime_log_evidence(logs: Dict[str, str]) -> Dict[str, bool]:
         content = "\n".join(logs.values())
         proxy_match = bool(re.search(r"\bLosslessProxy\s+v?[^\s]+\s+starting", content, re.IGNORECASE))
@@ -1090,24 +1154,19 @@ class DiagnosticRunner:
     @staticmethod
     def _lossless_loaded_modules(executable: Path) -> tuple[List[str], Optional[str]]:
         """Inspect the real LS process while scaling, before injected DLLs unload."""
-        expected = str(executable.resolve()).casefold()
-        errors: List[str] = []
-        for process in psutil.process_iter(["name", "exe"]):
-            try:
-                process_exe = str(process.info.get("exe") or "").casefold()
-                process_name = str(process.info.get("name") or "").casefold()
-                if process_exe != expected and process_name != executable.name.casefold():
-                    continue
-                modules = sorted({
-                    str(item.path) for item in process.memory_maps(grouped=False)
-                    if getattr(item, "path", None)
-                }, key=str.casefold)
-                return modules, None
-            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as error:
-                errors.append(f"{type(error).__name__}: {error}")
-        if errors:
-            return [], "; ".join(errors)
-        return [], "LosslessScaling.exe process was not found during module inspection"
+        from .adapter_report import configured_process
+        try:
+            instance = configured_process(executable)
+            if not instance:
+                return [], "Configured LosslessScaling.exe process was not found during module inspection"
+            process = psutil.Process(instance[0])
+            modules = sorted({str(item.path) for item in process.memory_maps(grouped=False)
+                              if getattr(item, "path", None)}, key=str.casefold)
+            if process.create_time() != instance[1] or configured_process(executable) != instance:
+                return [], "Lossless Scaling restarted during module inspection"
+            return modules, None
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError, ValueError) as error:
+            return [], f"{type(error).__name__}: {error}"
 
     @staticmethod
     def _reported_lossless_proxy_version(logs: Dict[str, str]) -> Optional[str]:
@@ -1119,9 +1178,9 @@ class DiagnosticRunner:
     def _runtime_log_paths(lossless_directory: Path) -> List[Path]:
         """Return root and nested add-on logs without duplicating paths."""
         paths = [*lossless_directory.glob("*.log")]
-        logs_directory = lossless_directory / "logs"
-        if logs_directory.is_dir():
-            paths.extend(logs_directory.rglob("*.log"))
+        for logs_directory in (lossless_directory / "logs", lossless_directory / ".companion/components"):
+            if logs_directory.is_dir():
+                paths.extend(logs_directory.rglob("*.log"))
         return list(dict.fromkeys(paths))
 
     def _run_live_scaling_workflow(self) -> Dict[str, Dict]:
@@ -1155,6 +1214,8 @@ class DiagnosticRunner:
         auto_scale_was_enabled = self.server.state.auto_scale_enabled
         was_running = self.server.process_watcher.check_is_lossless_scaling_running()
         settings_path = self.server.ls_settings.path
+        from .managed_runtime import assert_private_settings
+        assert_private_settings(settings_path)
         settings_bytes = settings_path.read_bytes() if settings_path.is_file() else None
         # The server does not own the inspector directly; the production scaling probe
         # closes over it. Create the same inspector type for independent log evidence.
@@ -1194,6 +1255,7 @@ class DiagnosticRunner:
             hwnd = find_largest_window(process.pid, timeout=12.0)
             if not focus_window(hwnd):
                 raise RuntimeError("Windows did not grant the benchmark foreground ownership")
+            self.server.state.diagnostic_scaling_target = (process.pid, hwnd, live_profile.id)
             if not self.server.process_watcher.check_is_lossless_scaling_running():
                 if not self.server.process_watcher.launch_lossless_scaling(force=True):
                     raise RuntimeError("Lossless Scaling could not be launched")
@@ -1299,6 +1361,7 @@ class DiagnosticRunner:
                 if value["summary"] == "The live scaling workflow did not complete.":
                     results[key] = self._result("fail", failure, traceback=traceback.format_exc())
         finally:
+            self.server.state.diagnostic_scaling_target = None
             try:
                 if self.server.state.is_scaling_active:
                     self.server.automation.set_scaling(False, reason="experimental_test_cleanup", force=True)
@@ -1722,13 +1785,14 @@ class DiagnosticRunner:
                 "device": (latest.get("device") or {}).get("description"),
             } if latest else {"present": False})
             try:
-                from .performance_benchmark import find_process_id
+                from .adapter_report import configured_process
             except Exception:
-                find_process_id = None
+                configured_process = None
             ls_pid = None
-            if find_process_id is not None:
+            if configured_process is not None:
                 try:
-                    ls_pid = find_process_id("LosslessScaling.exe")
+                    instance = configured_process(self.server.config.lossless_scaling_exe_path)
+                    ls_pid = instance[0] if instance else None
                 except Exception:
                     ls_pid = None
             layers = detect_reshaping_layers(pid=ls_pid) if ls_pid else []
@@ -1737,6 +1801,9 @@ class DiagnosticRunner:
             layers = []
         details = {
             "mapStatus": status,
+            "evidenceScope": "saved_map_consistency",
+            "idleMappingStatus": dict(self.server.state.gpu_mapping_status),
+            "liveRoutingVerified": False,
             "pinRoute": {k: self._path(v) if isinstance(v, str) else v
                          for k, v in route.items()},
             "adapterReport": report_info,
@@ -1757,9 +1824,14 @@ class DiagnosticRunner:
                 "enumeration order until run_monitor_benchmarks.py --calibrate runs.",
                 **details,
             )
+        if self.server.state.gpu_mapping_status.get("state") in {"error", "needs_validation"}:
+            return self._result(
+                "warn", "The saved GPU map is consistent, but idle index discovery failed or needs validation. "
+                "Run live GPU routing while scaling to verify the actual rendering GPU.", **details,
+            )
         return self._result(
             "pass",
-            "The LS GPU map matches this machine."
+            "The saved LS GPU map is consistent with this machine; live rendering is not verified by this test."
             if state == "ok" else
             "A single GPU makes LS GPU calibration unnecessary.",
             **details,

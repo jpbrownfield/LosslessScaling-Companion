@@ -1,5 +1,13 @@
 # Third-party notices
 
+## Private-settings bootstrap
+
+The native folder-redirection helper statically links the BSD-2-Clause
+[MinHook](https://github.com/TsudaKageyu/minhook) dependency at commit
+`c3fcafdc10146beb5919319d0683e44e3c30d537`, also pinned by the addon host.
+Packaged builds include its unmodified notice in
+`licenses/MinHook/MinHook-LICENSE.txt`.
+
 ## Optional SM86 Super Resolution backend
 
 Companion can download pinned release 0.4.1 directly from

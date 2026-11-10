@@ -54,6 +54,8 @@ struct AdapterReport {
     int rootGpuPreference = -1;
     std::vector<std::wstring> lsAdapterNames;
     std::string requestId;
+    std::string lsAdapterStatus = "not_requested";
+    std::uint32_t lsAdapterError = 0;
 };
 
 // No device creation or scaling. The optional names call is the exact export

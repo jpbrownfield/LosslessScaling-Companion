@@ -18,10 +18,18 @@ logger = logging.getLogger("LSCompanion.ReshadeManager")
 class ReshadeManager:
     @staticmethod
     def _is_lossless_scaling_ini(path: Path) -> bool:
-        return (
+        valid = (
             path.name.casefold() in {"reshade.ini", "reshadegui.ini"}
             and (path.parent / "LosslessScaling.exe").is_file()
         )
+        if valid:
+            from .managed_runtime import assert_managed_executable
+            try:
+                assert_managed_executable(path.parent / "LosslessScaling.exe")
+            except (OSError, ValueError, RuntimeError):
+                logger.error("ReShade configuration requires the managed LS clone: %s", path)
+                return False
+        return valid
 
     @staticmethod
     def find_reshade_ini(app_dir: str) -> Optional[Path]:

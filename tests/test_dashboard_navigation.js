@@ -58,6 +58,7 @@ function dashboard(saved = {}, query = '') {
   const context = vm.createContext({
     majorDashboardPanels: panels, settingsDashboardPanels: panels.slice(1),
     profilesPanel: panels[0], generalSettingsPanel: panels[1], dashboardNavButtons: buttons,
+    testingPanel: panels[4], requestRuntimeLogs() {},
     document,
     localStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value)},
     window: {scrollTo: value => scrolls.push(value), matchMedia: () => ({matches: true}), location: {search: query}, innerHeight: 900, addEventListener() {}},

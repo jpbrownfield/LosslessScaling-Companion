@@ -8,6 +8,23 @@ or LS process changes. Both the fast and slow checks defer during scaling,
 editing, tests, and updates. The standalone DXGI helper uses Windows idle process
 priority. Deferred work retries every 30 seconds once idle.
 
+## Probe failure evidence
+
+The startup guard writes `ls-idle-adapter-report-<pid>.json` as well as the
+ordinary runtime report. Runtime refreshes cannot replace the idle result.
+Both discovery identity checks still require the launched PID, creation time,
+and request nonce. `lsAdapterStatus` distinguishes an unloaded engine, missing
+export, getter exception, and empty list; `lsAdapterError` records the native
+error. Mapping status includes this evidence and the next retry interval.
+Repeated failures back off from five minutes to three hours; an explicit
+refresh resets that backoff. Saved mappings remain unchanged on failure.
+
+Live diagnostics retain benchmark isolation but authorize starts only for their
+temporary PID, HWND, and profile. ReShade and Special K checks require the actual
+deployed module paths plus fresh runtime evidence. NR validation uses the
+selected recipe and current host telemetry, including processed model frames.
+The saved-map diagnostic reports consistency separately from live GPU proof.
+
 ## Machine and remaining uncertainty
 
 The user's home machine has a 3090 as the Windows primary GPU, a 5050, Parsec's

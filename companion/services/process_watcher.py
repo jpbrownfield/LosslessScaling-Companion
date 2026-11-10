@@ -413,6 +413,9 @@ class ProcessWatcher:
     def stop_lossless_scaling(self, timeout: float = 5.0) -> bool:
         """Stop the configured Lossless Scaling process before changing its DLL set."""
         configured = self.profile_manager.config.lossless_scaling_exe_path
+        if configured:
+            from .managed_runtime import assert_managed_executable
+            assert_managed_executable(Path(configured))
         try:
             configured_key = str(Path(configured).resolve()).casefold() if configured else ""
         except OSError:
@@ -494,6 +497,9 @@ class ProcessWatcher:
                 return False
 
         executable = Path(cfg.lossless_scaling_exe_path)
+        runtime = getattr(self.profile_manager, "managed_runtime", None)
+        if runtime is not None:
+            runtime.validate(executable)
         if not executable.is_file():
             logger.error("Lossless Scaling executable not found: %s", executable)
             return False
@@ -505,7 +511,8 @@ class ProcessWatcher:
                 startup_info = subprocess.STARTUPINFO()
                 startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startup_info.wShowWindow = 0  # SW_HIDE
-                environment = os.environ.copy()
+                from .managed_runtime import launch_environment, await_isolation
+                environment, receipt, token = launch_environment(executable)
                 special_k_root = executable.parent / ".companion-special-k"
                 if (special_k_root / "Global" / "osd.ini").is_file():
                     environment["SPECIALK_PATH"] = str(special_k_root.resolve())
@@ -519,6 +526,7 @@ class ProcessWatcher:
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                 pid = process.pid
+                await_isolation(pid, receipt, token)
             self.state.lossless_scaling_running = True
             # Retain the polling safety net for security policies that allow
             # hook registration but prevent loading the DLL inside LS.
@@ -687,6 +695,7 @@ class ProcessWatcher:
             self._recent_unscaled_foreground = (time.monotonic(), info)
 
         if info.pid != self._last_foreground_pid or info.hwnd != self._last_foreground_hwnd:
+            logger.info("Foreground changed: %s (PID=%s, HWND=%s)", info.name, info.pid, info.hwnd)
             self._last_foreground_pid = info.pid
             self._last_foreground_hwnd = info.hwnd
             self.state.current_foreground_process = info.name
@@ -706,6 +715,7 @@ class ProcessWatcher:
                             logger.exception(
                                 "Scaling target closed handler failed")
                 if self.state.is_scaling_active and self.scaling_session_target_alive():
+                    logger.info("Keeping the active scaling session; foreground change will not switch its profile")
                     # A live scaling session owns Lossless Scaling until its
                     # target closes or the user scales something else
                     # explicitly. Focus changes are cosmetic only.

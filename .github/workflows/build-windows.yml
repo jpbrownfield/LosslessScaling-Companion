@@ -63,6 +63,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Browser extension tests failed" }
           node tests/test_notifications.js
           if ($LASTEXITCODE -ne 0) { throw "Notification UI tests failed" }
+          node tests/test_profile_navigation.js
+          if ($LASTEXITCODE -ne 0) { throw "Profile navigation UI tests failed" }
+          node tests/test_profile_icons.js
+          if ($LASTEXITCODE -ne 0) { throw "Profile icon UI tests failed" }
           node tests/test_update_lock.js
           if ($LASTEXITCODE -ne 0) { throw "Update maintenance UI tests failed" }
           node tests/test_dashboard_session.js
@@ -72,6 +76,22 @@ jobs:
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up .NET for the private-settings bootstrap
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build and test private-settings isolation
+        shell: pwsh
+        run: |
+          python scripts/build_runtime_isolation.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime isolation build failed" }
+          dotnet build native/runtime_isolation/Fixture/Fixture.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw "Isolation fixture build failed" }
+          $env:LSC_TEST_RUNTIME_ISOLATION = "1"
+          python -m unittest tests.test_managed_runtime -v
+          if ($LASTEXITCODE -ne 0) { throw "Private-settings isolation tests failed" }
 
       - name: Build bundled GPU benchmark
         shell: pwsh
@@ -133,7 +153,7 @@ jobs:
           python scripts/build_addon_manager.py
           if ($LASTEXITCODE -ne 0) { throw "Companion addon host build failed" }
           $env:LSC_TEST_ADDON_HOST = "1"
-          python -m pytest -q tests/test_addon_host.py tests/test_amd_nr.py
+          python -m pytest -q tests/test_addon_host.py tests/test_amd_nr.py tests/test_managed_runtime.py
           if ($LASTEXITCODE -ne 0) { throw "Companion addon host tests failed" }
 
       - name: Compile executable
@@ -150,6 +170,8 @@ jobs:
           }
           $benchmark = Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSBenchmark.exe" -ErrorAction Stop
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_StartupGuard.dll" -ErrorAction Stop | Out-Null
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/runtime-isolation/LSC_StartupHook.dll" -ErrorAction Stop | Out-Null
+          Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/runtime-isolation/LSC_RuntimeIsolation.dll" -ErrorAction Stop | Out-Null
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_AdapterProbe.exe" -ErrorAction Stop | Out-Null
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/tools/LSC_AMDNRProbe.exe" -ErrorAction Stop | Out-Null
           Resolve-Path -LiteralPath "dist/LosslessCompanion/_internal/native/amd_neuralrender/runtime.lock.json" -ErrorAction Stop | Out-Null

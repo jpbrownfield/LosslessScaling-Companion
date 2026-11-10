@@ -208,6 +208,7 @@ class ReshadeProfileService:
         folder = self._folder(profile.id)
         return {
             **profile.model_dump(),
+            "builtin": profile.id in {item.id for item in BUILTIN_PROFILES},
             "presetPath": str(folder / self._preset_filename(profile.name)),
             "configPath": str(folder / "ReShade.ini"),
         }

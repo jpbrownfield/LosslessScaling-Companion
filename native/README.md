@@ -105,3 +105,19 @@ with the Companion host by `python scripts/build_addon_manager.py`. It routes
 verified captures automatically from the actual GPU, reuses MIT compute flow,
 and calls the optional pinned AMD runtime's D3D12 C API. Its standalone probe
 tests compute flow and D3D11/D3D12 sharing without loading a neural model.
+
+`runtime_isolation` supplies the mandatory private-settings bootstrap. Its
+netstandard2.1 startup hook runs before LS Main, installs the pinned MinHook
+helper for process-local LocalAppData/RoamingAppData known-folder APIs, verifies
+the managed folder lookup, preloads selected host components and writes the
+launch receipt. Build with a .NET SDK and x64 MSVC tools:
+
+```powershell
+python scripts/build_runtime_isolation.py
+dotnet build native/runtime_isolation/Fixture/Fixture.csproj -c Release
+$env:LSC_TEST_RUNTIME_ISOLATION = '1'
+python -m unittest tests.test_managed_runtime -v
+```
+
+The fixture checks real managed/native folder lookups, writes only after the
+private path matches, and verifies a bare cloned executable fails before Main.

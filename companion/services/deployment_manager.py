@@ -54,6 +54,9 @@ class DeploymentManager:
     def _select_installation(self, root: Path) -> None:
         """Scope ownership and backups to one resolved installation directory."""
         root = root.resolve()
+        runtime = getattr(self.store, "managed_runtime", None)
+        if runtime is not None:
+            runtime.validate(root / "LosslessScaling.exe")
         key = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
         base = self.store.deployments / self.TARGET_ID
         self.manifest_path = base / "installations" / key / "active-manifest.json"
@@ -127,6 +130,19 @@ class DeploymentManager:
         return relative
 
     @staticmethod
+    def _assert_managed_target(lossless_scaling_exe: str) -> None:
+        executable = Path(lossless_scaling_exe).resolve()
+        # Real LS is a self-contained .NET application. Synthetic test hosts
+        # without its runtime config never read user LS settings.
+        if (executable.parent / "LosslessScaling.runtimeconfig.json").is_file():
+            from .managed_runtime import MARKER, ManagedRuntime
+            marker = executable.parent / MARKER
+            if not marker.is_file():
+                raise DeploymentConflictError("Deployment into the source LS installation is prohibited; use the managed clone")
+            record = json.loads(marker.read_text())
+            ManagedRuntime(Path(record["root"]).parent.parent).validate(executable)
+
+    @staticmethod
     def _lossless_root(lossless_scaling_exe: str) -> Path:
         executable = Path(lossless_scaling_exe).resolve()
         if executable.name.casefold() != "losslessscaling.exe" or not executable.is_file():
@@ -163,6 +179,7 @@ class DeploymentManager:
 
     def retry_recovery(self, lossless_scaling_exe: str) -> None:
         """Retry only recorded restorations; never reset unknown installation files."""
+        self._assert_managed_target(lossless_scaling_exe)
         with self._lock:
             root = self._lossless_root(lossless_scaling_exe)
             self._select_installation(root)
@@ -421,6 +438,9 @@ class DeploymentManager:
         active: bool,
     ) -> bool:
         """Atomically park/unpark managed ReShade and Special K binaries in place."""
+        self._assert_managed_target(lossless_scaling_exe)
+        if (Path(lossless_scaling_exe).parent / ".companion/components.json").is_file():
+            return False  # Explicit components live for the selected profile/process.
         requested = {str(item).casefold() for item in providers}
         if not requested:
             return False
@@ -481,6 +501,8 @@ class DeploymentManager:
         self, providers: Iterable[str], *, active: bool,
         lossless_scaling_exe: Optional[str] = None,
     ) -> bool:
+        if lossless_scaling_exe and (Path(lossless_scaling_exe).parent / ".companion/components.json").is_file():
+            return False
         requested = {str(item).casefold() for item in providers}
         manifest = self._read_manifest(lossless_scaling_exe)
         return any(
@@ -538,6 +560,7 @@ class DeploymentManager:
         files: Iterable[Dict],
     ) -> Dict:
         """Apply one complete desired LS file set, rolling back on every failure."""
+        self._assert_managed_target(lossless_scaling_exe)
         with self._lock:
             desired = self._normalize_desired(files)
             fingerprint = self._fingerprint(profile_id, desired)

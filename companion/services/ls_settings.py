@@ -100,6 +100,8 @@ class LosslessSettingsXml:
 
     def ensure_initial_backup(self) -> Optional[Path]:
         """Preserve the first untouched Settings.xml before any helper writes."""
+        from .managed_runtime import assert_private_settings
+        assert_private_settings(self.path)
         if not self.path.is_file():
             return None
         backup_path = self.initial_backup_path
@@ -117,6 +119,8 @@ class LosslessSettingsXml:
 
     def restore_initial_backup(self) -> bool:
         """Atomically restore the untouched Settings.xml while retaining the backup."""
+        from .managed_runtime import assert_private_settings
+        assert_private_settings(self.path)
         backup_path = self.initial_backup_path
         if not backup_path.is_file():
             return False
@@ -284,6 +288,8 @@ class LosslessSettingsXml:
 
     def _write_tree(self, tree: ET.ElementTree, *, backup: bool) -> None:
         """Write Settings.xml atomically, preserving the first original backup."""
+        from .managed_runtime import assert_private_settings
+        assert_private_settings(self.path)
         if backup:
             if self.ensure_initial_backup() is None:
                 raise OSError("Cannot write Lossless Scaling settings without an initial backup")

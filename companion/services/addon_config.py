@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from ..core.models import Profile
 from ..core.profile_manager import ProfileManager
-from .addon_schema import ADDONS, DEFAULT_ADDON_IDS
+from .addon_schema import ADDONS, DEFAULT_ADDON_IDS, MANAGED_DEFAULTS
 from . import sm86_sr, amd_nr
 
 
@@ -152,6 +152,11 @@ class AddonConfigService:
                 section["_enabled"] = False
             else:
                 section["_enabled"] = section["_enabled"] is True
+
+        # Hidden safety/housekeeping controls must also replace stale imported
+        # values; hiding an editor alone would leave their old behavior active.
+        for addon_id, defaults in MANAGED_DEFAULTS.items():
+            data["addons"].setdefault(addon_id, {}).update(defaults)
 
         if reshade_enabled:
             passthrough = data["addons"].setdefault("ReShadePassthrough", {})

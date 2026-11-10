@@ -21,6 +21,8 @@ jobs:
       - run: node tests/test_extension_background.js
       - run: node tests/test_notifications.js
       - run: node tests/test_dashboard_navigation.js
+      - run: node tests/test_profile_navigation.js
+      - run: node tests/test_profile_icons.js
       - run: node tests/test_update_lock.js
       - run: node tests/test_dashboard_session.js
       - run: node tests/test_dashboard_connection.js

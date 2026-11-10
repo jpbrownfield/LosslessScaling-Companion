@@ -1,7 +1,7 @@
-"""Terminal-style activity log plus a pulsing status border.
+"""Five-second toast cards plus a scaling status border.
 
-The pill shows the last few companion actions like terminal lines: each line
-appears for a couple of seconds and scrolls off the top. A separate
+Each action gets its own fading card; surviving cards slide up as older
+ones expire. A separate
 click-through frame around the target window pulses blue while scaling is
 pending (hotkey received or game detected) and maroon while scaling is
 active. No injection, no hooks; every failure degrades to silent no-op.
@@ -13,13 +13,14 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
+from .toast_stack import TOAST_SECONDS
 
-LINE_TTL_SECONDS = 2.0
+LINE_TTL_SECONDS = TOAST_SECONDS
 MAX_LINES = 5
-ERROR_TTL_SECONDS = 4.0
+ERROR_TTL_SECONDS = LINE_TTL_SECONDS
 STABLE_SECONDS = 3.0
 MIN_GAME_AREA = 640 * 480
-# Re-present at least this often while content is visible so the pill and
+# Re-present at least this often while content is visible so the cards and
 # border re-anchor if the game window moves (e.g. across monitors). The
 # presenter re-reads the live window rect on every present.
 REFOLLOW_SECONDS = 0.5
@@ -49,8 +50,10 @@ def _splash_pattern():
 
 @dataclass
 class _Line:
+    id: int
     text: str
     accent: tuple
+    created_at: float
     expires_at: float
 
 
@@ -90,10 +93,11 @@ def describe_window_default(hwnd: int):
 
 
 class OverlayState:
-    """Pure state: scrolling log lines plus one border request."""
+    """Pure state: timed toast messages plus one border request."""
 
     def __init__(self) -> None:
         self._lines: List[_Line] = []
+        self._sequence = 0
         self._border = _BorderRequest()
 
     @property
@@ -112,7 +116,9 @@ class OverlayState:
             hold_seconds = (ERROR_TTL_SECONDS if kind == "error"
                             else LINE_TTL_SECONDS)
         accent = _ACCENTS.get(kind, _ACCENTS["info"])
-        self._lines.append(_Line(text=text[:90], accent=accent,
+        self._sequence += 1
+        self._lines.append(_Line(id=self._sequence, text=text[:90], accent=accent,
+                                 created_at=moment,
                                  expires_at=moment + hold_seconds))
         del self._lines[:-MAX_LINES]
 
@@ -201,7 +207,7 @@ def production_indicator(profile_manager) -> "OverlayIndicator":
 
 
 class OverlayIndicator:
-    """Terminal log plus pulsing status border; never raises."""
+    """Toast cards plus the scaling status border; never raises."""
 
     def __init__(self, presenter: Optional[Presenter] = None,
                  enabled: Optional[Callable[[], bool]] = None,
@@ -210,6 +216,7 @@ class OverlayIndicator:
                  pump: bool = False,
                  pump_interval: float = 0.25) -> None:
         self._state = OverlayState()
+        self._line_anchor_hwnd: Optional[int] = None
         self._lock = threading.RLock()
         # NOTE: the Win32 presenter is created lazily on first real show so
         # unit tests (and headless runs) never create HWNDs or threads.
@@ -257,6 +264,8 @@ class OverlayIndicator:
             with self._lock:
                 if not self._enabled():
                     return
+                if anchor_hwnd is not None:
+                    self._line_anchor_hwnd = anchor_hwnd
                 self._state.log(text, kind, now=now)
             self._ensure_pump()
             self._render(anchor_hwnd, now=now)
@@ -298,6 +307,7 @@ class OverlayIndicator:
         try:
             with self._lock:
                 self._state.clear()
+                self._line_anchor_hwnd = None
             self.tick()
         except Exception:
             pass
@@ -387,6 +397,10 @@ class OverlayIndicator:
             with self._lock:
                 self._state.tick(now=now)
                 lines = self._state.current
+                if not lines:
+                    self._line_anchor_hwnd = None
+                if anchor_hwnd is None:
+                    anchor_hwnd = self._line_anchor_hwnd
                 border_anchor = self._border_allowed(now=now)
                 border_state = None
                 if border_anchor is not None:
@@ -412,7 +426,8 @@ class OverlayIndicator:
                 payload = None
             else:
                 payload = {
-                    "lines": [{"text": line.text, "accent": line.accent}
+                    "lines": [{"id": line.id, "text": line.text, "accent": line.accent,
+                               "created_at": line.created_at, "expires_at": line.expires_at}
                               for line in lines],
                     "border": border_state,
                     "border_anchor_hwnd": border_anchor,
@@ -420,7 +435,7 @@ class OverlayIndicator:
                                     else fallback_anchor),
                     "pulse": pulse,
                 }
-            signature = (tuple((line.text, line.accent) for line in lines),
+            signature = (tuple(line.id for line in lines),
                          border_state, border_anchor, fallback_anchor, pulse)
             moment = _time.monotonic() if now is None else now
             with self._lock:

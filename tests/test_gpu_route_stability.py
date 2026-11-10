@@ -379,7 +379,7 @@ class GpuMapFreshnessTests(unittest.TestCase):
             ls_gpu_id_map={RTX_5050: 1}, ls_gpu_map_fingerprint="deadbeef")
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
         runner.server = SimpleNamespace(config=automation.profile_manager.config,
-                                        automation=automation)
+                                        automation=automation, state=automation.state)
         runner._path = str
         stale = runner._gpu_routing()
         self.assertEqual(stale["status"], "fail")

@@ -37,6 +37,8 @@ class AppState:
         self.scaling_target_verified_for_minimization: bool = False
         self.current_gpu_route_key: Optional[str] = None
         self.benchmark_mode_active: bool = False
+        # Only this test window/profile may start while diagnostics own LS.
+        self.diagnostic_scaling_target: Optional[tuple[int, int, str]] = None
         self.dynamic_limiter_status: Dict[str, Any] = {
             "state": "inactive",
             "message": "Dynamic limiter inactive",
@@ -51,9 +53,15 @@ class AppState:
             object.__setattr__(self, name, value)
             return
         with self._lock:
+            existed = name in self.__dict__
             previous = self.__dict__.get(name)
             object.__setattr__(self, name, value)
             changed = previous != value
+            if existed and changed and name in {
+                "lossless_scaling_running", "is_scaling_active", "auto_scale_enabled",
+                "update_in_progress", "gpu_mapping_in_progress", "benchmark_mode_active",
+            }:
+                logging.getLogger("LSCompanion.State").info("%s: %s -> %s", name, previous, value)
             if changed and name != "connected_clients":
                 self.publish_change()
 

@@ -2,6 +2,7 @@
 // Companion owns settings through stopped-profile deployment. This endpoint is
 // read-only telemetry: no commands, paths, configuration, or GPU frame data.
 #include "companion_bridge.h"
+#include "component_loader.h"
 #include "d3d11_hook.h"
 #include "real_frame_hook.h"
 #include "../addon/addon_manager.h"
@@ -126,7 +127,7 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
     json result={{"schema",1},{"pid",GetCurrentProcessId()},{"createdAt",Seconds(created)},
         {"sampledAt",Seconds(now)},{"headless",true},{"hostVersion",LSC_HOST_VERSION},
         {"startupError",startupError},{"addons",json::array()},{"metrics",json::object()},
-        {"sm86Sr",sr},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
+        {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
     {
         std::lock_guard<std::mutex> lock(manager->GetMutex());
         for (const auto& addon : manager->GetAddons()) {
@@ -152,6 +153,7 @@ DWORD WINAPI Run(void* parameter) {
     auto* manager=static_cast<eam::AddonManager*>(parameter);
     std::string startupError;
     try {
+        if (LSCInitializeComponents()!=ERROR_SUCCESS) throw std::runtime_error("Explicit component initialization failed");
         {
             std::lock_guard<std::mutex> lock(sm86Mutex);
             auto& config=eam::ConfigManager::Instance();

@@ -221,6 +221,7 @@ std::string Serialize(const AdapterReport& report) {
     }
     out += "],\"rootGpuPreference\":";
     out += std::to_string(report.rootGpuPreference);
+    out += ",\"lsAdapterStatus\":\"" + report.lsAdapterStatus + "\",\"lsAdapterError\":" + std::to_string(report.lsAdapterError);
     out += ",\"requestId\":\"" + report.requestId + "\",\"lsAdapterNames\":[";
     for (size_t i = 0; i < report.lsAdapterNames.size(); ++i) {
         if (i) out += ",";
@@ -303,17 +304,25 @@ static AdapterReport CollectReport(void* d3d11Device, std::uint32_t hostVersion)
 
 // Keep SEH separate from functions with C++ destructors. Never load a proxy or
 // engine on behalf of the probe; LS must already have loaded its own module.
-static BSTR ReadLsNames() {
+static BSTR ReadLsNames(AdapterReport& report) {
     HMODULE module = nullptr;
     BSTR result = nullptr;
     __try {
         // Retain an already-loaded engine for the entire call. LS/proxy
         // shutdown must not unload the getter underneath this worker.
         GetModuleHandleExW(0, L"Lossless.dll", &module);
+        report.lsAdapterStatus = module ? "export_unavailable" : "engine_not_loaded";
         const auto getter = module ? reinterpret_cast<BSTR(__cdecl*)()>(
             GetProcAddress(module, "GetAdapterNames")) : nullptr;
-        result = getter ? getter() : nullptr;
+        if (getter) {
+            result = getter();
+            report.lsAdapterStatus = result && SysStringLen(result) ? "ok" : "empty";
+        } else {
+            report.lsAdapterError = GetLastError();
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        report.lsAdapterStatus = "getter_exception";
+        report.lsAdapterError = GetExceptionCode();
         result = nullptr;
     }
     if (module) FreeLibrary(module);
@@ -324,7 +333,7 @@ std::string CollectAdapterSnapshot(bool readLsNames, const std::string& requestI
     auto report = CollectReport(nullptr, 0);
     report.requestId = requestId;
     if (readLsNames) {
-        BSTR names = ReadLsNames();
+        BSTR names = ReadLsNames(report);
         if (names) {
             try {
                 const auto size = SysStringLen(names);
@@ -354,8 +363,10 @@ static bool WriteAdapterReportImpl(void* d3d11Device, std::uint32_t hostVersion,
     DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData,
                                            ARRAYSIZE(localAppData));
     if (!length || length >= ARRAYSIZE(localAppData)) return false;
-    std::wstring directory = std::wstring(localAppData) +
-                             L"\\LosslessScalingHelper\\diagnostics";
+    wchar_t configured[32768]{};
+    const auto configuredSize = GetEnvironmentVariableW(L"LSC_ADAPTER_REPORT_DIR", configured, ARRAYSIZE(configured));
+    std::wstring directory = configuredSize && configuredSize < ARRAYSIZE(configured) ? std::wstring(configured, configuredSize) :
+        std::wstring(localAppData) + L"\\LosslessScalingHelper\\diagnostics";
     CreateDirectoryW(directory.c_str(), nullptr);
     wchar_t name[64]{};
     swprintf_s(name, L"ls-adapter-report-%u.json", report.pid);

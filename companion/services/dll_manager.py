@@ -20,6 +20,9 @@ class DllManager:
         if not directory.is_dir() or not (directory / "LosslessScaling.exe").is_file():
             logger.error("DLL destination must be the directory containing LosslessScaling.exe: %s", directory)
             return None
+        if (directory / "LosslessScaling.runtimeconfig.json").is_file():
+            logger.error("Legacy DLL overrides are disabled for LS; use the managed host component manifest")
+            return None
         return directory
 
     @staticmethod

@@ -79,3 +79,42 @@ ADDONS = [
 ]
 
 DEFAULT_ADDON_IDS = tuple(item["id"] for item in ADDONS)
+
+# Managed controls stay in the schema so older saved values never reappear as
+# unknown fields. Apply these defaults when materializing every profile, too.
+MANAGED_DEFAULTS = {
+    "DLSSNR02": {"enabled": "1", "apply": "1", "autoMask": "1",
+                 "amdWait": "0", "amdHistory": "0", "amdBlendFrames": "0"},
+    "FSR3UPSC": {"frameGen": "0"},  # LS owns frame generation.
+    "ReShadePassthrough": {"auto_click_repress": "1"},
+}
+
+PRESENTATION = {
+    "DLSSNR02": dict(
+        summary="Enhance captured frames before frame generation. The scaling GPU selects the NVIDIA or AMD backend.",
+        category="Enhancement",
+        groups=[
+            dict(label="Quality & performance", keys=["scalePercent", "preset", "passes", "intensity", "style"], expanded=True),
+            dict(label="Model tuning", keys=["localStructure", "localTone", "skinStructure", "detail", "colour", "maxRatio"]),
+            dict(label="NVIDIA optical flow", vendor="NVIDIA", keys=["flowGrid", "flowQuality"]),
+            dict(label="NVIDIA HDR", vendor="NVIDIA", keys=["whiteNits", "proxy", "reconstruction"]),
+            dict(label="NVIDIA picture adjustments", vendor="NVIDIA", keys=["pictureEnabled", "pictureExposure", "pictureContrast", "pictureMidtones", "pictureShadows", "pictureHighlights", "pictureTemperature", "pictureTint", "pictureSaturation", "pictureVibrance", "pictureSharpen"]),
+            dict(label="AMD inference", vendor="AMD", keys=["amdMaxAge", "amdModelPath"]),
+            dict(label="NVIDIA model location", vendor="NVIDIA", keys=["modelPath"]),
+        ],
+    ),
+    "DLSS4DLAA": dict(summary="NVIDIA upscaling and anti-aliasing. Stays in sync with this profile’s scaling mode.", category="Upscaling", vendor="NVIDIA",
+        groups=[dict(label="DLSS model", keys=["dlaaPreset", "companionSm86Mode"], expanded=True),
+                dict(label="Picture adjustments", keys=[f["key"] for f in PICTURE])]),
+    "FSR3UPSC": dict(summary="FSR upscaling. Stays in sync with this profile’s scaling mode.", category="Upscaling",
+        groups=[dict(label="Picture adjustments", keys=[f["key"] for f in PICTURE], expanded=True)]),
+    "XESSUPSC": dict(summary="XeSS upscaling, with independent picture controls.", category="Upscaling",
+        groups=[dict(label="Picture adjustments", keys=[f["key"] for f in PICTURE], expanded=True)]),
+    "WindowedMode": dict(summary="Position the scaled output beside the game or on part of a display.", category="Display"),
+    "ReShadePassthrough": dict(summary="Lets mouse and keyboard input reach the ReShade menu. Enabled automatically when a ReShade preset is selected.", category="Input"),
+}
+for addon in ADDONS:
+    addon.update(PRESENTATION.get(addon["id"], {}))
+    for field in addon["fields"]:
+        if field["key"] in MANAGED_DEFAULTS.get(addon["id"], {}):
+            field.update(hidden=True, default=MANAGED_DEFAULTS[addon["id"]][field["key"]])

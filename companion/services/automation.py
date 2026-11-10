@@ -265,8 +265,18 @@ class AutomationController:
             return False
         with self._lock:
             if self.state.update_in_progress:
+                logger.info("Scaling %s request deferred during an update (%s)", "start" if active else "stop", reason)
                 return False
+            diagnostic_target = self.state.diagnostic_scaling_target
+            diagnostic_start = bool(
+                diagnostic_target
+                and (target_pid, target_hwnd, getattr(profile or self.state.current_active_profile, "id", None))
+                == diagnostic_target
+                and (reason in {"focus", "override_hotkey"}
+                     or reason.startswith("experimental_addon_test:"))
+            )
             if (active and self.state.benchmark_mode_active
+                    and not diagnostic_start
                     and reason != "performance_benchmark"
                     and not reason.startswith("gpu_calibration")):
                 # Benchmark and GPU-calibration runs own Lossless Scaling
@@ -286,6 +296,9 @@ class AutomationController:
                 logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             selected = profile or self.state.current_active_profile
+            logger.info("Scaling %s requested: reason=%s, profile=%s, PID=%s, HWND=%s, force=%s",
+                        "start" if active else "stop", reason,
+                        selected.name if selected else "Default", target_pid, target_hwnd, force)
             # A direct scale/stop supersedes any pending Scale Now timer.
             self._cancel_delayed_scale()
             if active and not self.state.is_scaling_active and self._pending_native_profiles:
@@ -532,6 +545,9 @@ class AutomationController:
                     self._set_control_status("idle", "GPU testing stopped after focus changed" if self._targeted_gpu_test_active
                                              else "Profile applied; scaling waits for a manual restart after focus changed")
                     return False
+                logger.info("Sending Lossless Scaling hotkey %s (hold %sms), attempt %s/%s; confirmation timeout %.1fs",
+                            "+".join([*hotkey.modifiers, hotkey.key]), hotkey.hold_delay_ms,
+                            attempt, max_attempts, confirmation_timeout)
                 emitted = trigger_hotkey(
                     modifiers=hotkey.modifiers,
                     key=hotkey.key,
@@ -661,7 +677,7 @@ class AutomationController:
                     if gpu_verification in {"failed", "cancelled"}:
                         return False
                 except Exception:
-                    logger.debug("Post-scale GPU verification unavailable", exc_info=True)
+                    logger.warning("Scaling confirmed but post-scale GPU verification is unavailable", exc_info=True)
             if self._targeted_gpu_test_active:
                 self.overlay_indicator.set_border("pending", anchor_hwnd=target_hwnd, immediate=True)
             elif active:
@@ -749,6 +765,9 @@ class AutomationController:
         return False
 
     def _set_control_status(self, state: str, message: str) -> None:
+        if self.state.scaling_control_status != {"state": state, "message": message}:
+            logger.log(logging.ERROR if state == "error" else logging.INFO,
+                       "Scaling control [%s]: %s", state, message)
         self.state.scaling_control_status = {"state": state, "message": message}
 
     def _instant_stop_scaling(
@@ -819,6 +838,7 @@ class AutomationController:
 
         def fire() -> None:
             self._delayed_scale_timer = None
+            logger.info("Scale Now timer elapsed; activating the foreground target")
             if self.state.is_scaling_active:
                 logger.info("Scale Now skipped; scaling is already active")
                 self._set_control_status("confirmed", "Scale Now skipped; scaling is already active")
@@ -840,6 +860,7 @@ class AutomationController:
             except Exception:
                 pass
             self._delayed_scale_timer = None
+            logger.info("Cancelled pending Scale Now timer")
 
     def toggle_scaling(self, profile: Optional[Profile] = None, *, reason: str) -> bool:
         return self.set_scaling(
@@ -863,6 +884,13 @@ class AutomationController:
         if not self.process_watcher:
             return False
         target = self.process_watcher.get_foreground_window_info()
+        diagnostic_target = self.state.diagnostic_scaling_target
+        if diagnostic_target and (
+            target is None or (target.pid, target.hwnd) != diagnostic_target[:2]
+        ):
+            # Do not restart/apply an unrelated foreground profile before the
+            # scoped start guard gets a chance to reject its scaling request.
+            return False
         if self.state.is_scaling_active:
             session_pid = int(self.state.scaling_target_pid or 0)
             session_hwnd = int(self.state.scaling_target_hwnd or 0)
@@ -907,6 +935,8 @@ class AutomationController:
             )
         if profile is None:
             self._set_control_status("error", "No default Lossless Scaling profile is available")
+            return False
+        if diagnostic_target and profile.id != diagnostic_target[2]:
             return False
         self.activate_profile(
             profile,
@@ -1050,6 +1080,32 @@ class AutomationController:
                 and self.profile_manager.config.minimize_other_windows_on_scale
             ):
                 self._minimize_other_windows()
+
+    def apply_general_gpu_settings(self) -> None:
+        """Apply a deliberate default-GPU edit to profiles that inherit it."""
+        with self._lock:
+            self.refresh_gpu_selections()
+            active = self.state.current_active_profile
+            if not active:
+                return
+            profile = self.profile_manager.get_profile_by_id(active.id) or active
+            if self._profile_gpu_route_ids(profile)[0]:
+                # An explicit profile GPU remains authoritative. A fixed
+                # output display alone does not override the general GPU.
+                return
+            if self.state.is_scaling_active:
+                self._queue_profile_restart(profile)
+                self._set_control_status("pending", "GPU settings saved; return to the scaled application to apply them")
+                return
+            # This is an explicit settings change, so a calibration restart
+            # moments ago must not prevent applying the new route.
+            self._last_gpu_route_relaunch_at = 0.0
+            self.activate_profile(
+                profile, force=True, suppress_auto_scale=True,
+                target_hwnd=self.state.current_foreground_hwnd,
+            )
+            if self.process_watcher:
+                self.process_watcher.invalidate_foreground_cache()
 
     @staticmethod
     def _profile_gpu_route_ids(profile: Optional[Profile]) -> tuple[int, int]:
@@ -2730,27 +2786,26 @@ class AutomationController:
             profile = self.state.current_active_profile
             target_hwnd = self.state.scaling_target_hwnd
             target_pid = self.state.scaling_target_pid
+            if (self.profile_changes_blocked() or self._pending_profile_restart
+                    or self.state.benchmark_mode_active or self.state.gpu_mapping_in_progress
+                    or self.state.update_in_progress or self.profile_manager.repair_session):
+                return False
             if not (
-                config.auto_route_gpu_to_display
+                (config.auto_route_gpu_to_display or config.preferred_scaling_gpu_device_id
+                 or config.preferred_scaling_gpu_name)
                 and self.state.is_scaling_active
                 and profile
                 and target_hwnd
             ):
                 return False
-            if any(self._profile_gpu_route_ids(profile)):
-                # A profile-specific numeric route is fixed; only profiles set
-                # to Auto follow the global per-display handoff behavior.
+            if self._profile_gpu_route_ids(profile)[0]:
+                # Only an explicit GPU overrides General Settings; a fixed
+                # output monitor can still inherit the default GPU.
                 return False
             route = self._desired_gpu_route(profile, target_hwnd)
             route_key = self._gpu_route_key(route)
-            if route_key == self.state.current_gpu_route_key:
-                return False
-            if not self._gpu_route_relaunch_due():
-                logger.info(
-                    "Skipping display GPU handoff to route %s; a recent relaunch is still settling",
-                    route_key,
-                )
-                return False
+            # Calibration can restore the native XML after caching a trial
+            # route. The cache alone cannot prove that LS loaded this route.
             route_change = self.lossless_settings.gpu_route_changes_required(
                 profile.lossless_profile_title,
                 int(route.get("lsGpuId", 0)),
@@ -2761,6 +2816,12 @@ class AutomationController:
                 return False
             if not route_change:
                 self.state.current_gpu_route_key = route_key
+                return False
+            if not self._gpu_route_relaunch_due():
+                logger.info(
+                    "Skipping display GPU handoff to route %s; a recent relaunch is still settling",
+                    route_key,
+                )
                 return False
             if not self.set_scaling(
                 False,
@@ -2872,6 +2933,10 @@ class AutomationController:
                 return
             previous = self.state.current_active_profile
             same_profile = bool(previous and profile and previous.id == profile.id)
+            if force or not same_profile:
+                logger.info("Activating profile %s (previous=%s, source=%s, PID=%s, HWND=%s, for_scaling=%s)",
+                            profile.name if profile else "Default", previous.name if previous else "none",
+                            source or "request", target_pid, target_hwnd, for_scaling)
             if (
                 previous
                 and not same_profile
@@ -2990,6 +3055,9 @@ class AutomationController:
             except (GraphicsResolutionError, OSError, ValueError, RuntimeError) as error:
                 logger.error("Profile '%s' graphics plan is invalid: %s", profile.name if profile else "none", error)
                 return
+            self._announce_profile_activation(
+                previous, profile, target_hwnd, suppress_auto_scale,
+                source=source)
             restart_lossless_scaling = False
             restart_succeeded = True
             reshade_swapped = False
@@ -3033,6 +3101,7 @@ class AutomationController:
                         "Profile '%s' was not activated because Lossless Scaling could not be stopped",
                         profile.name if profile else "none",
                     )
+                    self.overlay_indicator.set_border(None)
                     return
 
             try:
@@ -3053,11 +3122,13 @@ class AutomationController:
                 transition_succeeded = True
             except Exception as error:
                 logger.error("Profile '%s' activation failed: %s", profile.name if profile else "none", error)
+                self.overlay_indicator.set_border(None)
             finally:
                 if restart_lossless_scaling and self.process_watcher:
                     restart_succeeded = self.process_watcher.launch_lossless_scaling(force=True)
                     if not restart_succeeded:
                         logger.error("DLL profile was applied, but Lossless Scaling could not be restarted")
+                        self.overlay_indicator.set_border(None)
 
             if transition_succeeded and restart_lossless_scaling and restart_succeeded:
                 self._trigger_profile_runtime_actions(
@@ -3067,10 +3138,6 @@ class AutomationController:
                     target_hwnd=target_hwnd,
                     suppress_auto_scale=suppress_auto_scale,
                 )
-            if transition_succeeded:
-                self._announce_profile_activation(
-                    previous, profile, target_hwnd, suppress_auto_scale,
-                    source=source)
 
     def _apply_profile_transition(
         self,
@@ -3219,6 +3286,7 @@ class AutomationController:
         suppress_auto_scale: bool = False,
     ) -> None:
         if not profile:
+            logger.info("Automatic scaling skipped: no matching profile")
             return
         if reshade_swapped and profile.reshade and profile.reshade.reload_hotkey:
             ReshadeManager.trigger_reshade_reload(profile.reshade.reload_hotkey)
@@ -3234,12 +3302,14 @@ class AutomationController:
             # own dashboard --app window — must never auto-scale it, or the
             # Chrome profile latches on with nothing actually scaling.
             if self._is_browser_profile(profile):
-                logger.debug(
+                logger.info(
                     "Skipped focus auto-scale for browser profile '%s'; waiting for extension event",
                     profile.name,
                 )
                 return
             delay_ms = self.profile_manager.config.global_hotkey.activation_delay_ms
+            logger.info("Automatic scaling scheduled for '%s' in %sms (PID=%s, HWND=%s)",
+                        profile.name, delay_ms, target_pid, target_hwnd)
             if target_pid is not None and target_hwnd is not None and self.process_watcher:
                 deadline = time.monotonic() + (delay_ms / 1000.0)
                 while True:
@@ -3263,6 +3333,19 @@ class AutomationController:
                 target_pid=target_pid,
                 target_hwnd=target_hwnd,
             )
+        else:
+            reasons = []
+            if profile.is_default:
+                reasons.append("Default profile requires manual activation")
+            if not profile.auto_scale:
+                reasons.append("profile auto-scale is disabled")
+            if not self.profile_manager.config.disable_native_auto_scale:
+                reasons.append("helper does not own automatic scaling")
+            if not self.state.auto_scale_enabled:
+                reasons.append("global auto-scale is disabled")
+            if suppress_auto_scale:
+                reasons.append("automatic activation suppressed for this operation")
+            logger.info("Automatic scaling skipped for '%s': %s", profile.name, "; ".join(reasons))
 
     @staticmethod
     def _is_browser_profile(profile: Profile) -> bool:

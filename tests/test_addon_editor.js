@@ -8,17 +8,18 @@ const code = html.slice(html.indexOf('    function profileUpscalerChoice('), htm
 const nativePayloadCode = html.slice(html.indexOf('    function nativeSettingsPayload()'), html.indexOf('    function setProfileEditorOpen('));
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.events = {}; this.value = ''; }
+  constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.value = ''; }
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); }
   replaceChildren() { this.children = []; }
   setAttribute(key, value) { this[key] = value; }
+  getAttribute(key) { return this[key] ?? null; }
   addEventListener(name, callback) { this.events[name] = callback; }
   checkValidity() { return true; }
 }
 
 function editor() {
-  const nodes = Object.fromEntries(['addonEditorCards', 'addonManagerFields', 'reshadeManagedProfile', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
+  const nodes = Object.fromEntries(['addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
   nodes.profileId.value = 'inactive-game-profile';
   nodes.nativeScalingType.value = 'NIS';
   nodes.nativeScalingType.dataset = {nativeKey: 'ScalingType', nativeAvailable: 'true'};
@@ -27,7 +28,14 @@ function editor() {
   const context = vm.createContext({
     notificationState: {repairSession: false},
     document: {getElementById: id => nodes[id], createElement: tag => new Element(tag),
-      querySelectorAll: selector => selector === '[data-native-key]' ? [nodes.nativeScalingType] : []},
+      querySelectorAll: selector => {
+        if (selector === '[data-native-key]') return [nodes.nativeScalingType];
+        const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
+        const matches = [];
+        const walk = node => { if (attribute && node[attribute] != null) matches.push(node); node.children.forEach(walk); };
+        Object.values(nodes).forEach(walk);
+        return matches;
+      }},
     addonEditorCatalog: [{id: 'DLSSNR02', name: 'DLSS 5', fields: [{key: 'scalePercent', label: 'Resolution', type: 'number', default: '50'}]},
       {id: 'DLSS4DLAA', name: 'DLSS Upscaler', fields: [
         {key: 'dlaaPreset', label: 'DLSS upscaling preset', type: 'select', options: [['12', 'L'], ['13', 'M']]},
@@ -114,6 +122,65 @@ test('the entire dashboard script parses', () => {
   new vm.Script(html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>')));
 });
 
+test('physical inventory gates exclusive controls while shared NR and FSR stay editable', () => {
+  const {context, nodes, find} = editor();
+  const nr = context.addonEditorCatalog[0];
+  nr.fields.push({key: 'amdModelPath', label: 'AMD model', type: 'text'},
+    {key: 'flowQuality', label: 'NVIDIA flow', type: 'number'});
+  nr.groups = [{label: 'AMD inference', vendor: 'AMD', keys: ['amdModelPath']},
+    {label: 'NVIDIA optical flow', vendor: 'NVIDIA', keys: ['flowQuality']}];
+  context.addonEditorCatalog[1].vendor = 'NVIDIA';
+  context.addonEditorDraft.addons.DLSS4DLAA._enabled = true;
+  const groupFields = vendor => {
+    const walk = node => node.tag === 'fieldset' && node['data-addon-vendor'] === vendor
+      ? node : node.children.map(walk).find(Boolean);
+    return walk(nodes.addonEditorCards);
+  };
+  for (const vendors of [[], ['AMD'], ['NVIDIA'], ['AMD', 'NVIDIA']]) {
+    context.controlSettings.gpuInventory = {gpus: vendors.map(vendor => ({vendor}))};
+    context.renderAddonEditor();
+    assert.equal(find('Enable DLSS Upscaler').disabled, !vendors.includes('NVIDIA'));
+    assert.equal(groupFields('AMD').disabled, !vendors.includes('AMD'));
+    assert.equal(groupFields('NVIDIA').disabled, !vendors.includes('NVIDIA'));
+    assert.equal(find('Enable DLSS 5').disabled, false);
+    assert.equal(find('Enable FSR Upscaler').disabled, false);
+    assert.equal(context.addonEditorDraft.addons.DLSS4DLAA._enabled, true);
+  }
+  context.controlSettings.gpuInventory = {gpus: []};
+  context.applyAddonVendorAvailability();
+  assert.equal(groupFields('AMD').disabled, true);
+  context.controlSettings.gpuInventory = {gpus: [{deviceId: 'PCI\\VEN_1002'}, {deviceId: 'PCI\\VEN_10DE'}]};
+  context.applyAddonVendorAvailability();
+  assert.equal(groupFields('AMD').disabled, false);
+  assert.equal(groupFields('NVIDIA').disabled, false);
+});
+
+test('hidden managed controls do not reappear as additional saved settings', () => {
+  const {context, find} = editor();
+  context.addonEditorCatalog[0].fields.push({key: 'apply', label: 'Comparison output', hidden: true});
+  context.addonEditorDraft.addons.DLSSNR02.apply = '0';
+  context.renderAddonEditor();
+  assert.equal(find('Comparison output'), undefined);
+  assert.equal(find('apply'), undefined);
+  assert.ok(find('Resolution'));
+});
+
+test('host housekeeping fields stay hidden while unknown host settings survive', () => {
+  const {context, find} = editor();
+  context.addonEditorDraft.global = {auto_load: false, ui: {open_on_start: true, customUi: 'keep'}};
+  context.renderAddonEditor();
+  assert.equal(find('auto load'), undefined);
+  assert.equal(find('open on start'), undefined);
+  assert.equal(find('custom Ui').value, 'keep');
+});
+
+test('live scaling status immediately follows Scale Now inside the sidebar', () => {
+  const footer = html.slice(html.indexOf('<div class="sidebar-footer">'), html.indexOf('<main id="mainContent"'));
+  assert.ok(footer.indexOf('id="statusPill"') > footer.indexOf('id="scaleNowBtn"'));
+  assert.equal((html.match(/id="statusPill"/g) || []).length, 1);
+  assert.doesNotMatch(footer, /Switch to your app/);
+});
+
 test('addon toolbar binds and tolerates clicks before the connection opens', () => {
   const nodes = {};
   const context = vm.createContext({ws: null, WebSocket: {OPEN: 1},
@@ -193,12 +260,108 @@ test('missing manager or upscaler is explained without enabling the global add-o
   const {context, nodes} = editor();
   context.controlSettings.addonManagerEnabled = false;
   context.changeProfileScalingChoice('AddonDLSS');
-  assert.match(nodes.profileScalingTypeHint.textContent, /General Settings/);
+  assert.match(nodes.profileScalingTypeHint.textContent, /Add-ons/);
   assert.equal(context.controlSettings.addonManagerEnabled, false);
   context.controlSettings.addonManagerEnabled = true;
   context.addonEditorCatalog.find(addon => addon.id === 'DLSS4DLAA').installed = false;
   context.renderProfileScalingChoice();
   assert.match(nodes.profileScalingTypeHint.textContent, /not installed/);
+});
+
+test('cards disclose settings without enabling processing and preserve the user expansion', () => {
+  const {context, nodes, find} = editor();
+  const card = nodes.addonEditorCards.children[0];
+  assert.equal(card.children[1].hidden, true);
+  find('Configure DLSS 5').events.click();
+  assert.equal(card.children[1].hidden, false);
+  assert.equal(context.addonEditorDraft.addons.DLSSNR02._enabled, false);
+  context.renderAddonEditor();
+  assert.equal(nodes.addonEditorCards.children[0].children[1].hidden, false);
+  assert.equal(nodes.addonEditorSummary.textContent, '0 enabled for this profile');
+  const toggle = find('Enable DLSS 5');
+  toggle.checked = true;
+  toggle.events.change();
+  assert.equal(nodes.addonEditorSummary.textContent, '1 enabled for this profile');
+});
+
+test('search changes presentation without saving or discarding unmatched settings', () => {
+  const {context, nodes, sent, find} = editor();
+  const before = JSON.stringify(context.addonEditorDraft);
+  nodes.addonEditorSearch.value = 'resolution';
+  context.renderAddonEditor();
+  assert.equal(nodes.addonEditorCards.children.length, 2, 'both working resolution and Super Resolution match');
+  assert.ok(find('Resolution'));
+  assert.equal(nodes.addonEditorCards.children[0].children[1].hidden, false);
+  assert.equal(JSON.stringify(context.addonEditorDraft), before);
+  assert.equal(sent.length, 0);
+  nodes.addonEditorSearch.value = 'no matching add-on';
+  context.renderAddonEditor();
+  assert.match(nodes.addonEditorCards.children[0].textContent, /No add-ons match/);
+  assert.equal(JSON.stringify(context.addonEditorDraft), before);
+});
+
+test('grouped fields appear once, advanced groups collapse, and unknown values stay editable', () => {
+  const {context, nodes, find} = editor();
+  context.addonEditorCatalog[0].groups = [
+    {label: 'Quality', keys: ['scalePercent'], expanded: true},
+    {label: 'Advanced', keys: ['scalePercent', 'not-in-this-version']},
+  ];
+  context.addonEditorDraft.addons.DLSSNR02.futureValue = 7;
+  context.renderAddonEditor();
+  const controls = [];
+  const visit = node => { if (node['aria-label'] === 'Resolution') controls.push(node); node.children.forEach(visit); };
+  visit(nodes.addonEditorCards);
+  assert.equal(controls.length, 1);
+  assert.ok(find('future Value'));
+  assert.ok(find('numeric'), 'unknown add-ons remain available');
+});
+
+test('advanced group disclosure survives a rerender and can be found by its heading', () => {
+  const {context, nodes} = editor();
+  context.addonEditorCatalog[0].groups = [{label: 'Model tuning', keys: ['scalePercent']}];
+  context.renderAddonEditor();
+  let group = nodes.addonEditorCards.children[0].children[1].children[0];
+  assert.equal(group.open, false);
+  group.open = true;
+  group.events.toggle();
+  context.renderAddonEditor();
+  group = nodes.addonEditorCards.children[0].children[1].children[0];
+  assert.equal(group.open, true);
+  nodes.addonEditorSearch.value = 'model tuning';
+  context.renderAddonEditor();
+  assert.equal(nodes.addonEditorCards.children.length, 1);
+  assert.equal(nodes.addonEditorCards.children[0].children[1].children[0].open, true);
+});
+
+test('included shader presets have edit controls and imported presets have named delete controls', () => {
+  const list = {innerHTML: ''};
+  const context = vm.createContext({
+    document: {getElementById: () => list},
+    escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('"', '&quot;'),
+    reshadeProfiles: [{id: 'included', name: 'Built in', builtin: true, shaders: {pack: ['one.fx']}},
+      {id: 'custom', name: 'My preset', imported_preset: true}],
+  });
+  vm.runInContext(html.slice(html.indexOf('    function renderReshadeProfileList()'),
+    html.indexOf('    function updateShaderPackSelectionState(')), context);
+  context.renderReshadeProfileList();
+  assert.match(list.innerHTML, /Included preset/);
+  assert.doesNotMatch(list.innerHTML, /deleteReshadeProfile\('included'\)/);
+  assert.match(list.innerHTML, /aria-label="Edit Built in"/);
+  assert.match(list.innerHTML, /aria-label="Delete My preset"/);
+  assert.match(list.innerHTML, /Imported preset/);
+});
+
+test('an unavailable processor cannot be newly enabled and host-disabled profiles remain editable', () => {
+  const {context, nodes, find} = editor();
+  context.addonEditorCatalog[0].installed = false;
+  context.controlSettings.addonManagerEnabled = false;
+  context.renderAddonEditor();
+  assert.equal(find('Enable DLSS 5').disabled, true);
+  assert.equal(nodes.addonHostNotice.hidden, false);
+  assert.ok(find('Resolution'));
+  context.addonEditorDraft.addons.DLSSNR02._enabled = true;
+  context.renderAddonEditor();
+  assert.equal(find('Enable DLSS 5').disabled, false, 'a missing processor can still be turned off');
 });
 
 test('GPU saves use the identity of the displayed option even after inventory reordering', () => {

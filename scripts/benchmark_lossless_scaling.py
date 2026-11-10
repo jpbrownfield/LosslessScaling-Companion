@@ -264,6 +264,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("--benchmark-exe must name a Windows executable.", file=sys.stderr)
         return 2
     manager = ProfileManager()
+    if not args.no_scale:
+        from companion.services.managed_runtime import ManagedRuntime
+        try:
+            runtime = ManagedRuntime(manager.config_dir)
+            runtime.validate(Path(manager.config.lossless_scaling_exe_path or ""))
+            if Path(manager.config.lossless_settings_xml_path or "").resolve() != runtime.settings.resolve():
+                raise RuntimeError("Benchmark requires the managed runtime's private Settings.xml")
+            manager.managed_runtime = runtime
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"Start Companion once to prepare its managed LS copy before benchmarking: {error}", file=sys.stderr)
+            return 2
     default_profile = next(
         (profile for profile in manager.config.profiles if profile.is_default),
         None,
@@ -301,7 +312,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     state = AppState()
     watcher = ProcessWatcher(manager, state)
     inspector = LosslessScalingInspector(
-        settings_xml_path=manager.config.lossless_settings_xml_path
+        settings_xml_path=manager.config.lossless_settings_xml_path,
+        lossless_exe_path=manager.config.lossless_scaling_exe_path,
     )
     automation = AutomationController(
         manager,
