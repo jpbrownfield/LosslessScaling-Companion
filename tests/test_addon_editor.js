@@ -8,7 +8,7 @@ const code = html.slice(html.indexOf('    function profileUpscalerChoice('), htm
 const nativePayloadCode = html.slice(html.indexOf('    function nativeSettingsPayload()'), html.indexOf('    function setProfileEditorOpen('));
 
 class Element {
-  constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.value = ''; }
+  constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.children = []; this.events = {}; this.style = {}; this.value = ''; }
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); }
   replaceChildren() { this.children = []; }
@@ -19,15 +19,18 @@ class Element {
 }
 
 function editor() {
-  const nodes = Object.fromEntries(['addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
+  const nodes = Object.fromEntries(['addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'displayCommanderEnabled', 'displayCommanderReflex', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'nativeFrameGenerationType', 'nativeCaptureApi', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
   nodes.profileId.value = 'inactive-game-profile';
   nodes.nativeScalingType.value = 'NIS';
   nodes.nativeScalingType.dataset = {nativeKey: 'ScalingType', nativeAvailable: 'true'};
+  nodes.nativeFrameGenerationType.value = 'OFF';
+  nodes.nativeCaptureApi.value = 'DXGI';
   const sent = [];
   const profileSaves = [];
   const context = vm.createContext({
     notificationState: {repairSession: false},
     document: {getElementById: id => nodes[id], createElement: tag => new Element(tag),
+      querySelector: selector => selector === '[data-native-key="CaptureApi"]' ? nodes.nativeCaptureApi : null,
       querySelectorAll: selector => {
         if (selector === '[data-native-key]') return [nodes.nativeScalingType];
         const attribute = /^\[([^\]]+)\]$/.exec(selector)?.[1];
@@ -46,6 +49,7 @@ function editor() {
     addonEditorTimer: null, addonEditorGeneration: 0, editingOriginalProfile: {},
     addonScalingSavePending: false, controlSettings: {addonManagerEnabled: true},
     scheduleProfileAutosave: delay => profileSaves.push(delay),
+    renderFrameGenerationModeSettings: () => {},
     setTimeout: () => 1, clearTimeout: () => {}, structuredClone,
     ws: {readyState: 1, send: data => sent.push(JSON.parse(data))}, WebSocket: {OPEN: 1},
   });
@@ -56,34 +60,47 @@ function editor() {
     const walk = node => node['aria-label'] === label ? node : node.children.map(walk).find(Boolean);
     return walk(nodes.addonEditorCards) || walk(nodes.addonManagerFields);
   }
-  return {context, nodes, sent, find, profileSaves};
+  function savedJson() {
+    const values = [];
+    const walk = node => {
+      if (node.tag === 'pre') values.push(JSON.parse(node.textContent));
+      node.children.forEach(walk);
+    };
+    walk(nodes.addonEditorCards);
+    walk(nodes.addonManagerFields);
+    return values;
+  }
+  return {context, nodes, sent, find, savedJson, profileSaves};
 }
 
 test('inactive profile controls opt into DLSS and preserve unrelated JSON settings', () => {
-  const {context, sent, find} = editor();
+  const {context, sent, find, profileSaves, nodes} = editor();
   assert.equal(context.addonEditorDraft.addons.DLSSNR02._enabled, false);
   const enabled = find('Enable DLSS 5');
   enabled.checked = true;
   enabled.events.change();
   context.saveAddonEditor();
-  assert.equal(sent[0].profileId, 'inactive-game-profile');
-  assert.equal(sent[0].config.addons.DLSSNR02._enabled, true);
-  assert.equal(sent[0].config.addons.Future.nested.flag, true);
-  assert.equal(sent[0].config.global.custom, 17);
-  assert.equal(sent[0].config.addons.DLSSNR02.scalePercent, undefined);
+  assert.equal(sent.length, 0, 'NR and capture settings must use the compound profile save');
+  assert.equal(context.addonScalingSavePending, true);
+  assert.ok(profileSaves.length > 0);
+  assert.equal(nodes.nativeCaptureApi.value, 'WGC');
+  const config = context.editingOriginalProfile.addon_config;
+  assert.equal(config.addons.DLSSNR02._enabled, true);
+  assert.equal(config.addons.Future.nested.flag, true);
+  assert.equal(config.global.custom, 17);
+  assert.equal(config.addons.DLSSNR02.scalePercent, undefined);
 });
 
-test('known numeric settings use upstream strings and unknown numeric values retain JSON types', () => {
-  const {context, sent, find} = editor();
+test('known numeric settings use upstream strings and unknown numeric values are preserved', () => {
+  const {context, sent, find, savedJson} = editor();
   const resolution = find('Resolution');
   resolution.value = '60';
   resolution.events.change();
-  const numeric = find('numeric');
-  numeric.value = '3';
-  numeric.events.change();
+  assert.equal(find('numeric'), undefined, 'unknown values are compatibility data, not editable controls');
+  assert.equal(savedJson().find(value => value.addons).addons.Future.numeric, 2);
   context.saveAddonEditor();
   assert.equal(sent[0].config.addons.DLSSNR02.scalePercent, '60');
-  assert.equal(sent[0].config.addons.Future.numeric, 3);
+  assert.equal(sent[0].config.addons.Future.numeric, 2);
   assert.equal(sent[0].config.addons.Future.text, 'keep');
 });
 
@@ -166,12 +183,13 @@ test('hidden managed controls do not reappear as additional saved settings', () 
 });
 
 test('host housekeeping fields stay hidden while unknown host settings survive', () => {
-  const {context, find} = editor();
+  const {context, find, savedJson} = editor();
   context.addonEditorDraft.global = {auto_load: false, ui: {open_on_start: true, customUi: 'keep'}};
   context.renderAddonEditor();
   assert.equal(find('auto load'), undefined);
   assert.equal(find('open on start'), undefined);
-  assert.equal(find('custom Ui').value, 'keep');
+  assert.equal(find('custom Ui'), undefined);
+  assert.equal(savedJson().find(value => value.global).global.ui.customUi, 'keep');
 });
 
 test('live scaling status immediately follows Scale Now inside the sidebar', () => {
@@ -300,8 +318,8 @@ test('search changes presentation without saving or discarding unmatched setting
   assert.equal(JSON.stringify(context.addonEditorDraft), before);
 });
 
-test('grouped fields appear once, advanced groups collapse, and unknown values stay editable', () => {
-  const {context, nodes, find} = editor();
+test('grouped fields appear once, advanced groups collapse, and unknown values stay visible', () => {
+  const {context, nodes, find, savedJson} = editor();
   context.addonEditorCatalog[0].groups = [
     {label: 'Quality', keys: ['scalePercent'], expanded: true},
     {label: 'Advanced', keys: ['scalePercent', 'not-in-this-version']},
@@ -312,8 +330,9 @@ test('grouped fields appear once, advanced groups collapse, and unknown values s
   const visit = node => { if (node['aria-label'] === 'Resolution') controls.push(node); node.children.forEach(visit); };
   visit(nodes.addonEditorCards);
   assert.equal(controls.length, 1);
-  assert.ok(find('future Value'));
-  assert.ok(find('numeric'), 'unknown add-ons remain available');
+  assert.equal(find('future Value'), undefined);
+  assert.equal(savedJson().find(value => value.futureValue).futureValue, 7);
+  assert.equal(savedJson().find(value => value.addons).addons.Future.numeric, 2);
 });
 
 test('advanced group disclosure survives a rerender and can be found by its heading', () => {

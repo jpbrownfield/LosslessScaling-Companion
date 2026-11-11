@@ -3,6 +3,7 @@ import re
 import unittest
 import xml.etree.ElementTree as ET
 from collections import Counter
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -13,14 +14,26 @@ FIXTURE_322 = ROOT / "tests" / "fixtures" / "lossless_scaling" / "Settings-3.2.2
 SCHEMA_322 = ROOT / "tests" / "fixtures" / "lossless_scaling" / "3.2.2-schema.json"
 
 
+class DashboardAttributeParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.attributes = []
+
+    def handle_starttag(self, tag, attrs):
+        self.attributes.extend(attrs)
+
+
 class NativeProfileEditorContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = DASHBOARD.read_text(encoding="utf-8")
 
     def test_dashboard_ids_and_native_setting_keys_are_unique(self):
-        ids = re.findall(r'\bid="([^"]+)"', self.html)
-        native_keys = re.findall(r'data-native-key="([^"]+)"', self.html)
+        # Inline JavaScript selectors are references, not additional controls.
+        markup = DashboardAttributeParser()
+        markup.feed(self.html)
+        ids = [value for name, value in markup.attributes if name == "id"]
+        native_keys = [value for name, value in markup.attributes if name == "data-native-key"]
 
         self.assertEqual([key for key, count in Counter(ids).items() if count > 1], [])
         self.assertEqual(
