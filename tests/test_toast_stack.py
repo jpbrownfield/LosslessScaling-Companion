@@ -11,45 +11,46 @@ from companion.services.toast_stack import ToastStack, TOAST_HEIGHT, TOAST_GAP
 
 def line(key, created=100.0):
     return {"id": key, "text": "Scaling started", "accent": (16, 192, 16),
-            "created_at": created, "expires_at": created + 5}
+            "created_at": created, "expires_at": created + 7}
 
 
 class ToastStackTests(unittest.TestCase):
-    def test_fades_continuously_for_five_seconds(self):
+    def test_default_fade_lasts_seven_seconds(self):
         stack = ToastStack()
-        toast = stack.sync([line(1)], 100)[0]
+        toast = stack.sync([{"id": 1, "text": "Scaling started"}], 100)[0]
         self.assertEqual(toast.alpha(100), 255)
-        self.assertEqual(toast.alpha(102.5), 128)
-        self.assertEqual(toast.alpha(105), 0)
-        self.assertEqual(stack.frames(105), [])
+        self.assertEqual(toast.alpha(103.5), 128)
+        self.assertGreater(toast.alpha(106.9), 0)
+        self.assertEqual(toast.alpha(107), 0)
+        self.assertEqual(stack.frames(107), [])
 
     def test_heartbeat_does_not_restart_fade_or_movement(self):
         stack = ToastStack()
         toast = stack.sync([line(1)], 100)[0]
         self.assertIs(stack.sync([line(1)], 102)[0], toast)
         self.assertEqual(toast.created_at, 100)
-        self.assertEqual(toast.alpha(102), 153)
+        self.assertEqual(toast.alpha(102), 182)
         self.assertEqual(toast.y(102), 0)
 
     def test_expiry_slides_lower_cards_up_without_a_jump(self):
         stack = ToastStack()
         stack.sync([line(1), line(2, 101)], 101)
-        second = stack.frames(104.9)[1]
+        second = stack.frames(106.9)[1]
         step = TOAST_HEIGHT + TOAST_GAP
-        self.assertEqual(second.y(104.9), step)
-        self.assertEqual(stack.frames(105), [second])
-        self.assertEqual(second.y(105), step)
-        self.assertGreater(second.y(105.12), 0)
-        self.assertLess(second.y(105.12), step)
-        self.assertAlmostEqual(second.y(105.24), 0)
+        self.assertEqual(second.y(106.9), step)
+        self.assertEqual(stack.frames(107), [second])
+        self.assertEqual(second.y(107), step)
+        self.assertGreater(second.y(107.12), 0)
+        self.assertLess(second.y(107.12), step)
+        self.assertAlmostEqual(second.y(107.24), 0)
 
     def test_retarget_mid_slide_preserves_position(self):
         stack = ToastStack()
         stack.sync([line(1), line(2, 100.1), line(3, 100.2)], 101)
-        third = stack.frames(105)[1]
-        before = third.y(105.1)
-        self.assertEqual(stack.frames(105.1), [third])
-        self.assertEqual(third.y(105.1), before)
+        third = stack.frames(107)[1]
+        before = third.y(107.1)
+        self.assertEqual(stack.frames(107.1), [third])
+        self.assertEqual(third.y(107.1), before)
 
     def test_identical_text_keeps_separate_cards(self):
         stack = ToastStack()
@@ -116,13 +117,13 @@ class NativeToastTests(unittest.TestCase):
             first, second = presenter._toast_slots[1], presenter._toast_slots[2]
             alpha = ctypes.c_ubyte()
             self.assertTrue(u.GetLayeredWindowAttributes(first, None, ctypes.byref(alpha), None))
-            self.assertEqual(alpha.value, 204)
+            self.assertEqual(alpha.value, 219)
             self.assertTrue(u.GetLayeredWindowAttributes(second, None, ctypes.byref(alpha), None))
             self.assertEqual(alpha.value, 255)
             self.assertTrue(u.GetLayeredWindowAttributes(presenter._header_hwnd, None,
                                                         ctypes.byref(alpha), None))
             self.assertEqual(alpha.value, 255)
-            presenter._animate_toasts(104.9)
+            presenter._animate_toasts(106.9)
             before = overlay._Rect()
             self.assertTrue(u.GetWindowRect(second, ctypes.byref(before)))
             self.assertEqual((before.right - before.left, before.bottom - before.top),
@@ -133,14 +134,14 @@ class NativeToastTests(unittest.TestCase):
             self.assertEqual(header.bottom, presenter._toast_origin[1] - presenter._px(overlay.HEADER_GAP))
             self.assertEqual((header.right - header.left, header.bottom - header.top),
                              (presenter._px(overlay.HEADER_WIDTH), presenter._px(overlay.HEADER_HEIGHT)))
-            presenter._animate_toasts(105)
+            presenter._animate_toasts(107)
             self.assertNotIn(first, presenter._toast_shown)
             self.assertTrue(presenter._header_visible)
-            presenter._animate_toasts(105.24)
+            presenter._animate_toasts(107.24)
             after = overlay._Rect()
             self.assertTrue(u.GetWindowRect(second, ctypes.byref(after)))
             self.assertEqual(before.top - after.top, presenter._px(TOAST_HEIGHT + TOAST_GAP))
-            presenter._animate_toasts(106)
+            presenter._animate_toasts(108)
             self.assertFalse(presenter._toast_shown)
             self.assertFalse(presenter._toast_timer)
             self.assertFalse(presenter._header_visible)

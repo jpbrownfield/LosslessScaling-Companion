@@ -372,6 +372,8 @@ class AutomationController:
                         selected.name if selected else "Default", target_pid, target_hwnd, force)
             # A direct scale/stop supersedes any pending Scale Now timer.
             self._cancel_delayed_scale()
+            if active and not self._targeted_gpu_test_active:
+                self._announce_scaling_start(selected, target_hwnd)
             if active and not self.state.is_scaling_active and self._pending_native_profiles:
                 try:
                     self._flush_pending_native_profiles()
@@ -384,6 +386,7 @@ class AutomationController:
                 self.activate_profile(
                     selected, force=True, suppress_auto_scale=True,
                     target_pid=target_pid, target_hwnd=target_hwnd,
+                    for_scaling=True,
                 )
                 if self.addon_configs.has_pending(selected):
                     self._set_control_status("error", "Could not apply saved add-on settings before scaling")
@@ -614,6 +617,10 @@ class AutomationController:
                 logger.info("Sending Lossless Scaling hotkey %s (hold %sms), attempt %s/%s; confirmation timeout %.1fs",
                             "+".join([*hotkey.modifiers, hotkey.key]), hotkey.hold_delay_ms,
                             attempt, max_attempts, confirmation_timeout)
+                if active and not self._targeted_gpu_test_active:
+                    self.overlay_indicator.set_border(
+                        "pending", anchor_hwnd=target_hwnd,
+                        immediate=not automatic_activation)
                 emitted = trigger_hotkey(
                     modifiers=hotkey.modifiers,
                     key=hotkey.key,
@@ -3038,34 +3045,19 @@ class AutomationController:
                 self._pending_display_handoff = None
             return restarted
 
-    def _announce_profile_activation(
-        self, previous: Optional[Profile], profile: Optional[Profile],
-        target_hwnd: Optional[int], suppress_auto_scale: bool,
-        source: Optional[str] = None) -> None:
-        """Narrate detection + routing on the overlay; never interrupts."""
+    def _announce_scaling_start(
+        self, profile: Optional[Profile], target_hwnd: Optional[int],
+    ) -> None:
+        """Show intent only once an accepted scaling request begins."""
         try:
-            if profile is None or (previous is not None
-                                   and previous.id == profile.id):
-                return
-            config = self.profile_manager.config
-            automatic = bool(
-                profile and not profile.is_default and profile.auto_scale
-                and config.disable_native_auto_scale
-                and self.state.auto_scale_enabled
-                and not suppress_auto_scale)
-            detected = f"Game window detected: {profile.name}"
-            if source:
-                detected += f" ({source})"
-            self.overlay_indicator.log(detected, kind="armed",
-                                       anchor_hwnd=target_hwnd)
+            label = profile.name if profile else "focused window"
             self.overlay_indicator.log(
-                f"Configuring for profile: {profile.name}"
-                + (" (auto-scale on focus)" if automatic
-                   else " (manual hotkey)"),
+                f"Scaling requested: {label}",
                 kind="armed", anchor_hwnd=target_hwnd)
-            if automatic:
-                self.overlay_indicator.set_border("pending",
-                                                  anchor_hwnd=target_hwnd)
+            if profile:
+                self.overlay_indicator.log(
+                    f"Using profile: {profile.name}",
+                    kind="armed", anchor_hwnd=target_hwnd)
         except Exception:
             pass
 
@@ -3215,9 +3207,9 @@ class AutomationController:
             except (GraphicsResolutionError, OSError, ValueError, RuntimeError) as error:
                 logger.error("Profile '%s' graphics plan is invalid: %s", profile.name if profile else "none", error)
                 return
-            self._announce_profile_activation(
-                previous, profile, target_hwnd, suppress_auto_scale,
-                source=source)
+            # Focus may prepare a profile without ever scaling it (notably
+            # browsers). Only a real scaling operation earns setup toasts.
+            notify_overlay = for_scaling or self.state.is_scaling_active
             restart_lossless_scaling = False
             restart_succeeded = True
             reshade_swapped = False
@@ -3244,13 +3236,6 @@ class AutomationController:
                         "Deferring DLL profile restart for '%s' until scaling starts (Lossless Scaling is idle)",
                         profile.name if profile else "none",
                     )
-                    try:
-                        if profile is not None:
-                            self.overlay_indicator.log(
-                                f"Profile ready: {profile.name} (restart deferred)",
-                                anchor_hwnd=target_hwnd)
-                    except Exception:
-                        pass
                     defer_live_files = True
                 else:
                     restart_lossless_scaling = ls_running
@@ -3278,6 +3263,7 @@ class AutomationController:
                     suppress_auto_scale=suppress_auto_scale,
                     gpu_route=gpu_route,
                     defer_live_files=defer_live_files,
+                    notify_overlay=notify_overlay,
                 )
                 transition_succeeded = True
             except Exception as error:
@@ -3313,6 +3299,7 @@ class AutomationController:
         suppress_auto_scale: bool,
         gpu_route: Optional[Dict] = None,
         defer_live_files: bool = False,
+        notify_overlay: bool = False,
     ) -> bool:
         """Clean the old profile and apply the new one while its DLL host is stopped.
 
@@ -3345,11 +3332,12 @@ class AutomationController:
                     self.state.current_gpu_route_key = self._gpu_route_key(gpu_route)
                 if route_updated:
                     logger.info("Applied GPU route for '%s': GPU %s (%s), display %s", profile.name if profile else "Default", gpu_route.get("lsGpuId"), gpu_route.get("gpuName") or gpu_route.get("gpuDeviceId") or "Auto", gpu_route.get("lsDisplayId"))
-                    self.overlay_indicator.log(
-                        f"Routing GPU {gpu_route.get('lsGpuId')} / "
-                        f"display {gpu_route.get('lsDisplayId')} for "
-                        f"'{profile.name if profile else 'Default'}'",
-                        kind="info", anchor_hwnd=target_hwnd)
+                    if notify_overlay:
+                        self.overlay_indicator.log(
+                            f"Routing GPU {gpu_route.get('lsGpuId')} / "
+                            f"display {gpu_route.get('lsDisplayId')} for "
+                            f"'{profile.name if profile else 'Default'}'",
+                            kind="info", anchor_hwnd=target_hwnd)
             smooth_motion = bool(
                 profile
                 and profile.graphics.special_k.enabled
@@ -3378,7 +3366,7 @@ class AutomationController:
             )
             if profile:
                 self.addon_configs.mark_applied(profile)
-                if getattr(profile, "addon_config", None):
+                if notify_overlay and getattr(profile, "addon_config", None):
                     self.overlay_indicator.log(
                         "Applying addon configuration",
                         anchor_hwnd=target_hwnd)
@@ -3413,9 +3401,10 @@ class AutomationController:
                 owned_backup = not backup_path.exists()
                 if ReshadeManager.apply_managed_config(reshade_ini_path, str(managed_config)):
                     reshade_swapped = True
-                    self.overlay_indicator.log(
-                        f"Copying ReShade preset: {reshade.managed_profile_id}",
-                        anchor_hwnd=target_hwnd)
+                    if notify_overlay:
+                        self.overlay_indicator.log(
+                            f"Copying ReShade preset: {reshade.managed_profile_id}",
+                            anchor_hwnd=target_hwnd)
                     if owned_backup:
                         self._reshade_inis[profile.id] = reshade_ini_path
             elif reshade_ini_path and reshade.preset_path:
@@ -3423,10 +3412,11 @@ class AutomationController:
                 owned_backup = not backup_path.exists()
                 if ReshadeManager.swap_preset(reshade_ini_path, reshade.preset_path):
                     reshade_swapped = True
-                    self.overlay_indicator.log(
-                        "Copying ReShade preset: "
-                        f"{Path(reshade.preset_path).name}",
-                        anchor_hwnd=target_hwnd)
+                    if notify_overlay:
+                        self.overlay_indicator.log(
+                            "Copying ReShade preset: "
+                            f"{Path(reshade.preset_path).name}",
+                            anchor_hwnd=target_hwnd)
                     if owned_backup:
                         self._reshade_inis[profile.id] = reshade_ini_path
 

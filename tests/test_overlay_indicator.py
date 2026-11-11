@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from companion.core.models import Profile
+from companion.core.models import Profile, ReshadeConfig
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
 from companion.services import overlay_indicator
@@ -65,18 +65,18 @@ class OverlayStateTests(unittest.TestCase):
         state = OverlayState()
         state.log("first", now=100.0)
         state.log("second", now=101.0)
-        state.tick(now=104.9)
+        state.tick(now=106.9)
         self.assertEqual([item.text for item in state.current],
                          ["first", "second"])
-        state.tick(now=105.1)
+        state.tick(now=107.1)
         self.assertEqual([item.text for item in state.current], ["second"])
 
-    def test_errors_also_last_five_seconds(self):
+    def test_errors_also_last_seven_seconds(self):
         state = OverlayState()
         state.log("boom", kind="error", now=100.0)
-        state.tick(now=104.9)
+        state.tick(now=106.9)
         self.assertEqual(len(state.current), 1)
-        state.tick(now=105.0)
+        state.tick(now=107.0)
         self.assertEqual(state.current, [])
 
     def test_identical_messages_have_distinct_lifetimes(self):
@@ -85,8 +85,8 @@ class OverlayStateTests(unittest.TestCase):
         state.log("Scaling stopped", now=101.0)
         first, second = state.current
         self.assertNotEqual(first.id, second.id)
-        self.assertEqual((first.created_at, first.expires_at), (100.0, 105.0))
-        self.assertEqual((second.created_at, second.expires_at), (101.0, 106.0))
+        self.assertEqual((first.created_at, first.expires_at), (100.0, 107.0))
+        self.assertEqual((second.created_at, second.expires_at), (101.0, 108.0))
 
     def test_max_five_lines(self):
         state = OverlayState()
@@ -195,32 +195,27 @@ class OverlayWiringTests(unittest.TestCase):
         self.assertEqual(script.lines(), [])
         automation.resolve_deployment_files.assert_not_called()
 
-    def test_detection_precedes_setup_and_scaling_with_or_without_host_restart(self):
+    def test_scaling_request_precedes_setup_and_confirmation_with_or_without_host_restart(self):
         for restart in (False, True):
             with self.subTest(restart=restart):
                 automation, manager, script = make_automation(disable_native_auto_scale=True)
                 manager.config.lossless_scaling_exe_path = "C:/LS/LosslessScaling.exe"
                 manager.config.global_hotkey.activation_delay_ms = 0
-                automation.state.auto_scale_enabled = True
-                automation.process_watcher.target_is_foreground.return_value = True
                 automation.resolve_deployment_files = Mock(return_value=[])
                 automation._desired_gpu_route = Mock(return_value=None)
                 automation.deployment_manager.needs_change.return_value = restart
+                automation.deployment_manager.runtime_packages_need_state.return_value = False
+                automation._live_deployment_stale = Mock(side_effect=[True, False])
+                automation.addon_configs.has_pending = Mock(return_value=False)
+                automation.hotkey_trigger = Mock(return_value=True)
+                automation._verify_gpu_after_scaling = Mock(return_value="confirmed")
                 profile = Profile(id="game", name="The Game", auto_scale=True,
                                   addon_config={"global": {"auto_load": True}})
-
-                def scale(*_args, **_kwargs):
-                    automation.overlay_indicator.log("Scaling started: The Game", kind="ok")
-                    automation.overlay_indicator.set_border("active", anchor_hwnd=82)
-                    return True
-
-                automation.set_scaling = Mock(side_effect=scale)
-                automation.activate_profile(profile, target_pid=42, target_hwnd=82, source="process match")
-                automation.set_scaling.assert_called_once()
+                self.assertTrue(automation.set_scaling(
+                    True, profile, reason="focus", target_pid=42, target_hwnd=82))
                 messages = list(dict.fromkeys(script.lines()))
                 self.assertEqual(messages[:2], [
-                    "Game window detected: The Game (process match)",
-                    "Configuring for profile: The Game (auto-scale on focus)",
+                    "Scaling requested: The Game", "Using profile: The Game",
                 ])
                 self.assertLess(messages.index("Applying addon configuration"),
                                 messages.index("Scaling started: The Game"))
@@ -233,19 +228,60 @@ class OverlayWiringTests(unittest.TestCase):
         automation.activate_profile(profile, target_pid=42, target_hwnd=82)
         self.assertIsNone(automation.overlay_indicator._state.border.state)
 
-    def test_activate_logs_detection_and_config(self):
-        automation, _, script = make_automation()
-        previous = Profile(id="a", name="Browser", auto_scale=False)
-        current = Profile(id="b", name="The Game", auto_scale=True,
-                          lossless_profile_title="Gaming")
-        automation.state.current_active_profile = previous
-        automation.activate_profile(current, target_pid=42, target_hwnd=82)
-        lines = script.lines()
-        self.assertTrue(any("Game window detected" in line for line in lines),
-                        lines)
-        self.assertTrue(any("Configuring for profile: The Game" in line
-                            for line in lines), lines)
-        self.assertIn("pending", script.borders())
+    def test_idle_profile_preparation_is_quiet_including_browser_route_addons_and_preset(self):
+        for process, auto_scale, globally_enabled in (
+            ("game.exe", False, True), ("game.exe", True, False),
+            ("chrome.exe", False, True), ("chrome.exe", True, True)):
+            for force in (False, True):
+                with self.subTest(process=process, auto_scale=auto_scale, force=force):
+                    automation, manager, script = make_automation(disable_native_auto_scale=True)
+                    manager.config.lossless_scaling_exe_path = "C:/LS/LosslessScaling.exe"
+                    automation.state.auto_scale_enabled = globally_enabled
+                    automation.resolve_deployment_files = Mock(return_value=[])
+                    automation._desired_gpu_route = Mock(return_value={"lsGpuId": 1, "lsDisplayId": 1})
+                    automation.lossless_settings.gpu_route_changes_required.return_value = True
+                    automation.lossless_settings.update_gpu_route.return_value = True
+                    automation.deployment_manager.needs_change.return_value = True
+                    automation.set_scaling = Mock()
+                    profile = Profile(
+                        id="profile", name="Profile", target_process=process, auto_scale=auto_scale,
+                        addon_config={"global": {"auto_load": True}},
+                        reshade=ReshadeConfig(enabled=True, preset_path="C:/LS/preset.ini"))
+                    with patch("companion.services.automation.ReshadeManager.swap_preset", return_value=True):
+                        automation.activate_profile(profile, force=force, target_pid=42, target_hwnd=82)
+                    self.assertIs(automation.state.current_active_profile, profile)
+                    self.assertEqual(script.lines(), [])
+                    self.assertFalse(any(payload is not None for payload in script.seen))
+                    automation.set_scaling.assert_not_called()
+
+    def test_cancelled_focus_auto_scale_never_opens_overlay(self):
+        automation, _, script = make_automation(disable_native_auto_scale=True)
+        automation.process_watcher.target_is_foreground.return_value = False
+        profile = Profile(id="game", name="Game", auto_scale=True)
+        automation.activate_profile(profile, target_pid=42, target_hwnd=82)
+        self.assertEqual(script.lines(), [])
+        self.assertFalse(automation.state.is_scaling_active)
+
+    def test_focus_auto_scale_is_quiet_until_it_calls_set_scaling(self):
+        automation, manager, script = make_automation(disable_native_auto_scale=True)
+        manager.config.global_hotkey.activation_delay_ms = 0
+        automation._live_deployment_stale = Mock(return_value=False)
+        automation.addon_configs.has_pending = Mock(return_value=False)
+        automation.deployment_manager.runtime_packages_need_state.return_value = False
+        automation.hotkey_trigger = Mock(return_value=True)
+        automation._verify_gpu_after_scaling = Mock(return_value="confirmed")
+        profile = Profile(id="game", name="The Game", auto_scale=True)
+        scale = automation.set_scaling
+
+        def begin(*args, **kwargs):
+            self.assertEqual(script.lines(), [])
+            return scale(*args, **kwargs)
+
+        automation.set_scaling = Mock(side_effect=begin)
+        automation.activate_profile(profile, target_pid=42, target_hwnd=82)
+        automation.set_scaling.assert_called_once()
+        self.assertIn("Scaling requested: The Game", script.lines())
+        self.assertIn("Scaling started: The Game", script.lines())
 
     def test_hotkey_flash_and_border_pending(self):
         automation, _, script = make_automation(override_lossless_hotkey=True)
@@ -328,7 +364,7 @@ class OverlayWiringTests(unittest.TestCase):
         profile = Profile(id="game", name="Game",
                           lossless_profile_title="Gaming",
                           addon_config={"global": {"auto_load": True}})
-        automation.activate_profile(profile, target_pid=42, target_hwnd=82)
+        automation.activate_profile(profile, target_pid=42, target_hwnd=82, for_scaling=True)
         lines = script.lines()
         self.assertTrue(any("Applying addon configuration" in line
                             for line in lines), lines)

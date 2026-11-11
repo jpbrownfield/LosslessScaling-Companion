@@ -1,9 +1,9 @@
-"""Five-second toast cards plus a scaling status border.
+"""Seven-second toast cards plus a scaling status border.
 
 Each action gets its own fading card; surviving cards slide up as older
 ones expire. A separate
 click-through frame around the target window pulses blue while scaling is
-pending (hotkey received or game detected) and maroon while scaling is
+pending (a scaling request is underway) and maroon while scaling is
 active. No injection, no hooks; every failure degrades to silent no-op.
 """
 from __future__ import annotations
