@@ -8,7 +8,7 @@ import os
 import re
 import time
 
-MANAGED_HOST_VERSION = "build-5-lsc.4"
+MANAGED_HOST_VERSION = "build-5-lsc.5"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 

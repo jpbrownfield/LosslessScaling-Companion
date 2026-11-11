@@ -13,6 +13,7 @@ from companion.core.state import AppState
 from companion.services import overlay_indicator
 from companion.services.automation import AutomationController
 from companion.services.overlay_indicator import OverlayIndicator, OverlayState
+from companion.services.process_watcher import ProcessInfo, ProcessWatcher
 
 
 class Script:
@@ -165,6 +166,35 @@ class FocusSafetyTests(unittest.TestCase):
 
 
 class OverlayWiringTests(unittest.TestCase):
+    def test_unmatched_windows_are_quiet_after_leaving_a_profile_with_deferred_cleanup(self):
+        automation, manager, script = make_automation()
+        manager.config.lossless_scaling_exe_path = "C:/LS/LosslessScaling.exe"
+        automation.state.current_active_profile = Profile(id="game", name="The Game")
+        automation.resolve_deployment_files = Mock(return_value=[])
+        automation.deployment_manager.needs_change.return_value = True
+        transition = Mock(wraps=automation._apply_profile_transition)
+        automation._apply_profile_transition = transition
+        watcher = ProcessWatcher(
+            manager, automation.state, on_profile_changed=automation.activate_profile)
+        windows = [ProcessInfo(41, "notepad.exe", "C:/Windows/notepad.exe", "Notes", 81),
+                   ProcessInfo(42, "explorer.exe", "C:/Windows/explorer.exe", "Files", 82)]
+        with patch.object(watcher, "get_foreground_window_info", side_effect=windows):
+            for _ in windows:
+                watcher.check_foreground_and_update()
+
+        self.assertEqual(script.lines(), [])
+        self.assertIsNone(automation.state.current_active_profile)
+        self.assertEqual(automation.state.current_foreground_process, "explorer.exe")
+        transition.assert_called_once()
+        automation.process_watcher.stop_lossless_scaling.assert_not_called()
+
+    def test_unmatched_focus_with_no_active_profile_does_not_prepare_a_deployment(self):
+        automation, _, script = make_automation()
+        automation.resolve_deployment_files = Mock(return_value=[])
+        automation.activate_profile(None, "C:/Windows/notepad.exe", target_pid=41, target_hwnd=81)
+        self.assertEqual(script.lines(), [])
+        automation.resolve_deployment_files.assert_not_called()
+
     def test_detection_precedes_setup_and_scaling_with_or_without_host_restart(self):
         for restart in (False, True):
             with self.subTest(restart=restart):
@@ -410,7 +440,7 @@ class OverlayWin32VisibilityTests(unittest.TestCase):
             self.assertTrue(presenter._user32.GetWindowRect(
                 ctypes.c_void_p(presenter._hwnd), ctypes.byref(rect)))
             self.assertEqual((rect.right - rect.left, rect.bottom - rect.top),
-                             (overlay_window.WIDTH, overlay_window.HEIGHT))
+                             (presenter._px(overlay_window.WIDTH), presenter._px(overlay_window.HEIGHT)))
             presenter._draw_border(
                 "pending", int(user32.GetDesktopWindow()), False)
             self.assertTrue(presenter._border_visible)

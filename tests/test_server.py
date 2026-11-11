@@ -270,6 +270,36 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.state.current_active_profile, force=True, suppress_auto_scale=True,
         )
 
+    async def test_both_profile_save_endpoints_attach_previously_downloaded_neural_model(self):
+        from tests.test_neural_toggle import x64_image
+
+        source = Path(self.temp_dir.name) / "nvngx_dlssnr.dll"
+        source.write_bytes(x64_image())
+        model = self.automation.asset_store.import_file(str(source))
+        profile = self.manager.create_profile_from_process("game.exe")
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        addons = {"global": {}, "addons": {"DLSSNR02": {"_enabled": True}}}
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_ADDON_CONFIG", "profileId": profile.id, "generation": 1, "config": addons,
+        }))
+        response = next(json.loads(item) for item in websocket.messages
+                        if json.loads(item)["type"] == "ADDON_CONFIG_SAVED")
+        self.assertEqual(response["neuralRender"]["runtime_asset_sha256"], model["sha256"])
+        self.assertTrue(response["config"]["addons"]["DLSSNR02"]["_enabled"])
+
+        payload = self.manager.get_profile_by_id(profile.id).model_dump(mode="json")
+        payload["graphics"]["neural_render"]["runtime_asset_sha256"] = None
+        payload["native_scaling_settings"].update(CaptureApi="WGC", FrameGeneration="OFF", ScalingType="NIS")
+        websocket.messages.clear()
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_PROFILE", "profile": payload,
+        }))
+        response = next(json.loads(item) for item in websocket.messages
+                        if json.loads(item)["type"] == "PROFILE_SAVED")
+        self.assertEqual(response["profile"]["graphics"]["neural_render"]["runtime_asset_sha256"], model["sha256"])
+        self.assertEqual(response["profile"]["native_scaling_settings"]["CaptureApi"], "WGC")
+
     async def test_profile_list_is_lightweight_and_detail_is_loaded_on_request(self):
         profile = self.manager.create_profile_from_process("game.exe")
         profile.addon_config = {"addons": {"Example": {"setting": "private detail"}}}
@@ -314,6 +344,27 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.server.proxy_menu.open.assert_called_once_with()
         self.assertEqual(json.loads(websocket.messages[-1])["type"], "PROXY_MENU_OPENED")
+
+    async def test_sunshine_gpu_checkbox_defaults_on_and_persists_off(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.server.reshade_profiles.sync_all_configs = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.assertTrue(self.server._control_settings_payload()["sunshineMatchEncoderGpu"])
+        for value in (False, None, True):
+            message = {"type": "SAVE_GENERAL_SETTINGS"}
+            if value is not None:
+                message["sunshineMatchEncoderGpu"] = value
+            await self.server.process_message(websocket, json.dumps(message))
+            expected = value is True
+            response = json.loads(websocket.messages[-1])
+            self.assertEqual(response["type"], "GENERAL_SETTINGS_SAVED", response)
+            self.assertEqual(response["controlSettings"]["sunshineMatchEncoderGpu"], expected)
+            self.assertEqual(ProfileManager(self.manager.config_dir).config.sunshine_match_encoder_gpu, expected)
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS", "sunshineMatchEncoderGpu": "false"}))
+        self.assertIn("checkbox", websocket.messages[-1])
+        self.assertTrue(self.manager.config.sunshine_match_encoder_gpu)
 
     async def test_general_settings_save_configures_editable_hotkey_override(self):
         self.server.startup_manager = FakeStartupManager()
@@ -371,6 +422,25 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["controlSettings"]["overlayIndicatorEnabled"], expected)
             self.assertEqual(ProfileManager(self.manager.config_dir).config.overlay_indicator_enabled, expected)
         self.assertEqual(self.automation.overlay_indicator.tick.call_count, 3)
+
+    async def test_overlay_shortcuts_persist_and_duplicate_or_reshade_keys_are_rejected(self):
+        self.server.startup_manager = FakeStartupManager()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        desired = {"profile_editor": "ctrl+f9", "addon_manager": "insert",
+                   "performance_graph": "=", "special_k_panel": "-"}
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS", "overlayHotkeys": desired,
+        }))
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "GENERAL_SETTINGS_SAVED")
+        self.assertEqual(self.server._control_settings_payload()["overlayHotkeys"], desired)
+        self.assertEqual(ProfileManager(self.manager.config_dir).config.overlay_hotkeys, desired)
+        for invalid in ({**desired, "profile_editor": "insert"}, {**desired, "profile_editor": "end"}):
+            await self.server.process_message(websocket, json.dumps({
+                "type": "SAVE_GENERAL_SETTINGS", "overlayHotkeys": invalid,
+            }))
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            self.assertEqual(self.manager.config.overlay_hotkeys, desired)
 
     async def test_general_gpu_edit_applies_route_once_and_unrelated_saves_do_not_reload(self):
         self.server.startup_manager = FakeStartupManager()
@@ -674,6 +744,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "autoRouteGpuToDisplay": False,
             "nvidiaRtxHdrEnabled": True,
             "reshadeHdrPeakNits": 1400,
+            "reshadeSdrWhiteNits": 500,
+            "reshadeMonitorSdrWhiteNits": {"MONITOR-A": 450},
         }))
 
         self.assertEqual(self.manager.config.preferred_scaling_gpu_device_id, device_id)
@@ -681,6 +753,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.manager.config.auto_route_gpu_to_display)
         self.assertTrue(self.manager.config.nvidia_rtx_hdr_enabled)
         self.assertEqual(self.manager.config.reshade_hdr_peak_nits, 1400)
+        self.assertEqual(self.manager.config.reshade_sdr_white.default_nits, 500)
+        self.assertEqual(self.manager.config.reshade_sdr_white.monitors, {"monitor-a": 450})
         self.automation.nvidia_profile_manager.set_lossless_scaling_rtx_hdr.assert_called_once()
         response = json.loads(websocket.messages[-1])
         self.assertTrue(response["controlSettings"]["hasNvidiaGpu"])

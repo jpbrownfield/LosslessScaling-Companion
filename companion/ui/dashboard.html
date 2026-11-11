@@ -659,9 +659,24 @@
           <h2 class="settings-group-title">Startup</h2>
           <div class="settings-group-content"><div class="form-row">
             <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run on Startup</label></div>
-            <div class="form-group checkbox-group section-primary-toggle"><input id="overlayIndicatorEnabled" type="checkbox" checked aria-describedby="overlayIndicatorHelp"><label for="overlayIndicatorEnabled">Show Overlay</label></div>
           </div>
-          <p id="overlayIndicatorHelp" class="item-sub" style="white-space:normal;margin-top:8px">Show toast notifications and the animated scaling border.</p>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <h2 class="settings-group-title">Overlay</h2>
+          <div class="settings-group-content">
+            <div class="form-group checkbox-group section-primary-toggle"><input id="overlayIndicatorEnabled" type="checkbox" checked aria-describedby="overlayIndicatorHelp"><label for="overlayIndicatorEnabled">Show Overlay</label></div>
+            <p id="overlayIndicatorHelp" class="item-sub" style="white-space:normal;margin-bottom:14px">Show toast notifications, the scaling border, and overlay controls.</p>
+            <div class="form-row">
+              <div class="form-group"><label for="overlayProfileEditorHotkey">Profile editor</label><input id="overlayProfileEditorHotkey" type="text" value="delete" maxlength="64" placeholder="Delete" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="overlayAddonManagerHotkey">Add-on settings</label><input id="overlayAddonManagerHotkey" type="text" value="insert" maxlength="64" placeholder="Insert" autocomplete="off" spellcheck="false"></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
+            </div>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">Shortcuts work while the Overlay toggle is on. Use a key or combination such as Ctrl+F8; leave blank to disable. ReShade keeps its own menu binding. Special K's custom panel binding takes priority. The headless add-on host opens the active profile's Add-ons section.</p>
           </div>
         </section>
 
@@ -792,10 +807,13 @@
             <summary>HDR display &amp; menu settings</summary>
             <div class="reshade-preferences-grid">
               <div class="form-group"><label for="reshadeHdrPeakNits">HDR peak brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
-              <div class="form-group"><label for="reshadeOverlayHotkey">Menu hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="reshadeSdrWhiteNits">Default captured SDR white (nits)</label><input id="reshadeSdrWhiteNits" type="number" min="80" max="1000" step="1" value="400"></div>
+              <div class="form-group"><label for="reshadeOverlayHotkey">Overlay toggle hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
             </div>
+            <p class="item-sub" style="white-space:normal">SDR white applies to all managed Lilium SDR-to-HDR presets. A monitor override follows LS's output display; leave it blank to use the shared default. Changes apply the next time scaling starts.</p>
+            <div id="reshadeMonitorNits" class="reshade-preferences-grid" aria-label="Captured SDR white by monitor"></div>
             <p id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</p>
-            <p class="item-sub" style="white-space:normal">Menu input is enabled automatically for profiles that use ReShade. The default hotkey is End.</p>
+            <p class="item-sub" style="white-space:normal">The Overlay toggle is enabled automatically for profiles that use ReShade. Its default hotkey is End, shared with the ReShade menu.</p>
             <p>Shader catalogs use the maintained <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup feed</a>. <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">Shader pack reference</a>.</p>
           </details>
           <div class="reshade-library">
@@ -803,8 +821,16 @@
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
+        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Display Commander</h3><p class="addon-description">ReShade display diagnostics and optional NVIDIA Reflex for Lossless Scaling. Enable per profile in ReShade settings.</p></div><span class="addon-badge" data-addon-badge="display-commander">Not installed</span></div><div class="addon-status" data-addon-status="display-commander">Checking installed version...</div><div class="addon-actions"><button class="btn btn-primary" data-addon-install="display-commander">Download Display Commander</button><a class="btn btn-secondary" href="https://github.com/pmnoxx/display-commander" target="_blank" rel="noopener noreferrer">Documentation</a></div></section>
         <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">Optional HDR conversion, Reflex and presentation features. Enable and configure it per profile.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
+      <section class="settings-group">
+        <h2 class="settings-group-title">Sunshine / Apollo</h2>
+        <div class="settings-group-content">
+          <div class="form-group checkbox-group section-primary-toggle"><input id="sunshineMatchEncoderGpu" type="checkbox" checked><label for="sunshineMatchEncoderGpu">Match Lossless Scaling GPU to the streaming encoder GPU</label></div>
+          <p class="item-sub" style="white-space:normal">During a detected Sunshine or Apollo session, use its hardware encoding GPU for scaling. Temporarily overrides profile and default GPU choices while keeping your output monitor. Normal GPU routing returns after disconnect.</p>
+        </div>
+      </section>
       <section class="settings-group">
         <h2 class="settings-group-title">Process Lasso integration</h2>
         <div class="settings-group-content">
@@ -1092,16 +1118,21 @@
             <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an add-on or setting..." aria-label="Find an add-on or setting" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
             <span id="addonEditorStatus" class="addon-editor-status" role="status" aria-live="polite">Loading add-on settings...</span>
             <div id="addonEditorCards" class="addon-editor-grid"></div>
-            <details class="addon-manager-advanced"><summary>Advanced host settings</summary><div id="addonManagerFields" class="addon-editor-fields"></div></details>
+            <details class="addon-manager-advanced"><summary>Saved compatibility settings (read only)</summary><div id="addonManagerFields" class="addon-editor-fields"></div></details>
           </div>
         </details>
 
         <details id="profileReshadePanel" class="settings-group profile-settings-group profile-major-panel">
-          <summary class="settings-group-title">ReShade preset</summary>
+          <summary class="settings-group-title">ReShade</summary>
         <div class="profile-addon-section profile-reshade-section">
-          <p class="profile-reshade-help">Apply a saved shader configuration to this profile. Create and manage presets in Add-ons.</p>
+          <p class="profile-reshade-help">Apply a shared shader preset to this profile. ReShade edits are saved back to that preset, including the three built-ins. Create and manage presets in Add-ons.</p>
           <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
           <p class="item-sub" style="white-space:normal;margin-top:5px">Menu input is enabled automatically when a preset is selected.</p>
+          <div class="form-group checkbox-group"><input id="displayCommanderEnabled" type="checkbox"><label for="displayCommanderEnabled">Enable Display Commander</label></div>
+          <p class="item-sub" style="white-space:normal">Requires ReShade Full Add-On 6.6.2 or later and Display Commander installed in Add-ons. Works without a shader preset. Its FPS limiter is disabled so Lossless Scaling controls output pacing.</p>
+          <div class="form-group checkbox-group"><input id="displayCommanderReflex" type="checkbox" data-addon-vendor="NVIDIA"><label for="displayCommanderReflex">Inject NVIDIA Reflex (enables Display Commander)</label></div>
+          <p class="item-sub" style="white-space:normal">Affects Lossless Scaling's rendering queue. Does not enable Reflex in the captured game. Enabling this turns off Special K Reflex for this profile.</p>
+          <p class="item-sub" style="white-space:normal">SDR-to-HDR presets require an SDR source, Windows HDR and LS HDR support. Use one SDR-to-HDR converter at a time. Captured SDR white is configured globally in Add-ons ? ReShade ? HDR display &amp; menu settings, with a 400-nit default and optional monitor overrides.</p>
         </div>
         </details>
 
@@ -1187,7 +1218,7 @@
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
-        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. the manager's input passthrough uses the shortcut configured in General Settings.</p>
+        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. The Overlay toggle follows the configured ReShade menu shortcut.</p>
         <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
       </form>
@@ -1698,6 +1729,7 @@
             profiles = msg.profiles || [];
             invalidateProfileDetails();
             renderProfiles();
+            openRequestedProfileEditor();
             setTimeout(requestProcesses, 0);
           } else if (msg.type === 'PROFILE_DETAILS') {
             if (msg.generation === profileDetailsGeneration) {
@@ -1730,6 +1762,7 @@
             activeProfileId = msg.activeProfileId;
             renderProcesses();
             renderProfiles();
+            openRequestedProfileEditor();
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
             // Visual state is authoritative while a general-settings save is
@@ -1783,7 +1816,14 @@
           } else if (msg.type === 'ADDON_CONFIG_SAVED') {
             if (msg.profileId === document.getElementById('profileId').value && msg.generation === addonEditorGeneration) {
               addonEditorUnsaved = false;
-              if (editingOriginalProfile) editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
+              addonEditorDraft = structuredClone(msg.config || addonEditorDraft);
+              if (editingOriginalProfile) {
+                editingOriginalProfile.addon_config = structuredClone(addonEditorDraft);
+                if (msg.neuralRender) {
+                  editingOriginalProfile.graphics ||= {};
+                  editingOriginalProfile.graphics.neural_render = structuredClone(msg.neuralRender);
+                }
+              }
               document.getElementById('addonEditorStatus').textContent = msg.pending
                 ? (msg.restartPending
                   ? 'Saved. Close the editor and return to the scaled application to reload scaling.'
@@ -2118,13 +2158,20 @@
       document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
       document.getElementById('reshadeOverlayHotkey').value = controlSettings.reshadeOverlayHotkey || 'end';
       document.getElementById('addonManagerEnabled').checked = controlSettings.addonManagerEnabled !== false;
+      document.getElementById('sunshineMatchEncoderGpu').checked = controlSettings.sunshineMatchEncoderGpu !== false;
       renderProxyMenuAction();
       renderOverrideHotkeySettings();
       document.getElementById('snapNearFullscreenWindowsToMonitor').checked = controlSettings.snapNearFullscreenWindowsToMonitor !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
-    document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
+      document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
+      const overlayHotkeys = {profile_editor: 'delete', addon_manager: 'insert', performance_graph: '=', special_k_panel: '-', ...controlSettings.overlayHotkeys};
+      for (const [id, key] of [['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph'], ['overlaySpecialKPanelHotkey', 'special_k_panel']]) {
+        document.getElementById(id).value = overlayHotkeys[key];
+      }
       renderGpuRoutingSettings();
       const reshadeHdr = controlSettings.reshadeHdr || {};
+      document.getElementById('reshadeSdrWhiteNits').value = reshadeHdr.sdrWhiteNits || 400;
+      renderReshadeMonitorNits(reshadeHdr);
       const reshadeHdrInput = document.getElementById('reshadeHdrPeakNits');
       reshadeHdrInput.value = reshadeHdr.configuredNits == null ? '' : reshadeHdr.configuredNits;
       reshadeHdrInput.placeholder = reshadeHdr.detectedNits
@@ -2388,7 +2435,7 @@
       graphicsPackages = msg.packages || [];
       graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
-      ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime'].forEach(provider => {
+      ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime', 'display-commander'].forEach(provider => {
         const packages = graphicsPackages.filter(item => item.provider === provider);
         const latest = packages[packages.length - 1];
         const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
@@ -2406,6 +2453,50 @@
       renderExternalSourceStatus('special-k', msg.externalSources && msg.externalSources['special-k']);
       updateAddonInstallButtons();
       updateAddonDownloadLinks();
+    }
+
+    function renderReshadeMonitorNits(settings) {
+      const container = document.getElementById('reshadeMonitorNits');
+      container.replaceChildren();
+      const monitors = settings.monitors || [];
+      const overrides = settings.monitorSdrWhiteNits || {};
+      const seen = new Set();
+      monitors.forEach(monitor => {
+        if (!monitor.id || seen.has(monitor.id)) return;
+        seen.add(monitor.id);
+        const group = document.createElement('div');
+        group.className = 'form-group';
+        const label = document.createElement('label');
+        label.textContent = `${monitor.name} ? SDR white (nits)`;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '80'; input.max = '1000'; input.step = '1';
+        input.dataset.reshadeMonitorId = monitor.id;
+        input.value = overrides[monitor.id] == null ? '' : overrides[monitor.id];
+        input.placeholder = `Default: ${settings.sdrWhiteNits || 400}`;
+        input.setAttribute('aria-label', label.textContent);
+        label.appendChild(input);
+        group.appendChild(label);
+        container.appendChild(group);
+        input.addEventListener('change', () => scheduleGeneralSettingsSave());
+      });
+      if (!monitors.length) {
+        const help = document.createElement('p');
+        help.className = 'item-sub';
+        help.textContent = 'Monitor overrides appear when Windows reports a monitor identity. The shared default is used otherwise.';
+        container.appendChild(help);
+      }
+    }
+
+    function reshadeMonitorNitsPayload() {
+      // Preserve overrides for disconnected displays.
+      const values = new Map(Object.entries(controlSettings?.reshadeHdr?.monitorSdrWhiteNits || {}));
+      document.querySelectorAll('[data-reshade-monitor-id]').forEach(input => {
+        const key = input.dataset.reshadeMonitorId;
+        if (input.value === '') values.delete(key);
+        else values.set(key, Number(input.value));
+      });
+      return Object.fromEntries(values);
     }
 
     function normalizedAddonVersion(value) {
@@ -3099,6 +3190,19 @@
       scheduleProfileAutosave();
     }
 
+    function configureNeuralCapture() {
+      document.querySelector('[data-native-key="CaptureApi"]').value = 'WGC';
+      const generation = document.getElementById('nativeFrameGenerationType');
+      if (!['OFF', 'LSFG3'].includes(generation.value)) generation.value = 'LSFG3';
+      const scaling = document.getElementById('nativeScalingType');
+      if (generation.value === 'OFF' && !['Off', 'NIS'].includes(serializedScalingType(scaling.value))) {
+        scaling.value = 'NIS';
+      }
+      renderFrameGenerationModeSettings();
+      // Capture/scaler changes and the NR flag must reach the host together.
+      profileUpscalerChanged();
+    }
+
     function changeProfileScalingChoice(choice) {
       const selected = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC'}[choice] || null;
       setExclusiveProfileUpscaler(addonEditorDraft.addons, selected);
@@ -3219,16 +3323,22 @@
         output.textContent = status.reason || 'Addon host is not running.';
         return;
       }
-      const backend = status.neuralBackend || 'NVIDIA';
+      const backend = status.neuralBackend || 'waiting';
       const neuralId = backend === 'AMD' || backend === 'unsupported' ? 'LSC-AMDNR' : 'DLSSNR02';
       const neural = (status.addons || []).find(addon => addon.id === neuralId);
       const times = status.metrics && status.metrics[neuralId] || {};
       const total = ['prepare_ms', 'flow_ms', 'model_ms', 'composition_ms']
         .reduce((sum, key) => sum + (Number.isFinite(times[key]) ? times[key] : 0), 0);
-      const state = status.startupError || (neural && (neural.error || neural.status))
-        || (neural && neural.enabled ? 'Waiting for runtime status' : 'Neural Rendering is disabled');
-      output.setAttribute('data-state', status.startupError || neural?.error ? 'error' : 'available');
-      output.textContent = `${status.hostVersion} | ${backend}\n${state}${backend === 'NVIDIA' && total > 0 ? `\nLast completed NR GPU stages: ${total.toFixed(2)} ms` : ''}`;
+      const loadError = neural?.enabled && (neural.faulted || neural.loaded === false)
+        ? 'Neural Rendering is enabled but its backend did not load. Check the host installation and runtime error.' : '';
+      const state = status.startupError || neural?.error || loadError || neural?.status
+        || (neural ? neural.enabled ? 'Waiting for runtime status' : 'Neural Rendering is disabled'
+          : 'No Neural Rendering status reported');
+      output.setAttribute('data-state', status.startupError || neural?.error || loadError || neural?.level >= 2 ? 'error' : 'available');
+      output.textContent = `${status.hostVersion} | ${backend === 'waiting' ? 'Waiting for capture GPU' : backend}\n${state}`;
+      if (backend === 'NVIDIA' && neural?.enabled) output.textContent += total > 0
+        ? `\nLast completed NR GPU stages: ${total.toFixed(2)} ms`
+        : '\nNo completed NR GPU stages reported recently';
       if (backend === 'AMD') {
         if (Number.isFinite(times.compute_device)) output.textContent += `\nCompute device ${times.compute_device}`;
         const results = Number.isFinite(times.results) ? times.results : 0;
@@ -3255,20 +3365,18 @@
       const query = (document.getElementById('addonEditorSearch')?.value || '').trim().toLowerCase();
       const view = renderAddonEditor.view || (renderAddonEditor.view = new Map());
       const catalog = new Map(addonEditorCatalog.map(addon => [addon.id, addon]));
-      ['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough',
-        ...Object.keys(addonEditorDraft.addons)].forEach(id => {
-        if (id === 'LSC-AdapterReport' || id === 'LSC-AMDNR') return;
+      ['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].forEach(id => {
         if (!catalog.has(id)) catalog.set(id, { id, name: id, fields: [] });
       });
       let enabledCount = 0;
       let visibleCount = 0;
       catalog.forEach(addon => {
-        if (['__proto__', 'constructor', 'prototype', 'LSC-AdapterReport', 'LSC-AMDNR'].includes(addon.id)) return;
+        if (!['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].includes(addon.id)) return;
         const section = addonEditorDraft.addons[addon.id];
         const values = section && typeof section === 'object' && !Array.isArray(section)
           ? section : (addonEditorDraft.addons[addon.id] = {});
         if (typeof values._enabled !== 'boolean') values._enabled = false;
-        const reshadeRequired = addon.id === 'ReShadePassthrough' && !!document.getElementById('reshadeManagedProfile').value;
+        const reshadeRequired = addon.id === 'ReShadePassthrough' && !!(document.getElementById('reshadeManagedProfile').value || document.getElementById('displayCommanderEnabled').checked || document.getElementById('displayCommanderReflex').checked);
         if (reshadeRequired) values._enabled = true;
         if (values._enabled) enabledCount++;
         const searchable = [addon.name, addon.id, addon.summary, ...(addon.fields || []).filter(spec => !spec.hidden).map(spec => spec.label),
@@ -3348,6 +3456,12 @@
         enabled.addEventListener('change', () => {
           values._enabled = enabled.checked;
           view.set(addon.id, enabled.checked);
+          if (addon.id === 'DLSSNR02' && enabled.checked) {
+            configureNeuralCapture();
+            renderAddonEditor();
+            document.getElementById(enabled.id)?.focus?.({preventScroll: true});
+            return;
+          }
           if (['DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC'].includes(addon.id)) {
             if (enabled.checked) {
               setExclusiveProfileUpscaler(addonEditorDraft.addons, addon.id);
@@ -3409,7 +3523,16 @@
         savedTitle.textContent = 'Additional saved settings';
         const savedFields = document.createElement('div');
         savedFields.className = 'addon-editor-fields';
-        addonSavedFields(savedFields, values, `addons.${addon.id}`, knownKeys);
+        const extraValues = Object.fromEntries(Object.entries(values).filter(([key]) => !knownKeys.has(key)));
+        if (Object.keys(extraValues).length) {
+          const help = document.createElement('p');
+          help.className = 'addon-field-help';
+          help.textContent = 'Saved compatibility values from this add-on are retained unchanged. Use the documented controls above to configure it.';
+          const raw = document.createElement('pre');
+          raw.style.whiteSpace = 'pre-wrap';
+          raw.textContent = JSON.stringify(extraValues, null, 2);
+          savedFields.append(help, raw);
+        }
         if (savedFields.children.length) {
           saved.append(savedTitle, savedFields);
           const savedKey = `saved:${addon.id}`;
@@ -3452,7 +3575,14 @@
       if (hostNotice) hostNotice.hidden = controlSettings?.addonManagerEnabled !== false;
       const globalHost = document.getElementById('addonManagerFields');
       globalHost.replaceChildren();
-      addonSavedFields(globalHost, addonEditorDraft.global, 'global', new Set(['companion']));
+      const explanation = document.createElement('p');
+      explanation.className = 'addon-field-help';
+      explanation.textContent = 'Host startup, overlay input and backend selection are managed automatically. Unrecognized and legacy values are retained for compatibility; they are not supported profile controls. Disable all processing also disables saved optional add-ons.';
+      const saved = document.createElement('pre');
+      saved.style.whiteSpace = 'pre-wrap';
+      saved.textContent = JSON.stringify({global: addonEditorDraft.global, addons: Object.fromEntries(
+        Object.entries(addonEditorDraft.addons).filter(([id]) => !['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].includes(id)))}, null, 2);
+      globalHost.append(explanation, saved);
       renderProfileScalingChoice();
       applyAddonVendorAvailability();
     }
@@ -3850,6 +3980,9 @@
           : 'No dynamic calibration data.';
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
         const graphics = profile.graphics || {};
+        const commander = graphics.display_commander || {};
+        document.getElementById('displayCommanderEnabled').checked = !!commander.enabled;
+        document.getElementById('displayCommanderReflex').checked = !!commander.inject_reflex;
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
@@ -3881,6 +4014,10 @@
       autosaveStatus.classList.remove('error');
       setProfileEditorOpen(true);
       initializeProfileSections();
+      if (requestedProfileSection === 'addons') {
+        requestedProfileSection = null;
+        navigateProfileSection('profileAddonsPanel');
+      }
       renderProfileIssues();
       if (autosave) scheduleProfileAutosave(0);
     }
@@ -3925,6 +4062,34 @@
         auto_scale: true
       }, true);
     };
+
+    let requestedProfileEditorId = new URLSearchParams(window.location.search).get('editProfile');
+    let requestedProfileSection = new URLSearchParams(window.location.search).get('profileSection');
+    function openRequestedProfileEditor() {
+      const profileId = requestedProfileEditorId;
+      if (!profileId || !profiles.some(profile => profile.id === profileId)
+          || !ws || ws.readyState !== WebSocket.OPEN) return;
+      requestedProfileEditorId = null;
+      if (document.getElementById('profileModal').classList.contains('active')) {
+        if (document.getElementById('profileId').value !== profileId) {
+          requestedProfileSection = null;
+          noticeDialog('Close the current profile editor before opening another profile.');
+        } else if (requestedProfileSection === 'addons') {
+          requestedProfileSection = null;
+          navigateProfileSection('profileAddonsPanel');
+        }
+        return;
+      }
+      openMajorDashboardPanel(profilesPanel, true);
+      window.editProfile(profileId);
+    }
+    window.addEventListener('companion-edit-profile', event => {
+      const detail = typeof event.detail === 'string' ? {profileId: event.detail} : event.detail;
+      if (!detail || typeof detail.profileId !== 'string') return;
+      requestedProfileEditorId = detail.profileId;
+      requestedProfileSection = detail.section === 'addons' ? 'addons' : null;
+      openRequestedProfileEditor();
+    });
 
     window.editProfile = function(profileId) {
       const cached = profileDetails.get(profileId);
@@ -4462,6 +4627,23 @@
       addonEditorChanged();
     };
     document.getElementById('reshadeManagedProfile').addEventListener('change', renderAddonEditor);
+    document.getElementById('displayCommanderReflex').addEventListener('change', event => {
+      if (event.target.checked) {
+        document.getElementById('displayCommanderEnabled').checked = true;
+        document.getElementById('specialKReflex').checked = false;
+      }
+      renderAddonEditor();
+      scheduleProfileAutosave();
+    });
+    document.getElementById('displayCommanderEnabled').addEventListener('change', event => {
+      if (!event.target.checked) document.getElementById('displayCommanderReflex').checked = false;
+      renderAddonEditor();
+      scheduleProfileAutosave();
+    });
+    document.getElementById('specialKReflex').addEventListener('change', event => {
+      if (event.target.checked) document.getElementById('displayCommanderReflex').checked = false;
+      scheduleProfileAutosave();
+    });
     document.getElementById('browseTargetProgramBtn').onclick = () => {
       ws.send(JSON.stringify({
         type: 'BROWSE_GENERAL_PATH',
@@ -4519,11 +4701,20 @@
           reshadeHdrPeakNits: document.getElementById('reshadeHdrPeakNits').value === ''
             ? null
             : Number(document.getElementById('reshadeHdrPeakNits').value),
+          reshadeSdrWhiteNits: Number(document.getElementById('reshadeSdrWhiteNits').value),
+          reshadeMonitorSdrWhiteNits: reshadeMonitorNitsPayload(),
           reshadeOverlayHotkey: document.getElementById('reshadeOverlayHotkey').value.trim().toLowerCase(),
           addonManagerEnabled: document.getElementById('addonManagerEnabled').checked,
+          sunshineMatchEncoderGpu: document.getElementById('sunshineMatchEncoderGpu').checked,
           snapNearFullscreenWindowsToMonitor: document.getElementById('snapNearFullscreenWindowsToMonitor').checked,
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
           overlayIndicatorEnabled: document.getElementById('overlayIndicatorEnabled').checked,
+          overlayHotkeys: {
+            profile_editor: document.getElementById('overlayProfileEditorHotkey').value.trim(),
+            addon_manager: document.getElementById('overlayAddonManagerHotkey').value.trim(),
+            performance_graph: document.getElementById('overlayPerformanceGraphHotkey').value.trim(),
+            special_k_panel: document.getElementById('overlaySpecialKPanelHotkey').value.trim(),
+          },
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
           processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
           rtssFrameLimitingEnabled: rtssEnabled,
@@ -4565,7 +4756,8 @@
     }
 
     [
-      'runAtStartup', 'overlayIndicatorEnabled', 'addonManagerEnabled',
+      'runAtStartup', 'overlayIndicatorEnabled', 'addonManagerEnabled', 'sunshineMatchEncoderGpu',
+      'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey', 'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey',
       'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
       'overrideHotkeyShift', 'overrideHotkeyWin',
       'preferredScalingGpu',
@@ -4585,6 +4777,12 @@
     document.getElementById('overrideHotkeyKey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssDefaultGpuTargetPercent').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('rtssDefaultStaticFramerateLimit').addEventListener('change', () => scheduleGeneralSettingsSave());
+    document.getElementById('reshadeSdrWhiteNits').addEventListener('change', event => {
+      document.querySelectorAll('[data-reshade-monitor-id]').forEach(input => {
+        input.placeholder = `Default: ${event.target.value || 400}`;
+      });
+      scheduleGeneralSettingsSave();
+    });
     document.getElementById('reshadeHdrPeakNits').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('reshadeOverlayHotkey').addEventListener('change', () => scheduleGeneralSettingsSave());
     document.getElementById('autoReshadeHdrPeakBtn').onclick = () => {
@@ -4720,7 +4918,6 @@
       const existingSpecialK = editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.special_k || {};
       const installedReshadePackages = graphicsPackages.filter(item => item.provider === 'reshade');
       const installedReshadePackage = installedReshadePackages[installedReshadePackages.length - 1];
-      const availableRuntime = dlssnrRuntimes[dlssnrRuntimes.length - 1];
       const managedReshadeProfile = document.getElementById('reshadeManagedProfile').value;
       const legacyReshadePresetPath = managedReshadeProfile
         ? ''
@@ -4735,7 +4932,9 @@
         addonConfig.addons.ReShadePassthrough._enabled = true;
       }
       const dlss5Enabled = !!(addonConfig.addons.DLSSNR02 && addonConfig.addons.DLSSNR02._enabled);
-      const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath);
+      const commanderReflex = document.getElementById('displayCommanderReflex').checked;
+      const commanderEnabled = commanderReflex || document.getElementById('displayCommanderEnabled').checked;
+      const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath || commanderEnabled);
       const payload = {
         type: 'SAVE_PROFILE',
         requestId,
@@ -4793,13 +4992,18 @@
                 version: existingNeuralPackage.version || null,
                 channel: existingNeuralPackage.channel || 'stable'
               },
-              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || (availableRuntime && availableRuntime.sha256) || null
+              runtime_asset_sha256: existingNeural.runtime_asset_sha256 || null
             },
             reshade: {
               ...(editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade || {}),
               enabled: reshadeEnabled,
               version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
                 || (installedReshadePackage && installedReshadePackage.version) || null
+            },
+            display_commander: {
+              ...(editingOriginalProfile?.graphics?.display_commander || {}),
+              enabled: commanderEnabled,
+              inject_reflex: commanderReflex
             },
             special_k: {
               enabled: document.getElementById('specialKEnabled').checked,

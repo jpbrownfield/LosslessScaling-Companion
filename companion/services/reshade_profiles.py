@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import configparser
+import hashlib
+import io
+import json
 import logging
 import os
 import re
 import shutil
 import tempfile
+import threading
 import urllib.request
 import zipfile
+from functools import wraps
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional
 
@@ -20,6 +25,40 @@ from .input_simulator import InputSimulator
 
 
 logger = logging.getLogger(__name__)
+
+
+def _serialized(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._capture_lock:
+            return method(self, *args, **kwargs)
+    return locked
+
+LILIUM_INPUT_EFFECT = "LSC_PrepareLiliumSDR.fx"
+LILIUM_INPUT_TECHNIQUE = f"LSC_PrepareLiliumSDR@{LILIUM_INPUT_EFFECT}"
+# Lilium expects normalized SDR, even when its destination is an HDR swapchain.
+# The captured Windows HDR image instead uses absolute scRGB/PQ luminance.
+LILIUM_INPUT_SOURCE = r'''#include "lilium__include/include_main.fxh"
+uniform float SdrWhiteNits <
+    hidden = true;
+> = 400.0; // Owned by the general ReShade settings, with monitor overrides.
+void LSC_PrepareSDR(float4 position : SV_Position, out float4 output : SV_Target0)
+{
+    float4 colour = tex2Dfetch(SamplerBackBuffer, int2(position.xy));
+#if ACTUAL_COLOUR_SPACE == CSP_SCRGB
+    colour.rgb *= 80.0 / SdrWhiteNits;
+#elif ACTUAL_COLOUR_SPACE == CSP_HDR10
+    colour.rgb = Csp::Mat::BT2020_To::BT709(Csp::Trc::PQ_To::Linear(colour.rgb)) * (10000.0 / SdrWhiteNits);
+#else
+    colour.rgb = Csp::Trc::sRGB_To::Linear(colour.rgb);
+#endif
+    output = float4(saturate(colour.rgb), colour.a);
+}
+technique LSC_PrepareLiliumSDR < ui_label = "LS Companion: prepare captured SDR for Lilium"; >
+{
+    pass { VertexShader = VS_PostProcessWithoutTexCoord; PixelShader = LSC_PrepareSDR; }
+}
+'''
 
 CATALOG_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini"
 # Enough to keep profile creation useful offline. The live catalog is the same feed
@@ -71,6 +110,120 @@ class ReshadeProfileService:
         self._builtins_checked = False
         self._hdr_settings_checked = False
         self.hdr_display_detector = hdr_display_detector or HdrDisplayDetector()
+        self._capture_lock = threading.RLock()
+        self._capture_fingerprints = {}
+
+    @staticmethod
+    def _parse_preset(content: str):
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str
+        parser.read_string("[__LSC_PRESET_ROOT__]\n" + content)
+        return parser
+
+    @staticmethod
+    def _preset_text(parser) -> str:
+        output = io.StringIO()
+        parser.write(output, space_around_delimiters=False)
+        return output.getvalue().removeprefix("[__LSC_PRESET_ROOT__]\n")
+
+    def capture_deployed(self, executable: Optional[str], manifest: Dict) -> bool:
+        """Merge runtime preset edits back into the shared library, including built-ins.
+
+        Only manifest-owned presets are accepted. The immutable deployment
+        snapshot and capture receipt make this a three-way merge: a stale
+        runtime cannot overwrite a newer library edit or monitor calibration.
+        """
+        if not executable or not isinstance(manifest, dict) or not isinstance(manifest.get("files", []), list):
+            return False
+        from .managed_runtime import assert_managed_executable
+        host = Path(executable).resolve()
+        assert_managed_executable(host)
+        if host.name.casefold() != "losslessscaling.exe" or not host.is_file():
+            return False
+        with self._capture_lock:
+            changed = False
+            for entry in manifest.get("files", []):
+                if not isinstance(entry, dict) or entry.get("role") != "reshade_preset":
+                    continue
+                parts = Path(str(entry.get("relative_path") or "")).parts
+                if len(parts) != 4 or tuple(parts[:2]) != ("reshade-shaders", "LSCompanion"):
+                    continue
+                profile = next((p for p in self.profile_manager.config.reshade_profiles if p.id == parts[2]), None)
+                if profile is None:
+                    continue
+                folder = self._folder(profile.id)
+                shared = folder / self._preset_filename(profile.name)
+                runtime = (host.parent / Path(*parts)).resolve()
+                if host.parent not in runtime.parents or runtime.name != shared.name or not runtime.is_file():
+                    continue
+                if not shared.is_file() or not 0 < runtime.stat().st_size <= 4 * 1024 * 1024:
+                    continue
+                deployment_hash = entry.get("deployed_sha256") or entry.get("sha256")
+                if not isinstance(deployment_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", deployment_hash):
+                    continue
+                stamp = (deployment_hash, runtime.stat().st_mtime_ns, runtime.stat().st_size)
+                identity = str(runtime)
+                if self._capture_fingerprints.get(identity) == stamp:
+                    continue
+                text = runtime.read_text(encoding="utf-8-sig")
+                if (runtime.stat().st_mtime_ns, runtime.stat().st_size) != stamp[1:]:
+                    continue
+                try:
+                    edited = self._parse_preset(text)
+                    if "Techniques" not in edited["__LSC_PRESET_ROOT__"]:
+                        continue  # Do not import a partial runtime write.
+                    receipt_key = hashlib.sha256(identity.encode()).hexdigest()[:24]
+                    receipt_path = folder / f".runtime-capture-{receipt_key}.json"
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.is_file() else {}
+                    if receipt.get("deployment") == deployment_hash:
+                        baseline_text = receipt["runtimeText"]
+                    else:
+                        baseline_path = folder / ".resolved" / f"{deployment_hash}.ini"
+                        if not baseline_path.is_file():
+                            baseline_path = shared  # Receipt from a pre-snapshot build.
+                        baseline_text = baseline_path.read_text(encoding="utf-8-sig")
+                        if hashlib.sha256(baseline_path.read_bytes()).hexdigest() != deployment_hash:
+                            continue
+                    baseline = self._parse_preset(baseline_text)
+                    current = self._parse_preset(shared.read_text(encoding="utf-8-sig"))
+                except (ValueError, KeyError, configparser.Error, UnicodeError):
+                    continue
+                merged = False
+                for section in set(baseline.sections()) | set(edited.sections()):
+                    before = dict(baseline[section]) if baseline.has_section(section) else {}
+                    after = dict(edited[section]) if edited.has_section(section) else {}
+                    # ReShade may omit inactive shader values. Their absence
+                    # must not delete previously saved tuning.
+                    for key in after:
+                        if (section.casefold(), key.casefold()) in {
+                            ("lilium__inverse_tone_mapping.fx", "targetbrightness"),
+                            (LILIUM_INPUT_EFFECT.casefold(), "sdrwhitenits"),
+                        } or section == "LS Companion":
+                            continue
+                        if after.get(key) == before.get(key):
+                            continue
+                        existing = current.get(section, key, fallback=None)
+                        if existing not in (before.get(key), after.get(key)):
+                            logger.warning("Preserved newer shared ReShade setting %s/%s; runtime copy retained in %s",
+                                           section, key, receipt_path)
+                            continue
+                        if not current.has_section(section):
+                            current.add_section(section)
+                        if key in after:
+                            current[section][key] = after[key]
+                        else:
+                            current.remove_option(section, key)
+                        merged = True
+                if merged:
+                    if not current.has_section("LS Companion"):
+                        current.add_section("LS Companion")
+                    current["LS Companion"]["EffectsInitialized"] = "1"
+                    self._atomic_write(shared, self._preset_text(current))
+                    logger.info("Saved ReShade shader settings to shared preset '%s'", profile.name)
+                    changed = True
+                self._atomic_write(receipt_path, json.dumps({"deployment": deployment_hash, "runtimeText": text}))
+                self._capture_fingerprints[identity] = stamp
+            return changed
 
     def _folder(self, profile_id: str) -> Path:
         # Resolve a separate copy for containment validation, but preserve the
@@ -126,6 +279,7 @@ class ReshadeProfileService:
         self._catalog = [dict(item) for item in FALLBACK_CATALOG]
         return self._catalog
 
+    @_serialized
     def payload(self) -> Dict:
         self._ensure_builtin_profiles()
         if not self._hdr_settings_checked:
@@ -147,7 +301,40 @@ class ReshadeProfileService:
             "configuredNits": configured,
             "resolvedNits": int(resolved),
             "usingFallback": configured is None and detected.get("detectedNits") is None,
+            "sdrWhiteNits": self.profile_manager.config.reshade_sdr_white.default_nits,
+            "monitorSdrWhiteNits": dict(self.profile_manager.config.reshade_sdr_white.monitors),
+            "monitors": [
+                {"id": str(item["deviceId"]).strip().casefold(),
+                 "name": item.get("name") or item.get("deviceName") or item["deviceId"],
+                 "deviceName": item.get("deviceName", "")}
+                for item in self.profile_manager.config.gpu_inventory_snapshot.get("displays", [])
+                if item.get("deviceId")
+            ],
         }
+
+    def _resolved_sdr_white_nits(self, monitor_id: Optional[str] = None) -> int:
+        settings = self.profile_manager.config.reshade_sdr_white
+        return settings.monitors.get(str(monitor_id or "").strip().casefold(), settings.default_nits)
+
+    @staticmethod
+    def _sdr_white_content(content: str, nits: int) -> str:
+        if LILIUM_INPUT_TECHNIQUE.casefold() not in content.casefold():
+            return content
+        section = re.compile(r"(?ims)(^\[LSC_PrepareLiliumSDR\.fx\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)")
+        match = section.search(content)
+        value = f"SdrWhiteNits={nits:.6f}"
+        if not match:
+            return content.rstrip() + f"\n\n[{LILIUM_INPUT_EFFECT}]\n{value}\n"
+        key = re.compile(r"(?im)^SdrWhiteNits\s*=.*$")
+        body = match.group(2)
+        body = key.sub(value, body, count=1) if key.search(body) else f"{value}\n{body}"
+        return content[:match.start()] + match.group(1) + body + content[match.end():]
+
+    def _sync_sdr_white(self, preset: Path) -> None:
+        original = preset.read_text(encoding="utf-8-sig", errors="ignore")
+        updated = self._sdr_white_content(original, self._resolved_sdr_white_nits())
+        if updated != original:
+            self._atomic_write(preset, updated)
 
     def _resolved_hdr_peak_nits(self) -> int:
         return int(self.hdr_settings_payload()["resolvedNits"])
@@ -181,6 +368,8 @@ class ReshadeProfileService:
                 and (folder / "ReShade.Interactive.ini").is_file()
                 and not self._missing_selected_shaders(profile)
             ):
+                if "EffectsInitialized=1" not in preset.read_text(encoding="utf-8-sig"):
+                    self._write_files(profile)
                 continue
             try:
                 self._install_selected_shaders(profile, catalog)
@@ -219,6 +408,7 @@ class ReshadeProfileService:
         safe = re.sub(r"\s+", " ", safe).strip(" .") or "ReShade Profile"
         return f"{safe}.ini"
 
+    @_serialized
     def save(self, profile: ManagedReshadeProfile) -> Dict:
         catalog = self.catalog()
         catalog_ids = {item["id"] for item in catalog}
@@ -251,6 +441,7 @@ class ReshadeProfileService:
         self.profile_manager.save_config()
         return self._profile_payload(profile)
 
+    @_serialized
     def import_preset(self, source_path: str) -> Dict:
         source = Path(source_path).resolve()
         if not source.is_file() or source.suffix.casefold() != ".ini":
@@ -347,6 +538,7 @@ class ReshadeProfileService:
                 shutil.rmtree(staging)
             raise
 
+    @_serialized
     def delete(self, profile_id: str) -> bool:
         if any(p.reshade and p.reshade.enabled and p.reshade.managed_profile_id == profile_id for p in self.profile_manager.config.profiles):
             raise ValueError("This ReShade profile is still selected by an application profile")
@@ -360,10 +552,14 @@ class ReshadeProfileService:
         self.profile_manager.save_config()
         return True
 
+    @_serialized
     def _write_files(self, profile: ManagedReshadeProfile) -> None:
         folder = self._folder(profile.id)
         folder.mkdir(parents=True, exist_ok=True)
         preset = folder / self._preset_filename(profile.name)
+        previous_profile = next((p for p in self.profile_manager.config.reshade_profiles if p.id == profile.id), None)
+        previous_preset = folder / self._preset_filename(previous_profile.name) if previous_profile else preset
+        previous_content = previous_preset.read_text(encoding="utf-8-sig") if previous_preset.is_file() else None
         selected_names = [
             filename for files in profile.shaders.values() for filename in files
         ]
@@ -386,46 +582,114 @@ class ReshadeProfileService:
         technique_list = ",".join(techniques)
         sections = []
         if "lilium__inverse_tone_mapping.fx" in selected_keys:
+            self._write_lilium_input(folder)
+            technique_list = ",".join([LILIUM_INPUT_TECHNIQUE, *techniques])
             sections.append(
                 "[lilium__inverse_tone_mapping.fx]\n"
+                "ItmMethod=0\nInputTrc=2\nOverbrightHandling=2\n"
+                "Bt2446AProcessingMode=0\nBt2446AInputBrightness=100.000000\n"
+                "Bt2446AMaxInputBrightness=100.000000\n"
                 f"TargetBrightness={self._resolved_hdr_peak_nits():.6f}\n"
             )
+            sections.append(f"[{LILIUM_INPUT_EFFECT}]\nSdrWhiteNits={self._resolved_sdr_white_nits():.6f}\n")
         settings = "\n".join(sections)
         settings_suffix = f"\n{settings}" if settings else ""
-        self._atomic_write(
-            preset,
+        generated = self._parse_preset(
             f"Techniques={technique_list}\nTechniqueSorting={technique_list}\n\n"
-            f"[LS Companion]\nManaged=1\n{settings_suffix}",
-        )
+            f"[LS Companion]\nManaged=1\nLiliumInputVersion=1\nEffectsInitialized=1\n{settings_suffix}")
+        if previous_content is not None:
+            saved = self._parse_preset(previous_content)
+            old_files = {name.casefold() for files in (previous_profile.shaders.values() if previous_profile else []) for name in files}
+            available = technique_list.split(",") if technique_list else []
+            root = saved["__LSC_PRESET_ROOT__"]
+            enabled = [name for name in root.get("Techniques", "").split(",") if name in available]
+            if saved.get("LS Companion", "EffectsInitialized", fallback="") != "1":
+                enabled = available.copy()  # Initialize legacy starter presets once.
+            for name in available:
+                effect = name.partition("@")[2].casefold()
+                if effect not in old_files and effect != LILIUM_INPUT_EFFECT.casefold() and name not in enabled:
+                    enabled.append(name)
+            if LILIUM_INPUT_TECHNIQUE in available and "lilium__inverse_tone_mapping.fx" not in old_files:
+                enabled.insert(0, LILIUM_INPUT_TECHNIQUE)
+            root["Techniques"] = ",".join(dict.fromkeys(enabled))
+            root["TechniqueSorting"] = ",".join(dict.fromkeys(
+                [name for name in root.get("TechniqueSorting", "").split(",") if name in available] + available))
+            for section in generated.sections():
+                if section == "__LSC_PRESET_ROOT__":
+                    continue
+                if not saved.has_section(section):
+                    saved.add_section(section)
+                for key, value in generated[section].items():
+                    if key not in saved[section] or section == "LS Companion":
+                        saved[section][key] = value
+            generated = saved
+        self._atomic_write(preset, self._preset_text(generated))
+        self._update_imported_hdr_peak(preset)
+        self._sync_sdr_white(preset)
         self._write_config(profile, preset)
 
+    def _write_lilium_input(self, folder: Path) -> None:
+        destination = folder / "packages" / "LSCompanion" / LILIUM_INPUT_EFFECT
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.is_file() or destination.read_text(encoding="utf-8") != LILIUM_INPUT_SOURCE:
+            self._atomic_write(destination, LILIUM_INPUT_SOURCE)
+
+    def _migrate_lilium_input(self, profile: ManagedReshadeProfile, preset: Path) -> None:
+        if profile.imported_preset:
+            return
+        content = preset.read_text(encoding="utf-8-sig", errors="ignore")
+        if "[lilium__inverse_tone_mapping.fx]" not in content.casefold():
+            return
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.optionxform = str
+        # ReShade stores technique lists before the first INI section.
+        parser.read_string("[PRESET]\n" + content)
+        if parser.get("LS Companion", "LiliumInputVersion", fallback="") == "1":
+            self._write_lilium_input(preset.parent)
+            return
+        section = parser["lilium__inverse_tone_mapping.fx"]
+        if "InputTrc" in section:
+            return  # Explicitly tuned presets retain their original input path.
+        section.update(InputTrc="2", OverbrightHandling="2", ItmMethod="0",
+                       Bt2446AProcessingMode="0", Bt2446AInputBrightness="100.000000",
+                       Bt2446AMaxInputBrightness="100.000000")
+        for key in ("Techniques", "TechniqueSorting"):
+            current = parser["PRESET"].get(key, "")
+            parser["PRESET"][key] = ",".join([LILIUM_INPUT_TECHNIQUE, *filter(None, current.split(","))])
+        if not parser.has_section("LS Companion"):
+            parser.add_section("LS Companion")
+        parser["LS Companion"]["LiliumInputVersion"] = "1"
+        output = io.StringIO()
+        parser.write(output, space_around_delimiters=False)
+        self._write_lilium_input(preset.parent)
+        self._atomic_write(preset, output.getvalue().removeprefix("[PRESET]\n"))
+
+    @_serialized
     def refresh_hdr_peak_settings(self) -> None:
-        """Rewrite generated presets and update known HDR keys in imported INIs."""
+        """Migrate untuned SDR input and update peak without erasing shader edits."""
         for profile in self.profile_manager.config.reshade_profiles:
             folder = self._folder(profile.id)
             preset = folder / self._preset_filename(profile.name)
             if not preset.is_file():
                 continue
-            if profile.imported_preset:
-                self._update_imported_hdr_peak(preset)
-            elif (folder / "packages").is_dir():
-                self._write_files(profile)
+            self._migrate_lilium_input(profile, preset)
+            self._update_imported_hdr_peak(preset)
+            self._sync_sdr_white(preset)
 
     def _sync_profile_hdr_peak(self, profile: ManagedReshadeProfile) -> None:
         folder = self._folder(profile.id)
         preset = folder / self._preset_filename(profile.name)
         if not preset.is_file():
             return
+        self._migrate_lilium_input(profile, preset)
+        self._sync_sdr_white(preset)
         content = preset.read_text(encoding="utf-8-sig", errors="ignore")
         if "[lilium__inverse_tone_mapping.fx]" not in content.casefold():
             return
         expected = f"TargetBrightness={self._resolved_hdr_peak_nits():.6f}"
         if expected in content:
             return
-        if profile.imported_preset:
-            self._update_imported_hdr_peak(preset)
-        elif (folder / "packages").is_dir():
-            self._write_files(profile)
+        self._update_imported_hdr_peak(preset)
 
     def _update_imported_hdr_peak(self, preset: Path) -> None:
         content = preset.read_text(encoding="utf-8-sig", errors="ignore")
@@ -465,13 +729,17 @@ class ReshadeProfileService:
         def content(overlay_key: str) -> str:
             return (
                 "[GENERAL]\n"
+                f"PresetPath={reshade_path(deployed_preset)}\n"
                 f"CurrentPresetPath={reshade_path(deployed_preset)}\n"
+                f"StartupPresetPath={reshade_path(deployed_preset)}\n"
                 f"EffectSearchPaths={reshade_path(deployed_packages, recursive=True)}\n"
                 f"TextureSearchPaths={reshade_path(deployed_packages, recursive=True)}\n"
-                "PerformanceMode=1\n\n"
+                "PerformanceMode=0\nNoReloadOnInit=0\nSkipLoadingDisabledEffects=0\n\n"
+                "[ADDON]\nAddonPath=.\\\n\n"
                 "[INPUT]\n"
                 f"KeyOverlay={overlay_key}\n\n"
                 "[OVERLAY]\n"
+                "AutoSavePreset=1\n"
                 "TutorialProgress=4\n"
                 "ShowForceLoadEffectsButton=0\n"
                 "ShowPresetName=0\n"
@@ -484,7 +752,8 @@ class ReshadeProfileService:
             content(f"{virtual_key},0,0,0"),
         )
 
-    def deployment_files(self, profile_id: str) -> List[Dict]:
+    @_serialized
+    def deployment_files(self, profile_id: str, *, monitor_id: Optional[str] = None) -> List[Dict]:
         """Return the preset, shaders, includes and textures for LS deployment."""
         profile = next(
             (item for item in self.profile_manager.config.reshade_profiles if item.id == profile_id),
@@ -505,6 +774,15 @@ class ReshadeProfileService:
 
         folder = self._folder(profile.id)
         preset = folder / self._preset_filename(profile.name)
+        content = preset.read_text(encoding="utf-8-sig", errors="ignore")
+        resolved = self._sdr_white_content(content, self._resolved_sdr_white_nits(monitor_id))
+        # Keep an immutable baseline for merging edits made by ReShade back
+        # into the shared preset, including when no monitor override is used.
+        digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()
+        resolved_preset = folder / ".resolved" / f"{digest}.ini"
+        resolved_preset.parent.mkdir(parents=True, exist_ok=True)
+        if not resolved_preset.is_file():
+            self._atomic_write(resolved_preset, resolved)
         sources = [preset]
         packages = folder / "packages"
         if packages.is_dir():
@@ -516,7 +794,7 @@ class ReshadeProfileService:
             relative = source.relative_to(folder)
             result.append({
                 "relative_path": (deployed_folder / relative).as_posix(),
-                "source_path": str(source),
+                "source_path": str(resolved_preset if source == preset else source),
                 "role": "reshade_preset" if source == preset else "shader_bundle",
                 "source_package": f"managed-reshade-profile/{profile.id}",
             })
@@ -535,6 +813,7 @@ class ReshadeProfileService:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
+    @_serialized
     def sync_all_configs(self) -> None:
         """Keep each hidden interactive/non-interactive INI pair synchronized."""
         for profile in self.profile_manager.config.reshade_profiles:
@@ -542,6 +821,7 @@ class ReshadeProfileService:
             if preset.is_file():
                 self._write_config(profile, preset)
 
+    @_serialized
     def config_path(self, profile_id: str, *, interactive: bool = False) -> Optional[Path]:
         if profile_id in {profile.id for profile in BUILTIN_PROFILES}:
             self._ensure_builtin_profiles(retry=True)

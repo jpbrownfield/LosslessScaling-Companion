@@ -16,6 +16,7 @@ KEYEVENTF_SCANCODE = 0x0008
 
 # Key mapping table: Name -> Virtual Key Code
 VK_MAPPINGS = {
+    '=': 0xBB, 'equals': 0xBB, '-': 0xBD, 'minus': 0xBD, 'backspace': 0x08,
     'ctrl': 0x11,
     'control': 0x11,
     'lctrl': 0xA2,

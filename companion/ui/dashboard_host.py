@@ -79,6 +79,13 @@ def run():
                     continue
                 window.restore()
                 window.show()
+                profile_id = parse_qs(parsed.query).get("editProfile", [None])[0]
+                if profile_id:
+                    detail = {"profileId": profile_id,
+                              "section": parse_qs(parsed.query).get("profileSection", [None])[0]}
+                    window.evaluate_js("window.dispatchEvent(new CustomEvent('companion-edit-profile', "
+                                       + "{detail: " + json.dumps(detail) + "}))")
+                    continue
                 # Focus without reloading the page or losing unsaved editors.
                 requested_view = parse_qs(parsed.query).get("view", ["profiles"])[0]
                 view = requested_view if requested_view in {"settings", "addons"} else "profiles"

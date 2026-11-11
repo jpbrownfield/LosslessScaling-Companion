@@ -243,6 +243,8 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertIsNotNone(status, "The real host did not publish bridge status")
                 self.assertEqual(status["startupError"], "")
                 self.assertEqual(status["hostVersion"], MANAGED_HOST_VERSION)
+                self.assertIs(status["reshade"]["interactive"], False)
+                self.assertIsInstance(status["reshade"]["hotkeyVk"], int)
                 self.assertFalse(status["capture"]["runtimeVerified"], "Synthetic LS must be rejected by the runtime gate")
                 neural = next(item for item in status["addons"] if item["id"] == "DLSSNR02")
                 self.assertTrue(neural["loaded"])

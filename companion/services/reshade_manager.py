@@ -68,27 +68,18 @@ class ReshadeManager:
             with open(ini_file, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
 
-            # Pattern matches CurrentPresetPath=... or PresetPath=...
-            preset_pattern = re.compile(r"^(CurrentPresetPath\s*=\s*)(.*)$", re.MULTILINE | re.IGNORECASE)
-            preset_path_pattern = re.compile(r"^(PresetPath\s*=\s*)(.*)$", re.MULTILINE | re.IGNORECASE)
-
             abs_preset_path = str(preset_file.resolve())
-
-            if preset_pattern.search(content):
-                new_content = preset_pattern.sub(lambda match: match.group(1) + abs_preset_path, content)
-            elif preset_path_pattern.search(content):
-                new_content = preset_path_pattern.sub(lambda match: match.group(1) + abs_preset_path, content)
-            else:
-                # Append under [GENERAL] section or at top
-                if "[GENERAL]" in content.upper():
-                    new_content = re.sub(
-                        r"(\[GENERAL\])",
-                        lambda match: match.group(1) + f"\nCurrentPresetPath={abs_preset_path}",
-                        content,
-                        flags=re.IGNORECASE,
-                    )
-                else:
-                    new_content = f"[GENERAL]\nCurrentPresetPath={abs_preset_path}\n\n" + content
+            general = re.compile(r"(?ims)(^\[GENERAL\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)")
+            match = general.search(content)
+            body = match.group(2) if match else ""
+            # PresetPath is consumed by current ReShade. Keep the legacy key
+            # synchronized and override any earlier startup selection too.
+            for key in ("PresetPath", "CurrentPresetPath", "StartupPresetPath"):
+                pattern = re.compile(rf"(?im)^{key}\s*=.*$")
+                value = f"{key}={abs_preset_path}"
+                body = pattern.sub(lambda _: value, body) if pattern.search(body) else body.rstrip() + "\n" + value + "\n"
+            new_content = (content[:match.start()] + match.group(1) + body + content[match.end():]
+                           if match else "[GENERAL]\n" + body.lstrip() + "\n" + content)
 
             handle, temp_name = tempfile.mkstemp(
                 prefix=f".{ini_file.name}.", suffix=".tmp", dir=ini_file.parent

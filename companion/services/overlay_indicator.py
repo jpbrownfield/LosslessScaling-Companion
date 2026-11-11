@@ -217,6 +217,8 @@ class OverlayIndicator:
                  pump_interval: float = 0.25) -> None:
         self._state = OverlayState()
         self._line_anchor_hwnd: Optional[int] = None
+        self._reshade_context: Optional[Dict] = None
+        self._performance_graph: Optional[Dict] = None
         self._lock = threading.RLock()
         # NOTE: the Win32 presenter is created lazily on first real show so
         # unit tests (and headless runs) never create HWNDs or threads.
@@ -257,6 +259,24 @@ class OverlayIndicator:
             return self._presenter
 
     # -- public API ------------------------------------------------------
+    def set_performance_graph(self, data: Optional[Dict]) -> None:
+        with self._lock:
+            self._performance_graph = dict(data) if data is not None else None
+        self.tick()
+
+    def set_reshade_context(self, active: bool, anchor_hwnd: Optional[int] = None,
+                            hints: Optional[List[Dict]] = None) -> None:
+        with self._lock:
+            previous = self._reshade_context
+            if not active and previous is None:
+                return
+            since = previous["since"] if previous and previous["anchor"] == anchor_hwnd else _time.monotonic()
+            self._reshade_context = ({"anchor": anchor_hwnd, "hints": hints or [], "since": since}
+                                     if active else None)
+        if active:
+            self._ensure_pump()
+        self.tick()
+
     def log(self, text: str, kind: str = "info",
             anchor_hwnd: Optional[int] = None,
             now: Optional[float] = None) -> None:
@@ -307,6 +327,8 @@ class OverlayIndicator:
         try:
             with self._lock:
                 self._state.clear()
+                self._reshade_context = None
+                self._performance_graph = None
                 self._line_anchor_hwnd = None
             self.tick()
         except Exception:
@@ -350,7 +372,8 @@ class OverlayIndicator:
                     if not self._pump_running:
                         return
                     active = (bool(self._state.current)
-                              or self._state.border.state is not None)
+                              or self._state.border.state is not None
+                              or self._reshade_context is not None)
                 if not active:
                     idle_ticks += 1
                     if idle_ticks >= 8:
@@ -405,10 +428,16 @@ class OverlayIndicator:
                 border_state = None
                 if border_anchor is not None:
                     border_state = self._state.border.state
+                context = self._reshade_context
+                if context and context["anchor"]:
+                    info = self._window_info(context["anchor"])
+                    if info and is_game_like_window(*info):
+                        border_anchor = context["anchor"]
+                        border_state = "reshade"
             moment = _time.monotonic() if now is None else now
             pulse = bool(border_state) and (int(moment * 4) % 2 == 0)
             self._present(lines, border_state, border_anchor, anchor_hwnd,
-                          pulse, now=moment)
+                          pulse, now=moment, context=context)
         except Exception:
             pass
 
@@ -420,23 +449,33 @@ class OverlayIndicator:
                  border_anchor: Optional[int],
                  fallback_anchor: Optional[int],
                  pulse: bool = False,
-                 now: Optional[float] = None) -> None:
+                 now: Optional[float] = None,
+                 context: Optional[Dict] = None) -> None:
         try:
+            rendered_lines = [{"id": line.id, "text": line.text, "accent": line.accent,
+                               "created_at": line.created_at, "expires_at": line.expires_at}
+                              for line in lines]
+            if context and border_state == "reshade":
+                rendered_lines = [{"id": "reshade-status", "text": "Overlay active",
+                                   "accent": (235, 183, 42), "persistent": True,
+                                   "created_at": context["since"]}, *rendered_lines[-(MAX_LINES - 1):]]
             if not lines and border_state is None:
                 payload = None
             else:
                 payload = {
-                    "lines": [{"id": line.id, "text": line.text, "accent": line.accent,
-                               "created_at": line.created_at, "expires_at": line.expires_at}
-                              for line in lines],
+                    "lines": rendered_lines,
                     "border": border_state,
                     "border_anchor_hwnd": border_anchor,
                     "anchor_hwnd": (border_anchor if border_anchor is not None
                                     else fallback_anchor),
                     "pulse": pulse,
+                    "hotkey_hints": context["hints"] if context and border_state == "reshade" else [],
+                    "performance_graph": self._performance_graph if context and border_state == "reshade" else None,
                 }
             signature = (tuple(line.id for line in lines),
-                         border_state, border_anchor, fallback_anchor, pulse)
+                         border_state, border_anchor, fallback_anchor, pulse,
+                         tuple((hint["key"], hint["label"]) for hint in (payload or {}).get("hotkey_hints", [])),
+                         repr((payload or {}).get("performance_graph")))
             moment = _time.monotonic() if now is None else now
             with self._lock:
                 changed = (signature != self._last_signature

@@ -8,6 +8,7 @@
 #include "../addon/addon_manager.h"
 #include "../config/config_manager.h"
 #include "../host/metrics.h"
+#include "../features/reshade_passthrough.h"
 #include "../log/logger.h"
 #include "eam/real_frame_status.h"
 #include "imgui.h"
@@ -128,6 +129,12 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"sampledAt",Seconds(now)},{"headless",true},{"hostVersion",LSC_HOST_VERSION},
         {"startupError",startupError},{"addons",json::array()},{"metrics",json::object()},
         {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
+    auto& config=eam::ConfigManager::Instance();
+    result["reshade"]={{"interactive",!eam::features::reshade::Status().empty()},
+        {"hotkeyVk",std::atoi(config.Get("ReShadePassthrough","hotkey_vk","35").c_str())},
+        {"ctrl",config.Get("ReShadePassthrough","hotkey_ctrl","0")=="1"},
+        {"alt",config.Get("ReShadePassthrough","hotkey_alt","0")=="1"},
+        {"shift",config.Get("ReShadePassthrough","hotkey_shift","0")=="1"}};
     {
         std::lock_guard<std::mutex> lock(manager->GetMutex());
         for (const auto& addon : manager->GetAddons()) {

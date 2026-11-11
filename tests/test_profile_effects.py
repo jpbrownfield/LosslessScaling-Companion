@@ -357,11 +357,11 @@ class ProfileEffectsTests(unittest.TestCase):
             self.assertEqual(route["lsDisplayId"], 3)
             self.assertEqual(route["deviceName"], r"\\.\DISPLAY3")
 
-    def test_explicit_profile_gpu_moves_target_before_focus_and_scaling_hotkey(self):
+    def test_explicit_profile_display_moves_target_before_focus_and_scaling_hotkey(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = ProfileManager(Path(directory) / "config")
             profile = Profile(name="GPU target", native_scaling_settings={
-                "PreferredGpuId": "2", "OutputDisplayId": "0",
+                "PreferredGpuId": "2", "OutputDisplayId": "3",
             })
             events = []
             router = Mock()
@@ -400,7 +400,8 @@ class ProfileEffectsTests(unittest.TestCase):
             # Routing and the existing runtime-verification path may each resolve
             # this selection. Both must honor the explicitly requested GPU.
             self.assertTrue(router.route_for_ls_ids.call_args_list)
-            self.assertTrue(all(call.args == (2, 0) and not call.kwargs
+            self.assertEqual(router.route_for_ls_ids.call_args_list[0].args, (2, 3))
+            self.assertTrue(all(call.args[0] == 2 and not call.kwargs
                                 for call in router.route_for_ls_ids.call_args_list))
 
     def test_active_profile_new_window_updates_xml_route_without_redeployment(self):

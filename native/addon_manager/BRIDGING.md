@@ -117,9 +117,15 @@ not advertised as live until applied. Inactive profiles remain editable.
 The local pipe `LSCompanionAddonStatus-<pid>` provides protocol/schema **1**.
 It returns bounded JSON with process creation time, sampling time, host version,
 addon load/errors/status, current published metrics, and existing capture-hook
-diagnostics. It contains no frame pixels or settings. The client checks server
+diagnostics. The additive `reshade` object reports the **Overlay toggle** state
+and its runtime menu binding; it contains no frame pixels or profile settings. The client checks server
 PID, process instance, schema, size and freshness, and has a bounded read timeout.
 The pipe accepts only a delivery acknowledgement; it has no command interface.
+Overlay controls use this verified toggle state to show the yellow border,
+persistent status card, and scoped configurable shortcuts. The native menu key
+is never registered or swallowed by Companion. The headless host has no manager
+window; the add-on shortcut opens the current profile's Add-ons section instead.
+
 Telemetry is advisory: missing captures, NR disabled, or a waiting/error status
 must never be interpreted as proof that scaling is active or stopped. Scaling
 confirmation retains the inspector's native LS log/window evidence.

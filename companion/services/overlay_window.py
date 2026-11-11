@@ -42,6 +42,10 @@ HEIGHT = TOAST_HEIGHT
 HEADER_WIDTH = 156
 HEADER_HEIGHT = 32
 HEADER_GAP = 8
+HINT_WIDTH = 340
+HINT_HEIGHT = 154
+GRAPH_WIDTH = 380
+GRAPH_HEIGHT = 174
 BORDER_PX = 8
 BORDER_RADIUS = 24
 BORDER_ANIM_MS = 16
@@ -56,6 +60,7 @@ BG_COLOR = (24, 28, 36)
 TEXT_COLOR = (235, 235, 235)
 PENDING_COLOR = (26, 120, 255)
 ACTIVE_COLOR = (145, 24, 62)
+RESHADE_COLOR = (235, 183, 42)
 
 WS_POPUP = 0x80000000
 WS_EX_TRANSPARENT = 0x00000020
@@ -83,6 +88,7 @@ MONITOR_DEFAULTTONEAREST = 2
 _BORDER_COLORS = {
     "pending": PENDING_COLOR,
     "active": ACTIVE_COLOR,
+    "reshade": RESHADE_COLOR,
 }
 
 
@@ -279,6 +285,10 @@ def _user32():
         u.GetCursorPos.restype = ctypes.c_bool
         u.MonitorFromPoint.argtypes = [_Point, ctypes.c_ulong]
         u.MonitorFromPoint.restype = ctypes.c_void_p
+        u.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        u.MonitorFromWindow.restype = ctypes.c_void_p
+        u.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
         u.GetMonitorInfoW.argtypes = [ctypes.c_void_p,
                                       ctypes.POINTER(_MonitorInfo)]
         u.GetMonitorInfoW.restype = ctypes.c_bool
@@ -325,6 +335,12 @@ def _user32():
         g.SaveDC.restype = ctypes.c_int
         g.RestoreDC.argtypes = [ctypes.c_void_p, ctypes.c_int]
         g.RestoreDC.restype = wintypes.BOOL
+        g.SetMapMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        g.SetMapMode.restype = ctypes.c_int
+        for name in ("SetWindowExtEx", "SetViewportExtEx"):
+            function = getattr(g, name)
+            function.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            function.restype = wintypes.BOOL
         g.ExtSelectClipRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
         g.ExtSelectClipRgn.restype = ctypes.c_int
         g.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
@@ -358,6 +374,10 @@ def _user32():
         g.SetTextColor.restype = ctypes.c_ulong
         g.DeleteObject.argtypes = [ctypes.c_void_p]
         g.DeleteObject.restype = ctypes.c_bool
+        g.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        g.CreatePen.restype = ctypes.c_void_p
+        g.Polyline.argtypes = [ctypes.c_void_p, ctypes.POINTER(_Point), ctypes.c_int]
+        g.Polyline.restype = wintypes.BOOL
         msimg32.GradientFill.argtypes = [ctypes.c_void_p, ctypes.POINTER(_GradientVertex),
                                         ctypes.c_ulong, ctypes.POINTER(_GradientTriangle),
                                         ctypes.c_ulong, ctypes.c_ulong]
@@ -402,6 +422,8 @@ class Win32OverlayPresenter:
     PILL_CLASS = "LSCompanionOverlay"
     BORDER_CLASS = "LSCompanionOverlayBorder"
     HEADER_CLASS = "LSCompanionOverlayHeader"
+    HINT_CLASS = "LSCompanionOverlayHints"
+    GRAPH_CLASS = "LSCompanionOverlayGraph"
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -412,6 +434,14 @@ class Win32OverlayPresenter:
         self._header_hwnd = None
         self._header_visible = False
         self._header_icon = None
+        self._hint_hwnd = None
+        self._hint_visible = False
+        self._hint_lines = []
+        self._hint_height = HINT_HEIGHT
+        self._ui_scale = 1.0
+        self._graph_hwnd = None
+        self._graph_visible = False
+        self._graph_data = None
         self._thread = None
         self._thread_id = None
         self._pending = None
@@ -505,7 +535,7 @@ class Win32OverlayPresenter:
             self._release_border_buffer()
             self._stop_toast_timer()
             with self._lock:
-                handles = [*self._toast_hwnds, self._header_hwnd, self._border_hwnd]
+                handles = [*self._toast_hwnds, self._header_hwnd, self._hint_hwnd, self._graph_hwnd, self._border_hwnd]
                 self._toast_hwnds = []
                 self._toast_slots.clear()
                 self._toast_lines.clear()
@@ -515,6 +545,14 @@ class Win32OverlayPresenter:
                 self._header_hwnd = None
                 self._header_visible = False
                 self._header_icon = None
+                self._hint_hwnd = None
+                self._hint_visible = False
+                self._hint_lines = []
+                self._hint_height = HINT_HEIGHT
+                self._ui_scale = 1.0
+                self._graph_hwnd = None
+                self._graph_visible = False
+                self._graph_data = None
                 self._border_geometry = None
                 self._hwnd = None
                 self._border_hwnd = None
@@ -546,7 +584,10 @@ class Win32OverlayPresenter:
             thread.start()
 
     def _pump(self) -> None:
+        previous_dpi_context = None
         try:
+            # Keep overlay geometry in physical pixels on mixed-DPI desktops.
+            previous_dpi_context = self._user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
             self._thread_id = self._kernel32.GetCurrentThreadId()
             if not self._create_windows():
                 self._note_failure("create_windows")
@@ -592,6 +633,8 @@ class Win32OverlayPresenter:
                 pass
             self._thread_id = None
             self._border_timer = False
+            if previous_dpi_context:
+                self._user32.SetThreadDpiAwarenessContext(previous_dpi_context)
 
     # -- windows ------------------------------------------------------------
     def _make_window(self, class_name: str, layered: bool = False,
@@ -661,19 +704,32 @@ class Win32OverlayPresenter:
         try:
             paint = _PaintStruct()
             hdc = self._user32.BeginPaint(ctypes.c_void_p(hwnd), ctypes.byref(paint))
+            saved = 0
             try:
                 if not hdc:
                     return
                 with self._lock:
                     toast_line = self._toast_lines.get(hwnd)
                     border_color = self._border_color
+                if hwnd != self._border_hwnd and self._ui_scale != 1.0:
+                    saved = self._gdi32.SaveDC(hdc)
+                    self._gdi32.SetMapMode(hdc, 8)  # MM_ANISOTROPIC, logical 1080p units
+                    self._gdi32.SetWindowExtEx(hdc, 1000, 1000, None)
+                    extent = round(1000 * self._ui_scale)
+                    self._gdi32.SetViewportExtEx(hdc, extent, extent, None)
                 if hwnd == self._header_hwnd:
                     self._paint_header(hdc)
+                elif hwnd == self._hint_hwnd:
+                    self._paint_hints(hdc)
+                elif hwnd == self._graph_hwnd:
+                    self._paint_graph(hdc)
                 elif toast_line is not None:
                     self._paint_pill(hdc, [toast_line])
                 elif hwnd == self._border_hwnd and border_color is not None:
                     self._paint_border_frame(hdc, hwnd, border_color)
             finally:
+                if saved:
+                    self._gdi32.RestoreDC(hdc, saved)
                 try:
                     self._user32.EndPaint(ctypes.c_void_p(hwnd),
                                           ctypes.byref(paint))
@@ -824,12 +880,69 @@ class Win32OverlayPresenter:
                 0, 0, HEADER_WIDTH + 1, HEADER_HEIGHT + 1, 20, 20)
             if not self._set_region(self._header_hwnd, "_header_rgn", rounded):
                 return False
+            self._hint_hwnd = self._make_window(
+                self.HINT_CLASS, layered=True, width=HINT_WIDTH, height=HINT_HEIGHT)
+            if not self._hint_hwnd:
+                return False
+            rounded = self._gdi32.CreateRoundRectRgn(
+                0, 0, HINT_WIDTH + 1, HINT_HEIGHT + 1, 24, 24)
+            if not self._set_region(self._hint_hwnd, "_hint_rgn", rounded):
+                return False
+            self._graph_hwnd = self._make_window(
+                self.GRAPH_CLASS, layered=True, width=GRAPH_WIDTH, height=GRAPH_HEIGHT)
+            if not self._graph_hwnd:
+                return False
+            rounded = self._gdi32.CreateRoundRectRgn(0, 0, GRAPH_WIDTH + 1, GRAPH_HEIGHT + 1, 24, 24)
+            if not self._set_region(self._graph_hwnd, "_graph_rgn", rounded):
+                return False
             self._border_hwnd = self._make_window(self.BORDER_CLASS)
             return bool(self._hwnd and self._border_hwnd)
         except Exception:
             return False
 
     # -- apply --------------------------------------------------------------
+    def _px(self, value: float) -> int:
+        return round(value * self._ui_scale)
+
+    def _size_ui_window(self, hwnd: int, slot: str, width: int, height: int, radius: int) -> None:
+        region = self._gdi32.CreateRoundRectRgn(
+            0, 0, self._px(width) + 1, self._px(height) + 1,
+            self._px(2 * radius), self._px(2 * radius))
+        if not self._set_region(hwnd, slot, region):
+            raise OSError("Could not resize overlay surface")
+        self._user32.SetWindowPos(ctypes.c_void_p(hwnd), None, 0, 0,
+            self._px(width), self._px(height), SWP_NOZORDER | SWP_NOACTIVATE | 0x0002)  # SWP_NOMOVE
+        self._user32.InvalidateRect(ctypes.c_void_p(hwnd), None, False)
+
+    def _update_ui_scale(self, anchor: Optional[int]) -> None:
+        if anchor:
+            monitor = self._user32.MonitorFromWindow(ctypes.c_void_p(anchor), MONITOR_DEFAULTTONEAREST)
+        else:
+            point = _Point()
+            self._user32.GetCursorPos(ctypes.byref(point))
+            monitor = self._user32.MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST)
+        info = _MonitorInfo()
+        info.cbSize = ctypes.sizeof(info)
+        if not self._user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return
+        # Use the shorter monitor dimension so portrait rotation keeps the
+        # same readable size. 1080p = 1x, 1440p = 1.33x, 4K = 2x.
+        resolution = min(info.rcMonitor.right - info.rcMonitor.left,
+                         info.rcMonitor.bottom - info.rcMonitor.top)
+        scale = max(0.5, resolution / 1080.0)
+        if scale == self._ui_scale:
+            return
+        self._ui_scale = scale
+        self._header_icon = None
+        for hwnd in self._toast_hwnds:
+            self._size_ui_window(hwnd, "_pill_rgn", WIDTH, HEIGHT, TOAST_RADIUS)
+        for hwnd, slot, width, height, radius in (
+            (self._header_hwnd, "_header_rgn", HEADER_WIDTH, HEADER_HEIGHT, 10),
+            (self._hint_hwnd, "_hint_rgn", HINT_WIDTH, self._hint_height, 12),
+            (self._graph_hwnd, "_graph_rgn", GRAPH_WIDTH, GRAPH_HEIGHT, 12)):
+            if hwnd:
+                self._size_ui_window(hwnd, slot, width, height, radius)
+
     def _apply_pending(self) -> None:
         try:
             with self._lock:
@@ -859,12 +972,135 @@ class Win32OverlayPresenter:
                 self._draw_border(border, border_anchor, pulse)
             else:
                 self._hide_border()
+            hints = has_pending.get("hotkey_hints") or []
+            if hints and border == "reshade" and border_anchor:
+                self._draw_hints(hints, border_anchor)
+            else:
+                self._hide_hints()
+            graph = has_pending.get("performance_graph")
+            if graph is not None and border == "reshade" and border_anchor:
+                self._draw_graph(graph, border_anchor)
+            else:
+                self._hide_graph()
         except Exception:
             self._note_failure("apply_pending")
 
     def _hide_all(self) -> None:
         self._hide_pill()
         self._hide_border()
+        self._hide_hints()
+        self._hide_graph()
+
+    def _hide_graph(self) -> None:
+        if self._graph_hwnd and self._graph_visible:
+            self._user32.ShowWindow(ctypes.c_void_p(self._graph_hwnd), SW_HIDE)
+        self._graph_visible = False
+
+    def _draw_graph(self, data: Dict, anchor: int) -> None:
+        self._update_ui_scale(anchor)
+        rect = _Rect()
+        if (not self._user32.GetWindowRect(ctypes.c_void_p(anchor), ctypes.byref(rect))
+                or self._user32.IsIconic(ctypes.c_void_p(anchor))):
+            self._hide_graph()
+            return
+        self._graph_data = dict(data)
+        self._user32.SetWindowPos(ctypes.c_void_p(self._graph_hwnd), None, rect.left + self._px(24),
+            rect.bottom - self._px(GRAPH_HEIGHT + 24) if rect.right - rect.left >= self._px(800) else rect.top + self._px(48),
+            0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
+        self._user32.InvalidateRect(ctypes.c_void_p(self._graph_hwnd), None, False)
+        if not self._user32.SetLayeredWindowAttributes(ctypes.c_void_p(self._graph_hwnd), 0, 255, 2):
+            raise OSError("Could not show the performance graph")
+        if not self._graph_visible:
+            self._user32.ShowWindow(ctypes.c_void_p(self._graph_hwnd), SW_SHOWNOACTIVATE)
+        self._graph_visible = True
+
+    def _paint_graph(self, memory) -> None:
+        self._paint_card(memory, GRAPH_WIDTH, GRAPH_HEIGHT, 12)
+        data = self._graph_data or {}
+        font = self._gdi32.CreateFontW(-13, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        previous = self._gdi32.SelectObject(memory, font)
+        pen = self._gdi32.CreatePen(0, 2, self._rgb((66, 192, 225)))
+        previous_pen = self._gdi32.SelectObject(memory, pen)
+        grid = self._gdi32.CreateSolidBrush(self._rgb((47, 54, 67)))
+        try:
+            self._gdi32.SetBkMode(memory, TRANSPARENT)
+            self._gdi32.SetTextColor(memory, self._rgb(TEXT_COLOR))
+            title = "Application FPS / frame time"
+            self._user32.DrawTextW(memory, title, -1,
+                ctypes.byref(_Rect(16, 10, GRAPH_WIDTH - 16, 32)), DT_SINGLELINE)
+            summary = (f"{data['fps']:.1f} FPS   /   {data['frame_ms']:.2f} ms"
+                       if data.get("fps") is not None else data.get("status", "Waiting for frames..."))
+            self._user32.DrawTextW(memory, summary, -1,
+                ctypes.byref(_Rect(16, 32, GRAPH_WIDTH - 16, 54)), DT_SINGLELINE | DT_END_ELLIPSIS)
+            values = data.get("samples", [])[-180:]
+            ceiling = max(33.3, max(values, default=0) * 1.15)
+            for y in (70, 108, 146):
+                self._user32.FillRect(memory, ctypes.byref(_Rect(16, y, GRAPH_WIDTH - 16, y + 1)), grid)
+            points = []
+            for index, value in enumerate(values):
+                point = (16 + round(index * (GRAPH_WIDTH - 32) / max(1, len(values) - 1)),
+                         146 - round(min(1.0, value / ceiling) * 76))
+                points.append(_Point(*point))
+            if len(points) >= 2:
+                self._gdi32.Polyline(memory, (_Point * len(points))(*points), len(points))
+        finally:
+            if previous:
+                self._gdi32.SelectObject(memory, previous)
+            if previous_pen:
+                self._gdi32.SelectObject(memory, previous_pen)
+            for handle in (font, pen, grid):
+                self._gdi32.DeleteObject(handle)
+
+    def _hide_hints(self) -> None:
+        if self._hint_hwnd and self._hint_visible:
+            self._user32.ShowWindow(ctypes.c_void_p(self._hint_hwnd), SW_HIDE)
+        self._hint_visible = False
+
+    def _draw_hints(self, hints: List[Dict], anchor: int) -> None:
+        self._update_ui_scale(anchor)
+        rect = _Rect()
+        if (not self._user32.GetWindowRect(ctypes.c_void_p(anchor), ctypes.byref(rect))
+                or self._user32.IsIconic(ctypes.c_void_p(anchor))):
+            self._hide_hints()
+            return
+        lines = [dict(hint) for hint in hints[:5]]
+        height = 24 + 26 * len(lines)
+        if height != self._hint_height:
+            self._size_ui_window(self._hint_hwnd, "_hint_rgn", HINT_WIDTH, height, 12)
+            self._hint_height = height
+        if lines != self._hint_lines or not self._hint_visible:
+            self._hint_lines = lines
+            self._user32.InvalidateRect(ctypes.c_void_p(self._hint_hwnd), None, False)
+        self._user32.SetWindowPos(
+            ctypes.c_void_p(self._hint_hwnd), None,
+            max(rect.left + self._px(16), rect.right - self._px(HINT_WIDTH + 16)),
+            max(rect.top + self._px(16), rect.bottom - self._px(height + 24)), self._px(HINT_WIDTH), self._px(height),
+            SWP_NOZORDER | SWP_NOACTIVATE)
+        if not self._user32.SetLayeredWindowAttributes(ctypes.c_void_p(self._hint_hwnd), 0, 255, 2):
+            raise OSError("Could not show ReShade hotkey hints")
+        if not self._hint_visible:
+            self._user32.ShowWindow(ctypes.c_void_p(self._hint_hwnd), SW_SHOWNOACTIVATE)
+        self._hint_visible = True
+
+    def _paint_hints(self, memory) -> None:
+        self._paint_card(memory, HINT_WIDTH, self._hint_height, 12)
+        font = self._gdi32.CreateFontW(
+            -13, 0, 0, 0, 500, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+        previous = self._gdi32.SelectObject(memory, font)
+        try:
+            self._gdi32.SetBkMode(memory, TRANSPARENT)
+            for index, hint in enumerate(self._hint_lines):
+                top = 12 + index * 26
+                self._gdi32.SetTextColor(memory, self._rgb(RESHADE_COLOR))
+                self._user32.DrawTextW(memory, str(hint["key"]), -1,
+                    ctypes.byref(_Rect(16, top, 158, top + 26)), DT_SINGLELINE | 0x0004)
+                self._gdi32.SetTextColor(memory, self._rgb(TEXT_COLOR))
+                self._user32.DrawTextW(memory, str(hint["label"]), -1,
+                    ctypes.byref(_Rect(162, top, HINT_WIDTH - 12, top + 26)), DT_END_ELLIPSIS | 0x0004)
+        finally:
+            if previous:
+                self._gdi32.SelectObject(memory, previous)
+            self._gdi32.DeleteObject(font)
 
     def _hide_pill(self) -> None:
         try:
@@ -942,7 +1178,7 @@ class Win32OverlayPresenter:
                 continue
             x, y = self._toast_origin
             self._user32.SetWindowPos(ctypes.c_void_p(hwnd), None,
-                                      x, round(y + toast.y(now)), 0, 0,
+                                      x, y + self._px(toast.y(now)), 0, 0,
                                       SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
             if not self._user32.SetLayeredWindowAttributes(
                     ctypes.c_void_p(hwnd), 0, toast.alpha(now), 2):  # LWA_ALPHA
@@ -955,7 +1191,8 @@ class Win32OverlayPresenter:
             x, y = self._toast_origin
             self._user32.SetWindowPos(
                 ctypes.c_void_p(self._header_hwnd), None,
-                x + WIDTH - HEADER_WIDTH, y - HEADER_HEIGHT - HEADER_GAP, 0, 0,
+                x + self._px(WIDTH) - self._px(HEADER_WIDTH),
+                y - self._px(HEADER_HEIGHT) - self._px(HEADER_GAP), 0, 0,
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE)
             if not self._user32.SetLayeredWindowAttributes(
                     ctypes.c_void_p(self._header_hwnd), 0,
@@ -993,7 +1230,8 @@ class Win32OverlayPresenter:
             from PIL import Image, ImageWin
             from ..ui.icons import create_lightning_icon
 
-            icon = create_lightning_icon(96, 96).resize((24, 24), Image.Resampling.LANCZOS)
+            icon_size = self._px(24)
+            icon = create_lightning_icon(96, 96).resize((icon_size, icon_size), Image.Resampling.LANCZOS)
             background = Image.new("RGBA", icon.size, (*BG_COLOR, 255))
             background.alpha_composite(icon)
             self._header_icon = ImageWin.Dib(background.convert("RGB"))
@@ -1050,6 +1288,7 @@ class Win32OverlayPresenter:
 
     def _place_pill(self, anchor: Optional[int]) -> None:
         try:
+            self._update_ui_scale(anchor)
             self._toast_origin = None
             placed = False
             if anchor:
@@ -1057,10 +1296,10 @@ class Win32OverlayPresenter:
                 if self._user32.GetWindowRect(ctypes.c_void_p(anchor),
                                               ctypes.byref(rect)):
                     if rect.right - rect.left >= 120 and not self._user32.IsIconic(ctypes.c_void_p(anchor)):
-                        x = rect.right - WIDTH - 16
-                        y = rect.top + 48
+                        x = rect.right - self._px(WIDTH + 16)
+                        y = rect.top + self._px(48)
                         if x < rect.left:
-                            x = rect.left + 16
+                            x = rect.left + self._px(16)
                         placed = True
                     else:
                         return
@@ -1073,8 +1312,8 @@ class Win32OverlayPresenter:
                 info.cbSize = ctypes.sizeof(_MonitorInfo)
                 if self._user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
                     work = info.rcWork
-                    x = work.right - WIDTH - 16
-                    y = work.top + 48
+                    x = work.right - self._px(WIDTH + 16)
+                    y = work.top + self._px(48)
                 else:
                     x, y = 64, 64
             self._toast_origin = (int(x), int(y))

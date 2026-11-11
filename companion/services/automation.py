@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, TYPE_CHECKING
 
+import psutil
+
 from ..core.models import Profile
 from ..core.profile_manager import DEFAULT_BROWSER_EXECUTABLES, ProfileManager
 from ..core.state import AppState
@@ -26,6 +28,7 @@ from .reshade_manager import ReshadeManager
 from .reshade_profiles import ReshadeProfileService
 from .window_manager import MonitorWindowManager
 from .overlay_indicator import OverlayIndicator
+from .sunshine_session import SunshineSessionMonitor
 
 if TYPE_CHECKING:
     from .process_watcher import ProcessWatcher
@@ -117,9 +120,61 @@ class AutomationController:
         self._pending_profile_restart: Optional[Dict] = None
         self._pending_native_profiles: Dict[str, tuple] = {}
         self._pending_native_failed = False
+        # Runtime intent belongs to a process instance, never to a profile or
+        # executable. Creation time protects a new game from recycled PIDs.
+        self._manually_stopped_processes: Dict[int, float] = {}
+        self._scaling_display_device: Optional[str] = None
+        self._pending_display_handoff: Optional[tuple[str, float]] = None
+        self._pending_native_stop: Optional[tuple[float, int, Optional[int]]] = None
+        self.sunshine_sessions = SunshineSessionMonitor()
+        self._last_streaming_gpu_device_id: Optional[str] = None
 
-    def resolve_deployment_files(self, profile: Optional[Profile]) -> List[Dict]:
+    def observe_native_scaling_hotkey(self, pid: int, hwnd: Optional[int]) -> None:
+        """Record physical stop intent without blocking the keyboard hook."""
+        if pid:
+            self._pending_native_stop = (time.monotonic(), pid, hwnd)
+
+    @staticmethod
+    def _process_birth_time(pid: int) -> float:
+        return psutil.Process(pid).create_time()
+
+    def _remember_manual_stop(self, pid: Optional[int]) -> None:
+        if not pid:
+            return
+        try:
+            self._manually_stopped_processes[pid] = self._process_birth_time(pid)
+            logger.info("Automatic scaling disabled until PID %s exits (manual stop)", pid)
+        except psutil.Error:
+            logger.debug("Stopped target PID %s is no longer available", pid)
+
+    def _auto_scaling_suppressed(self, pid: Optional[int]) -> bool:
+        # Prune exited processes even when the next trigger targets another app.
+        for stopped_pid, birth in list(self._manually_stopped_processes.items()):
+            try:
+                if self._process_birth_time(stopped_pid) != birth:
+                    self._manually_stopped_processes.pop(stopped_pid, None)
+            except psutil.NoSuchProcess:
+                self._manually_stopped_processes.pop(stopped_pid, None)
+            except psutil.AccessDenied:
+                pass  # Preserve the user's stop while identity is unavailable.
+        return pid in self._manually_stopped_processes
+
+    @staticmethod
+    def _is_automatic_start(reason: str) -> bool:
+        return (reason in {"focus", "browser_video"}
+                or reason.startswith("process_lasso_performance_mode:"))
+
+    def _remember_scaling_display(self, target_hwnd: Optional[int]) -> None:
+        self._pending_display_handoff = None
+        try:
+            route = self.gpu_router.route_for_window(target_hwnd) if target_hwnd else None
+            self._scaling_display_device = str((route or {}).get("deviceName") or "") or None
+        except Exception:
+            self._scaling_display_device = None
+
+    def resolve_deployment_files(self, profile: Optional[Profile], *, target_hwnd: Optional[int] = None) -> List[Dict]:
         """Resolve runtime binaries plus any selected managed ReShade assets."""
+        self.capture_reshade_settings()
         packages = self.asset_store.list_packages()
         addon_manager_available = any(
             item.get("provider") == "ls-addon-manager"
@@ -168,9 +223,21 @@ class AutomationController:
             and profile.reshade.enabled
             and profile.reshade.managed_profile_id
         ):
-            files.extend(
-                self.reshade_profiles.deployment_files(profile.reshade.managed_profile_id)
-            )
+            monitor_id = None
+            if self.profile_manager.config.reshade_sdr_white.monitors:
+                hwnd = target_hwnd or self.state.scaling_target_hwnd or self.state.current_foreground_hwnd
+                try:
+                    route = self._desired_gpu_route(profile, hwnd, refresh_selections=False)
+                    inventory = self.gpu_router.detect()
+                    matches = [item for item in inventory.get("displays", [])
+                               if str(item.get("deviceName") or "").casefold()
+                               == str(route.get("deviceName") or "").casefold()]
+                    if len(matches) == 1:
+                        monitor_id = matches[0].get("deviceId")
+                except (OSError, ValueError, RuntimeError):
+                    logger.warning("Could not identify the ReShade output monitor; using general SDR white", exc_info=True)
+            files.extend(self.reshade_profiles.deployment_files(
+                profile.reshade.managed_profile_id, monitor_id=monitor_id))
         return files
 
     @staticmethod
@@ -296,6 +363,10 @@ class AutomationController:
                 logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             selected = profile or self.state.current_active_profile
+            if active and self._is_automatic_start(reason) and self._auto_scaling_suppressed(target_pid):
+                logger.info("Skipped %s auto-scale for manually stopped PID %s", reason, target_pid)
+                return False
+            stopped_pid = self.state.scaling_target_pid if not active else None
             logger.info("Scaling %s requested: reason=%s, profile=%s, PID=%s, HWND=%s, force=%s",
                         "start" if active else "stop", reason,
                         selected.name if selected else "Default", target_pid, target_hwnd, force)
@@ -317,7 +388,7 @@ class AutomationController:
                 if self.addon_configs.has_pending(selected):
                     self._set_control_status("error", "Could not apply saved add-on settings before scaling")
                     return False
-            if active and selected and self._live_deployment_stale(selected):
+            if active and selected and self._live_deployment_stale(selected, target_hwnd=target_hwnd):
                 # An idle foreground switch deferred the DLL swap; refresh
                 # Lossless Scaling now that scaling is actually starting.
                 self.activate_profile(
@@ -325,7 +396,7 @@ class AutomationController:
                     target_pid=target_pid, target_hwnd=target_hwnd,
                     for_scaling=True,
                 )
-                if self._live_deployment_stale(selected):
+                if self._live_deployment_stale(selected, target_hwnd=target_hwnd):
                     self._set_control_status("error", "Could not refresh Lossless Scaling deployment before scaling")
                     return False
             runtime_providers = self._runtime_providers(selected)
@@ -366,6 +437,7 @@ class AutomationController:
                 instant = self._instant_stop_scaling(selected, reason)
                 if instant is not None:
                     if instant:
+                        self._remember_manual_stop(stopped_pid)
                         try:
                             self.overlay_indicator.log("Scaling stopped",
                                                        anchor_hwnd=target_hwnd)
@@ -379,7 +451,7 @@ class AutomationController:
                 and not self._targeted_gpu_test_active
             ):
                 profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(selected)
-                if profile_gpu_id or profile_display_id:
+                if profile_display_id:
                     explicit_route = self.gpu_router.route_for_ls_ids(
                         profile_gpu_id, profile_display_id
                     )
@@ -485,13 +557,7 @@ class AutomationController:
             # are retained only for migration/delay compatibility.
             hotkey = self.profile_manager.config.global_hotkey
             trigger_hotkey = self.hotkey_trigger or InputSimulator.trigger_hotkey
-            automatic_activation = bool(
-                active
-                and (
-                    reason in {"focus", "browser_video"}
-                    or reason.startswith("process_lasso_performance_mode:")
-                )
-            )
+            automatic_activation = active and self._is_automatic_start(reason)
             max_attempts = (
                 self.AUTO_SCALE_MAX_ATTEMPTS if automatic_activation else 1
             )
@@ -657,7 +723,10 @@ class AutomationController:
                 self.state.scaling_target_pid = target_pid
                 self.state.scaling_target_hwnd = target_hwnd
                 self.state.scaling_target_verified_for_minimization = bool(target_pid and target_hwnd)
+                self._remember_scaling_display(target_hwnd)
             else:
+                if reason in self.INSTANT_STOP_REASONS:
+                    self._remember_manual_stop(stopped_pid)
                 if self.profile_manager.config.addon_manager_enabled:
                     self.addon_configs.capture(selected, configured_exe)
                 self.state.scaling_target_pid = None
@@ -993,6 +1062,14 @@ class AutomationController:
         """Apply window side effects when LS changes state outside our hotkey path."""
         with self._lock:
             previous = self.state.is_scaling_active
+            candidate = self._pending_native_stop
+            if not active and previous and candidate:
+                self._pending_native_stop = None
+                pressed_at, pid, hwnd = candidate
+                if (time.monotonic() - pressed_at <= 5.0
+                        and pid == self.state.scaling_target_pid
+                        and hwnd == self.state.scaling_target_hwnd):
+                    self._remember_manual_stop(pid)
             self.state.is_scaling_active = active
             if active and target:
                 try:
@@ -1025,6 +1102,8 @@ class AutomationController:
                 self.state.scaling_target_pid = observed_pid
                 self.state.scaling_target_hwnd = observed_hwnd
                 self.state.scaling_target_verified_for_minimization = verified_target
+                if not previous:
+                    self._remember_scaling_display(observed_hwnd)
                 matched = self.profile_manager.match_target_profile(
                     process_name=target.get("processName"),
                     executable_path=target.get("exePath"),
@@ -1139,6 +1218,7 @@ class AutomationController:
     def capture_active_addon_config(self) -> bool:
         """Capture edits from Echo's native panel and queue the same safe reload."""
         with self._lock:
+            self.capture_reshade_settings()
             active = self.state.current_active_profile
             if active is None:
                 return False
@@ -1153,6 +1233,19 @@ class AutomationController:
                 if self.state.is_scaling_active:
                     self._queue_profile_restart(profile)
             return captured
+
+    def capture_reshade_settings(self) -> bool:
+        """Capture the deployed preset's owner, even during a profile handoff."""
+        with self._lock:
+            executable = self.profile_manager.config.lossless_scaling_exe_path
+            if not executable:
+                return False
+            try:
+                manifest = self.deployment_manager._read_manifest(executable)
+                return self.reshade_profiles.capture_deployed(executable, manifest)
+            except (OSError, ValueError, RuntimeError):
+                logger.warning("Could not save shared ReShade settings", exc_info=True)
+                return False
 
     def apply_saved_profile(
         self, profile: Profile, *,
@@ -1303,6 +1396,7 @@ class AutomationController:
                 raise ValueError("Save the profile before editing its add-ons")
             profile = existing.model_copy(deep=True)
             profile.addon_config = data
+            self.graphics_resolver.select_neural_runtime(profile)
             self.addon_configs.catalog(self.asset_store.list_packages())
             self.addon_configs.materialize(
                 profile,
@@ -1322,6 +1416,21 @@ class AutomationController:
                     self.activate_profile(profile, force=True, suppress_auto_scale=True)
             return profile
 
+    def _streaming_gpu_route(self) -> Optional[Dict]:
+        """A session override uses physical identity and the calibrated LS index."""
+        if (not self.profile_manager.config.sunshine_match_encoder_gpu
+                or self.state.benchmark_mode_active or self.state.gpu_mapping_in_progress
+                or self._targeted_gpu_test_active):
+            return None
+        name = self.sunshine_sessions.gpu_name()
+        if not name:
+            return None
+        from .gpu_selections import match_device
+        selected = match_device(self.gpu_router.detect().get("gpus", []), None, name, gpu=True)
+        if selected is None:
+            return None
+        return self.gpu_router.route_for_gpu(selected["deviceId"], selected["name"])
+
     def _desired_gpu_route(
         self, profile: Optional[Profile], target_hwnd: Optional[int], *,
         refresh_selections: bool = True,
@@ -1330,6 +1439,17 @@ class AutomationController:
             self.refresh_gpu_selections()
         profile_gpu_id, profile_display_id = self._profile_gpu_route_ids(profile)
         config = self.profile_manager.config
+        streaming_route = self._streaming_gpu_route()
+        if streaming_route:
+            # Only the rendering GPU is overridden. Keep the profile's output
+            # monitor or follow its target window, including virtual displays.
+            output = (self.gpu_router.route_for_ls_ids(0, profile_display_id)
+                      if profile_display_id else
+                      self.gpu_router.route_for_window(target_hwnd) if target_hwnd else None)
+            if output:
+                for key in ("lsDisplayId", "deviceName"):
+                    streaming_route[key] = output.get(key, streaming_route.get(key))
+            return streaming_route
         # An explicit preferred-GPU pin is user intent: honor it instead of
         # chasing the foreground window across displays. Previously the pin
         # was silently discarded whenever auto-routing was on, so Browser and
@@ -1364,10 +1484,16 @@ class AutomationController:
             except Exception:
                 logger.debug("Pinned GPU display resolution failed",
                              exc_info=True)
-        if follow_window and target_hwnd:
+        if target_hwnd and (follow_window or not profile_display_id):
             detected = self.gpu_router.route_for_window(target_hwnd)
             if detected:
-                route = detected
+                if follow_window:
+                    route = detected
+                else:
+                    # GPU selection and output selection are independent.
+                    # A rendering-GPU pin must still follow the app's monitor.
+                    route["lsDisplayId"] = detected.get("lsDisplayId", 0)
+                    route["deviceName"] = detected.get("deviceName", "")
         if profile_gpu_id or profile_display_id:
             selected = self.gpu_router.route_for_ls_ids(
                 profile_gpu_id, profile_display_id
@@ -2356,7 +2482,10 @@ class AutomationController:
             return None
 
     def _intended_rendering_gpu(self, profile, window_gpu=None) -> Optional[str]:
-        """Resolve profile choice, then global pin, then automatic monitor GPU."""
+        """Resolve the streaming override, profile, global pin, then monitor GPU."""
+        streaming_route = self._streaming_gpu_route()
+        if streaming_route:
+            return streaming_route.get("gpuDeviceId")
         values = getattr(profile, "native_scaling_settings", {}) or {}
         try:
             slot = max(0, int(values.get("PreferredGpuId") or 0))
@@ -2473,6 +2602,7 @@ class AutomationController:
             found = False
             cancelled = False
             error_message = "No tested index selected the requested GPU"
+            streaming_override = bool(self._streaming_gpu_route())
             initial_display = (self.gpu_router.route_for_window(target_hwnd) or {}).get("deviceName")
             attempted = []
 
@@ -2541,7 +2671,7 @@ class AutomationController:
                     self._record_gpu_index_observation(index, report, expected, run_id, "correct" if correct else "trial_mismatch")
                     if not correct:
                         continue
-                    if profile and int(profile.native_scaling_settings.get("PreferredGpuId") or 0) > 0:
+                    if not streaming_override and profile and int(profile.native_scaling_settings.get("PreferredGpuId") or 0) > 0:
                         profile.native_scaling_settings["PreferredGpuId"] = str(index)
                         self.profile_manager.save_config()
                     window = self.gpu_router.route_for_window(target_hwnd) or {}
@@ -2723,7 +2853,7 @@ class AutomationController:
             force=True, target_pid=target_pid, target_hwnd=target_hwnd,
             park_runtime_on_stop=False))
 
-    def _live_deployment_stale(self, profile: Optional[Profile]) -> bool:
+    def _live_deployment_stale(self, profile: Optional[Profile], *, target_hwnd: Optional[int] = None) -> bool:
         """Whether the running Lossless Scaling host needs a DLL refresh.
 
         Idle foreground switches defer deployment swaps (see
@@ -2740,7 +2870,7 @@ class AutomationController:
                 return False
             return bool(self.deployment_manager.needs_change(
                 profile.id,
-                self.resolve_deployment_files(profile),
+                self.resolve_deployment_files(profile, target_hwnd=target_hwnd),
                 lossless_scaling_exe=configured_exe,
             ))
         except Exception:
@@ -2780,9 +2910,8 @@ class AutomationController:
         return gpu_route
 
     def reconcile_gpu_route(self) -> bool:
-        """Handoff active scaling when its target moves onto a differently routed display."""
+        """Handoff active scaling after an output move or streaming GPU change."""
         with self._lock:
-            config = self.profile_manager.config
             profile = self.state.current_active_profile
             target_hwnd = self.state.scaling_target_hwnd
             target_pid = self.state.scaling_target_pid
@@ -2791,19 +2920,38 @@ class AutomationController:
                     or self.state.update_in_progress or self.profile_manager.repair_session):
                 return False
             if not (
-                (config.auto_route_gpu_to_display or config.preferred_scaling_gpu_device_id
-                 or config.preferred_scaling_gpu_name)
-                and self.state.is_scaling_active
+                self.state.is_scaling_active
                 and profile
                 and target_hwnd
             ):
                 return False
-            if self._profile_gpu_route_ids(profile)[0]:
-                # Only an explicit GPU overrides General Settings; a fixed
-                # output monitor can still inherit the default GPU.
-                return False
             route = self._desired_gpu_route(profile, target_hwnd)
+            streaming_route = self._streaming_gpu_route()
+            streaming_gpu = (streaming_route or {}).get("gpuDeviceId")
+            if streaming_gpu != self._last_streaming_gpu_device_id:
+                # A connect/disconnect is deliberate routing intent, so it
+                # need not wait for the foreground-flicker cooldown.
+                self._last_gpu_route_relaunch_at = 0.0
+                self._last_streaming_gpu_device_id = streaming_gpu
             route_key = self._gpu_route_key(route)
+            display = str(route.get("deviceName") or "")
+            follows_display = not self._profile_gpu_route_ids(profile)[1]
+            display_moved = bool(follows_display and display and self._scaling_display_device
+                                 and display.casefold() != self._scaling_display_device.casefold())
+            if display_moved:
+                # Wait for a stable destination and never steal focus during
+                # alt-tab. Physical moves need not wait the route-only 60s guard.
+                if self.process_watcher and not self.process_watcher.maintain_scaling_target_foreground(target_pid, target_hwnd):
+                    self._pending_display_handoff = None
+                    return False
+                now = time.monotonic()
+                if not self._pending_display_handoff or self._pending_display_handoff[0] != display:
+                    self._pending_display_handoff = (display, now)
+                    return False
+                if now - self._pending_display_handoff[1] < 0.5:
+                    return False
+            else:
+                self._pending_display_handoff = None
             # Calibration can restore the native XML after caching a trial
             # route. The cache alone cannot prove that LS loaded this route.
             route_change = self.lossless_settings.gpu_route_changes_required(
@@ -2814,10 +2962,13 @@ class AutomationController:
             if route_change is None:
                 self._set_control_status("error", "Lossless Scaling GPU routing settings are unavailable")
                 return False
-            if not route_change:
+            if not route_change and not display_moved:
                 self.state.current_gpu_route_key = route_key
                 return False
-            if not self._gpu_route_relaunch_due():
+            if (route_change and self.process_watcher
+                    and not self.process_watcher.maintain_scaling_target_foreground(target_pid, target_hwnd)):
+                return False
+            if not display_moved and not self._gpu_route_relaunch_due():
                 logger.info(
                     "Skipping display GPU handoff to route %s; a recent relaunch is still settling",
                     route_key,
@@ -2839,7 +2990,7 @@ class AutomationController:
                 self._set_control_status("error", "Could not stop Lossless Scaling for GPU handoff")
                 return False
             try:
-                changed = self.lossless_settings.update_gpu_route(
+                changed = not route_change or self.lossless_settings.update_gpu_route(
                     profile.lossless_profile_title,
                     int(route.get("lsGpuId", 0)),
                     int(route.get("lsDisplayId", 0)),
@@ -2874,7 +3025,7 @@ class AutomationController:
                 gpu_id=int(route.get("lsGpuId", 0)),
                 display_id=int(route.get("lsDisplayId", 0)),
             )
-            return self.set_scaling(
+            restarted = self.set_scaling(
                 True,
                 profile,
                 reason="display_gpu_handoff",
@@ -2882,6 +3033,10 @@ class AutomationController:
                 target_pid=target_pid,
                 target_hwnd=target_hwnd,
             )
+            if restarted:
+                self._scaling_display_device = display or None
+                self._pending_display_handoff = None
+            return restarted
 
     def _announce_profile_activation(
         self, previous: Optional[Profile], profile: Optional[Profile],
@@ -2931,7 +3086,12 @@ class AutomationController:
         with self._lock:
             if self.state.update_in_progress and not suppress_auto_scale:
                 return
+            suppress_auto_scale = suppress_auto_scale or self._auto_scaling_suppressed(target_pid)
             previous = self.state.current_active_profile
+            if not force and profile is None and previous is None:
+                # Unmatched foreground windows share the same idle state;
+                # there is no profile or deployment transition to announce.
+                return
             same_profile = bool(previous and profile and previous.id == profile.id)
             if force or not same_profile:
                 logger.info("Activating profile %s (previous=%s, source=%s, PID=%s, HWND=%s, for_scaling=%s)",
@@ -3006,7 +3166,7 @@ class AutomationController:
 
             try:
                 configured_exe = self.profile_manager.config.lossless_scaling_exe_path
-                deployment_files = self.resolve_deployment_files(profile)
+                deployment_files = self.resolve_deployment_files(profile, target_hwnd=target_hwnd)
                 deployment_change = bool(
                     configured_exe
                     and self.deployment_manager.needs_change(
@@ -3085,10 +3245,10 @@ class AutomationController:
                         profile.name if profile else "none",
                     )
                     try:
-                        self.overlay_indicator.log(
-                            f"Profile ready: {profile.name if profile else 'none'} "
-                            "(restart deferred)",
-                            anchor_hwnd=target_hwnd)
+                        if profile is not None:
+                            self.overlay_indicator.log(
+                                f"Profile ready: {profile.name} (restart deferred)",
+                                anchor_hwnd=target_hwnd)
                     except Exception:
                         pass
                     defer_live_files = True
@@ -3161,6 +3321,10 @@ class AutomationController:
         the host is idle, and applied lazily when scaling starts.
         """
         reshade_swapped = False
+        if not defer_live_files and self.capture_reshade_settings():
+            # Stopping LS can flush a final ReShade preset write after the
+            # original plan was built. Rebuild before copying that plan.
+            deployment_files = self.resolve_deployment_files(profile, target_hwnd=target_hwnd)
         if previous and not defer_live_files:
             self._cleanup_profile(previous)
 
@@ -3290,6 +3454,9 @@ class AutomationController:
             return
         if reshade_swapped and profile.reshade and profile.reshade.reload_hotkey:
             ReshadeManager.trigger_reshade_reload(profile.reshade.reload_hotkey)
+        if not suppress_auto_scale and self._auto_scaling_suppressed(target_pid):
+            logger.info("Automatic scaling skipped: PID %s was manually stopped", target_pid)
+            return
         if (
             not profile.is_default
             and profile.auto_scale

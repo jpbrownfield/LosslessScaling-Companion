@@ -2,7 +2,7 @@
 Data models and schemas for LS Companion.
 """
 
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any, Literal, Annotated
 from pathlib import Path
 from pydantic import BaseModel, Field, field_validator, model_validator
 import uuid
@@ -59,6 +59,16 @@ class SpecialKConfig(ManagedPackageConfig):
         return self
 
 
+class DisplayCommanderConfig(ManagedPackageConfig):
+    inject_reflex: bool = False
+
+    @model_validator(mode="after")
+    def reflex_requires_addon(self):
+        if self.inject_reflex:
+            self.enabled = True
+        return self
+
+
 class NeuralRenderConfig(BaseModel):
     implementation: Literal["disabled", "lsp_neural_render", "ls_reshade_feeder"] = "disabled"
     package: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
@@ -105,6 +115,7 @@ class GraphicsStackConfig(BaseModel):
     neural_render: NeuralRenderConfig = Field(default_factory=NeuralRenderConfig)
     reshade: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
     special_k: SpecialKConfig = Field(default_factory=SpecialKConfig)
+    display_commander: DisplayCommanderConfig = Field(default_factory=DisplayCommanderConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -312,6 +323,12 @@ class Profile(BaseModel):
 
     @model_validator(mode="after")
     def fill_blank_name_from_target(self):
+        if self.graphics.display_commander.enabled:
+            self.reshade = self.reshade or ReshadeConfig()
+            self.reshade.enabled = True
+            self.reshade.menu_proxy_enabled = True
+            if self.graphics.display_commander.inject_reflex:
+                self.graphics.special_k.experimental_reflex = False
         if self.reshade:
             if self.reshade.menu_proxy_enabled is None:
                 # Profiles written before this setting existed used the
@@ -342,6 +359,18 @@ class Profile(BaseModel):
         )
         self.name = Path(str(target).replace("\\", "/")).name if target else "Untitled Profile"
         return self
+
+
+class ReshadeSdrWhiteSettings(BaseModel):
+    default_nits: int = Field(default=400, ge=80, le=1000)
+    monitors: Dict[str, Annotated[int, Field(ge=80, le=1000)]] = Field(default_factory=dict)
+
+    @field_validator("monitors")
+    @classmethod
+    def normalize_monitor_ids(cls, values):
+        if len(values) > 128 or any(not key.strip() or len(key) > 1024 for key in values):
+            raise ValueError("Invalid ReShade monitor identities")
+        return {key.strip().casefold(): value for key, value in values.items()}
 
 
 class AppConfig(BaseModel):
@@ -387,8 +416,10 @@ class AppConfig(BaseModel):
     auto_route_gpu_to_display: bool = True
     nvidia_rtx_hdr_enabled: bool = False
     reshade_hdr_peak_nits: Optional[int] = Field(default=None, ge=80, le=10000)
+    reshade_sdr_white: ReshadeSdrWhiteSettings = Field(default_factory=ReshadeSdrWhiteSettings)
     reshade_overlay_hotkey: str = "end"
     addon_manager_enabled: bool = True
+    sunshine_match_encoder_gpu: bool = True
     addon_manager: ManagedPackageConfig = Field(
         default_factory=lambda: ManagedPackageConfig(enabled=True)
     )
@@ -396,6 +427,10 @@ class AppConfig(BaseModel):
     snap_near_fullscreen_windows_to_monitor: bool = True
     minimize_other_windows_on_scale: bool = False
     overlay_indicator_enabled: bool = True
+    overlay_hotkeys: Dict[str, str] = Field(default_factory=lambda: {
+        "profile_editor": "delete", "addon_manager": "insert",
+        "performance_graph": "=", "special_k_panel": "-",
+    })
     override_lossless_hotkey: bool = False
     override_hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
     process_lasso_performance_mode_scaling: bool = False

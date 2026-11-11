@@ -142,11 +142,11 @@ class AddonConfigServiceTests(unittest.TestCase):
                 "provider": "ls-addon-manager", "payload_path": directory,
                 "files": [{"relative_path": "addons/FutureProcessor/addon.json"}],
             }])
-            self.assertTrue(next(item for item in catalog if item["id"] == "FutureProcessor")["installed"])
+            self.assertNotIn("FutureProcessor", {item["id"] for item in catalog})
             result = service.effective(Profile(name="Game"), reshade_enabled=False)
             self.assertFalse(result["addons"]["FutureProcessor"]["_enabled"])
 
-    def test_editor_discovers_manually_installed_addons_without_loading_them(self):
+    def test_editor_retains_manual_addons_without_exposing_undocumented_controls(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = root / "addons" / "ManualAddon" / "addon.json"
@@ -154,7 +154,7 @@ class AddonConfigServiceTests(unittest.TestCase):
             manifest.write_text('{"name":"Manual add-on"}', encoding="utf-8")
             service = self.service()
             service.profile_manager.config.lossless_scaling_exe_path = str(root / "LosslessScaling.exe")
-            self.assertIn("ManualAddon", {item["id"] for item in service.catalog()})
+            self.assertNotIn("ManualAddon", {item["id"] for item in service.catalog()})
             config = service.effective(Profile(name="Game"), reshade_enabled=False)
             self.assertFalse(config["addons"]["ManualAddon"]["_enabled"])
 

@@ -11,6 +11,8 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Carries the selected PID and HWND through profile activation, refocuses that exact window after any Lossless Scaling restart, and refuses the hotkey if identity verification fails.
    - Confirms the resulting scaling state from Lossless Scaling's overlay instead of treating successful keyboard input as proof of activation.
    - Keeps an application scaled when focus changes. A configured game can explicitly take precedence over an actively scaled browser profile.
+   - Remembers a manual scaling stop for that application process until it exits. Alt-tab, browser events and Process Lasso cannot automatically restart it; other applications can still auto-scale, and a manual start remains available.
+   - Follows monitor moves (including Win+Shift+Left/Right) when the profile follows the application monitor. After the destination settles, Companion restarts scaling on that display while preserving any rendering-GPU selection.
    - Starts LS with a bundled, process-specific startup-window guard to suppress dashboard flashes without hiding its scaling overlay. The guard expires after startup so the dashboard can still be opened manually.
    - Offers DLSS and FSR manager add-ons in the profile's Scaling Type list. These choices save native NIS plus the matching add-on configuration together, disable competing upscalers, and remain distinct from LS's built-in FSR.
    - Refreshes GPU identities at startup and before routing. Profile GPU/display numbers are remapped using saved device identity, PCI model or an unambiguous friendly name; the inventory history is persisted. Unrecoverable legacy numeric-only overrides follow General Settings rather than binding to an arbitrary GPU. An unavailable explicit General Settings GPU is reported instead of silently switching to Auto. Native LS routing is updated through the normal safe profile-activation path, not by restarting scaling just to refresh the inventory.
@@ -28,16 +30,24 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Installation and initialization never rewrite Lossless Scaling's native profiles. Native hotkey and Auto Scale ownership begins only after the user changes an auto-saved General Setting.
 
 4. **Lossless Scaling ReShade Preset Management:**
-   - Programmatically swaps `CurrentPresetPath` in the `ReShade.ini` beside Lossless Scaling.
+   - Sets ReShade's `PresetPath` and `StartupPresetPath` in `ReShade.ini` beside Lossless Scaling, with the legacy `CurrentPresetPath` kept synchronized.
+   - Enables the selected shader techniques when a preset is first created, including all three built-in presets. Later deliberate technique toggles, ordering, shader arguments and preset preprocessor definitions are saved to that named shared preset and reused by every application profile selecting it.
+   - Enables ReShade preset autosave and editable shader parameters. Companion captures runtime preset writes about once per second, on overlay close, at shutdown and before deployment changes. Deployment snapshots and capture receipts preserve newer shared edits; conflicting runtime values remain in the preset's `.runtime-capture-*.json` receipt. The general SDR-white/monitor and HDR-peak controls retain ownership of their luminance values. ReShade's menu/runtime configuration remains managed separately from shader presets.
    - Triggers ReShade reload hotkeys on profile activation.
 
 5. **Lossless Scaling Add-ons:**
+   - **Sunshine / Apollo:** A checkbox under Add-ons, enabled by default, temporarily matches the scaling GPU to the hardware encoder GPU during a connected streaming session. It reads the running host's log, keeps the selected output monitor, and restores normal profile/default GPU routing after disconnect. Missing logs, software encoders, and ambiguous GPU names leave normal routing in place.
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
    - Game executable paths are used only for foreground profile detection.
+   - ReShade profile settings offer separate **Display Commander** and **Inject NVIDIA Reflex** switches. Reflex enables Display Commander and ReShade even without a shader preset, and disables Special K Reflex for that profile. Download Display Commander from Add-ons first; ReShade Full Add-On 6.6.2 or later is required. Its foreground/background FPS limiters stay disabled. These controls affect LS, not the captured game's simulation or render queue. Display Commander updates are installed manually from its Add-ons card.
+   - The profile editor lists supported image processors and display/input features with a master on/off switch. Internal reporters, automatic AMD backend routing and retired integrations do not appear as separate processors. Host startup flags and unrecognized saved values are retained in the read-only advanced view. Numeric tuning values are parameters of the parent feature, so they do not each have an enable switch. Overlay input is automatic while ReShade is enabled; upscaler selections stay synchronized with Scaling Type.
+   - Managed Lilium SDR-to-HDR presets prepare captured SDR before inverse tone mapping: linear scRGB is normalized using its 80-nit reference, HDR10 is decoded to linear BT.709, and Lilium uses linear input without another gamma decode. Captured SDR white defaults to **400 nits**, configured once in **Add-ons ? ReShade ? HDR display & menu settings**. Each identified monitor can override it; blank monitor entries inherit the shared default. Overrides use the monitor device identity and apply to LS's selected output display at the next scaling start. Disconnected monitor settings are retained. This is separate from HDR peak brightness and is shared across application and shader profiles. Peak brightness remains separately controlled by the HDR display setting. Use an SDR source with Windows HDR and LS HDR support; native HDR, Windows Auto HDR, RTX HDR or Special K conversion must not feed a second SDR-to-HDR conversion. Imported or explicitly input-tuned presets retain their input path. Peak refresh preserves other shader edits.
    - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion headless/status bridge. Deployment is transactional; addon-host updates ship with Companion.
    - Saves one complete addon configuration per profile. Built-in controls edit inactive and active profiles; active changes apply through the safe stopped-process reload workflow.
-   - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; ReShade input passthrough is enabled automatically when needed.
+   - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; the **Overlay toggle** is enabled automatically for ReShade profiles when needed.
+   - While the Overlay toggle is on, a yellow border and an **Overlay active** card identify the interaction mode. Lower-right hints show the actual ReShade menu key and the configured Companion shortcuts: **Delete** opens the current profile, **Insert** opens its Add-ons section, **=** toggles a live application FPS/frame-time graph, and **-** opens Special K when loaded. A custom Special K panel binding takes priority. Configure or disable these shortcuts in **Settings → Overlay**. The graph requires verified PresentMon from Performance & Benchmark and captures only the current application; it stops when the overlay is closed. The headless host does not create an add-on manager GUI.
+   - Overlay text, cards, hotkey hints and the performance graph scale with the target monitor's resolution: 1080p uses the base size, 1440p uses 1.33× and 4K uses 2×.
    - Add-on edits made during scaling are saved immediately and deployed after scaling stops. Unknown saved settings remain available in the editor and are preserved.
    - Keeps bounded runtime logs in `%LOCALAPPDATA%\LosslessScalingHelper\logs\companion.log` and includes the recent log tail in diagnostic downloads.
    - **Debug → Log** shows timestamped Info, Warning, and Error activity, including automatic scaling decisions, target verification, hotkeys, confirmation failures, GPU routing, deployments, updates, and diagnostics. Search or filter by level, pause the view, follow new entries, or download the shown entries. The live view retains up to 1,000 entries from the last 24 hours of the session. The plain-text file retains complete entries from the last 24 hours across restarts, capped at 10 MiB by dropping the oldest entries. Age cleanup runs at startup, while writing, and once per minute while idle.
@@ -247,6 +257,13 @@ optional processing starts disabled. The supported configuration is LS 3.2.2.0
 (the original DLL hash is checked), WGC, LSFG 3 or FG Off; FG Off requires Scaling
 Off or NIS. Unknown LS builds and model failures can pause capture. Disable NR
 and reload the profile or restart LS to recover.
+Enabling the profile switch selects WGC, upgrades LSFG 1/2 to LSFG 3, and selects
+NIS for an incompatible scaler when FG is off. These changes are saved together.
+An unpinned profile attaches the most recently imported valid x64 NR model;
+existing model pins and per-backend model paths are preserved. A missing model
+is reported during deployment rather than silently omitted. The runtime status
+shows capture/model failures and whether recent NR GPU timings were reported;
+an enabled switch alone does not confirm that frames were enhanced.
 
 AMD capture GPUs automatically use the separate experimental AMD NR addon.
 Download **AMD Neural Rendering** in Add-ons, install Windows HIP 7, and use the
@@ -471,7 +488,7 @@ component folder and `Global` configuration to hide its HUD and startup banner.
 Its explicit injection mode selects D3D11 through the clone's `SpecialK.d3d11`
 marker. Changes require restarting the managed LS process.
 
-The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 4.
+The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 5.
 The build verifies source/release archive digests, compiles the host, and retains
 the release's unchanged NR/upscaler binaries, corresponding source and licences.
 Run `python scripts/build_addon_manager.py` before packaging. Companion's controls

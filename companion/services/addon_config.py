@@ -47,11 +47,11 @@ class AddonConfigService:
                     continue
                 addon_id = path.parent.name
                 self.available_addon_ids.add(addon_id)
-                if addon_id in {"LSC-AdapterReport", "LSC-AMDNR"}:
+                if addon_id not in entries:
                     continue  # Internal routing evidence, not an optional image processor.
-                entry = entries.setdefault(addon_id, dict(id=addon_id, fields=[]))
-                entry.update(name=metadata.get("name") or addon_id,
-                             description=metadata.get("description") or "Installed manager add-on.", installed=True)
+                # Curated descriptions explain the profile controls. Runtime
+                # manifests also contain internals and retired integrations.
+                entries[addon_id]["installed"] = True
             except (OSError, ValueError, TypeError):
                 continue
         if "LSC-AMDNR" in self.available_addon_ids:

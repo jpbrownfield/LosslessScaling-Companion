@@ -15,13 +15,14 @@ import time
 from http import HTTPStatus
 from pathlib import Path
 from typing import Callable, Dict, Set, Optional, TYPE_CHECKING
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, quote
 from websockets.legacy.server import WebSocketServerProtocol, serve
 from websockets.exceptions import ConnectionClosed
 from pydantic import ValidationError
 
 from ..core.models import (
     AppConfig,
+    ReshadeSdrWhiteSettings,
     BrowserFullscreenEvent,
     GraphicsStackConfig,
     HotkeyConfig,
@@ -54,9 +55,12 @@ from .automatic_updates import AutomaticUpdates, newer_addon_version
 from .addon_host import runtime_status as addon_runtime_status, addon_version_key
 from .gpu_index_refresh import IdleGpuIndexRefresh
 from .profile_icons import ProfileIconService
+from .reshade_overlay import ReShadeOverlayController
+from .overlay_shortcuts import validate_overlay_hotkeys, parse_shortcut
+from .live_performance import LivePerformanceGraph
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
-from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels
+from ..ui.dashboard_window import dashboard_css_rect_to_client_pixels, open_dashboard_window
 from ..version import current_version
 from scripts.benchmark_lossless_scaling import main as run_performance_benchmark
 
@@ -116,6 +120,12 @@ class CompanionWebSocketServer:
         self.on_installer_launched = on_installer_launched
         self.proxy_menu = proxy_menu or getattr(process_watcher, "proxy_menu", None)
         self.config: AppConfig = profile_manager.config
+        self.live_performance = LivePerformanceGraph(state, self.automation.overlay_indicator,
+                                                     self._presentmon_executable)
+        self.reshade_overlay = ReShadeOverlayController(
+            profile_manager, state, self.automation.overlay_indicator, hotkey_listener,
+            open_profile=self._open_overlay_profile, performance_graph=self.live_performance.toggle)
+        self._reshade_overlay_task = None
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
         self.server = None
@@ -229,9 +239,18 @@ class CompanionWebSocketServer:
         self.addon_update_task = asyncio.create_task(self._addon_update_loop())
         self.presentmon_detection_task = asyncio.create_task(self._detect_presentmon_on_startup())
         self.gpu_index_task = asyncio.create_task(self._gpu_index_loop())
+        self._reshade_overlay_task = asyncio.create_task(self._reshade_overlay_loop())
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
 
     async def stop(self) -> None:
+        await self._run_background_thread(self.automation.capture_reshade_settings)
+        if self._reshade_overlay_task:
+            self._reshade_overlay_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reshade_overlay_task
+            self._reshade_overlay_task = None
+        self.reshade_overlay.clear()
+        await self._run_background_thread(self.live_performance.stop, wait=True)
         for unsubscribe in self._publication_unsubscribers:
             unsubscribe()
         self._publication_unsubscribers.clear()
@@ -286,6 +305,34 @@ class CompanionWebSocketServer:
         self._background_thread_tasks.add(task)
         task.add_done_callback(self._background_thread_tasks.discard)
         return await asyncio.shield(task)
+
+    def _open_overlay_profile(self, profile_id: str, section: str | None = None) -> bool:
+        if self.profile_manager.get_profile_by_id(profile_id) is None:
+            return False
+        url = f"http://{self.config.host}:{self.config.port}/dashboard?editProfile={quote(profile_id, safe='')}"
+        if section == "addons":
+            url += "&profileSection=addons"
+        return open_dashboard_window(url)
+
+    async def _reshade_overlay_loop(self):
+        next_capture = 0.0
+        try:
+            while True:
+                try:
+                    status = (await self._run_background_thread(addon_runtime_status, self.config.lossless_scaling_exe_path)
+                              if self.reshade_overlay.eligible() else {"available": False})
+                    was_open = self.reshade_overlay.active
+                    self.reshade_overlay.update(status)
+                    if time.monotonic() >= next_capture or (was_open and not self.reshade_overlay.active):
+                        await self._run_background_thread(self.automation.capture_reshade_settings)
+                        next_capture = time.monotonic() + 1.0
+                    self.live_performance.refresh()
+                except Exception:
+                    logger.exception("Could not refresh ReShade overlay status")
+                    self.reshade_overlay.clear()
+                await asyncio.sleep(0.25)
+        finally:
+            self.reshade_overlay.clear()
 
     async def handle_client(self, websocket: WebSocketServerProtocol) -> None:
         # websockets>=11 calls the handler with only the protocol; the HTTP
@@ -734,6 +781,7 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({
                     "type": "ADDON_CONFIG_SAVED", "profileId": profile.id,
                     "generation": msg.get("generation"), "config": profile.addon_config,
+                    "neuralRender": profile.graphics.neural_render.model_dump(mode="json"),
                     "pending": configs.has_pending(profile),
                     "restartPending": self.automation.profile_reload_pending(profile.id),
                 }))
@@ -924,6 +972,7 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_RESHADE_PROFILE":
+                await asyncio.to_thread(self.automation.capture_reshade_settings)
                 profile = ManagedReshadeProfile.model_validate(msg.get("profile") or {})
                 previous = next((item for item in self.config.reshade_profiles if item.id == profile.id), None)
                 result = await asyncio.to_thread(self.reshade_profiles.save, profile)
@@ -1070,6 +1119,11 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_GENERAL_SETTINGS":
+                overlay_hotkeys = validate_overlay_hotkeys(msg.get("overlayHotkeys", self.config.overlay_hotkeys))
+                reshade_binding = parse_shortcut(msg.get("reshadeOverlayHotkey", self.config.reshade_overlay_hotkey))
+                if reshade_binding and any(parse_shortcut(binding) and parse_shortcut(binding)[:2] == reshade_binding[:2]
+                                           for binding in overlay_hotkeys.values()):
+                    raise ValueError("Overlay shortcuts must differ from the ReShade menu hotkey")
                 notify_updates = msg.get("notifyOnUpdates", self.config.notify_on_updates)
                 automatic_updates = msg.get("automaticallyInstallUpdates", self.config.automatically_install_updates)
                 if type(notify_updates) is not bool or type(automatic_updates) is not bool:
@@ -1079,6 +1133,9 @@ class CompanionWebSocketServer:
                 requested_addon_manager_enabled = bool(
                     msg.get("addonManagerEnabled", self.config.addon_manager_enabled)
                 )
+                match_encoder_gpu = msg.get("sunshineMatchEncoderGpu", self.config.sunshine_match_encoder_gpu)
+                if type(match_encoder_gpu) is not bool:
+                    raise ValueError("Sunshine/Apollo GPU matching must be a checkbox")
                 smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
                 gpu_inventory = self.automation.gpu_router.detect()
                 requested_auto_route = bool(msg.get("autoRouteGpuToDisplay", False))
@@ -1126,6 +1183,11 @@ class CompanionWebSocketServer:
                 reshade_peak_changed = (
                     requested_reshade_peak != self.config.reshade_hdr_peak_nits
                 )
+                requested_sdr_white = ReshadeSdrWhiteSettings(
+                    default_nits=msg.get("reshadeSdrWhiteNits", self.config.reshade_sdr_white.default_nits),
+                    monitors=msg.get("reshadeMonitorSdrWhiteNits", self.config.reshade_sdr_white.monitors),
+                )
+                reshade_white_changed = requested_sdr_white != self.config.reshade_sdr_white
                 requested_reshade_hotkey = str(
                     msg.get("reshadeOverlayHotkey", self.config.reshade_overlay_hotkey)
                 ).strip().casefold()
@@ -1251,12 +1313,14 @@ class CompanionWebSocketServer:
                 self.config.automatically_install_updates = automatic_updates
                 self._next_update_check = 0.0
                 self.config.addon_manager_enabled = requested_addon_manager_enabled
+                self.config.sunshine_match_encoder_gpu = match_encoder_gpu
                 self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
                 self.config.preferred_scaling_gpu_name = requested_gpu_name
                 self.config.auto_route_gpu_to_display = requested_auto_route
                 self.config.nvidia_rtx_hdr_enabled = requested_rtx_hdr
                 self.config.reshade_hdr_peak_nits = requested_reshade_peak
+                self.config.reshade_sdr_white = requested_sdr_white
                 self.config.reshade_overlay_hotkey = requested_reshade_hotkey
                 self.config.default_profile_auto_scale = requested_default_auto_scale
                 self.config.lossless_control_configured = True
@@ -1271,6 +1335,7 @@ class CompanionWebSocketServer:
                 self.config.minimize_other_windows_on_scale = bool(
                     msg.get("minimizeOtherWindowsOnScale", False)
                 )
+                self.config.overlay_hotkeys = overlay_hotkeys
                 self.config.overlay_indicator_enabled = bool(
                     msg.get("overlayIndicatorEnabled", self.config.overlay_indicator_enabled)
                 )
@@ -1301,8 +1366,11 @@ class CompanionWebSocketServer:
                         force=True,
                         suppress_auto_scale=True,
                     )
-                if reshade_peak_changed:
+                if reshade_peak_changed or reshade_white_changed:
                     await asyncio.to_thread(self.reshade_profiles.refresh_hdr_peak_settings)
+                    active = self.state.current_active_profile
+                    if reshade_white_changed and active and active.reshade and active.reshade.enabled:
+                        self.automation.addon_configs.mark_edited(active)
                 if reshade_hotkey_changed:
                     await asyncio.to_thread(self.reshade_profiles.sync_all_configs)
                 await asyncio.to_thread(
@@ -1348,7 +1416,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "lsp-neural-render", "reshade", "special-k"}:
+                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "lsp-neural-render", "reshade", "special-k", "display-commander"}:
                     raise ValueError("This add-on cannot be installed automatically")
                 if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
                     raise ValueError(
@@ -1391,7 +1459,7 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
-                if provider in {"sm86-sr", "amd-neural-render-runtime"}:
+                if provider in {"sm86-sr", "amd-neural-render-runtime", "display-commander"}:
                     # Staging is installation-wide; opt-in and stopped deployment
                     # remain per profile. Never change an active profile here.
                     await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
@@ -1857,6 +1925,7 @@ class CompanionWebSocketServer:
                     previous = self.profile_manager.get_profile_by_id(prof.id)
                     inventory = await asyncio.to_thread(self.automation.refresh_gpu_selections)
                     self.automation.gpu_selections.capture_profile(prof, inventory, previous)
+                    await asyncio.to_thread(self.automation.graphics_resolver.select_neural_runtime, prof)
                     if previous and previous.is_default:
                         # This helper profile is an alias for LS's first/native
                         # profile. Its display name and native identity are not
@@ -3037,6 +3106,7 @@ class CompanionWebSocketServer:
             ),
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
         "overlayIndicatorEnabled": self.config.overlay_indicator_enabled,
+        "overlayHotkeys": dict(self.config.overlay_hotkeys),
             "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
             "processLassoLogPath": self.config.process_lasso_log_path or "",
             "processLassoDetectedLogPath": (
@@ -3060,6 +3130,7 @@ class CompanionWebSocketServer:
             "reshadeHdr": self.reshade_profiles.hdr_settings_payload(),
             "reshadeOverlayHotkey": self.config.reshade_overlay_hotkey,
             "addonManagerEnabled": self.config.addon_manager_enabled,
+            "sunshineMatchEncoderGpu": self.config.sunshine_match_encoder_gpu,
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
             "overrideLosslessHotkey": self.config.override_lossless_hotkey,

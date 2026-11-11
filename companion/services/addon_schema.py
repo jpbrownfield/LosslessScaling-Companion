@@ -73,8 +73,8 @@ ADDONS = [
                  choice("split_type", "Scaled half", [["0", "Left"], ["1", "Right"], ["2", "Top"], ["3", "Bottom"]]),
                  flag("position_mode", "Position beside the game"),
                  choice("position_side", "Position", [["0", "Left"], ["1", "Right"], ["2", "Above"], ["3", "Below"]])]),
-    dict(id="ReShadePassthrough", name="ReShade input passthrough",
-         description="Enabled automatically for profiles using ReShade. Its overlay hotkey follows General Settings.",
+    dict(id="ReShadePassthrough", name="Overlay toggle",
+         description="Enabled automatically while ReShade is in use, including Display Commander without a shader preset. Its overlay hotkey follows General Settings.",
          fields=[flag("auto_click_repress", "Click and repeat the overlay hotkey", "1")]),
 ]
 
@@ -91,7 +91,7 @@ MANAGED_DEFAULTS = {
 
 PRESENTATION = {
     "DLSSNR02": dict(
-        summary="Enhance captured frames before frame generation. The scaling GPU selects the NVIDIA or AMD backend.",
+        summary="Enhance captured frames before frame generation. Enabling selects WGC, upgrades LSFG 1/2 to LSFG 3, and uses NIS for incompatible scalers when FG is off. An installed model is attached automatically. The scaling GPU selects the NVIDIA or AMD backend.",
         category="Enhancement",
         groups=[
             dict(label="Quality & performance", keys=["scalePercent", "preset", "passes", "intensity", "style"], expanded=True),
@@ -111,7 +111,7 @@ PRESENTATION = {
     "XESSUPSC": dict(summary="XeSS upscaling, with independent picture controls.", category="Upscaling",
         groups=[dict(label="Picture adjustments", keys=[f["key"] for f in PICTURE], expanded=True)]),
     "WindowedMode": dict(summary="Position the scaled output beside the game or on part of a display.", category="Display"),
-    "ReShadePassthrough": dict(summary="Lets mouse and keyboard input reach the ReShade menu. Enabled automatically when a ReShade preset is selected.", category="Input"),
+    "ReShadePassthrough": dict(summary="Lets mouse and keyboard input reach the ReShade menu. Enabled automatically while ReShade is in use.", category="Input"),
 }
 for addon in ADDONS:
     addon.update(PRESENTATION.get(addon["id"], {}))

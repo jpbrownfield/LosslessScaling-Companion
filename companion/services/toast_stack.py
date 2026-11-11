@@ -28,6 +28,8 @@ class Toast:
         return self.source_y + (self.target_y - self.source_y) * eased
 
     def alpha(self, now: float) -> int:
+        if self.line.get("persistent"):
+            return 255
         duration = max(0.001, self.expires_at - self.created_at)
         remaining = (self.expires_at - now) / duration
         return round(255 * min(1.0, max(0.0, remaining)))
@@ -48,7 +50,8 @@ class ToastStack:
             toast = existing.get(key)
             if toast is None:
                 created = float(line.get("created_at", now))
-                expires = float(line.get("expires_at", created + TOAST_SECONDS))
+                expires = (float("inf") if line.get("persistent")
+                           else float(line.get("expires_at", created + TOAST_SECONDS)))
                 target = len(updated) * (TOAST_HEIGHT + TOAST_GAP)
                 toast = Toast(key, dict(line), created, expires,
                               target + 8, target, now)

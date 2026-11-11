@@ -14,7 +14,7 @@ from .asset_store import AssetStore
 from .input_simulator import InputSimulator
 from .deployment_manager import DeploymentManager
 from .addon_host import addon_version_key
-from . import sm86_sr, amd_nr
+from . import sm86_sr, amd_nr, display_commander
 
 
 class GraphicsResolutionError(RuntimeError):
@@ -65,21 +65,21 @@ class GraphicsResolver:
         )
         if directory is None:
             raise GraphicsResolutionError(
-                "ReShade with LosslessProxy requires the bundled LS Companion ReShade bridge; "
+                "ReShade with LosslessProxy requires the bundled Overlay toggle bridge; "
                 "reinstall LS Companion or build its native bridge"
             )
 
         binary = self._require_x64(
             (directory / "LSC_ReShadeBridge.dll").resolve(strict=True),
-            "The bundled LS Companion ReShade bridge",
+            "The bundled Overlay toggle bridge",
         )
         manifest = (directory / "addon.json").resolve(strict=True)
         try:
             metadata = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise GraphicsResolutionError(f"The bundled ReShade bridge manifest is invalid: {error}") from error
+            raise GraphicsResolutionError(f"The bundled Overlay toggle bridge manifest is invalid: {error}") from error
         if not isinstance(metadata, dict) or metadata.get("dll") != binary.name:
-            raise GraphicsResolutionError("The bundled ReShade bridge manifest does not match its DLL")
+            raise GraphicsResolutionError("The bundled Overlay toggle bridge manifest does not match its DLL")
 
         package = "reshade/bundled-ls-companion-bridge/1.0.0"
         return [
@@ -260,6 +260,8 @@ class GraphicsResolver:
                 )
 
     def _manual_runtime(self, digest: str) -> Path:
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", digest.removeprefix("sha256:")):
+            raise GraphicsResolutionError("The selected neural runtime has an invalid SHA-256 identifier")
         directory = self.store.imports / digest.removeprefix("sha256:")
         metadata_path = directory / "asset.json"
         if not metadata_path.is_file():
@@ -270,6 +272,45 @@ class GraphicsResolver:
         return self._require_x64(
             Path(metadata["path"]).resolve(strict=True), "The selected neural runtime"
         )
+
+    def select_neural_runtime(self, profile: Profile, *, required: bool = False) -> Optional[Path]:
+        """Bind an unpinned NR profile to the most recently imported valid model.
+
+        Downloading a model can precede enabling the profile. Both save paths and
+        deployment must resolve that case; an enabled add-on alone is not a model.
+        Explicit pins and backend-specific model paths remain authoritative.
+        """
+        neural = profile.graphics.neural_render
+        addons = profile.addon_config.get("addons", {})
+        settings = addons.get("DLSSNR02", {}) if isinstance(addons, dict) else {}
+        settings = settings if isinstance(settings, dict) else {}
+        if settings.get("_enabled", neural.implementation == "lsp_neural_render") is not True:
+            return None
+        if neural.runtime_asset_sha256:
+            return self._manual_runtime(neural.runtime_asset_sha256)
+        candidates = []
+        for item in self.store.list_imports():
+            digest = str(item.get("sha256") or "")
+            if (item.get("filename", "").casefold() != "nvngx_dlssnr.dll"
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)):
+                continue
+            try:
+                runtime = self._manual_runtime(digest)
+                imported_at = (self.store.imports / digest / "asset.json").stat().st_mtime_ns
+                candidates.append((imported_at, digest, runtime))
+            except (OSError, ValueError, GraphicsResolutionError):
+                continue
+        if candidates:
+            _, neural.runtime_asset_sha256, runtime = max(candidates)
+            return runtime
+        if required and not any(str(settings.get(key) or "").strip()
+                                for key in ("modelPath", "amdModelPath")):
+            raise GraphicsResolutionError(
+                "Neural Rendering is enabled but no model is installed. Download the "
+                "Neural Rendering model in Add-ons, import nvngx_dlssnr.dll, or set "
+                "the model path for your GPU in this profile."
+            )
+        return None
 
     def _lossless_original(self, lossless_scaling_exe: Optional[str]) -> Path:
         if not lossless_scaling_exe:
@@ -465,13 +506,14 @@ class GraphicsResolver:
                 "source_path": str(source), "role": "special_k_config",
                 "source_package": "generated/special-k-overlay"}
 
-    def _blank_neural_reshade_config(self, profile_id: str) -> Path:
+    def _blank_neural_reshade_config(self, profile_id: str, overlay_hotkey: Optional[str] = None) -> Path:
         """Generate the safe baseline INI used until a named ReShade config is selected."""
         return self.store.write_generated_text(
             profile_id,
             "ReShade.ini",
             "[GENERAL]\nPerformanceMode=1\n\n"
-            "[INPUT]\nKeyOverlay=0,0,0,0\n\n"
+            f"[INPUT]\nKeyOverlay={InputSimulator.vk_from_string(overlay_hotkey) if overlay_hotkey else 0},0,0,0\n\n"
+            "[ADDON]\nAddonPath=.\\\n\n"
             "[OVERLAY]\nTutorialProgress=4\nShowForceLoadEffectsButton=0\n",
         )
 
@@ -592,6 +634,7 @@ class GraphicsResolver:
                 graphics.reshade.model_copy(update={"enabled": reshade_selected}),
             )
             if reshade_package:
+                files.extend(display_commander.deployment_files(self.store, profile, reshade_package))
                 has_selected_reshade_config = bool(
                     profile.reshade
                     and profile.reshade.enabled
@@ -604,6 +647,11 @@ class GraphicsResolver:
                         if item["relative_path"].replace("\\", "/").casefold() != "reshade.ini"
                     ]
                 files.extend(recipe_files)
+                if graphics.display_commander.enabled and not has_selected_reshade_config:
+                    files = [item for item in files if item["relative_path"].casefold() != "reshade.ini"]
+                    files.append(dict(relative_path="ReShade.ini",
+                        source_path=str(self._blank_neural_reshade_config(profile.id, reshade_overlay_hotkey)),
+                        role="neural_reshade_config", source_package="generated/display-commander-reshade-config"))
 
             special_k_package = self._package("special-k", graphics.special_k)
             if special_k_package:
@@ -620,11 +668,8 @@ class GraphicsResolver:
                     "source_package": "generated/special-k-config",
                 })
             neural = graphics.neural_render
-            if (
-                neural.implementation == "lsp_neural_render"
-                and neural.runtime_asset_sha256
-            ):
-                runtime = self._manual_runtime(neural.runtime_asset_sha256)
+            runtime = self.select_neural_runtime(profile, required=True)
+            if runtime is not None:
                 files.append({
                     "relative_path": "nvngx_dlssnr.dll",
                     "source_path": str(runtime),
@@ -720,6 +765,7 @@ class GraphicsResolver:
             and profile.reshade.menu_proxy_enabled
         )
         if reshade_package:
+            files.extend(display_commander.deployment_files(self.store, profile, reshade_package))
             recipe_files = self._recipe_files(reshade_package)
             if has_selected_reshade_config:
                 # Installer defaults are only a seed. The selected managed or
@@ -760,8 +806,9 @@ class GraphicsResolver:
                     "source_package": "generated/lossless-proxy-config",
                 }
             )
-        if neural_enabled and not has_selected_reshade_config:
-            blank_reshade = self._blank_neural_reshade_config(profile.id)
+        if (neural_enabled or graphics.display_commander.enabled) and not has_selected_reshade_config:
+            blank_reshade = self._blank_neural_reshade_config(
+                profile.id, reshade_overlay_hotkey if graphics.display_commander.enabled else None)
             files.append(
                 {
                     "relative_path": "ReShade.ini",

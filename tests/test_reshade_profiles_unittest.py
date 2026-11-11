@@ -13,6 +13,50 @@ from companion.services.reshade_profiles import ReshadeProfileService
 
 
 class ReshadeProfileFileTests(unittest.TestCase):
+    def test_legacy_lilium_input_migration_keeps_tuning_and_runs_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(config_dir=Path(directory) / "config")
+            manager.config.reshade_hdr_peak_nits = 900
+            profile = ManagedReshadeProfile(id="legacy-hdr", name="Legacy HDR",
+                shaders={"22": ["lilium__inverse_tone_mapping.fx"]})
+            manager.config.reshade_profiles = [profile]
+            service = ReshadeProfileService(manager)
+            folder = service._folder(profile.id)
+            folder.mkdir(parents=True)
+            preset = folder / "Legacy HDR.ini"
+            preset.write_text("Techniques=lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx\n\n"
+                "[lilium__inverse_tone_mapping.fx]\nTargetBrightness=600\nGammaIn=0.15\n"
+                "[Other.fx]\nCustom=keep\n", encoding="utf-8")
+            service.refresh_hdr_peak_settings()
+            first = preset.read_text(encoding="utf-8")
+            self.assertIn("Techniques=LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,lilium__", first)
+            self.assertIn("InputTrc=2", first)
+            self.assertIn("OverbrightHandling=2", first)
+            self.assertIn("TargetBrightness=900.000000", first)
+            self.assertIn("GammaIn=0.15", first)
+            self.assertIn("Custom=keep", first)
+            shader = folder / "packages/LSCompanion/LSC_PrepareLiliumSDR.fx"
+            self.assertTrue(shader.is_file())
+            manager.config.reshade_hdr_peak_nits = 1000
+            service.refresh_hdr_peak_settings()
+            second = preset.read_text(encoding="utf-8")
+            self.assertEqual(second.count("Techniques=LSC_PrepareLiliumSDR@"), 1)
+            self.assertIn("TargetBrightness=1000.000000", second)
+            self.assertIn("GammaIn=0.15", second)
+
+    def test_explicit_lilium_input_path_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(config_dir=Path(directory) / "config")
+            profile = ManagedReshadeProfile(id="tuned", name="Tuned")
+            service = ReshadeProfileService(manager)
+            folder = service._folder(profile.id)
+            folder.mkdir(parents=True)
+            preset = folder / "Tuned.ini"
+            original = "Techniques=custom\n[lilium__inverse_tone_mapping.fx]\nInputTrc=4\nTargetBrightness=600\n"
+            preset.write_text(original, encoding="utf-8")
+            service._migrate_lilium_input(profile, preset)
+            self.assertEqual(preset.read_text(encoding="utf-8"), original)
+
     def test_payload_seeds_low_cost_profiles_and_preserves_combined_order(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp_path = Path(directory)
@@ -62,7 +106,8 @@ class ReshadeProfileFileTests(unittest.TestCase):
                 / "Sharpening SDR to HDR Low Cost.ini"
             )
             self.assertIn(
-                "Techniques=lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx,"
+                "Techniques=LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,"
+                "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx,"
                 "lilium__cas_hdr_ps@lilium__cas_hdr.fx",
                 preset.read_text(encoding="utf-8"),
             )

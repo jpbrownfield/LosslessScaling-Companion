@@ -162,7 +162,8 @@ class CompanionApplication:
             self.profile_manager, self.state, self.rtss_manager
         )
         self.hotkey_listener = GlobalHotkeyListener(
-            self.profile_manager, self.state, self.automation.handle_override_hotkey
+            self.profile_manager, self.state, self.automation.handle_override_hotkey,
+            native_stop_callback=self.automation.observe_native_scaling_hotkey,
         )
         self.server = CompanionWebSocketServer(
             self.profile_manager,

@@ -1,5 +1,18 @@
 # Third-party notices
 
+## Optional Display Commander and Lilium effects
+
+Companion can download the upstream x64 ReShade add-on from
+[pmnoxx/display-commander](https://github.com/pmnoxx/display-commander),
+licensed under [AGPL-3.0](https://github.com/pmnoxx/display-commander/blob/main/LICENSE).
+It is not embedded in the Companion host. Its upstream source and third-party
+notices remain available in that repository.
+
+Lilium effects are acquired from
+[EndlesslyFlowering/ReShade_HDR_shaders](https://github.com/EndlesslyFlowering/ReShade_HDR_shaders)
+through the ReShade package catalog. Companion's input preparation is a separate
+effect and does not modify the downloaded Lilium shader source.
+
 ## Private-settings bootstrap
 
 The native folder-redirection helper statically links the BSD-2-Clause

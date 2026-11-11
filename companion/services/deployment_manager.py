@@ -23,9 +23,9 @@ class DeploymentConflictError(RuntimeError):
 class DeploymentManager:
     TARGET_ID = "lossless-scaling"
     MUTABLE_CONFIG_ROLES = {
-        "lossless_proxy_config", "addon_manager_config", "special_k_config", "neural_reshade_config",
+        "lossless_proxy_config", "addon_manager_config", "special_k_config", "neural_reshade_config", "display_commander_config", "reshade_preset",
     }
-    RUNTIME_MUTATED_CONFIG_ROLES = {"neural_reshade_config"}
+    RUNTIME_MUTATED_CONFIG_ROLES = {"neural_reshade_config", "display_commander_config", "reshade_preset"}
     # Installing/updating our fork is an explicit takeover of these exact
     # component files. Unknown files beside them are left alone, and the
     # normal fail-closed rule still protects every unrelated managed binary.

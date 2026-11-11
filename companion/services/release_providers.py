@@ -229,6 +229,16 @@ class GitHubReleaseProvider(ReleaseProvider):
         return releases
 
 
+class DisplayCommanderReleaseProvider(GitHubReleaseProvider):
+    def __init__(self):
+        super().__init__("display-commander", "pmnoxx/display-commander", r"^zzz_display_commander\.addon64$")
+
+    def list_releases(self, *, channel="stable"):
+        # The rolling debug release is not marked as a GitHub prerelease.
+        return [release for release in super().list_releases(channel=channel)
+                if "debug" not in (release.version + " " + release.name).casefold()]
+
+
 class Sm86SrReleaseProvider(ReleaseProvider):
     """Review/pin new binaries before making them available to Companion."""
     provider_id = sm86_sr.PROVIDER
@@ -457,6 +467,7 @@ class ProviderRegistry:
             "special-k": GitHubReleaseProvider(
                 "special-k", "SpecialKO/SpecialK", r"\.(?:zip|7z)$"
             ),
+            "display-commander": DisplayCommanderReleaseProvider(),
             "presentmon": GitHubReleaseProvider(
                 "presentmon",
                 "GameTechDev/PresentMon",
@@ -660,7 +671,14 @@ class ReleaseManager:
                 size=destination.stat().st_size,
             )
             progress("staging", received, total)
-            if provider_id in {"reshade", "special-k"}:
+            if provider_id == "display-commander":
+                if AssetStore.pe_architecture(destination) != "x64":
+                    raise UnsafeAssetError("Display Commander must be a valid x64 ReShade add-on")
+                result = self.store.import_release_file(
+                    str(destination), provider=provider_id, version=version,
+                    expected_sha256=expected_digest, source_metadata=metadata,
+                )
+            elif provider_id in {"reshade", "special-k"}:
                 result = self._stage_graphics_runtime(destination, staging, provider_id, version, metadata)
             elif zipfile.is_zipfile(destination):
                 result = self.store.import_release_archive(
