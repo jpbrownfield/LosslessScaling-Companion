@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
+import time
 from ctypes import wintypes
 from typing import Callable, Optional, Tuple
 
@@ -73,11 +74,14 @@ class GlobalHotkeyListener:
         self.overlay_registered = {}
         self._overlay_actions = {}
         self._overlay_signature = None
+        self._overlay_pending = False
+        self._overlay_retry_at = 0.0
         self._overlay_ids = {}
         self._overlay_locks = {name: threading.Lock() for name in DEFAULT_OVERLAY_HOTKEYS}
 
     def set_overlay_actions(self, actions: dict) -> None:
-        if actions != self._overlay_actions:
+        if (actions != self._overlay_actions
+                or self._overlay_pending and time.monotonic() >= self._overlay_retry_at):
             self._overlay_actions = dict(actions)
             self.refresh()
 
@@ -122,14 +126,20 @@ class GlobalHotkeyListener:
         self._sync_native_observer()
         actions = dict(self._overlay_actions)
         signature = tuple((name, item["binding"]) for name, item in sorted(actions.items()))
-        if signature == self._overlay_signature:
+        changed = signature != self._overlay_signature
+        if not changed and (not self._overlay_pending or time.monotonic() < self._overlay_retry_at):
             return
-        for key_id in self._overlay_ids:
-            ctypes.windll.user32.UnregisterHotKey(None, key_id)
-        registered, key_ids = {}, {}
+        if changed:
+            for key_id in self._overlay_ids:
+                ctypes.windll.user32.UnregisterHotKey(None, key_id)
+            self.overlay_registered, self._overlay_ids = {}, {}
+        registered, key_ids = dict(self.overlay_registered), dict(self._overlay_ids)
+        pending = False
         for offset, name in enumerate(DEFAULT_OVERLAY_HOTKEYS):
             item = actions.get(name)
             if not item:
+                continue
+            if registered.get(name) == item["binding"]:
                 continue
             try:
                 parsed = parse_shortcut(item["binding"])
@@ -140,12 +150,17 @@ class GlobalHotkeyListener:
                 if ctypes.windll.user32.RegisterHotKey(None, key_id, modifiers | MOD_NOREPEAT, vk):
                     registered[name] = item["binding"]
                     key_ids[key_id] = name
+                    logger.info("Registered overlay shortcut: %s (%s)", name, item["binding"])
                 else:
-                    logger.warning("Overlay shortcut unavailable: %s (%s)", name, item["binding"])
+                    pending = True
+                    if changed:
+                        logger.warning("Overlay shortcut unavailable; will retry: %s (%s)", name, item["binding"])
             except ValueError as error:
                 logger.warning("Invalid overlay shortcut %s: %s", name, error)
         self.overlay_registered, self._overlay_ids = registered, key_ids
         self._overlay_signature = signature
+        self._overlay_pending = pending
+        self._overlay_retry_at = time.monotonic() + 1.0
 
     def _remove_native_observer(self) -> None:
         if self._native_hook:
@@ -284,9 +299,11 @@ class GlobalHotkeyListener:
         def invoke():
             try:
                 if not self._stop_event.wait(0.15) and self._overlay_actions.get(name) == item:
-                    item["callback"]()
+                    result = item["callback"]()
+                    logger.info("Overlay shortcut received: %s (%s)", name,
+                                "ignored by current session" if result is False else "handled")
             except Exception:
-                logger.exception("Could not open the active profile editor")
+                logger.exception("Overlay shortcut callback failed: %s", name)
             finally:
                 lock.release()
 
@@ -325,4 +342,6 @@ class GlobalHotkeyListener:
                 ctypes.windll.user32.UnregisterHotKey(None, key_id)
             self._overlay_ids.clear()
             self.overlay_registered = {}
+            self._overlay_signature = None
+            self._overlay_pending = False
             self._thread_id = None

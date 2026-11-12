@@ -1,15 +1,35 @@
 import threading
+import ctypes
 import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from companion.core.models import HotkeyConfig
+from companion.core.models import AppConfig, HotkeyConfig
 from companion.core.state import AppState
-from companion.services.hotkey_listener import GlobalHotkeyListener
+from companion.services.hotkey_listener import GlobalHotkeyListener, WM_HOTKEY, OVERLAY_HOTKEY_BASE
 
 
 class GlobalHotkeyListenerTests(unittest.TestCase):
+    def test_overlay_message_reaches_callback_and_reregisters_after_restart(self):
+        received = threading.Event()
+        listener = GlobalHotkeyListener(SimpleNamespace(config=AppConfig()), AppState(), lambda: None)
+        listener.set_overlay_actions({"overlay_toggle": {
+            "binding": "ctrl+shift+f22", "callback": received.set,
+        }})
+        for _ in range(2):
+            received.clear()
+            try:
+                listener.start()
+                self.assertEqual(listener.overlay_registered, {"overlay_toggle": "ctrl+shift+f22"})
+                self.assertTrue(ctypes.windll.user32.PostThreadMessageW(
+                    listener._thread_id, WM_HOTKEY, OVERLAY_HOTKEY_BASE, 0
+                ))
+                self.assertTrue(received.wait(timeout=1))
+            finally:
+                listener.stop()
+            self.assertEqual(listener.overlay_registered, {})
+
     def native_listener(self):
         manager = SimpleNamespace(config=SimpleNamespace(
             override_lossless_hotkey=False,

@@ -72,7 +72,8 @@ class ReShadeOverlayController:
         if not isinstance(reshade, dict):
             reshade = {}
         uses_reshade = bool(profile and (profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)))
-        native_active = bool(eligible and uses_reshade and status.get("available") is True
+        live_reshade = bool(uses_reshade and status.get("available") is True)
+        native_active = bool(eligible and live_reshade
                              and reshade.get("interactive") is True)
         if native_active != self._native_active:
             self._manual_active = None
@@ -109,7 +110,9 @@ class ReShadeOverlayController:
                 except ValueError:
                     continue
                 native_mask = sum(mask for key, mask in (("ctrl", 2), ("alt", 1), ("shift", 4)) if reshade.get(key) is True)
-                if parsed and parsed[:2] != (native_mask, reshade.get("hotkeyVk")):
+                # The host reports a default End binding even with ReShade
+                # disabled. Only a live ReShade session can reserve its key.
+                if parsed and (not live_reshade or parsed[:2] != (native_mask, reshade.get("hotkeyVk"))):
                     actions[name] = {"binding": binding, "callback": self._callbacks[name]}
         if self.listener is not None:
             if not self.foreground_check():

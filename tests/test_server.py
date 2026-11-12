@@ -486,6 +486,20 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
             self.assertEqual(self.manager.config.overlay_hotkeys, desired)
 
+    async def test_companion_end_and_reshade_home_shortcuts_save_together(self):
+        self.server.startup_manager = FakeStartupManager()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS",
+            "overlayHotkeys": {"overlay_toggle": "end"},
+            "reshadeOverlayHotkey": "home",
+        }))
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "GENERAL_SETTINGS_SAVED")
+        saved = ProfileManager(self.manager.config_dir).config
+        self.assertEqual(saved.overlay_hotkeys["overlay_toggle"], "end")
+        self.assertEqual(saved.reshade_overlay_hotkey, "home")
+
     async def test_general_gpu_edit_applies_route_once_and_unrelated_saves_do_not_reload(self):
         self.server.startup_manager = FakeStartupManager()
         self.automation.apply_general_gpu_settings = Mock()

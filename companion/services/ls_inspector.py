@@ -35,7 +35,8 @@ class ScaledTargetInfo:
         exe_path: Optional[str] = None,
         capture_mode: Optional[str] = None,
         scale_factor: Optional[str] = None,
-        source: str = "unknown"
+        source: str = "unknown",
+        hwnd: Optional[int] = None,
     ):
         self.is_active = is_active
         self.process_name = process_name
@@ -45,12 +46,14 @@ class ScaledTargetInfo:
         self.capture_mode = capture_mode
         self.scale_factor = scale_factor
         self.source = source
+        self.hwnd = hwnd
 
     def to_dict(self) -> Dict:
         return {
             "isActive": self.is_active,
             "processName": self.process_name,
             "pid": self.pid,
+            "hwnd": self.hwnd,
             "windowTitle": self.window_title,
             "exePath": self.exe_path,
             "captureMode": self.capture_mode,
@@ -224,7 +227,8 @@ class LosslessScalingInspector:
                     if active and (not identity or any(int(match[i]) <= 0 for i in (4, 5, 6, 7))):
                         continue
                     self.last_known_target = ScaledTargetInfo(
-                        is_active=active, source="log_file", scale_factor=match[8], **(identity or {})
+                        is_active=active, source="log_file", scale_factor=match[8],
+                        hwnd=hwnd if active else None, **(identity or {})
                     )
                     self._log_state = active
                     self._log_event_sequence += 1
@@ -366,6 +370,7 @@ class LosslessScalingInspector:
                     # when the new start line omits its target details.
                     self.last_known_target.process_name = None
                     self.last_known_target.pid = None
+                    self.last_known_target.hwnd = None
                     self.last_known_target.window_title = None
                     self.last_known_target.exe_path = None
                     self.last_known_target.is_active = True
@@ -391,6 +396,7 @@ class LosslessScalingInspector:
 
                 elif self._SCALING_STOPPED_RE.search(line_str):
                     self.last_known_target.is_active = False
+                    self.last_known_target.hwnd = None
                     self.last_known_target.source = "log_file"
                     self._log_state = False
                     self._log_event_sequence += 1
@@ -630,6 +636,7 @@ class LosslessScalingInspector:
             target.window_title = self.last_known_target.window_title
             target.pid = self.last_known_target.pid
             target.exe_path = self.last_known_target.exe_path
+            target.hwnd = self.last_known_target.hwnd if target.is_active else None
 
         # If log didn't specify the PID/process, resolve from current/tracked foreground window
         # Only for authoritative sources (overlay / fresh log event). Falling
@@ -639,7 +646,7 @@ class LosslessScalingInspector:
         if (
             target.is_active
             and target.source in ("overlay_window", "log_file")
-            and (not target.process_name or not target.pid)
+            and (not target.process_name or not target.pid or not target.hwnd)
             and fallback_foreground
         ):
             hwnd = user32.GetForegroundWindow()
@@ -649,9 +656,12 @@ class LosslessScalingInspector:
                 if pid.value:
                     try:
                         proc = psutil.Process(pid.value)
+                        if target.pid and pid.value != target.pid:
+                            return target
                         if target.process_name and proc.name().casefold() != target.process_name.casefold():
                             return target
                         target.pid = pid.value
+                        target.hwnd = int(hwnd)
                         target.process_name = target.process_name or proc.name()
                         target.exe_path = proc.exe()
                         

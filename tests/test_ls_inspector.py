@@ -37,6 +37,7 @@ class LosslessScalingInspectorTests(unittest.TestCase):
             self.assertTrue(observation["isActive"])
             self.assertEqual(observation["pid"], 42)
             self.assertEqual(observation["exePath"], "C:/game.exe")
+            self.assertEqual(observation["hwnd"], 0x211812)
             self.assertEqual(observation["detectionSource"], "log_file")
             inspector.end_scaling_confirmation()
             inspector.begin_scaling_confirmation(False)
@@ -44,6 +45,26 @@ class LosslessScalingInspectorTests(unittest.TestCase):
             with log.open("a", encoding="utf-8") as stream:
                 stream.write(self.echo_line(0))
             self.assertFalse(inspector.probe_scaling_state())
+            self.assertIsNone(inspector.inspect_current_scaling_target().hwnd)
+
+    def test_foreground_detection_preserves_window_handle_for_overlay(self):
+        with patch.object(LosslessScalingInspector, "_candidate_log_files", return_value=[]):
+            inspector = LosslessScalingInspector()
+        with patch.object(inspector, "_candidate_log_files", return_value=[]), patch.object(
+            inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)
+        ), patch(
+            "companion.services.ls_inspector.user32"
+        ) as windows, patch("companion.services.ls_inspector.psutil.Process") as process:
+            windows.GetForegroundWindow.return_value = 82
+            windows.GetWindowThreadProcessId.side_effect = lambda hwnd, pid: setattr(pid._obj, "value", 42)
+            windows.GetWindowTextLengthW.return_value = 4
+            windows.GetWindowTextW.side_effect = lambda hwnd, text, size: setattr(text, "value", "Game")
+            process.return_value.name.return_value = "game.exe"
+            process.return_value.exe.return_value = "C:/game.exe"
+            inspector.inspect_current_scaling_target()
+            observation = inspector.inspect_current_scaling_target().to_dict()
+        self.assertEqual(observation["hwnd"], 82)
+        self.assertEqual(observation["pid"], 42)
 
     def test_echo_history_and_replayed_stale_events_are_ignored(self):
         inspector, log = self.echo_inspector(self.echo_line())

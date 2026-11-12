@@ -82,6 +82,10 @@
     .settings-group-content > .form-row:last-child,
     .settings-group-content .form-row > .form-group { margin-bottom: 0; }
     .settings-group-content .form-row { align-items: start; }
+    .general-settings-section { min-width:0; }
+    .general-settings-section + .general-settings-section { margin-top:20px; padding-top:20px; border-top:1px solid var(--card-border); }
+    .general-settings-section > h3 { margin:0 0 14px; color:var(--text-muted); font-size:12px; font-weight:600; }
+    .general-settings-section > .form-group:last-child { margin-bottom:0; }
     .settings-columns { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; }
     .settings-column { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
     .settings-column > .form-group { margin: 0; }
@@ -105,16 +109,20 @@
     .reshade-profile-row { padding:12px 14px; border:1px solid var(--card-border); border-radius:9px; background:var(--surface-bg); }
     .reshade-profile-content { width: min(900px, calc(100vw - 32px)); max-width: none; overflow-x: hidden; }
     .reshade-profile-content form { min-width: 0; }
-    .shader-catalog { display:grid; gap:6px; max-height:52vh; margin-top:8px; padding-right:4px; overflow-y:auto; overflow-x:hidden; contain:content; }
-    .shader-pack { min-width:0; border:1px solid var(--card-border); border-radius:8px; background:var(--input-bg); }
-    .shader-pack summary { display:flex; min-width:0; align-items:center; gap:9px; padding:9px 10px; cursor:pointer; }
-    .shader-pack summary > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .shader-pack-body { padding:0 10px 10px; }
-    .shader-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 12px; margin-top:10px; }
-    .shader-choice { display:flex; min-width:0; align-items:flex-start; gap:7px; color:var(--text); font-size:12px; }
-    .shader-choice span { min-width:0; overflow-wrap:anywhere; }
-    .pack-link { flex:0 0 auto; margin-left:auto; color:var(--accent); font-size:12px; }
-    @media (max-width:650px) { .shader-grid { grid-template-columns:1fr; } }
+    .shader-catalog { max-height:52vh; margin-top:8px; overflow:auto; border:1px solid var(--card-border); border-radius:8px; }
+    .reshade-table { width:100%; border-collapse:collapse; text-align:left; font-size:12px; }
+    .reshade-table th, .reshade-table td { padding:9px 12px; border-bottom:1px solid var(--card-border); overflow-wrap:anywhere; }
+    .reshade-table thead th { position:sticky; top:0; background:var(--surface-bg); z-index:1; color:var(--text-muted); }
+    .reshade-table input[type="number"] { width:120px; max-width:100%; }
+    .reshade-table .shader-pack-heading th { background:var(--input-bg); font-weight:normal; }
+    .shader-pack-heading label, .shader-choice { display:flex; align-items:center; gap:9px; cursor:pointer; }
+    .shader-choice { padding-left:18px; color:var(--text); }
+    .shader-table-provider { width:28%; color:var(--text-muted); }
+    .shader-toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+    .shader-toolbar .search-input { flex:1; min-width:180px; }
+    .shader-selection-summary { margin-top:8px; color:var(--text-muted); font-size:12px; }
+    .pack-link { color:var(--accent); font-size:12px; }
+    .monitor-identity { display:block; color:var(--text-muted); font-size:11px; font-weight:normal; margin-top:4px; }
     .addon-description { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
     .runtime-log { max-height:480px; min-height:160px; overflow:auto; border:1px solid var(--card-border); border-radius:8px; background:var(--surface-bg); font:12px/1.5 Consolas,monospace; }
     .runtime-log-entry { padding:8px 12px; border-bottom:1px solid var(--card-border); white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -658,84 +666,84 @@
       </div>
       <div class="settings-content">
         <section class="settings-group">
-          <h2 class="settings-group-title">Startup</h2>
-          <div class="settings-group-content"><div class="form-row">
-            <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run on Startup</label></div>
-          </div>
+          <h2 class="settings-group-title">Controls &amp; overlay</h2>
+          <div class="settings-group-content">
+            <section class="general-settings-section" aria-label="Scaling shortcut">
+              <h3>Scaling shortcut</h3>
+              <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Use Companion to handle the scaling shortcut</label></div>
+              <div id="overrideHotkeySettings" class="form-row hotkey-settings">
+                <div class="form-group"><label for="overrideHotkeyKey">Scaling shortcut</label><input id="overrideHotkeyKey" type="text" value="ctrl+alt+s" maxlength="64" autocomplete="off" spellcheck="false"></div>
+              </div>
+              <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches. Click Set key and press the full combination, such as Ctrl+Alt+S.</p>
+            </section>
+            <section class="general-settings-section" aria-label="Overlay &amp; menu shortcuts">
+              <h3>Overlay &amp; menu shortcuts</h3>
+              <div class="form-group checkbox-group section-primary-toggle"><input id="overlayIndicatorEnabled" type="checkbox" checked aria-describedby="overlayIndicatorHelp"><label for="overlayIndicatorEnabled">Show Overlay</label></div>
+              <p id="overlayIndicatorHelp" class="item-sub" style="white-space:normal;margin-bottom:14px">Show toast notifications, the scaling border, and overlay controls.</p>
+              <div class="form-row">
+                <div class="form-group"><label for="overlayToggleHotkey">Companion overlay</label><input id="overlayToggleHotkey" type="text" value="ctrl+home" maxlength="64" autocomplete="off" spellcheck="false"></div>
+                <div class="form-group"><label for="reshadeOverlayHotkey">ReShade configuration menu</label><input id="reshadeOverlayHotkey" type="text" value="end" maxlength="64" autocomplete="off" spellcheck="false"></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label for="overlayProfileEditorHotkey">Profile editor</label><input id="overlayProfileEditorHotkey" type="text" value="delete" maxlength="64" placeholder="Delete" autocomplete="off" spellcheck="false"></div>
+                <div class="form-group"><label for="overlayAddonManagerHotkey">Advanced add-on panel</label><input id="overlayAddonManagerHotkey" type="text" value="insert" maxlength="64" placeholder="Insert" autocomplete="off" spellcheck="false"></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
+                <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
+              </div>
+              <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, Ctrl+Home opens or closes Companion's overlay. End opens ReShade's shader and preset menu when ReShade is enabled. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
+            </section>
           </div>
         </section>
 
         <section class="settings-group">
-          <h2 class="settings-group-title">Overlay</h2>
+          <h2 class="settings-group-title">Display &amp; scaling</h2>
           <div class="settings-group-content">
-            <div class="form-group checkbox-group section-primary-toggle"><input id="overlayIndicatorEnabled" type="checkbox" checked aria-describedby="overlayIndicatorHelp"><label for="overlayIndicatorEnabled">Show Overlay</label></div>
-            <p id="overlayIndicatorHelp" class="item-sub" style="white-space:normal;margin-bottom:14px">Show toast notifications, the scaling border, and overlay controls.</p>
-            <div class="form-row">
-              <div class="form-group"><label for="overlayToggleHotkey">Companion overlay</label><input id="overlayToggleHotkey" type="text" value="ctrl+home" maxlength="64" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label for="reshadeOverlayHotkey">ReShade configuration menu</label><input id="reshadeOverlayHotkey" type="text" value="end" maxlength="64" autocomplete="off" spellcheck="false"></div>
-            </div>
-            <div class="form-row">
-              <div class="form-group"><label for="overlayProfileEditorHotkey">Profile editor</label><input id="overlayProfileEditorHotkey" type="text" value="delete" maxlength="64" placeholder="Delete" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label for="overlayAddonManagerHotkey">Advanced add-on panel</label><input id="overlayAddonManagerHotkey" type="text" value="insert" maxlength="64" placeholder="Insert" autocomplete="off" spellcheck="false"></div>
-            </div>
-            <div class="form-row">
-              <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
-            </div>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, Ctrl+Home opens or closes Companion's overlay. End opens ReShade's shader and preset menu when ReShade is enabled. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
-          </div>
-        </section>
+            <section class="general-settings-section" aria-label="GPU selection">
+              <h3>GPU selection</h3>
+              <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
+              <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
+              <div id="gpuIndexRefreshStatus" class="item-sub" style="white-space:normal" aria-live="polite"></div>
+              <p class="item-sub" style="white-space:normal;margin-top:8px">Auto follows the display containing the app. Moving it to another GPU’s display briefly restarts scaling with the updated GPU and display.</p>
+            </section>
+            <section class="general-settings-section" aria-label="Window behavior">
+              <h3>Window behavior</h3>
+              <div class="form-group checkbox-group"><input id="snapNearFullscreenWindowsToMonitor" type="checkbox" checked><label for="snapNearFullscreenWindowsToMonitor">Fit Near-Fullscreen Games Exactly to Monitor Bounds</label></div>
 
-        <section class="settings-group">
-          <h2 class="settings-group-title">GPU Selection</h2>
-          <div class="settings-group-content">
-            <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
-            <div class="form-group checkbox-group"><input id="snapNearFullscreenWindowsToMonitor" type="checkbox" checked><label for="snapNearFullscreenWindowsToMonitor">Fit Near-Fullscreen Games Exactly to Monitor Bounds</label></div>
-            <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
-            <div id="gpuIndexRefreshStatus" class="item-sub" style="white-space:normal" aria-live="polite"></div>
-            <p class="item-sub" style="white-space:normal;margin-top:8px">Auto follows the display containing the app. Moving it to another GPU’s display briefly restarts scaling with the updated GPU and display.</p>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <h2 class="settings-group-title">Keyboard shortcuts</h2>
-          <div class="settings-group-content">
-            <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey (Needed to hotkey to apply companion features)</label></div>
-            <div id="overrideHotkeySettings" class="form-row hotkey-settings">
-              <div class="form-group"><label for="overrideHotkeyKey">Scaling shortcut</label><input id="overrideHotkeyKey" type="text" value="ctrl+alt+s" maxlength="64" autocomplete="off" spellcheck="false"></div>
-            </div>
-            <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches. Click Set key and press the full combination, such as Ctrl+Alt+S.</p>
-          </div>
-        </section>
-
-        <section class="settings-group">
-          <h2 class="settings-group-title">Display &amp; windows</h2>
-          <div class="settings-group-content">
-            <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor</label></div>
-            <p class="item-sub" style="white-space:normal;margin-top:8px">Minimizing other windows can save bandwidth on dual GPU setups. Those windows stay minimized until you restore them.</p>
+              <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor</label></div>
+              <p class="item-sub" style="white-space:normal;margin-top:8px">Minimizing other windows can save bandwidth on dual GPU setups. Those windows stay minimized until you restore them.</p>
+            </section>
           </div>
         </section>
 
         <section class="settings-group settings-wide">
-          <h2 class="settings-group-title">Updates</h2>
+          <h2 class="settings-group-title">App &amp; updates</h2>
           <div class="settings-group-content">
-            <div class="form-group checkbox-group"><input id="notifyOnUpdates" type="checkbox" checked><label for="notifyOnUpdates">Notify me about Companion and add-on updates</label></div>
-            <div class="form-group checkbox-group"><input id="automaticallyInstallUpdates" type="checkbox"><label for="automaticallyInstallUpdates">Automatically install updates</label></div>
-            <p id="updatePreferenceHelp" class="item-sub" style="white-space:normal;margin-bottom:18px">Automatic installation takes priority over notifications. Updates wait until scaling, profile editing, and tests are idle; Companion restarts after updating.</p>
-            <aside id="companionUpdateNotice" class="update-notice" role="status" hidden>
-              <div><strong>LS Companion update available</strong><p id="companionUpdateText"></p></div>
-              <div class="update-notice-actions">
-                <a id="companionReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
-                <button id="laterCompanionUpdateBtn" class="btn btn-secondary" type="button">Later</button>
-                <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download and install</button>
-                <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Run installer</button>
+            <section class="general-settings-section" aria-label="Startup">
+              <h3>Startup</h3>
+              <div class="form-group checkbox-group section-primary-toggle"><input id="runAtStartup" type="checkbox"><label for="runAtStartup">Run on Startup</label></div>
+            </section>
+            <section class="general-settings-section" aria-label="Updates">
+              <h3>Updates</h3>
+              <div class="form-group checkbox-group"><input id="notifyOnUpdates" type="checkbox" checked><label for="notifyOnUpdates">Notify me about Companion and add-on updates</label></div>
+              <div class="form-group checkbox-group"><input id="automaticallyInstallUpdates" type="checkbox"><label for="automaticallyInstallUpdates">Automatically install updates</label></div>
+              <p id="updatePreferenceHelp" class="item-sub" style="white-space:normal;margin-bottom:18px">Automatic installation takes priority over notifications. Updates wait until scaling, profile editing, and tests are idle; Companion restarts after updating.</p>
+              <aside id="companionUpdateNotice" class="update-notice" role="status" hidden>
+                <div><strong>LS Companion update available</strong><p id="companionUpdateText"></p></div>
+                <div class="update-notice-actions">
+                  <a id="companionReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
+                  <button id="laterCompanionUpdateBtn" class="btn btn-secondary" type="button">Later</button>
+                  <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download and install</button>
+                  <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Run installer</button>
+                </div>
+              </aside>
+              <div class="settings-toolbar">
+                <p id="companionUpdateStatusText" class="item-sub" style="white-space:normal">Checking GitHub releases...</p>
+                <button id="checkCompanionUpdateBtn" class="btn btn-secondary" type="button">Check for updates</button>
               </div>
-            </aside>
-            <div class="settings-toolbar">
-              <p id="companionUpdateStatusText" class="item-sub" style="white-space:normal">Checking GitHub releases...</p>
-              <button id="checkCompanionUpdateBtn" class="btn btn-secondary" type="button">Check for updates</button>
-            </div>
-            <p class="item-sub" style="white-space:normal;margin-top:8px">Companion updates use verified GitHub releases. Community runtimes that require separate approval stay manual.</p>
+              <p class="item-sub" style="white-space:normal;margin-top:8px">Companion updates use verified GitHub releases. Community runtimes that require separate approval stay manual.</p>
+            </section>
           </div>
         </section>
 
@@ -812,10 +820,10 @@
             <summary>HDR display &amp; menu settings</summary>
             <div class="reshade-preferences-grid">
               <div class="form-group"><label for="reshadeHdrPeakNits">HDR peak brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
-              <div class="form-group"><label for="reshadeSdrWhiteNits">Default captured SDR white (nits)</label><input id="reshadeSdrWhiteNits" type="number" min="80" max="1000" step="1" value="400"></div>
+              <div id="reshadeDefaultNitsRow" class="form-group"><label for="reshadeSdrWhiteNits">Default captured SDR white (nits)</label><input id="reshadeSdrWhiteNits" type="number" min="80" max="1000" step="1" value="400"></div>
             </div>
-            <p class="item-sub" style="white-space:normal">SDR white applies to all managed Lilium SDR-to-HDR presets. A monitor override follows LS's output display; leave it blank to use the shared default. Changes apply the next time scaling starts.</p>
-            <div id="reshadeMonitorNits" class="reshade-preferences-grid" aria-label="Captured SDR white by monitor"></div>
+            <p class="item-sub" style="white-space:normal">SDR white applies to all managed Lilium SDR-to-HDR presets. Each value follows LS's output display; leave it blank to use the saved default (400 nits initially). Changes apply the next time scaling starts.</p>
+            <div id="reshadeMonitorNits" aria-label="Captured SDR white by monitor"></div>
             <p id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</p>
             <p class="item-sub" style="white-space:normal">The Overlay toggle is enabled automatically for profiles that use ReShade. Configure the ReShade menu key (End by default) in Settings → Overlay.</p>
             <p>Shader catalogs use the maintained <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup feed</a>. <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">Shader pack reference</a>.</p>
@@ -1145,7 +1153,7 @@
           <p class="item-sub" style="white-space:normal">Requires ReShade Full Add-On 6.6.2 or later and Display Commander installed in Add-ons. Works without a shader preset. Its FPS limiter is disabled so Lossless Scaling controls output pacing.</p>
           <div class="form-group checkbox-group"><input id="displayCommanderReflex" type="checkbox" data-addon-vendor="NVIDIA"><label for="displayCommanderReflex">Inject NVIDIA Reflex (enables Display Commander)</label></div>
           <p class="item-sub" style="white-space:normal">Affects Lossless Scaling's rendering queue. Does not enable Reflex in the captured game. Enabling this turns off Special K Reflex for this profile.</p>
-          <p class="item-sub" style="white-space:normal">SDR-to-HDR presets require an SDR source, Windows HDR and LS HDR support. Use one SDR-to-HDR converter at a time. Captured SDR white is configured globally in Add-ons ? ReShade ? HDR display &amp; menu settings, with a 400-nit default and optional monitor overrides.</p>
+          <p class="item-sub" style="white-space:normal">SDR-to-HDR presets require an SDR source, Windows HDR and LS HDR support. Use one SDR-to-HDR converter at a time. Captured SDR white is configured globally in Add-ons / ReShade / HDR display &amp; menu settings, with a 400-nit default and optional monitor overrides.</p>
         </div>
         </details>
 
@@ -1227,12 +1235,14 @@
 
   <div id="reshadeProfileModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="reshadeProfileModalTitle">
     <div class="modal-content reshade-profile-content">
-      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Choose provider packs, then individual shader files just like ReShade Setup.</p><span id="reshadeAutosaveStatus" class="autosave-status">Enter a name to begin autosaving.</span></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="font-size:20px;cursor:pointer">&times;</button></div>
+      <div class="modal-header"><div><h3 id="reshadeProfileModalTitle" style="color:var(--accent)">New ReShade Profile</h3><p class="item-sub">Search shaders by name, then select individual effects or a whole group.</p><span id="reshadeAutosaveStatus" class="autosave-status">Enter a name to begin autosaving.</span></div><button id="closeReshadeProfileModalBtn" type="button" aria-label="Close" style="font-size:20px;cursor:pointer">&times;</button></div>
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
         <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. The Overlay toggle follows the configured ReShade menu shortcut.</p>
-        <input id="reshadeShaderSearch" class="search-input" type="search" placeholder="Search shader packs or individual shaders..." autocomplete="off">
+        <div class="shader-toolbar"><input id="reshadeShaderSearch" class="search-input" type="search" aria-label="Search shaders or packs" placeholder="Search shader names or packs..." autocomplete="off"><label><input id="reshadeSelectedOnly" type="checkbox"> Selected only</label></div>
+        <p id="reshadeShaderSummary" class="shader-selection-summary" role="status"></p>
+        <p class="item-sub" style="white-space:normal">Shader files are grouped by pack. Group checkboxes select or clear the visible results. Changes save automatically.</p>
         <div id="reshadeShaderCatalog" class="shader-catalog"><div class="item-sub">Loading the official shader catalog...</div></div>
       </form>
     </div>
@@ -2471,32 +2481,64 @@
     function renderReshadeMonitorNits(settings) {
       const container = document.getElementById('reshadeMonitorNits');
       container.replaceChildren();
-      const monitors = settings.monitors || [];
-      const overrides = settings.monitorSdrWhiteNits || {};
       const seen = new Set();
-      monitors.forEach(monitor => {
-        if (!monitor.id || seen.has(monitor.id)) return;
+      const monitors = (settings.monitors || []).filter(monitor => {
+        if (!monitor.id || seen.has(monitor.id)) return false;
         seen.add(monitor.id);
-        const group = document.createElement('div');
-        group.className = 'form-group';
-        const label = document.createElement('label');
-        label.textContent = `${monitor.name} ? SDR white (nits)`;
+        return true;
+      });
+      const fallback = document.getElementById('reshadeDefaultNitsRow');
+      if (fallback) fallback.hidden = monitors.length > 0;
+      const overrides = settings.monitorSdrWhiteNits || {};
+      const table = document.createElement('table');
+      table.className = 'reshade-table';
+      const head = document.createElement('thead');
+      const headings = document.createElement('tr');
+      ['Monitor', 'Captured SDR white (nits)'].forEach(text => {
+        const cell = document.createElement('th');
+        cell.setAttribute('scope', 'col');
+        cell.textContent = text;
+        headings.appendChild(cell);
+      });
+      head.appendChild(headings);
+      table.appendChild(head);
+      const body = document.createElement('tbody');
+      monitors.forEach((monitor, index) => {
+        // Keep Unicode names; strip control/replacement characters from driver strings.
+        const clean = value => String(value || '').replace(/[\u0000-\u001f\u007f\ufffd]/g, '').trim();
+        const name = clean(monitor.name).replace(/^[?\s]+|[?\s]+$/g, '')
+          || clean(monitor.deviceName) || `Monitor ${index + 1}`;
+        const row = document.createElement('tr');
+        const label = document.createElement('th');
+        label.setAttribute('scope', 'row');
+        label.textContent = name;
+        const identity = document.createElement('span');
+        identity.className = 'monitor-identity';
+        identity.textContent = clean(monitor.deviceName) || `Monitor ${index + 1}`;
+        identity.title = monitor.id;
+        label.appendChild(identity);
+        const cell = document.createElement('td');
         const input = document.createElement('input');
         input.type = 'number';
         input.min = '80'; input.max = '1000'; input.step = '1';
         input.dataset.reshadeMonitorId = monitor.id;
         input.value = overrides[monitor.id] == null ? '' : overrides[monitor.id];
         input.placeholder = `Default: ${settings.sdrWhiteNits || 400}`;
-        input.setAttribute('aria-label', label.textContent);
-        label.appendChild(input);
-        group.appendChild(label);
-        container.appendChild(group);
-        input.addEventListener('change', () => scheduleGeneralSettingsSave());
+        input.setAttribute('aria-label', `${name} (${identity.textContent}) SDR white (nits)`);
+        cell.appendChild(input);
+        row.appendChild(label);
+        row.appendChild(cell);
+        body.appendChild(row);
+        input.addEventListener('change', () => {
+          if (input.reportValidity()) scheduleGeneralSettingsSave();
+        });
       });
-      if (!monitors.length) {
+      table.appendChild(body);
+      if (monitors.length) container.appendChild(table);
+      else {
         const help = document.createElement('p');
         help.className = 'item-sub';
-        help.textContent = 'Monitor overrides appear when Windows reports a monitor identity. The shared default is used otherwise.';
+        help.textContent = 'No monitors detected. The shared default is used until a monitor is available.';
         container.appendChild(help);
       }
     }
@@ -2960,64 +3002,70 @@
       }).join('');
     }
 
-    function updateShaderPackSelectionState(details, pack) {
+    function updateShaderPackSelectionState(group, pack) {
       const selected = reshadeShaderSelection[pack.id] || new Set();
-      const shaderCount = (pack.shaders || []).length;
-      const toggle = details.querySelector('.reshade-pack-toggle');
-      toggle.checked = !!shaderCount && selected.size === shaderCount;
-      toggle.indeterminate = selected.size > 0 && selected.size < shaderCount;
-      details.querySelector('.shader-pack-count').textContent = `${selected.size} selected · ${shaderCount} shaders`;
+      const visible = [...group.querySelectorAll('[data-shader]')];
+      const count = visible.filter(box => selected.has(box.value)).length;
+      const toggle = group.querySelector('.reshade-pack-toggle');
+      toggle.checked = !!visible.length && count === visible.length;
+      toggle.indeterminate = count > 0 && count < visible.length;
+      group.querySelector('.shader-pack-count').textContent = `${count} of ${visible.length} visible selected`;
     }
 
-    function renderShaderPackBody(details, pack, query) {
-      const packText = `${pack.name || ''} ${pack.description || ''}`.toLowerCase();
-      const shaders = query && !packText.includes(query)
-        ? (pack.shaders || []).filter(shader => shader.toLowerCase().includes(query))
-        : (pack.shaders || []);
-      const selected = reshadeShaderSelection[pack.id] || new Set();
-      const grid = details.querySelector('.shader-grid');
-      grid.innerHTML = shaders.map(shader => `<label class="shader-choice"><input type="checkbox" value="${escapeHtml(shader)}" ${selected.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label>`).join('') || '<span class="item-sub">No matching shaders in this pack.</span>';
-      grid.querySelectorAll('input[type="checkbox"]').forEach(box => {
-        box.onchange = () => {
-          const choice = reshadeShaderSelection[pack.id] || new Set();
-          if (box.checked) choice.add(box.value); else choice.delete(box.value);
-          if (choice.size) reshadeShaderSelection[pack.id] = choice;
-          else delete reshadeShaderSelection[pack.id];
-          updateShaderPackSelectionState(details, pack);
-          scheduleReshadeAutosave();
-        };
+    function filteredReshadeShaderPacks(query, selectedOnly) {
+      const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      // Include saved files absent from today's catalog so they can still be reviewed/removed.
+      const packs = reshadeCatalog.map(pack => ({...pack,
+        shaders: [...new Set([...(pack.shaders || []), ...(reshadeShaderSelection[pack.id] || [])])]}));
+      Object.keys(reshadeShaderSelection).forEach(id => {
+        if (!packs.some(pack => pack.id === id)) packs.push({id, name: `Unavailable pack (${id})`,
+          shaders: [...reshadeShaderSelection[id]]});
       });
+      return packs.map(pack => ({...pack, visibleShaders: pack.shaders.filter(shader => {
+        const text = `${pack.name || ''} ${pack.description || ''} ${shader}`.toLowerCase();
+        return terms.every(term => text.includes(term))
+          && (!selectedOnly || reshadeShaderSelection[pack.id]?.has(shader));
+      }).sort((a, b) => a.localeCompare(b))})).filter(pack => pack.visibleShaders.length)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
+
+    function updateReshadeShaderSummary() {
+      const total = Object.values(reshadeShaderSelection).reduce((sum, shaders) => sum + shaders.size, 0);
+      const visible = document.getElementById('reshadeShaderCatalog').querySelectorAll('[data-shader]').length;
+      document.getElementById('reshadeShaderSummary').textContent = `${total} selected / ${visible} shown`;
     }
 
     function renderReshadeShaderCatalog() {
-      const query = document.getElementById('reshadeShaderSearch').value.trim().toLowerCase();
-      const matching = reshadeCatalog.filter(pack => {
-        if (!query) return true;
-        return `${pack.name || ''} ${pack.description || ''}`.toLowerCase().includes(query)
-          || (pack.shaders || []).some(shader => shader.toLowerCase().includes(query));
-      });
+      const query = document.getElementById('reshadeShaderSearch').value;
+      const selectedOnly = document.getElementById('reshadeSelectedOnly').checked;
+      const matching = filteredReshadeShaderPacks(query, selectedOnly);
       const catalog = document.getElementById('reshadeShaderCatalog');
-      catalog.innerHTML = matching.map(pack => {
+      catalog.innerHTML = matching.length ? `<table class="reshade-table"><thead><tr><th scope="col">Shader / effect file</th><th scope="col">Pack</th></tr></thead>${matching.map((pack, index) => {
         const selected = reshadeShaderSelection[pack.id] || new Set();
-        return `<details class="shader-pack" data-provider="${escapeHtml(pack.id)}"><summary><input type="checkbox" class="reshade-pack-toggle"><span><strong>${escapeHtml(pack.name)}</strong><br><span class="item-sub shader-pack-count">${selected.size} selected · ${(pack.shaders || []).length} shaders</span></span>${pack.repositoryUrl ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Provider ↗</a>` : ''}</summary><div class="shader-pack-body"><div class="shader-grid"></div></div></details>`;
-      }).join('') || '<div class="item-sub" style="padding:10px">No matching shader packs or shaders.</div>';
-      catalog.querySelectorAll('.shader-pack').forEach(details => {
-        const pack = reshadeCatalog.find(item => item.id === details.dataset.provider);
-        if (!pack) return;
-        const toggle = details.querySelector('.reshade-pack-toggle');
-        toggle.onclick = event => event.stopPropagation();
-        toggle.onchange = () => {
-          if (toggle.checked) reshadeShaderSelection[pack.id] = new Set(pack.shaders || []);
+        return `<tbody data-pack-index="${index}"><tr class="shader-pack-heading"><th colspan="2" scope="rowgroup"><label><input type="checkbox" class="reshade-pack-toggle" aria-label="Select visible shaders in ${escapeHtml(pack.name)}"><strong>${escapeHtml(pack.name)}</strong><span class="item-sub shader-pack-count"></span></label>${pack.description ? `<div class="item-sub" style="white-space:normal;margin-top:4px">${escapeHtml(pack.description)}</div>` : ''}${/^https:\/\//i.test(pack.repositoryUrl || '') ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer">Pack source</a>` : ''}</th></tr>${pack.visibleShaders.map(shader => `<tr><td><label class="shader-choice"><input type="checkbox" data-shader value="${escapeHtml(shader)}" aria-label="${escapeHtml(shader)} (${escapeHtml(pack.name)})" ${selected.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label></td><td class="shader-table-provider">${escapeHtml(pack.name)}</td></tr>`).join('')}</tbody>`;
+      }).join('')}</table>` : '<div class="item-sub" style="padding:16px">No matching shaders. Try another search or turn off Selected only.</div>';
+      catalog.querySelectorAll('[data-pack-index]').forEach(group => {
+        const pack = matching[Number(group.dataset.packIndex)];
+        const changeSelection = (shaders, checked) => {
+          const choice = reshadeShaderSelection[pack.id] || new Set();
+          shaders.forEach(shader => { if (checked) choice.add(shader); else choice.delete(shader); });
+          if (choice.size) reshadeShaderSelection[pack.id] = choice;
           else delete reshadeShaderSelection[pack.id];
-          updateShaderPackSelectionState(details, pack);
-          if (details.open) renderShaderPackBody(details, pack, query);
+          if (selectedOnly) renderReshadeShaderCatalog();
+          else {
+            group.querySelectorAll('[data-shader]').forEach(box => { box.checked = choice.has(box.value); });
+            updateShaderPackSelectionState(group, pack);
+            updateReshadeShaderSummary();
+          }
           scheduleReshadeAutosave();
         };
-        details.ontoggle = () => {
-          if (details.open) renderShaderPackBody(details, pack, query);
-        };
-        updateShaderPackSelectionState(details, pack);
+        group.querySelector('.reshade-pack-toggle').onchange = event => changeSelection(pack.visibleShaders, event.target.checked);
+        group.querySelectorAll('[data-shader]').forEach(box => {
+          box.onchange = () => changeSelection([box.value], box.checked);
+        });
+        updateShaderPackSelectionState(group, pack);
       });
+      updateReshadeShaderSummary();
     }
 
     function openReshadeProfileModal(profile = null) {
@@ -4512,6 +4560,7 @@
     document.getElementById('procSearch').oninput = renderProcesses;
     document.getElementById('profileSearch').oninput = renderProfiles;
     document.getElementById('reshadeShaderSearch').oninput = renderReshadeShaderCatalog;
+    document.getElementById('reshadeSelectedOnly').onchange = renderReshadeShaderCatalog;
     document.getElementById('rtssFramerateLimit').oninput = updateRtssTargetHelper;
     document.getElementById('rtssLimitMode').onchange = renderRtssModeSettings;
     document.getElementById('rtssDefaultLimitMode').onchange = () => {

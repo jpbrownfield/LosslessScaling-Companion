@@ -13,6 +13,7 @@ from companion.services.reshade_overlay import ReShadeOverlayController, menu_ho
 from companion.services.overlay_shortcuts import (parse_shortcut, validate_overlay_hotkeys,
                                                  special_k_menu_hotkey)
 from companion.services.hotkey_listener import GlobalHotkeyListener
+from companion.services.ls_inspector import ScaledTargetInfo
 
 
 def environment():
@@ -123,6 +124,19 @@ class ReShadeOverlayTests(unittest.TestCase):
         controller.clear()
         listener.set_overlay_actions.assert_called_with({})
 
+    def test_detected_scaling_window_can_anchor_overlay_without_host_telemetry(self):
+        controller, _, state, _, _, seen = environment()
+        state.current_active_profile.graphics.reshade.enabled = False
+        state.scaling_target_hwnd = None
+        state.current_scaled_target = ScaledTargetInfo(
+            is_active=True, pid=42, hwnd=82, process_name="game.exe", source="log_file"
+        ).to_dict()
+        controller.update({"available": False})
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertEqual(seen[-1]["anchor_hwnd"], 82)
+        self.assertEqual(seen[-1]["lines"][0]["text"], "Overlay active")
+
     def test_companion_toggle_is_scoped_to_foreground_and_application_session(self):
         controller, _, state, listener, _, _ = environment()
         controller.update(status(False))
@@ -164,6 +178,30 @@ class ReShadeOverlayTests(unittest.TestCase):
         controller.update(status())
         self.assertNotIn("profile_editor", listener.set_overlay_actions.call_args.args[0])
         self.assertEqual(len(seen[-1]["hotkey_hints"]), 1)
+
+    def test_end_opens_companion_when_reshade_uses_home(self):
+        controller, manager, _, listener, _, seen = environment()
+        manager.config.overlay_hotkeys["overlay_toggle"] = "end"
+        manager.config.reshade_overlay_hotkey = "home"
+        listener.overlay_registered = dict(manager.config.overlay_hotkeys)
+        controller.update(status(False, reshade={"interactive": False, "hotkeyVk": 36}))
+        self.assertEqual(listener.set_overlay_actions.call_args.args[0]["overlay_toggle"]["binding"], "end")
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertIn({"key": "Home", "label": "Toggle ReShade menu"}, seen[-1]["hotkey_hints"])
+
+    def test_disabled_or_unavailable_reshade_does_not_reserve_host_default_end(self):
+        for uses_reshade, available in ((False, True), (True, False)):
+            with self.subTest(uses_reshade=uses_reshade, available=available):
+                controller, manager, state, listener, _, _ = environment()
+                manager.config.overlay_hotkeys["overlay_toggle"] = "end"
+                manager.config.reshade_overlay_hotkey = "home"
+                state.current_active_profile.graphics.reshade.enabled = uses_reshade
+                controller.update(status(False, available=available,
+                                         reshade={"interactive": False, "hotkeyVk": 35}))
+                self.assertIn("overlay_toggle", listener.set_overlay_actions.call_args.args[0])
+                self.assertTrue(controller.dispatch_action("overlay_toggle"))
+                self.assertTrue(controller.active)
 
     def test_special_k_custom_binding_is_passive_and_takes_priority(self):
         controller, _, state, listener, _, seen = environment()
@@ -214,6 +252,32 @@ class OverlayShortcutTests(unittest.TestCase):
             listener._sync_registration()
             self.assertEqual(listener.overlay_registered, {})
             fake.UnregisterHotKey.assert_called_once()
+
+    def test_listener_recovers_from_temporary_conflict_without_releasing_other_shortcuts(self):
+        listener = GlobalHotkeyListener(SimpleNamespace(config=AppConfig()), AppState(), lambda: None)
+        actions = {"overlay_toggle": {"binding": "ctrl+home", "callback": lambda: None},
+                   "profile_editor": {"binding": "delete", "callback": lambda: None}}
+        fake = Mock()
+        fake.RegisterHotKey.side_effect = [False, True, True]
+        with patch("companion.services.hotkey_listener.ctypes.windll.user32", fake), patch(
+            "companion.services.hotkey_listener.time.monotonic", return_value=10
+        ) as clock, patch.object(listener, "refresh") as refresh:
+            listener.set_overlay_actions(actions)
+            listener._sync_registration()
+            self.assertEqual(listener.overlay_registered, {"profile_editor": "delete"})
+            refresh.reset_mock()
+            listener.set_overlay_actions(actions)
+            listener._sync_registration()
+            refresh.assert_not_called()
+            self.assertEqual(fake.RegisterHotKey.call_count, 2)
+            clock.return_value = 11
+            listener.set_overlay_actions(actions)
+            refresh.assert_called_once()
+            listener._sync_registration()
+            self.assertEqual(set(listener.overlay_registered), set(actions))
+            fake.UnregisterHotKey.assert_not_called()
+            listener._sync_registration()
+            self.assertEqual(fake.RegisterHotKey.call_count, 3)
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'Win32 overlay controls')
