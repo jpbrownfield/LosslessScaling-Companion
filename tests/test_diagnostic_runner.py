@@ -179,7 +179,41 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 runner._benchmark_cli_behavior(),
             ]
 
-            self.assertEqual([result["status"] for result in results], ["pass"] * 3)
+            self.assertEqual([result["status"] for result in results], ["pass"] * 3, results)
+
+    def test_reshade_diagnostic_rejects_original_missing_and_corrupted_presets(self):
+        import configparser
+        from companion.services.reshade_manager import ReshadeManager
+
+        swap = ReshadeManager.swap_preset
+        for fault in ("original", "missing", "corrupted", "mismatched-selection"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                runner = DiagnosticRunner.__new__(DiagnosticRunner)
+                runner._behavior_root = Path(directory)
+
+                def broken_swap(active, preset):
+                    self.assertTrue(swap(active, preset))
+                    ini = configparser.ConfigParser(interpolation=None)
+                    ini.read(active, encoding="utf-8")
+                    selected = Path(ini["GENERAL"]["PresetPath"])
+                    if fault == "missing":
+                        selected.unlink()
+                    elif fault == "corrupted":
+                        selected.write_text("Techniques=Wrong@Wrong.fx\n", encoding="utf-8")
+                    else:
+                        keys = ("PresetPath", "CurrentPresetPath", "StartupPresetPath") if fault == "original" else ("StartupPresetPath",)
+                        for key in keys:
+                            ini["GENERAL"][key] = preset
+                        with open(active, "w", encoding="utf-8") as output:
+                            ini.write(output)
+                    return True
+
+                with patch.object(ReshadeManager, "swap_preset", side_effect=broken_swap):
+                    result = runner._reshade_move_behavior()
+                self.assertEqual(result["status"], "fail", result)
+                self.assertFalse(result["details"]["presetSwapped"])
+                self.assertTrue(result["details"]["backupPreserved"])
+                self.assertTrue(result["details"]["originalRestored"])
 
     def test_live_scaling_results_run_once_and_are_returned_individually(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)

@@ -191,8 +191,13 @@ jobs:
           $env:LSC_TEST_ADDON_HOST = "1"
           python -m pytest -q tests/test_addon_host.py tests/test_amd_nr.py tests/test_managed_runtime.py
           if ($LASTEXITCODE -ne 0) { throw "Companion addon host tests failed" }
-          & build/native/addon-host-smoke/lsc_routing_test.exe
-          if ($LASTEXITCODE -ne 0) { throw "Companion NR routing tests failed" }
+          Push-Location -LiteralPath build/native/addon-host-smoke
+          try {
+            & .\lsc_routing_test.exe
+            if ($LASTEXITCODE -ne 0) { throw "Companion NR routing tests failed" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Compile executable
         shell: pwsh

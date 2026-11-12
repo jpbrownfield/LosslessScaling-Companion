@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import hashlib
 import json
 import logging
@@ -1698,8 +1699,24 @@ class DiagnosticRunner:
             active.write_text(original, encoding="utf-8")
             preset.write_text("Techniques=Diagnostic@Diagnostic.fx\n", encoding="utf-8")
             managed.write_text("[INPUT]\nKeyOverlay=0,0,0,0\n", encoding="utf-8")
+            original_preset = preset.read_bytes()
             swapped = ReshadeManager.swap_preset(str(active), str(preset))
-            preset_moved = str(preset.resolve()) in active.read_text(encoding="utf-8")
+            # ReShade edits a private copy; the source preset must stay intact.
+            # Compare actual files, including Windows short/long path aliases.
+            selection = configparser.ConfigParser(interpolation=None)
+            preset_moved = False
+            try:
+                selection.read_string(active.read_text(encoding="utf-8"))
+                selected = Path(selection["GENERAL"]["PresetPath"])
+                preset_moved = (
+                    selected.is_absolute()
+                    and selected.resolve().is_relative_to((root / ".companion/reshade-presets").resolve())
+                    and all(selected.samefile(selection["GENERAL"][key])
+                            for key in ("CurrentPresetPath", "StartupPresetPath"))
+                    and selected.read_bytes() == original_preset == preset.read_bytes()
+                )
+            except (configparser.Error, KeyError, OSError, ValueError):
+                pass
             backup_preserved = active.with_suffix(".ini.bak").read_text(encoding="utf-8") == original
             managed_applied = ReshadeManager.apply_managed_config(str(active), str(managed))
             managed_matches = active.read_text(encoding="utf-8") == managed.read_text(encoding="utf-8")
