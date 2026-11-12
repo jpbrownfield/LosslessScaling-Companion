@@ -342,7 +342,6 @@ class CompanionApplication:
                     self.process_watcher.check_foreground_and_update()
                     self.process_lasso_monitor.poll()
                 lossless_running = self.process_watcher.check_is_lossless_scaling_running()
-                self.proxy_menu.enforce_hidden()
                 
                 # Check live scaling target via log / overlay
                 if not self.state.benchmark_mode_active:
@@ -371,6 +370,7 @@ class CompanionApplication:
                     self.automation.reconcile_pending_addon_settings()
                     self.automation.reconcile_gpu_route()
                     self.dynamic_limiter.poll()
+                self.automation.gloam_integration.poll()
             except Exception as e:
                 logger.exception("Process monitor tick failed")
             time.sleep(1.0)
@@ -444,6 +444,7 @@ class CompanionApplication:
             self._start_shutdown_watchdog()
             logger.info("Shutting down LS Companion...")
             self.running = False
+            self.automation.gloam_integration.close()
             try:
                 from .ui.dashboard_window import close_dashboard_window
 

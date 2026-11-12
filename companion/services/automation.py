@@ -29,6 +29,7 @@ from .reshade_profiles import ReshadeProfileService
 from .window_manager import MonitorWindowManager
 from .overlay_indicator import OverlayIndicator
 from .sunshine_session import SunshineSessionMonitor
+from .gloam_integration import GloamIntegration
 
 if TYPE_CHECKING:
     from .process_watcher import ProcessWatcher
@@ -127,6 +128,7 @@ class AutomationController:
         self._pending_display_handoff: Optional[tuple[str, float]] = None
         self._pending_native_stop: Optional[tuple[float, int, Optional[int]]] = None
         self.sunshine_sessions = SunshineSessionMonitor()
+        self.gloam_integration = GloamIntegration(profile_manager, state)
         self._last_streaming_gpu_device_id: Optional[str] = None
 
     def observe_native_scaling_hotkey(self, pid: int, hwnd: Optional[int]) -> None:
@@ -195,7 +197,7 @@ class AutomationController:
             config_path = self.addon_configs.materialize(
                 profile,
                 reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
-                hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
+                hotkey=self.profile_manager.config.reshade_overlay_hotkey,
             )
             from . import amd_nr
             if amd_nr.enabled(profile.addon_config):
@@ -242,18 +244,10 @@ class AutomationController:
 
     @staticmethod
     def _echo_hotkey_vk(value: str) -> int:
-        keys = {
-            "insert": 45, "delete": 46, "home": 36, "end": 35,
-            "pageup": 33, "page up": 33, "pagedown": 34, "page down": 34,
-        }
-        text = str(value or "end").strip().casefold()
-        if text in keys:
-            return keys[text]
-        if len(text) == 1 and text.isalpha():
-            return ord(text.upper())
-        if text.startswith("f") and text[1:].isdigit() and 1 <= int(text[1:]) <= 12:
-            return 111 + int(text[1:])
-        return 35
+        try:
+            return InputSimulator.vk_from_string(str(value or "end").strip())
+        except ValueError:
+            return 35
 
     def _lossless_scaling_dir(self) -> Optional[str]:
         """Return the sole directory in which managed graphics files may be deployed."""
@@ -441,12 +435,6 @@ class AutomationController:
                 if instant is not None:
                     if instant:
                         self._remember_manual_stop(stopped_pid)
-                        try:
-                            self.overlay_indicator.log("Scaling stopped",
-                                                       anchor_hwnd=target_hwnd)
-                            self.overlay_indicator.set_border(None)
-                        except Exception:
-                            pass
                     return instant
             if (
                 active
@@ -720,6 +708,8 @@ class AutomationController:
                     pass
                 return False
             self.state.mark_scaling_toggled(active)
+            if not active:
+                self.overlay_indicator.end_scaling()
             self._set_control_status(
                 "confirmed",
                 f"Lossless Scaling confirmed {'active' if active else 'idle'}",
@@ -765,13 +755,6 @@ class AutomationController:
                         anchor_hwnd=target_hwnd)
                     self.overlay_indicator.set_border(
                         "active", anchor_hwnd=target_hwnd)
-                except Exception:
-                    pass
-            else:
-                try:
-                    self.overlay_indicator.log("Scaling stopped",
-                                               anchor_hwnd=target_hwnd)
-                    self.overlay_indicator.set_border(None)
                 except Exception:
                     pass
             return True
@@ -863,6 +846,7 @@ class AutomationController:
         if not stopped and still_running:
             logger.warning("Instant stop could not close LS; falling back to hotkey toggle")
             return None
+        self.overlay_indicator.end_scaling()
         configured_exe = self.profile_manager.config.lossless_scaling_exe_path
         try:
             if self.profile_manager.config.addon_manager_enabled:
@@ -1047,18 +1031,13 @@ class AutomationController:
                 label = "game"
             logger.info("Scaling target closed; ending scaling session for '%s'", label)
             self.state.mark_scaling_toggled(False)
+            self.overlay_indicator.end_scaling()
             self._set_control_status("confirmed", "Scaling target closed")
             self.state.scaling_owner_profile_id = None
             self.state.scaling_trigger = None
             self.state.scaling_target_pid = None
             self.state.scaling_target_hwnd = None
             self.state.scaling_target_verified_for_minimization = False
-            try:
-                self.overlay_indicator.log(
-                    f"Scaling stopped (target closed): {label}")
-                self.overlay_indicator.set_border(None)
-            except Exception:
-                pass
             if self.process_watcher:
                 try:
                     self.process_watcher.invalidate_foreground_cache()
@@ -1144,6 +1123,7 @@ class AutomationController:
                 except (TypeError, ValueError):
                     anchor = None
                 try:
+                    self.overlay_indicator.begin_scaling()
                     self.overlay_indicator.log(
                         f"Scaling started (native hotkey): {label}",
                         kind="ok", anchor_hwnd=anchor)
@@ -1153,8 +1133,7 @@ class AutomationController:
                     pass
             else:
                 try:
-                    self.overlay_indicator.log("Scaling stopped")
-                    self.overlay_indicator.set_border(None)
+                    self.overlay_indicator.end_scaling()
                 except Exception:
                     pass
 
@@ -1408,7 +1387,7 @@ class AutomationController:
             self.addon_configs.materialize(
                 profile,
                 reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
-                hotkey_vk=self._echo_hotkey_vk(self.profile_manager.config.reshade_overlay_hotkey),
+                hotkey=self.profile_manager.config.reshade_overlay_hotkey,
             )
             if profile == existing:
                 return existing
@@ -3050,6 +3029,7 @@ class AutomationController:
     ) -> None:
         """Show intent only once an accepted scaling request begins."""
         try:
+            self.overlay_indicator.begin_scaling()
             label = profile.name if profile else "focused window"
             self.overlay_indicator.log(
                 f"Scaling requested: {label}",
@@ -3389,9 +3369,7 @@ class AutomationController:
             managed_config = (
                 self.reshade_profiles.config_path(
                     reshade.managed_profile_id,
-                    interactive=bool(
-                        reshade.menu_proxy_enabled
-                    ),
+                    interactive=True,
                 )
                 if reshade.managed_profile_id
                 else None
@@ -3410,7 +3388,10 @@ class AutomationController:
             elif reshade_ini_path and reshade.preset_path:
                 backup_path = Path(reshade_ini_path).with_suffix(".ini.bak")
                 owned_backup = not backup_path.exists()
-                if ReshadeManager.swap_preset(reshade_ini_path, reshade.preset_path):
+                if ReshadeManager.swap_preset(
+                    reshade_ini_path, reshade.preset_path,
+                    overlay_hotkey=self.profile_manager.config.reshade_overlay_hotkey,
+                ):
                     reshade_swapped = True
                     if notify_overlay:
                         self.overlay_indicator.log(

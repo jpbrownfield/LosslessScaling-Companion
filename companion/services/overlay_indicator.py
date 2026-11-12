@@ -219,6 +219,7 @@ class OverlayIndicator:
         self._line_anchor_hwnd: Optional[int] = None
         self._reshade_context: Optional[Dict] = None
         self._performance_graph: Optional[Dict] = None
+        self._scaling_ended = False
         self._lock = threading.RLock()
         # NOTE: the Win32 presenter is created lazily on first real show so
         # unit tests (and headless runs) never create HWNDs or threads.
@@ -259,14 +260,26 @@ class OverlayIndicator:
             return self._presenter
 
     # -- public API ------------------------------------------------------
+    def begin_scaling(self) -> None:
+        with self._lock:
+            self._scaling_ended = False
+
+    def end_scaling(self) -> None:
+        """Dismiss the session and ignore late work until another scale starts."""
+        with self._lock:
+            self._scaling_ended = True
+            self.hide()
+
     def set_performance_graph(self, data: Optional[Dict]) -> None:
         with self._lock:
-            self._performance_graph = dict(data) if data is not None else None
+            self._performance_graph = dict(data) if data is not None and not self._scaling_ended else None
         self.tick()
 
     def set_reshade_context(self, active: bool, anchor_hwnd: Optional[int] = None,
                             hints: Optional[List[Dict]] = None) -> None:
         with self._lock:
+            if active and self._scaling_ended:
+                return
             previous = self._reshade_context
             if not active and previous is None:
                 return
@@ -282,7 +295,7 @@ class OverlayIndicator:
             now: Optional[float] = None) -> None:
         try:
             with self._lock:
-                if not self._enabled():
+                if not self._enabled() or self._scaling_ended:
                     return
                 if anchor_hwnd is not None:
                     self._line_anchor_hwnd = anchor_hwnd
@@ -304,6 +317,8 @@ class OverlayIndicator:
         """
         try:
             with self._lock:
+                if self._scaling_ended:
+                    return
                 if not self._enabled():
                     state = None
                 moment = _time.monotonic() if now is None else now
@@ -434,10 +449,12 @@ class OverlayIndicator:
                     if info and is_game_like_window(*info):
                         border_anchor = context["anchor"]
                         border_state = "reshade"
-            moment = _time.monotonic() if now is None else now
-            pulse = bool(border_state) and (int(moment * 4) % 2 == 0)
-            self._present(lines, border_state, border_anchor, anchor_hwnd,
-                          pulse, now=moment, context=context)
+                # Serialize the snapshot and its presentation with end_scaling:
+                # an older pump tick must not re-queue cards after dismissal.
+                moment = _time.monotonic() if now is None else now
+                pulse = bool(border_state) and (int(moment * 4) % 2 == 0)
+                self._present(lines, border_state, border_anchor, anchor_hwnd,
+                              pulse, now=moment, context=context)
         except Exception:
             pass
 

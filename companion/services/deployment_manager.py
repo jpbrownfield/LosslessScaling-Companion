@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -365,6 +366,8 @@ class DeploymentManager:
             if entry.get("inactive"):
                 destination = destination.with_name(destination.name + ".inactive")
             if not destination.is_file():
+                return False
+            if entry.get("role") in self.MUTABLE_CONFIG_ROLES and not destination.stat().st_mode & stat.S_IWUSR:
                 return False
             if (
                 entry.get("role") not in self.RUNTIME_MUTATED_CONFIG_ROLES
@@ -740,7 +743,10 @@ class DeploymentManager:
                             shutil.copy2(destination, original_backup_path)
                         original_backup = str(original_backup_path)
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    self._atomic_copy(Path(item["source_path"]), destination)
+                    if item["role"] in self.MUTABLE_CONFIG_ROLES:
+                        self._atomic_copy(Path(item["source_path"]), destination, writable=True)
+                    else:
+                        self._atomic_copy(Path(item["source_path"]), destination)
                     new_entries.append(
                         {
                             "relative_path": item["relative_path"],
@@ -840,13 +846,21 @@ class DeploymentManager:
                 time.sleep(0.1 * (2 ** min(attempt, 3)))
 
     @staticmethod
-    def _atomic_copy(source: Path, destination: Path) -> None:
+    def _atomic_copy(source: Path, destination: Path, *, writable: bool = False) -> None:
         handle, temp_name = tempfile.mkstemp(
             prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
         )
         os.close(handle)
         try:
-            shutil.copy2(source, temp_name)
+            if writable:
+                # Mutable presets inherit the private runtime directory's ACL;
+                # never copy a downloaded/source file's read-only attribute.
+                shutil.copyfile(source, temp_name)
+                os.chmod(temp_name, os.stat(temp_name).st_mode | stat.S_IWUSR)
+                if destination.is_file() and not destination.stat().st_mode & stat.S_IWUSR:
+                    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+            else:
+                shutil.copy2(source, temp_name)
             DeploymentManager._replace_with_retry(temp_name, destination)
         finally:
             if os.path.exists(temp_name):

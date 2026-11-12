@@ -127,6 +127,7 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertEqual(kwargs["startupinfo"].wShowWindow, 0)
             self.assertTrue(kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW)
             self.assertEqual(kwargs["env"]["SPECIALK_PATH"], str(osd.parent.parent.resolve()))
+            self.assertEqual(kwargs["env"]["RESHADE_BASE_PATH_OVERRIDE"], str(executable.parent.resolve()))
             suppress.assert_called_once_with(4242)
             self.assertEqual(launch_events, ["popen", "suppress", "sleep"])
 

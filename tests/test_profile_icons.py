@@ -14,6 +14,46 @@ from companion.services.profile_icons import ProfileIconService, executable_icon
 
 
 class ProfileIconTests(unittest.TestCase):
+    @staticmethod
+    def cached_png(color="red"):
+        output = BytesIO()
+        Image.new("RGBA", (64, 64), color).save(output, format="PNG")
+        return output.getvalue()
+
+    def test_disk_cache_survives_restart_without_the_application_running(self):
+        cache = Path(self.directory.name) / "icons"
+        profile = Profile(name="Legacy", target_process="Game.exe")
+        data = self.cached_png()
+        service = ProfileIconService(cache)
+        with patch.object(service, "_resolve_name", return_value=[str(self.exe)]), \
+                patch("companion.services.profile_icons.executable_icon_png", return_value=data):
+            self.assertEqual(service.png(profile), data)
+        restarted = ProfileIconService(cache)
+        with patch.object(restarted, "_resolve_name", return_value=[]) as resolve, \
+                patch("companion.services.profile_icons.executable_icon_png") as extract:
+            self.assertEqual(restarted.png(profile), data)
+            resolve.assert_not_called()
+            extract.assert_not_called()
+            self.exe.unlink()
+            self.assertEqual(restarted.png(profile), data)
+
+    def test_disk_cache_invalidates_updates_and_retargets_and_recovers_corruption(self):
+        cache = Path(self.directory.name) / "icons"
+        profile = Profile(name="Game", target_executable_path=str(self.exe))
+        first, second = self.cached_png(), self.cached_png("blue")
+        with patch("companion.services.profile_icons.executable_icon_png", return_value=first):
+            self.assertEqual(ProfileIconService(cache).png(profile), first)
+        self.exe.write_bytes(b"updated executable resource")
+        with patch("companion.services.profile_icons.executable_icon_png", return_value=second) as extract:
+            self.assertEqual(ProfileIconService(cache).png(profile), second)
+            self.assertEqual(extract.call_count, 1)
+        (cache / f"{ProfileIconService.version(profile, None)}.png").write_bytes(b"corrupt")
+        with patch("companion.services.profile_icons.executable_icon_png", return_value=second) as extract:
+            self.assertEqual(ProfileIconService(cache).png(profile), second)
+            self.assertEqual(extract.call_count, 1)
+        other = profile.model_copy(update={"target_executable_path": str(self.exe.with_name("Other.exe"))})
+        self.assertIsNone(ProfileIconService(cache).png(other))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

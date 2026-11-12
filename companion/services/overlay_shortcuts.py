@@ -6,11 +6,13 @@ from pathlib import Path
 from .input_simulator import InputSimulator
 
 DEFAULT_OVERLAY_HOTKEYS = {
+    "overlay_toggle": "ctrl+home",
     "profile_editor": "delete", "addon_manager": "insert",
     "performance_graph": "=", "special_k_panel": "-",
 }
 ACTION_LABELS = {
-    "profile_editor": "Edit current profile", "addon_manager": "Add-on settings",
+    "overlay_toggle": "Close Companion overlay",
+    "profile_editor": "Edit current profile", "addon_manager": "Advanced add-on panel",
     "performance_graph": "Performance graph", "special_k_panel": "Special K panel",
 }
 MODIFIERS = {"ctrl": 2, "alt": 1, "shift": 4, "win": 8}
@@ -30,6 +32,17 @@ def parse_shortcut(value: str):
     label_key = {"=": "=", "-": "-", "pageup": "Page Up", "pagedown": "Page Down"}.get(key, key.title())
     label = "+".join([part.title() for part in MODIFIERS if part in modifiers] + [label_key])
     return mask, vk, label
+
+
+def reshade_key_data(value: str) -> tuple[int, int, int, int]:
+    """ReShade serializes a shortcut as virtual key, Ctrl, Shift, Alt."""
+    parsed = parse_shortcut(value)
+    if not parsed:
+        raise ValueError("Enter a ReShade menu hotkey")
+    mask, vk, _label = parsed
+    if mask & MODIFIERS["win"]:
+        raise ValueError("ReShade menu shortcuts support Ctrl, Alt and Shift; the Win modifier is unavailable")
+    return vk, int(bool(mask & 2)), int(bool(mask & 4)), int(bool(mask & 1))
 
 
 def validate_overlay_hotkeys(value):

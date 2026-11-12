@@ -12,6 +12,7 @@ from ..core.models import Profile
 from ..core.profile_manager import ProfileManager
 from .addon_schema import ADDONS, DEFAULT_ADDON_IDS, MANAGED_DEFAULTS
 from . import sm86_sr, amd_nr
+from .overlay_shortcuts import reshade_key_data
 
 
 class AddonConfigService:
@@ -110,6 +111,7 @@ class AddonConfigService:
             data = self._clean(json.loads(live.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             return False
+        self._sync_scaling_alias(profile, data)
         if profile.is_default:
             self.profile_manager.config.default_addon_config = data
         profile.addon_config = copy.deepcopy(data)
@@ -117,7 +119,22 @@ class AddonConfigService:
         self.profile_manager.save_config()
         return True
 
-    def effective(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35) -> Dict[str, Any]:
+    @staticmethod
+    def _sync_scaling_alias(profile: Profile, data: Dict[str, Any]) -> None:
+        """Panel selections use the same native NIS path as the scaling picker."""
+        selected = None
+        for addon_id in ("DLSS4DLAA", "FSR3UPSC", "XESSUPSC"):
+            section = data["addons"].get(addon_id)
+            if not isinstance(section, dict) or section.get("_enabled") is not True:
+                continue
+            if selected is None:
+                selected = addon_id
+                profile.native_scaling_settings["ScalingType"] = "NIS"
+            else:
+                section["_enabled"] = False
+
+    def effective(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35,
+                  hotkey: Optional[str] = None) -> Dict[str, Any]:
         """Return Host-owned profile state plus Companion's host invariants.
 
         ``addon_config`` is authoritative.  The NeuralRender model remains in
@@ -139,7 +156,9 @@ class AddonConfigService:
         if not isinstance(companion, dict):
             companion = global_settings["companion"] = {}
         ui["open_on_start"] = False
-        companion["headless"] = True
+        companion["managed"] = True
+        companion["headless"] = False
+        ui.setdefault("hotkey_enabled", False)
         global_settings["auto_load"] = True
 
         # The host may load an add-on when its entry/flag is absent. Opt in only
@@ -158,15 +177,17 @@ class AddonConfigService:
         for addon_id, defaults in MANAGED_DEFAULTS.items():
             data["addons"].setdefault(addon_id, {}).update(defaults)
 
+        data["addons"]["ReShadePassthrough"]["_enabled"] = bool(reshade_enabled)
         if reshade_enabled:
             passthrough = data["addons"].setdefault("ReShadePassthrough", {})
             if not isinstance(passthrough, dict):
                 passthrough = data["addons"]["ReShadePassthrough"] = {}
             passthrough["_enabled"] = True
-            passthrough.setdefault("hotkey_vk", str(hotkey_vk))
-            passthrough.setdefault("hotkey_ctrl", "0")
-            passthrough.setdefault("hotkey_alt", "0")
-            passthrough.setdefault("hotkey_shift", "0")
+            vk, ctrl, shift, alt = reshade_key_data(hotkey) if hotkey is not None else (hotkey_vk, 0, 0, 0)
+            passthrough["hotkey_vk"] = str(vk)
+            passthrough["hotkey_ctrl"] = str(ctrl)
+            passthrough["hotkey_alt"] = str(alt)
+            passthrough["hotkey_shift"] = str(shift)
             passthrough.setdefault("auto_click_repress", "1")
         if "LSC-AdapterReport" in self.available_addon_ids:
             data["addons"].setdefault("LSC-AdapterReport", {})["_enabled"] = True
@@ -183,8 +204,10 @@ class AddonConfigService:
             data["addons"]["DLSS4DLAA"].update(dlaaPreset=sm86_sr.MODES[mode], scalerPerGame="0")
         return data
 
-    def materialize(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35) -> Path:
-        data = self.effective(profile, reshade_enabled=reshade_enabled, hotkey_vk=hotkey_vk)
+    def materialize(self, profile: Profile, *, reshade_enabled: bool, hotkey_vk: int = 35,
+                    hotkey: Optional[str] = None) -> Path:
+        data = self.effective(profile, reshade_enabled=reshade_enabled, hotkey_vk=hotkey_vk, hotkey=hotkey)
+        self._sync_scaling_alias(profile, data)
         profile.addon_config = copy.deepcopy(data)
         neural_enabled = data["addons"]["DLSSNR02"]["_enabled"] is True
         profile.graphics.neural_render.implementation = "lsp_neural_render" if neural_enabled else "disabled"

@@ -31,7 +31,7 @@ def environment():
     listener = Mock(overlay_registered=dict(config.overlay_hotkeys))
     opener = Mock(return_value=True)
     controller = ReShadeOverlayController(manager, state, indicator, listener, opener,
-                                         foreground_check=lambda: True)
+                                         foreground_check=lambda: True, open_addon_panel=Mock(return_value=True))
     return controller, manager, state, listener, opener, seen
 
 
@@ -40,6 +40,17 @@ def status(active=True, **extra):
 
 
 class ReShadeOverlayTests(unittest.TestCase):
+    def test_scaling_stop_cleanup_does_not_create_an_overlay_closed_toast(self):
+        controller, _, state, listener, _, seen = environment()
+        controller.update(status())
+        state.is_scaling_active = False
+        controller.indicator.end_scaling()
+        controller.update(status())
+        self.assertFalse(controller.active)
+        self.assertIsNone(seen[-1])
+        self.assertEqual(controller.indicator._state.current, [])
+        listener.set_overlay_actions.assert_called_with({})
+
     def test_live_toggle_sets_yellow_border_and_persistent_status_then_restores_scaling(self):
         controller, manager, state, listener, _, seen = environment()
         controller.update(status())
@@ -48,19 +59,28 @@ class ReShadeOverlayTests(unittest.TestCase):
         self.assertTrue(payload["lines"][0]["persistent"])
         self.assertEqual(payload["hotkey_hints"][0], {"key": "F8", "label": "Toggle ReShade menu"})
         self.assertIn({"key": "Delete", "label": "Edit current profile"}, payload["hotkey_hints"])
-        self.assertIn({"key": "Insert", "label": "Add-on settings"}, payload["hotkey_hints"])
+        self.assertIn({"key": "Insert", "label": "Advanced add-on panel"}, payload["hotkey_hints"])
         controller.update(status(False))
         self.assertEqual(seen[-1]["border"], "active")
         self.assertFalse(seen[-1]["hotkey_hints"])
-        listener.set_overlay_actions.assert_called_with({})
+        self.assertEqual(set(listener.set_overlay_actions.call_args.args[0]), {"overlay_toggle"})
 
-    def test_shortcuts_open_current_profile_and_headless_addon_settings(self):
+    def test_shortcuts_open_current_profile_and_native_addon_panel(self):
         controller, _, _, _, opener, _ = environment()
         controller.update(status())
         self.assertTrue(controller.dispatch_action("profile_editor"))
         opener.assert_called_with("game", None)
         self.assertTrue(controller.dispatch_action("addon_manager"))
-        opener.assert_called_with("game", "addons")
+        controller.open_addon_panel.assert_called_once_with()
+        opener.assert_called_once_with("game", None)
+
+    def test_disabled_host_removes_panel_shortcut_and_blocks_dispatch(self):
+        controller, manager, _, listener, _, _ = environment()
+        manager.config.addon_manager_enabled = False
+        controller.update(status())
+        self.assertNotIn("addon_manager", listener.set_overlay_actions.call_args.args[0])
+        self.assertFalse(controller.dispatch_action("addon_manager"))
+        controller.open_addon_panel.assert_not_called()
 
     def test_shortcuts_do_not_open_after_focus_profile_or_session_changes(self):
         controller, _, state, _, opener, _ = environment()
@@ -84,7 +104,58 @@ class ReShadeOverlayTests(unittest.TestCase):
                 state.benchmark_mode_active = True
             controller.update({"available": False} if setting == "telemetry" else status())
             self.assertFalse(controller.active)
-            listener.set_overlay_actions.assert_called_with({})
+            self.assertEqual(set(listener.set_overlay_actions.call_args.args[0]),
+                             {"overlay_toggle"} if setting == "telemetry" else set())
+
+    def test_companion_toggle_opens_without_reshade_or_telemetry_and_stays_closed(self):
+        controller, _, state, listener, _, seen = environment()
+        state.current_active_profile.graphics.reshade.enabled = False
+        controller.update({"available": False})
+        self.assertFalse(controller.active)
+        self.assertEqual(set(listener.set_overlay_actions.call_args.args[0]), {"overlay_toggle"})
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertEqual(seen[-1]["lines"][0]["text"], "Overlay active")
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        controller.update({"available": False})
+        self.assertFalse(controller.active)
+        self.assertFalse(controller.dispatch_action("profile_editor"))
+        controller.clear()
+        listener.set_overlay_actions.assert_called_with({})
+
+    def test_companion_toggle_is_scoped_to_foreground_and_application_session(self):
+        controller, _, state, listener, _, _ = environment()
+        controller.update(status(False))
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        controller.foreground_check = lambda: False
+        controller.update(status(False))
+        listener.set_overlay_actions.assert_called_with({})
+        self.assertFalse(controller.dispatch_action("overlay_toggle"))
+        controller.foreground_check = lambda: True
+        state.scaling_target_pid = 99
+        self.assertFalse(controller.dispatch_action("overlay_toggle"))
+        controller.update(status(False))
+        self.assertFalse(controller.active)
+
+    def test_manually_closed_native_overlay_waits_for_next_native_toggle(self):
+        controller, _, _, _, _, _ = environment()
+        controller.update(status())
+        controller.dispatch_action("overlay_toggle")
+        controller.update(status())
+        self.assertFalse(controller.active)
+        controller.update(status(False))
+        controller.update(status(True))
+        self.assertTrue(controller.active)
+
+    def test_native_scaling_without_a_matched_profile_can_open_default_profile_controls(self):
+        controller, manager, state, _, opener, _ = environment()
+        manager.config.profiles = [Profile(id="default", name="Default", is_default=True)]
+        state.current_active_profile = None
+        controller.update({"available": False, "pid": 123})
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertTrue(controller.dispatch_action("profile_editor"))
+        opener.assert_called_once_with("default", None)
 
     def test_reserved_reshade_key_and_failed_registrations_are_not_advertised(self):
         controller, manager, _, listener, _, seen = environment()

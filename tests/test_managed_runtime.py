@@ -18,6 +18,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ManagedRuntimeTests(unittest.TestCase):
+    def test_reshade_base_override_is_child_only_and_uses_private_installation(self):
+        executable = Path(self.temp.name) / "fixture" / "LosslessScaling.exe"
+        executable.parent.mkdir()
+        executable.write_bytes(b"fixture")
+        with patch.dict(os.environ, {"RESHADE_BASE_PATH_OVERRIDE": "C:/AnotherGame"}):
+            environment, _, _ = launch_environment(executable)
+            self.assertEqual(environment["RESHADE_BASE_PATH_OVERRIDE"], str(executable.parent.resolve()))
+            self.assertEqual(os.environ["RESHADE_BASE_PATH_OVERRIDE"], "C:/AnotherGame")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

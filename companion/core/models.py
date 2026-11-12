@@ -32,7 +32,8 @@ class HotkeyConfig(BaseModel):
     @classmethod
     def validate_key(cls, value: str) -> str:
         normalized = value.strip().casefold()
-        if not normalized or len(normalized) > 16 or not normalized.replace("_", "").isalnum():
+        normalized = {"oemplus": "=", "oemminus": "-"}.get(normalized, normalized)
+        if not normalized or len(normalized) > 16 or (normalized not in {"=", "-"} and not normalized.replace("_", "").isalnum()):
             raise ValueError("hotkey key must be a short letter, number, or named key")
         return normalized
 
@@ -420,6 +421,7 @@ class AppConfig(BaseModel):
     reshade_overlay_hotkey: str = "end"
     addon_manager_enabled: bool = True
     sunshine_match_encoder_gpu: bool = True
+    gloam_hdr_enabled: bool = False
     addon_manager: ManagedPackageConfig = Field(
         default_factory=lambda: ManagedPackageConfig(enabled=True)
     )
@@ -428,6 +430,7 @@ class AppConfig(BaseModel):
     minimize_other_windows_on_scale: bool = False
     overlay_indicator_enabled: bool = True
     overlay_hotkeys: Dict[str, str] = Field(default_factory=lambda: {
+        "overlay_toggle": "ctrl+home",
         "profile_editor": "delete", "addon_manager": "insert",
         "performance_graph": "=", "special_k_panel": "-",
     })

@@ -1,4 +1,4 @@
-"""FriedSnowman build-5 settings. Values use the upstream text representation."""
+"""FriedSnowman settings, reviewed through build-7. Values use upstream text."""
 
 
 def number(key, label, minimum, maximum, step="0.01", default=""):
@@ -34,7 +34,7 @@ ADDONS = [
                  choice("style", "Model style", [["0", "Standard"], ["1", "Natural"], ["2", "Cinematic"]]),
                  number("localStructure", "Local structure", 0, 2, default="0.8"),
                  number("localTone", "Local tone", 0, 2, default="0.3"),
-                 number("skinStructure", "Skin structure (-1: automatic)", -1, 2, default="-1"),
+                 number("skinStructure", "Skin structure", 0, 2, default="0.8"),
                  flag("autoMask", "Automatic skin detection", "1"),
                  number("detail", "Composition detail", 0, 4, default="1"),
                  number("colour", "Composition colour", 0, 4, default="1"),

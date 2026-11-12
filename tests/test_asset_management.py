@@ -13,6 +13,21 @@ from companion.services.graphics_resolver import GraphicsResolutionError, Graphi
 
 
 class AssetStoreTests(unittest.TestCase):
+    def test_mutable_deployment_copy_does_not_inherit_source_readonly_attribute(self):
+        import stat
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / "preset.ini", Path(directory) / "deployed.ini"
+            source.write_text("[Effect]\nValue=1\n", encoding="utf-8")
+            target.write_text("old", encoding="utf-8")
+            source.chmod(stat.S_IREAD)
+            target.chmod(stat.S_IREAD)
+            DeploymentManager._atomic_copy(source, target, writable=True)
+            self.assertTrue(target.stat().st_mode & stat.S_IWUSR)
+            self.assertFalse(source.stat().st_mode & stat.S_IWUSR)
+            target.write_text("[Effect]\nValue=2\n", encoding="utf-8")
+            self.assertIn("Value=1", source.read_text(encoding="utf-8"))
+            source.chmod(stat.S_IREAD | stat.S_IWRITE)
     def test_atomic_copy_retries_transient_windows_lock_without_touching_original(self):
         with tempfile.TemporaryDirectory() as directory:
             source, target = Path(directory) / "source.dll", Path(directory) / "target.dll"

@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 from ..core.models import ManagedReshadeProfile
 from ..core.profile_manager import ProfileManager
 from .hdr_display import HdrDisplayDetector
-from .input_simulator import InputSimulator
+from .overlay_shortcuts import reshade_key_data
 
 
 logger = logging.getLogger(__name__)
@@ -722,7 +722,7 @@ class ReshadeProfileService:
             value = ".\\" + str(path).replace("/", "\\")
             return value + ("\\**" if recursive else "")
 
-        virtual_key = InputSimulator.vk_from_string(
+        key_data = reshade_key_data(
             self.profile_manager.config.reshade_overlay_hotkey
         )
 
@@ -749,7 +749,7 @@ class ReshadeProfileService:
         self._atomic_write(folder / "ReShade.ini", content("0,0,0,0"))
         self._atomic_write(
             folder / "ReShade.Interactive.ini",
-            content(f"{virtual_key},0,0,0"),
+            content(",".join(map(str, key_data))),
         )
 
     @_serialized

@@ -66,13 +66,41 @@ def cmake_executable():
     return str(sorted(matches)[-1])
 
 
+def release_asset_name(lock):
+    tag = lock["tag"]
+    name = lock.get("release_asset", f"LSAddonManager-{tag}-x64.zip")
+    if name not in (f"LSAddonManager-{tag}-x64.zip", f"LSAddonManager-{tag}-x64.exe"):
+        raise RuntimeError("Unexpected pinned upstream release asset")
+    return name
+
+
+def extract_release(archive, work):
+    """Extract the verified release into an isolated build folder, never install it."""
+    setup_dir, payload = work / "setup", work / "payload"
+    if archive.suffix == ".zip":
+        extract(archive, setup_dir)
+        executable = setup_dir / "LSAddonManagerSetup.exe"
+        notices = setup_dir
+    elif archive.suffix == ".exe":
+        executable = archive
+        notices = payload
+    else:
+        raise RuntimeError("Unsupported upstream release format")
+    if not (payload / "Lossless.dll").is_file():
+        subprocess.run([str(executable.resolve()), "--extract", str(payload.resolve()),
+            "--no-remember", "--log", str((work / "extract.log").resolve())], check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=180)
+    return payload, notices
+
+
 def build(cache: Path):
     lock = json.loads((OVERLAY / "upstream.lock.json").read_text())
     repository, commit, tag = (lock[key] for key in ("repository", "commit", "tag"))
     source_zip = download(f"https://codeload.github.com/{repository}/zip/{commit}",
                           cache / "source.zip", lock["source_sha256"])
-    release_zip = download(f"https://github.com/{repository}/releases/download/{tag}/LSAddonManager-{tag}-x64.zip",
-                           cache / "release.zip", lock["release_sha256"])
+    release_name = release_asset_name(lock)
+    release_archive = download(f"https://github.com/{repository}/releases/download/{tag}/{release_name}",
+                           cache / ("release" + Path(release_name).suffix), lock["release_sha256"])
     overlay_hash = hashlib.sha256(b"".join(path.read_bytes() for path in sorted(OVERLAY.iterdir())
         if path.suffix in {".cpp", ".h", ".inc", ".py", ".json"})).hexdigest()[:16]
     work = ROOT / "build/addon_manager" / overlay_hash
@@ -93,6 +121,9 @@ def build(cache: Path):
         subprocess.run([sys.executable, str(amd_overlay / "prepare_runtime.py"), str(amd_runtime_source)], check=True)
         (amd_runtime_source / ".companion-prepared").write_text(amd_lock["commit"])
     cmake = cmake_executable()
+    subprocess.run([cmake, "-S", str(ROOT / "native/hdr_session"),
+                    "-B", str(ROOT / "build/hdr_session"), "-A", "x64"], check=True)
+    subprocess.run([cmake, "--build", str(ROOT / "build/hdr_session"), "--config", "Release"], check=True)
     subprocess.run([cmake, "-S", str(ROOT / "native/adapter_report"),
                     "-B", str(ROOT / "build/adapter_report"), "-A", "x64"], check=True)
     subprocess.run([cmake, "--build", str(ROOT / "build/adapter_report"), "--config", "Release",
@@ -115,17 +146,23 @@ def build(cache: Path):
                 dependencies[name] = candidate
                 break
     subprocess.run([cmake, "-S", str(source / "manager"), "-B", str(work / "host"), "-A", "x64",
-        f'-DLSC_HOST_VERSION={lock["version"]}', *dependency_options], check=True)
-    subprocess.run([cmake, "--build", str(work / "host"), "--config", "Release", "--target", "Lossless",
-                    "lsc_headless_smoke", "lsc_fake_engine", "lsc_routing_test", "--parallel"], check=True)
+        f'-DLSC_HOST_VERSION={lock["version"]}', f'-DEAM_BUILD_NUMBER={tag.removeprefix("build-")}',
+        *dependency_options], check=True)
+    targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_routing_test"]
+    fps_test = (source / "manager/tools/fps_counter_test.cpp").is_file()
+    if fps_test:
+        targets.extend(("eam_fpstest", "eam_updatetest"))
+    subprocess.run([cmake, "--build", str(work / "host"), "--config", "Release", "--target",
+                    *targets, "--parallel", "4"], check=True)
+    if fps_test:
+        for name, args in (("eam_fpstest", ()), ("eam_fpstest", ("foreign",)), ("eam_updatetest", ())):
+            subprocess.run([str(work / "host/Release" / (name + ".exe")), *args],
+                           check=True, cwd=work, timeout=60)
 
-    setup_dir = work / "setup"
-    extract(release_zip, setup_dir)
-    payload = work / "payload"
-    if not (payload / "Lossless.dll").is_file():
-        subprocess.run([str(setup_dir / "LSAddonManagerSetup.exe"), "--extract", str(payload),
-            "--no-remember", "--log", str(work / "extract.log")], check=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=180)
+    subprocess.run([cmake, "-S", str(ROOT / "native/hdr_session"), "-B", str(ROOT / "build/hdr_session"),
+                    "-A", "x64", f"-DLSC_MINHOOK_SOURCE={dependencies['minhook']}"], check=True)
+    subprocess.run([cmake, "--build", str(ROOT / "build/hdr_session"), "--config", "Release"], check=True)
+    payload, upstream_notices = extract_release(release_archive, work)
     shutil.copy2(work / "host/Release/Lossless.dll", payload / "Lossless.dll")
     helper = payload / "addons/LSC-AdapterReport"
     helper.mkdir(parents=True, exist_ok=True)
@@ -150,7 +187,7 @@ def build(cache: Path):
     notices = payload / "licenses/LSAddonManager"
     notices.mkdir(parents=True, exist_ok=True)
     for name in ("LICENSE.txt", "NOTICE.md"):
-        shutil.copy2(setup_dir / name, notices / name)
+        shutil.copy2(upstream_notices / name, notices / name)
     shutil.copy2(OVERLAY / "upstream.lock.json", notices / "upstream.lock.json")
     shutil.copy2(OVERLAY / "BRIDGING.md", notices / "BRIDGING.md")
     shutil.copy2(ROOT / "native/vendor/losslessproxy-sdk/LICENSE", notices / "LosslessProxy-SDK-LICENSE.txt")
@@ -175,7 +212,7 @@ def build(cache: Path):
         bundle.write(__file__, "scripts/build_addon_manager.py")
         bundle.write(ROOT / "companion/services/sm86_sr.py", "companion/services/sm86_sr.py")
         bundle.write(ROOT / "companion/services/amd_nr.py", "companion/services/amd_nr.py")
-        for folder in (ROOT / "native/adapter_report", ROOT / "native/amd_neuralrender", ROOT / "native/vendor/losslessproxy-sdk"):
+        for folder in (ROOT / "native/adapter_report", ROOT / "native/amd_neuralrender", ROOT / "native/hdr_session", ROOT / "native/vendor/losslessproxy-sdk"):
             for path in sorted(folder.rglob("*")):
                 if path.is_file():
                     bundle.write(path, path.relative_to(ROOT).as_posix())

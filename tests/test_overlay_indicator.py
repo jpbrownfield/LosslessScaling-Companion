@@ -346,18 +346,49 @@ class OverlayWiringTests(unittest.TestCase):
                             for line in script.lines()))
         self.assertIn("active", script.borders())
 
-    def test_deactivation_clears_border(self):
-        automation, manager, script = make_automation()
-        profile = Profile(id="game", name="The Game")
+    def test_deactivation_dismisses_all_cards_before_focusing_another_window(self):
+        for reason in ("manual_profile_switch", "manual"):
+            with self.subTest(reason=reason):
+                automation, manager, script = make_automation()
+                profile = Profile(id="game", name="The Game")
+                automation.state.is_scaling_active = True
+                automation.state.current_active_profile = profile
+                indicator = automation.overlay_indicator
+                indicator.log("Scaling started", anchor_hwnd=82)
+                indicator.set_border("active", anchor_hwnd=82)
+                indicator.set_reshade_context(True, anchor_hwnd=82)
+                indicator.set_performance_graph({"fps": 60})
+                self.assertIsNotNone(script.seen[-1])
+                with patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True), \
+                     patch("companion.services.automation.threading.Thread"):
+                    result = automation.set_scaling(
+                        False, profile, reason=reason, target_pid=42, target_hwnd=82)
+                self.assertTrue(result)
+                self.assertIsNone(script.seen[-1])
+                automation.activate_profile(None, target_pid=99, target_hwnd=199)
+                indicator.tick(anchor_hwnd=199)
+                self.assertIsNone(script.seen[-1])
+                self.assertEqual(indicator._state.current, [])
+                with patch("companion.services.automation.InputSimulator.trigger_hotkey", return_value=True):
+                    self.assertTrue(automation.set_scaling(
+                        True, profile, reason="manual_profile_switch", force=True,
+                        target_pid=42, target_hwnd=82))
+                self.assertEqual(script.seen[-1]["anchor_hwnd"], 82)
+                self.assertTrue(script.seen[-1]["lines"])
+
+    def test_native_stop_clears_toasts_and_a_new_native_start_can_show_them(self):
+        automation, _, script = make_automation()
         automation.state.is_scaling_active = True
-        automation.state.current_active_profile = profile
-        with patch("companion.services.automation.InputSimulator"
-                   ".trigger_hotkey", return_value=True):
-            result = automation.set_scaling(
-                False, profile, reason="manual_profile_switch",
-                target_pid=42, target_hwnd=82)
-        self.assertTrue(result)
-        self.assertIn(None, script.borders())
+        indicator = automation.overlay_indicator
+        indicator.log("Scaling started", anchor_hwnd=82)
+        automation.reconcile_observed_scaling_state(False)
+        self.assertIsNone(script.seen[-1])
+        indicator.log("Late cleanup", anchor_hwnd=199)
+        indicator.tick(anchor_hwnd=199)
+        self.assertIsNone(script.seen[-1])
+        automation.reconcile_observed_scaling_state(True, {"pid": 42, "hwnd": 82, "processName": "game.exe"})
+        self.assertEqual(script.seen[-1]["anchor_hwnd"], 82)
+        self.assertIn("Scaling started (native hotkey): game.exe", script.lines())
 
     def test_transition_logs_route_preset_addons(self):
         automation, _, script = make_automation()
@@ -373,6 +404,29 @@ class OverlayWiringTests(unittest.TestCase):
 class OverlayHygieneTests(unittest.TestCase):
     """Default wiring must not spawn threads/windows (leaked pumps broke
     sleep-asserting tests via the globally-patched time.sleep)."""
+
+    def test_ended_session_rejects_late_messages_until_another_scaling_event(self):
+        seen = []
+        indicator = OverlayIndicator(presenter=seen.append, window_info=lambda hwnd: (1920, 1080, "Game"))
+        indicator.begin_scaling()
+        indicator.log("Original session", anchor_hwnd=77, now=100.0)
+        indicator.set_border("active", anchor_hwnd=77, now=100.0)
+        indicator.set_reshade_context(True, anchor_hwnd=77)
+        indicator.end_scaling()
+        indicator.log("Overlay closed", anchor_hwnd=88, now=100.1)
+        indicator.set_reshade_context(True, anchor_hwnd=77)
+        indicator.set_border("active", anchor_hwnd=77, now=100.1)
+        indicator.set_performance_graph({"fps": 60})
+        indicator.tick(anchor_hwnd=88, now=100.2)
+        self.assertIsNone(seen[-1])
+        self.assertEqual(indicator._state.current, [])
+        self.assertIsNone(indicator._reshade_context)
+        self.assertIsNone(indicator._performance_graph)
+        indicator.begin_scaling()
+        indicator.log("New session", anchor_hwnd=99, now=101.0)
+        self.assertEqual(seen[-1]["anchor_hwnd"], 99)
+        self.assertEqual([line["text"] for line in seen[-1]["lines"]], ["New session"])
+        self.assertEqual(seen[-1]["lines"][0]["expires_at"], 108.0)
 
     def _pump_threads(self):
         return [thread for thread in threading.enumerate()

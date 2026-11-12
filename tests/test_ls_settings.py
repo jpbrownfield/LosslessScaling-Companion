@@ -12,6 +12,18 @@ FIXTURE = Path(__file__).parent / "fixtures" / "lossless_scaling" / "Settings.xm
 
 
 class LosslessSettingsXmlTests(unittest.TestCase):
+    def test_punctuation_scaling_shortcuts_round_trip_through_native_key_names(self):
+        for key, native_key in (("=", "OemPlus"), ("-", "OemMinus")):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "Settings.xml"
+                shutil.copy2(FIXTURE, target)
+                settings = LosslessSettingsXml(str(target))
+                desired = HotkeyConfig(modifiers=["ctrl", "shift"], key=key)
+                self.assertTrue(settings.update_control_settings(hotkey=desired)["hotkey"])
+                self.assertEqual(ET.parse(target).getroot().findtext("Hotkey"), native_key)
+                self.assertEqual(settings.read_hotkey(), desired)
+                self.assertFalse(settings.control_changes_required(hotkey=desired)["hotkey"])
+
     def test_updates_gpu_route_for_only_the_named_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             settings_path = Path(directory) / "Settings.xml"

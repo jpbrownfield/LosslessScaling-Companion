@@ -11,6 +11,22 @@ def replace_once(path, before, after):
     path.write_text(text.replace(before, after), encoding="utf-8", newline="\n")
 
 
+def patch_managed_startup(main):
+    legacy = 'eam::GuiManager::StartGuiThread(addons.get(), [] { D3D11Hook::InstallDispatchHooks(); });'
+    current = ('eam::GuiManager::StartGuiThread(addons.get(), [lossless] {\n'
+               '        D3D11Hook::InstallDispatchHooks();\n'
+               '        eam::features::scaling::InstallHooks(lossless);\n'
+               '    });')
+    text = main.read_text(encoding="utf-8")
+    if text.count(legacy) + text.count(current) != 1:
+        raise RuntimeError(f"Upstream drift in {main}: expected one known GUI startup sequence")
+    before = current if current in text else legacy
+    setup = ', [lossless] { eam::features::scaling::InstallHooks(lossless); }' if before == current else ''
+    replace_once(main, before,
+        'if (!lsc::StartManagedHost(addons.get(), [](eam::AddonManager* manager) { '
+        'eam::GuiManager::StartGuiThread(manager); }' + setup + '))\n        ' + before)
+
+
 def prepare(source: Path):
     overlay = Path(__file__).resolve().parent
     manager = source / "manager"
@@ -58,23 +74,40 @@ def prepare(source: Path):
     main = manager / "src/core/main.cpp"
     replace_once(main, '#include "../gui/gui_manager.h"',
                  '#include "../gui/gui_manager.h"\n#include "companion_bridge.h"')
-    replace_once(main,
-                 'eam::GuiManager::StartGuiThread(addons.get(), [] { D3D11Hook::InstallDispatchHooks(); });',
-                 'if (!lsc::StartHeadless(addons.get()))\n'
-                 '        eam::GuiManager::StartGuiThread(addons.get(), [] { D3D11Hook::InstallDispatchHooks(); });')
+    patch_managed_startup(main)
     replace_once(main, 'DWORD reason, LPVOID)', 'DWORD reason, LPVOID reserved)')
     replace_once(main, 'g_manager->Stop();\n        g_manager.reset();',
-                 '// Headless modules are pinned. Process teardown must not join workers\n'
+                 '// Managed modules are pinned. Process teardown must not join workers\n'
                  '        // or destroy GPU resources while Windows holds the loader lock.\n'
-                 '        if (reserved && lsc::IsHeadless()) { g_manager.release(); return TRUE; }\n'
+                 '        if (reserved && lsc::IsManagedHost()) { g_manager.release(); return TRUE; }\n'
                  '        g_manager->Stop();\n        g_manager.reset();')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp"):
+    # Companion shows the existing HWND from its own shortcuts. Keep the GUI's
+    # hidden flag in sync so an external ShowWindow wakes its blocked render loop.
+    replace_once(manager / "src/gui/gui_manager.cpp", '    case WM_SIZE:',
+                 '    case WM_SHOWWINDOW:\n        g.hidden = !wParam;\n        break;\n\n    case WM_SIZE:')
+    # Companion ships a patched host. Its own updater must remain the source of
+    # updates, and upstream's consent prompt must not reveal the hidden panel.
+    updates = manager / "src/gui/widgets/update_notice.cpp"
+    if updates.is_file():
+        managed = ('ConfigManager::Instance().GlobalGetOr<bool>("companion", "managed", false) || '
+                   'ConfigManager::Instance().GlobalGetOr<bool>("companion", "headless", false)')
+        replace_once(updates, 'void InitializeUpdateCheck(updates::Checker& checker) {',
+                     'void InitializeUpdateCheck(updates::Checker& checker) {\n'
+                     f'    if ({managed}) {{ checker.SetPolicy(updates::Policy::Disabled); return; }}')
+        replace_once(updates, 'void RenderUpdateSettings(updates::Checker& checker) {',
+                     'void RenderUpdateSettings(updates::Checker& checker) {\n'
+                     f'    if ({managed}) {{ ImGui::TextDisabled("Updates are provided by Lossless Scaling Companion."); return; }}')
+    dispatch = manager / "src/core/d3d11_hook.cpp"
+    replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
+    replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
+                 'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
-                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp)\n'
+                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp)\n'
                      'foreach(test_target eam_uipreview eam_coretest eam_sampletest eam_guitest eam_captureprobe)\n'
-                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp)\n'
+                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp)\n'
                      '  target_compile_definitions(${test_target} PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
                      'endforeach()\n'
                      'target_compile_definitions(Lossless PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'

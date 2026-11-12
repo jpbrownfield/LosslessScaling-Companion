@@ -36,6 +36,16 @@ class ReShadePersistenceTests(unittest.TestCase):
         entry = next(item for item in manifest["files"] if item["role"] == "reshade_preset")
         return manifest, self.host.parent / entry["relative_path"]
 
+    def test_managed_menu_shortcut_serializes_ctrl_shift_alt_in_reshade_order(self):
+        profile = self.manager.config.reshade_profiles[0]
+        for shortcut, expected in (("ctrl+alt+f9", "120,1,0,1"), ("shift+f10", "121,0,1,0")):
+            with self.subTest(shortcut=shortcut):
+                self.manager.config.reshade_overlay_hotkey = shortcut
+                config = self.service.config_path(profile.id, interactive=True).read_text(encoding="utf-8")
+                self.assertIn(f"KeyOverlay={expected}", config)
+                passive = self.service.config_path(profile.id).read_text(encoding="utf-8")
+                self.assertIn("KeyOverlay=0,0,0,0", passive)
+
     def shared(self, profile):
         return self.service._folder(profile.id) / self.service._preset_filename(profile.name)
 

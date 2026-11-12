@@ -13,6 +13,14 @@ benchmark = Path("build/native/LSBenchmark.exe")
 if not benchmark.is_file():
     raise SystemExit("Build build/native/LSBenchmark.exe before packaging LS Companion")
 benchmark_binaries = [(str(benchmark), "tools")]
+hdr_session = Path("build/native/LSHdrSession.exe")
+if not hdr_session.is_file():
+    raise SystemExit("Build native/hdr_session before packaging LS Companion")
+benchmark_binaries.append((str(hdr_session), "tools"))
+hdr_probe_test = Path("build/native/LSC_HDRProbeTest.exe")
+if not hdr_probe_test.is_file():
+    raise SystemExit("Build the HDR GPU fixture before packaging LS Companion")
+benchmark_binaries.append((str(hdr_probe_test), "tools"))
 startup_guard = Path("build/native/LSC_StartupGuard.dll")
 if not startup_guard.is_file():
     raise SystemExit("Build the native startup guard before packaging LS Companion")

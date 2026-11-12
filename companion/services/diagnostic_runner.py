@@ -7,10 +7,12 @@ import json
 import logging
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -60,12 +62,13 @@ class DiagnosticRunner:
         "deployment_behavior": ("deployment", "benchmark", "process_windows"),
         "benchmark": ("assets", "lossless_installation"),
         "gpu_routing": ("configuration",),
+        "gloam_hdr": ("configuration",),
         "rtss": ("process_windows",),
         "startup": ("configuration",),
         "runtime": ("configuration",),
     }
     LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
-    READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation"}
+    READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation", "gloam_hdr"}
     ALWAYS_RUN_AFTER_DEPENDENCIES = {
         "reshade_runtime", "proxy_reshade", "proxy_neural_render", "gpu_route_validation",
     }
@@ -119,10 +122,89 @@ class DiagnosticRunner:
             ("deployment_behavior", "Live add-on and proxy deployment behavior", self._live_addon_deployment_behavior),
             ("benchmark", "Benchmark workload and PresentMon command", self._benchmark),
             ("gpu_routing", "Lossless Scaling GPU identity mapping", self._gpu_routing),
+            ("gloam_hdr", "Gloam HDR profiles, session helper, and live HDR observer", self._gloam_hdr),
             ("rtss", "RTSS integration readiness", self._rtss),
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
         )
+
+    def _gloam_hdr(self) -> Dict:
+        """Inspect actual provisioned files/process and fresh in-LS statistics.
+
+        A disabled feature never enables a sampler or launches a marker as a test.
+        This check does not change Gloam's active policy or restart either app.
+        """
+        integration = self.server.automation.gloam_integration
+        integration.poll()
+        status = integration.snapshot()
+        if not self.server.config.gloam_hdr_enabled:
+            clean = not status["helperRunning"] and integration.control.mapping is None
+            return self._result("pass" if clean else "fail",
+                                "Disabled: HDR control released and no session helper is running." if clean
+                                else "Disabled integration still owns a sampler or helper.", integration=status)
+        from .gloam_integration import helper_source
+        helper = helper_source()
+        fixture = helper.with_name("LSC_HDRProbeTest.exe") if helper else None
+        if not fixture or not fixture.is_file():
+            return self._result("warn", "Build the HDR GPU fixture to test SDR-white handling, highlight detection, disabled scanning, and lease expiry.", integration=status)
+        fixture_run = subprocess.run([str(fixture)], capture_output=True, text=True, timeout=45,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if fixture_run.returncode:
+            return self._result("fail", "HDR GPU fixture failed.", returnCode=fixture_run.returncode,
+                                output=fixture_run.stdout[-2000:], error=fixture_run.stderr[-2000:])
+        # The unprofiled base executable verifies the actual heartbeat/EOF path
+        # without requesting a color-policy change on any user's monitor.
+        marker = subprocess.Popen([str(helper), str(os.getpid())], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            ready = queue.Queue()
+            threading.Thread(target=lambda: ready.put(marker.stdout.read(1)), daemon=True).start()
+            if ready.get(timeout=30) != b"1":
+                return self._result("fail", "The HDR session helper did not initialize.")
+            marker.stdin.write(b"1")
+            marker.stdin.flush()
+            time.sleep(.2)
+            if marker.poll() is not None:
+                return self._result("fail", "The HDR session helper exited before its heartbeat ended.")
+        except queue.Empty:
+            return self._result("fail", "The HDR session helper did not initialize within 30 seconds.")
+        finally:
+            marker.stdin.close()
+            try:
+                marker.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                marker.terminate()
+                marker.wait(timeout=2)
+            marker.stdout.close()
+        if marker.returncode:
+            return self._result("fail", "The HDR session helper did not shut down cleanly.", returnCode=marker.returncode)
+        if status["state"] not in {"ready", "idle", "watching", "active"}:
+            return self._result("warn", status["message"], integration=status, gpuFixturePassed=True, helperLifetimePassed=True)
+        profiles = integration.profiles
+        if not profiles or any(not Path(p["ExecutablePath"]).is_file() for p in profiles):
+            return self._result("fail", "A per-monitor HDR executable or Gloam profile is missing.", integration=status)
+        if len({p["AppName"] for p in profiles}) != len(profiles):
+            return self._result("fail", "Multiple monitors share an HDR session executable.")
+        host = runtime_status(self.server.config.lossless_scaling_exe_path)
+        probe = host.get("hdrProbe") if host.get("available") else None
+        if not self.server.state.is_scaling_active:
+            return self._result("warn", "Profiles and executables are ready; start scaling to test the live HDR observer.",
+                                integration=status, monitors=len(profiles))
+        if not isinstance(probe, dict):
+            return self._result("warn", "The running host has no HDR observer; update the bundled host and restart LS.", integration=status)
+        if probe.get("error"):
+            return self._result("fail", probe["error"], integration=status, probe=probe)
+        from .gloam_integration import tick_ms
+        fresh = 0 <= tick_ms() - int(probe.get("presentTick", 0)) < 3000
+        if not fresh:
+            return self._result("warn", "No fresh LS presentation was observed.", integration=status, probe=probe)
+        if status["state"] == "active" and not status["helperRunning"]:
+            return self._result("fail", "HDR was confirmed but its monitor helper is not running.", integration=status, probe=probe)
+        if probe.get("colorSpace") == 1 and not status["confirmed"] and not probe.get("scans"):
+            return self._result("warn", "scRGB presentation found; waiting for asynchronous HDR samples.", integration=status, probe=probe)
+        return self._result("pass", "Live LS presentation telemetry and per-monitor Gloam provisioning are available.",
+                            integration=status, probe=probe, monitors=len(profiles),
+                            limitation="Gloam has no external acknowledgement API; a running marker proves the request, not its effective color policy.")
 
     def catalog(self) -> list[Dict]:
         return [

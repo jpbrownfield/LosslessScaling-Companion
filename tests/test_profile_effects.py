@@ -16,6 +16,81 @@ from companion.services.reshade_manager import ReshadeManager
 
 
 class ProfileEffectsTests(unittest.TestCase):
+    def test_external_preset_deploys_a_menu_config_before_reshade_starts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            manager = ProfileManager(root / "config")
+            manager.config.lossless_scaling_exe_path = str(executable)
+            manager.config.reshade_overlay_hotkey = "ctrl+shift+f9"
+            preset = root / "Preset.ini"
+            preset.write_text("Techniques=Example\n", encoding="utf-8")
+            profile = Profile(name="External preset", reshade=ReshadeConfig(
+                enabled=True, preset_path=str(preset)))
+            automation = AutomationController(manager, AppState())
+            self._stage_component_host(automation, root)
+
+            files = automation.resolve_deployment_files(profile)
+
+            configs = [item for item in files if item["relative_path"] == "ReShade.ini"]
+            self.assertEqual(len(configs), 1)
+            content = Path(configs[0]["source_path"]).read_text(encoding="utf-8")
+            self.assertIn("KeyOverlay=120,1,1,0", content)
+            addon_config = next(item for item in files if item["relative_path"] == "addons/config.json")
+            native = json.loads(Path(addon_config["source_path"]).read_text())["addons"]["ReShadePassthrough"]
+            self.assertEqual([native[key] for key in ("hotkey_vk", "hotkey_ctrl", "hotkey_shift", "hotkey_alt")],
+                             ["120", "1", "1", "0"])
+            automation._apply_profile_transition(
+                None, profile, False, files, park_runtime=False,
+                trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                suppress_auto_scale=True)
+            content = (root / "ReShade.ini").read_text(encoding="utf-8")
+            self.assertIn("KeyOverlay=120,1,1,0", content)
+            editable = next(root.glob(".companion/reshade-presets/*/preset.ini"))
+            self.assertIn(f"PresetPath={editable.resolve()}", content)
+
+    def test_external_preset_repairs_disabled_or_stale_menu_key(self):
+        for old_input in ("", "[INPUT]\nKeyOverlay=0,0,0,0\n", "[INPUT]\nKeyOverlay=36,1,0,0\n"):
+            with self.subTest(old_input=old_input), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executable = root / "LosslessScaling.exe"
+                executable.write_bytes(b"exe")
+                ini, preset = root / "ReShade.ini", root / "Preset.ini"
+                original = "[GENERAL]\nEffectSearchPaths=.\\shaders\\**\n" + old_input
+                ini.write_text(original, encoding="utf-8")
+                preset.write_text("Techniques=Example\n", encoding="utf-8")
+                manager = ProfileManager(root / "config")
+                manager.config.lossless_scaling_exe_path = str(executable)
+                manager.config.reshade_overlay_hotkey = "ctrl+alt+f9"
+                profile = Profile(name="External preset", reshade=ReshadeConfig(
+                    enabled=True, preset_path=str(preset)))
+                automation = AutomationController(manager, AppState())
+
+                automation._apply_profile_transition(
+                    None, profile, False, [], park_runtime=False,
+                    trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                    suppress_auto_scale=True)
+
+                content = ini.read_text(encoding="utf-8")
+                self.assertIn("KeyOverlay=120,1,0,1", content)
+                self.assertEqual(content.count("KeyOverlay="), 1)
+                self.assertIn("EffectSearchPaths=.\\shaders\\**", content)
+                self.assertEqual(ini.with_suffix(".ini.bak").read_text(encoding="utf-8"), original)
+
+    def test_managed_reshade_always_selects_a_config_with_the_menu_key_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory))
+            profile = Profile(name="Shader", reshade=ReshadeConfig(
+                enabled=True, managed_profile_id="preset", menu_proxy_enabled=False))
+            automation = AutomationController(manager, AppState())
+            automation.reshade_profiles.config_path = Mock(return_value=None)
+            automation._apply_profile_transition(
+                None, profile, False, [], park_runtime=False,
+                trigger_runtime_actions=False, target_pid=None, target_hwnd=None,
+                suppress_auto_scale=True)
+            automation.reshade_profiles.config_path.assert_called_once_with("preset", interactive=True)
+
     @staticmethod
     def _stage_component_host(automation, root):
         (root / "Lossless.dll").write_bytes(b"original engine fixture")
@@ -147,7 +222,9 @@ class ProfileEffectsTests(unittest.TestCase):
             ini.write_text("[GENERAL]\nCurrentPresetPath=old.ini\n", encoding="utf-8")
             preset.write_text("[Preset]\n", encoding="utf-8")
             self.assertTrue(ReshadeManager.swap_preset(str(ini), str(preset)))
-            self.assertIn(str(preset.resolve()), ini.read_text(encoding="utf-8"))
+            editable = next(root.glob(".companion/reshade-presets/*/preset.ini"))
+            self.assertIn(str(editable.resolve()), ini.read_text(encoding="utf-8"))
+            self.assertEqual(editable.read_bytes(), preset.read_bytes())
             self.assertTrue(root.joinpath("ReShade.ini.bak").exists())
 
     def test_dll_deployment_restores_original(self):
@@ -1167,16 +1244,15 @@ class ProfileEffectsTests(unittest.TestCase):
             seen = []
             automation.overlay_indicator = OverlayIndicator(
                 presenter=seen.append)
+            automation.overlay_indicator.log("Scaling started", anchor_hwnd=4343)
             automation.handle_scaling_target_closed()
 
             self.assertFalse(state.is_scaling_active)
             self.assertIsNone(state.scaling_target_pid)
             self.assertIsNone(state.scaling_target_hwnd)
             self.assertIsNone(state.scaling_owner_profile_id)
-            texts = [item["text"] for payload in seen if payload
-                     for item in payload.get("lines", [])]
-            self.assertTrue(any("target closed" in text for text in texts),
-                            texts)
+            self.assertIsNone(seen[-1])
+            self.assertEqual(automation.overlay_indicator._state.current, [])
 
     @patch("companion.services.automation.InputSimulator.trigger_hotkey",
            return_value=True)
@@ -1330,8 +1406,29 @@ class ProfileEffectsTests(unittest.TestCase):
 
             AutomationController(manager, AppState()).activate_profile(profile)
 
-            self.assertIn(str(preset.resolve()), lossless_ini.read_text(encoding="utf-8"))
+            editable = next(lossless_dir.glob(".companion/reshade-presets/*/preset.ini"))
+            self.assertIn(str(editable.resolve()), lossless_ini.read_text(encoding="utf-8"))
+            self.assertEqual(editable.read_bytes(), preset.read_bytes())
             self.assertIn("CurrentPresetPath=game.ini", game_ini.read_text(encoding="utf-8"))
+
+    def test_readonly_reshade_source_and_config_use_writable_private_preset_and_retain_edits(self):
+        import stat
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "LosslessScaling.exe").write_bytes(b"exe")
+            ini, source = root / "ReShade.ini", root / "OriginalPreset.ini"
+            ini.write_text("[GENERAL]\n", encoding="utf-8")
+            source.write_text("[Effect]\nValue=1\n", encoding="utf-8")
+            ini.chmod(stat.S_IREAD)
+            source.chmod(stat.S_IREAD)
+            self.assertTrue(ReshadeManager.swap_preset(str(ini), str(source)))
+            editable = next(root.glob(".companion/reshade-presets/*/preset.ini"))
+            editable.write_text("[Effect]\nValue=2\n", encoding="utf-8")
+            self.assertTrue(ReshadeManager.swap_preset(str(ini), str(source)))
+            self.assertIn("Value=2", editable.read_text(encoding="utf-8"))
+            self.assertIn("Value=1", source.read_text(encoding="utf-8"))
+            source.chmod(stat.S_IREAD | stat.S_IWRITE)
 
 
 if __name__ == "__main__":

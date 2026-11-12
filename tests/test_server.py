@@ -338,12 +338,30 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.proxy_menu.open.return_value = {"opened": True, "focused": True}
         self.state.is_scaling_active = True
 
-        await self.server.process_message(
-            websocket, json.dumps({"type": "OPEN_PROXY_MENU"})
-        )
+        with patch("companion.services.server.addon_runtime_status", return_value={"available": True, "headless": False, "pid": 123}):
+            await self.server.process_message(
+                websocket, json.dumps({"type": "OPEN_PROXY_MENU"})
+            )
 
-        self.server.proxy_menu.open.assert_called_once_with()
+        self.server.proxy_menu.open.assert_called_once_with(123)
         self.assertEqual(json.loads(websocket.messages[-1])["type"], "PROXY_MENU_OPENED")
+
+    async def test_gloam_hdr_checkbox_persists_and_rejects_non_boolean_values(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.server.reshade_profiles.sync_all_configs = Mock()
+        self.automation.gloam_integration.poll = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.assertFalse(self.server._control_settings_payload()["gloamHdrEnabled"])
+        for value in (True, False):
+            await self.server.process_message(websocket, json.dumps({"type": "SAVE_GENERAL_SETTINGS", "gloamHdrEnabled": value}))
+            response = json.loads(websocket.messages[-1])
+            self.assertEqual(response["type"], "GENERAL_SETTINGS_SAVED", response)
+            self.assertEqual(response["controlSettings"]["gloamHdrEnabled"], value)
+            self.assertEqual(ProfileManager(self.manager.config_dir).config.gloam_hdr_enabled, value)
+        await self.server.process_message(websocket, json.dumps({"type": "SAVE_GENERAL_SETTINGS", "gloamHdrEnabled": "true"}))
+        self.assertIn("checkbox", websocket.messages[-1])
+        self.assertFalse(self.manager.config.gloam_hdr_enabled)
 
     async def test_sunshine_gpu_checkbox_defaults_on_and_persists_off(self):
         self.server.startup_manager = FakeStartupManager()
@@ -407,6 +425,32 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.reshade_profiles.sync_all_configs.assert_called_once_with()
         self.server.hotkey_listener.refresh.assert_called_once_with()
 
+    async def test_combination_picker_settings_persist_and_reject_unsupported_reshade_win_modifier(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.server.hotkey_listener = Mock()
+        self.server.reshade_profiles.sync_all_configs = Mock()
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS", "reshadeOverlayHotkey": "ctrl+alt+f9",
+            "overrideLosslessHotkey": True,
+            "overrideHotkey": {"modifiers": ["ctrl", "shift"], "key": "="},
+        }))
+        response = json.loads(websocket.messages[-1])
+        self.assertEqual(response["type"], "GENERAL_SETTINGS_SAVED")
+        self.assertEqual(response["controlSettings"]["reshadeOverlayHotkey"], "ctrl+alt+f9")
+        saved = ProfileManager(self.manager.config_dir).config
+        self.assertEqual(saved.reshade_overlay_hotkey, "ctrl+alt+f9")
+        self.assertEqual(saved.override_hotkey.key, "=")
+        self.assertEqual(saved.override_hotkey.modifiers, ["ctrl", "shift"])
+        self.server.reshade_profiles.sync_all_configs.assert_called_once_with()
+        for invalid in ("win+f9", "ctrl+ctrl+f9"):
+            await self.server.process_message(websocket, json.dumps({
+                "type": "SAVE_GENERAL_SETTINGS", "reshadeOverlayHotkey": invalid,
+            }))
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            self.assertEqual(self.manager.config.reshade_overlay_hotkey, "ctrl+alt+f9")
+
     async def test_general_overlay_toggle_persists_and_preserves_omitted_preference(self):
         self.server.startup_manager = FakeStartupManager()
         self.automation.overlay_indicator = Mock()
@@ -427,7 +471,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.startup_manager = FakeStartupManager()
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
-        desired = {"profile_editor": "ctrl+f9", "addon_manager": "insert",
+        desired = {"overlay_toggle": "ctrl+home", "profile_editor": "ctrl+f9", "addon_manager": "insert",
                    "performance_graph": "=", "special_k_panel": "-"}
         await self.server.process_message(websocket, json.dumps({
             "type": "SAVE_GENERAL_SETTINGS", "overlayHotkeys": desired,
@@ -972,7 +1016,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('id="defaultProfileAutoScale"', body)
             self.assertIn('id="rtssDefaultGpuTargetGroup"', body)
             self.assertIn("Default Limiting Mode", body)
-            self.assertIn('class="modifier-options"', body)
+            self.assertIn('id="overrideHotkeyKey"', body)
+            self.assertNotIn('id="overrideHotkeyCtrl"', body)
             self.assertNotIn("issued a new session token", body)
             self.assertIn('id="targetType"', body)
             self.assertIn('id="targetValue"', body)
@@ -1027,7 +1072,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
             self.assertIn("FriedSnowman Addon Suite", body)
-            self.assertIn("Refresh Runtime Status", body)
+            self.assertIn("Open advanced add-on panel", body)
             self.assertIn("Community Runtime Warning", body)
             self.assertIn("Download Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)

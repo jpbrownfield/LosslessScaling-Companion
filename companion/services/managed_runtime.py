@@ -174,6 +174,9 @@ class ManagedRuntime:
 def launch_environment(executable: Path) -> tuple[dict, Path | None, str | None]:
     """Child-only bootstrap. No mutation of the Companion process environment."""
     environment = os.environ.copy()
+    # ReShade is loaded by full path. Resolve its relative presets/config only
+    # inside this private LS installation, never an inherited game override.
+    environment["RESHADE_BASE_PATH_OVERRIDE"] = str(Path(executable).resolve().parent)
     # The clone's runtimeconfig owns its mandatory hook. Do not also supply the
     # same hook through the environment (.NET invokes both registrations).
     environment.pop("DOTNET_STARTUP_HOOKS", None)

@@ -43,7 +43,7 @@ HEADER_WIDTH = 156
 HEADER_HEIGHT = 32
 HEADER_GAP = 8
 HINT_WIDTH = 340
-HINT_HEIGHT = 154
+HINT_HEIGHT = 180
 GRAPH_WIDTH = 380
 GRAPH_HEIGHT = 174
 BORDER_PX = 8
@@ -1063,7 +1063,7 @@ class Win32OverlayPresenter:
                 or self._user32.IsIconic(ctypes.c_void_p(anchor))):
             self._hide_hints()
             return
-        lines = [dict(hint) for hint in hints[:5]]
+        lines = [dict(hint) for hint in hints[:6]]
         height = 24 + 26 * len(lines)
         if height != self._hint_height:
             self._size_ui_window(self._hint_hwnd, "_hint_rgn", HINT_WIDTH, height, 12)

@@ -56,7 +56,7 @@ from .addon_host import runtime_status as addon_runtime_status, addon_version_ke
 from .gpu_index_refresh import IdleGpuIndexRefresh
 from .profile_icons import ProfileIconService
 from .reshade_overlay import ReShadeOverlayController
-from .overlay_shortcuts import validate_overlay_hotkeys, parse_shortcut
+from .overlay_shortcuts import validate_overlay_hotkeys, parse_shortcut, reshade_key_data
 from .live_performance import LivePerformanceGraph
 from ..ui.icons import lightning_icon_png
 from ..ui.path_picker import choose_dlssnr_runtime, choose_general_setting_path
@@ -124,13 +124,14 @@ class CompanionWebSocketServer:
                                                      self._presentmon_executable)
         self.reshade_overlay = ReShadeOverlayController(
             profile_manager, state, self.automation.overlay_indicator, hotkey_listener,
-            open_profile=self._open_overlay_profile, performance_graph=self.live_performance.toggle)
+            open_profile=self._open_overlay_profile, performance_graph=self.live_performance.toggle,
+            open_addon_panel=self._open_overlay_addon_panel)
         self._reshade_overlay_task = None
         self.clients: Set[WebSocketServerProtocol] = set()
         self.fullscreen_tasks: Dict[str, asyncio.Task] = {}
         self.server = None
         self.dashboard_token = secrets.token_urlsafe(32)
-        self.profile_icons = ProfileIconService()
+        self.profile_icons = ProfileIconService(Path(profile_manager.config_dir) / "icon-cache")
         self.client_authority: Dict[WebSocketServerProtocol, str] = {}
         self.addon_update_task: Optional[asyncio.Task] = None
         self.presentmon_detection_task: Optional[asyncio.Task] = None
@@ -738,6 +739,8 @@ class CompanionWebSocketServer:
 
             if msg_type == "GET_PROFILE_DETAILS":
                 await asyncio.to_thread(self.automation.refresh_gpu_selections)
+                if self.config.addon_manager_enabled:
+                    await asyncio.to_thread(self.automation.capture_active_addon_config)
                 await websocket.send(json.dumps({
                     "type": "PROFILE_DETAILS",
                     "generation": msg.get("generation"),
@@ -747,6 +750,8 @@ class CompanionWebSocketServer:
 
             if msg_type == "GET_PROFILE_DETAIL":
                 await asyncio.to_thread(self.automation.refresh_gpu_selections)
+                if self.config.addon_manager_enabled:
+                    await asyncio.to_thread(self.automation.capture_active_addon_config)
                 profile = self.profile_manager.get_profile_by_id(str(msg.get("profileId") or ""))
                 if profile is None:
                     raise ValueError("Unknown profile")
@@ -843,7 +848,10 @@ class CompanionWebSocketServer:
                     raise RuntimeError("Companion Addon Host is disabled in General Settings")
                 if not self.state.is_scaling_active:
                     raise RuntimeError("The add-on menu is available only while scaling")
-                result = await asyncio.to_thread(self.proxy_menu.open)
+                status = await asyncio.to_thread(addon_runtime_status, self.config.lossless_scaling_exe_path)
+                if not status.get("available") or status.get("headless") is not False:
+                    raise RuntimeError("Install the current Companion Addon Host and restart Lossless Scaling to open the panel")
+                result = await asyncio.to_thread(self.proxy_menu.open, status["pid"])
                 if not result.get("opened"):
                     raise RuntimeError(str(result.get("reason") or "Could not open the add-on menu"))
                 await websocket.send(json.dumps({"type": "PROXY_MENU_OPENED"}))
@@ -1134,6 +1142,9 @@ class CompanionWebSocketServer:
                     msg.get("addonManagerEnabled", self.config.addon_manager_enabled)
                 )
                 match_encoder_gpu = msg.get("sunshineMatchEncoderGpu", self.config.sunshine_match_encoder_gpu)
+                gloam_hdr = msg.get("gloamHdrEnabled", self.config.gloam_hdr_enabled)
+                if type(gloam_hdr) is not bool:
+                    raise ValueError("Gloam HDR integration must be a checkbox")
                 if type(match_encoder_gpu) is not bool:
                     raise ValueError("Sunshine/Apollo GPU matching must be a checkbox")
                 smart_auto_scale_enabled = bool(msg.get("smartAutoScaleEnabled", True))
@@ -1193,11 +1204,7 @@ class CompanionWebSocketServer:
                 ).strip().casefold()
                 if not requested_reshade_hotkey:
                     raise ValueError("Enter a ReShade menu hotkey")
-                reshade_virtual_key = InputSimulator.vk_from_string(
-                    requested_reshade_hotkey
-                )
-                if not 1 <= reshade_virtual_key <= 255:
-                    raise ValueError("ReShade menu hotkey must be a Windows virtual key")
+                reshade_key_data(requested_reshade_hotkey)
                 reshade_hotkey_changed = (
                     requested_reshade_hotkey != self.config.reshade_overlay_hotkey
                 )
@@ -1314,6 +1321,7 @@ class CompanionWebSocketServer:
                 self._next_update_check = 0.0
                 self.config.addon_manager_enabled = requested_addon_manager_enabled
                 self.config.sunshine_match_encoder_gpu = match_encoder_gpu
+                self.config.gloam_hdr_enabled = gloam_hdr
                 self.config.addon_manager.enabled = requested_addon_manager_enabled
                 self.config.preferred_scaling_gpu_device_id = requested_gpu_id
                 self.config.preferred_scaling_gpu_name = requested_gpu_name
@@ -1353,6 +1361,7 @@ class CompanionWebSocketServer:
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
                 self.automation.overlay_indicator.tick()
+                await asyncio.to_thread(self.automation.gloam_integration.poll)
                 if gpu_settings_changed:
                     await asyncio.to_thread(self.automation.apply_general_gpu_settings)
                 if (
@@ -2046,9 +2055,7 @@ class CompanionWebSocketServer:
                         self.automation.addon_configs.materialize,
                         prof,
                         reshade_enabled=reshade_enabled,
-                        hotkey_vk=self.automation._echo_hotkey_vk(
-                            self.config.reshade_overlay_hotkey
-                        ),
+                        hotkey=self.config.reshade_overlay_hotkey,
                     )
                     await asyncio.to_thread(self.profile_manager.save_config)
                     logger.info(f"Saved profile: {prof.name}")
@@ -3004,12 +3011,24 @@ class CompanionWebSocketServer:
             },
         }
 
+    def _open_overlay_addon_panel(self) -> bool:
+        if not self.proxy_menu or not self.config.addon_manager_enabled:
+            return False
+        status = addon_runtime_status(self.config.lossless_scaling_exe_path)
+        if not status.get("available") or status.get("headless") is not False:
+            self.automation.overlay_indicator.log("Update the addon host and restart Lossless Scaling to open its panel", kind="info")
+            return False
+        result = self.proxy_menu.open(status["pid"])
+        if not result.get("opened"):
+            self.automation.overlay_indicator.log(result.get("reason", "Addon panel is unavailable"), kind="info")
+        return bool(result.get("opened"))
+
     def _profile_editor_data(self, profile: Profile) -> Dict:
         data = profile.model_dump(mode="json")
         data["addon_config"] = self.automation.addon_configs.effective(
             profile,
             reshade_enabled=bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)),
-            hotkey_vk=self.automation._echo_hotkey_vk(self.config.reshade_overlay_hotkey),
+            hotkey=self.config.reshade_overlay_hotkey,
         )
         return data
 
@@ -3131,6 +3150,8 @@ class CompanionWebSocketServer:
             "reshadeOverlayHotkey": self.config.reshade_overlay_hotkey,
             "addonManagerEnabled": self.config.addon_manager_enabled,
             "sunshineMatchEncoderGpu": self.config.sunshine_match_encoder_gpu,
+            "gloamHdrEnabled": self.config.gloam_hdr_enabled,
+            "gloamHdrStatus": self.automation.gloam_integration.snapshot(),
             "losslessControlConfigured": self.config.lossless_control_configured,
             "hotkey": self.config.global_hotkey.model_dump(),
             "overrideLosslessHotkey": self.config.override_lossless_hotkey,
@@ -3151,6 +3172,7 @@ class CompanionWebSocketServer:
             hold_delay_ms=current.hold_delay_ms,
             activation_delay_ms=current.activation_delay_ms,
         )
+        InputSimulator.vk_from_string(requested.key)
         if not requested.modifiers and requested.key == "f24":
             raise ValueError("F24 without modifiers is reserved as the hidden Lossless Scaling hotkey")
         self.config.override_hotkey = requested
@@ -3201,4 +3223,5 @@ class CompanionWebSocketServer:
             "dynamicLimiter": state["dynamic_limiter_status"],
             "scalingControl": state["scaling_control_status"],
             "gpuIndexMapping": state["gpu_mapping_status"],
+            "gloamHdrStatus": self.automation.gloam_integration.snapshot(),
         }

@@ -232,13 +232,12 @@
     .input-with-button input { flex: 1; min-width: 0; }
     .input-with-button .btn { flex: 0 0 auto; }
     .input-with-button .btn[hidden] { display: none; }
-    .modifier-options { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; min-height: 38px; }
-    .modifier-options .checkbox-group { margin: 0; }
     .form-row.hotkey-settings { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px; }
-    .hotkey-settings > .form-group { margin-bottom: 0; }
-    .activation-key-input { width: 46px; height: 38px; align-self: flex-start; padding-inline: 6px !important; text-align: center; }
-    .hotkey-settings .activation-key-input { width: 40px; height: 28px; padding-block: 4px; }
-    .hotkey-settings .modifier-options { min-height: 28px; gap: 12px; }
+    .hotkey-settings > .form-group { margin-bottom: 0; flex: 1; }
+    .form-group.hotkey-picker { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; align-items: center; gap: 6px; }
+    .hotkey-picker > label { grid-column: 1 / -1; }
+    .hotkey-picker > input { min-width: 0; text-transform: uppercase; font-family: Consolas, monospace; cursor: pointer; }
+    .hotkey-picker.is-recording > input { outline: 2px solid var(--accent); outline-offset: 1px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
     .checkbox-group { display: flex; flex-direction: row; align-items: center; align-self: start; gap: 8px; margin-top: 2px; }
     .checkbox-group input[type="checkbox"] { flex: 0 0 auto; width: 17px; height: 17px; margin: 0; padding: 0; }
@@ -507,6 +506,9 @@
     .addon-editor-state.is-unavailable, .is-enabled .addon-editor-state.is-unavailable { color:#fbbf24; }
     .addon-editor-body { min-width:0; margin:0; padding:0 20px 20px; border:0; border-top:1px solid var(--card-border); }
     fieldset.addon-editor-fields { min-width:0; margin:0; padding:12px 0 0; border:0; }
+    .addon-editor-body.addon-editor-fields { padding:16px 20px 20px; }
+    .addon-editor-body > .addon-field-help { grid-column:1/-1; }
+    #addonScalingFields { grid-template-columns:minmax(0,1fr); }
     fieldset.addon-card { margin:0; min-inline-size:0; }
     .addon-vendor-note { color:var(--text-muted); font-size:12px; margin:8px 0; }
     .vendor-settings { min-width:0; border:0; margin:0; padding:0; }
@@ -669,14 +671,18 @@
             <div class="form-group checkbox-group section-primary-toggle"><input id="overlayIndicatorEnabled" type="checkbox" checked aria-describedby="overlayIndicatorHelp"><label for="overlayIndicatorEnabled">Show Overlay</label></div>
             <p id="overlayIndicatorHelp" class="item-sub" style="white-space:normal;margin-bottom:14px">Show toast notifications, the scaling border, and overlay controls.</p>
             <div class="form-row">
+              <div class="form-group"><label for="overlayToggleHotkey">Companion overlay</label><input id="overlayToggleHotkey" type="text" value="ctrl+home" maxlength="64" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="reshadeOverlayHotkey">ReShade configuration menu</label><input id="reshadeOverlayHotkey" type="text" value="end" maxlength="64" autocomplete="off" spellcheck="false"></div>
+            </div>
+            <div class="form-row">
               <div class="form-group"><label for="overlayProfileEditorHotkey">Profile editor</label><input id="overlayProfileEditorHotkey" type="text" value="delete" maxlength="64" placeholder="Delete" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label for="overlayAddonManagerHotkey">Add-on settings</label><input id="overlayAddonManagerHotkey" type="text" value="insert" maxlength="64" placeholder="Insert" autocomplete="off" spellcheck="false"></div>
+              <div class="form-group"><label for="overlayAddonManagerHotkey">Advanced add-on panel</label><input id="overlayAddonManagerHotkey" type="text" value="insert" maxlength="64" placeholder="Insert" autocomplete="off" spellcheck="false"></div>
             </div>
             <div class="form-row">
               <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
               <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
             </div>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">Shortcuts work while the Overlay toggle is on. Use a key or combination such as Ctrl+F8; leave blank to disable. ReShade keeps its own menu binding. Special K's custom panel binding takes priority. The headless add-on host opens the active profile's Add-ons section.</p>
+            <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, Ctrl+Home opens or closes Companion's overlay. End opens ReShade's shader and preset menu when ReShade is enabled. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
           </div>
         </section>
 
@@ -696,10 +702,9 @@
           <div class="settings-group-content">
             <div class="form-group checkbox-group"><input id="overrideLosslessHotkey" type="checkbox"><label for="overrideLosslessHotkey">Override Lossless Scaling Hotkey (Needed to hotkey to apply companion features)</label></div>
             <div id="overrideHotkeySettings" class="form-row hotkey-settings">
-              <div class="form-group"><label for="overrideHotkeyKey">Activation Key</label><input id="overrideHotkeyKey" class="activation-key-input" type="text" value="s" maxlength="16" autocomplete="off" spellcheck="false"></div>
-              <div class="form-group"><label>Modifiers</label><div class="modifier-options"><div class="checkbox-group"><input id="overrideHotkeyCtrl" type="checkbox"><label for="overrideHotkeyCtrl">Ctrl</label></div><div class="checkbox-group"><input id="overrideHotkeyAlt" type="checkbox"><label for="overrideHotkeyAlt">Alt</label></div><div class="checkbox-group"><input id="overrideHotkeyShift" type="checkbox"><label for="overrideHotkeyShift">Shift</label></div><div class="checkbox-group"><input id="overrideHotkeyWin" type="checkbox"><label for="overrideHotkeyWin">Win</label></div></div></div>
+              <div class="form-group"><label for="overrideHotkeyKey">Scaling shortcut</label><input id="overrideHotkeyKey" type="text" value="ctrl+alt+s" maxlength="64" autocomplete="off" spellcheck="false"></div>
             </div>
-            <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches.</p>
+            <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches. Click Set key and press the full combination, such as Ctrl+Alt+S.</p>
           </div>
         </section>
 
@@ -767,13 +772,13 @@
             </div>
             <div class="addon-status" data-addon-status="ls-addon-manager">Checking installed version...</div>
             <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install bundled host</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button></div>
-            <details class="addon-notes"><summary>About the host &amp; updates</summary><p>Runs inside Lossless Scaling without a separate manager window. The suite updates together with Companion. By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on FrankBarretta's LosslessProxy. MIT host; GPL-3.0-only Neural Rendering. <a href="https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md" target="_blank" rel="noopener noreferrer">Licenses &amp; upstream notices</a>.</p></details>
+            <details class="addon-notes"><summary>About the host &amp; updates</summary><p>Runs inside Lossless Scaling. Its advanced panel starts hidden; open it while scaling from here or with the overlay shortcut. The suite updates together with Companion. By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on FrankBarretta's LosslessProxy. MIT host; GPL-3.0-only Neural Rendering. <a href="https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md" target="_blank" rel="noopener noreferrer">Licenses &amp; upstream notices</a>.</p></details>
           </div>
           <aside class="addon-host-runtime" aria-label="Addon host runtime status">
             <div class="addon-runtime-title">Runtime status</div>
             <p id="addonRuntimeStatus" class="addon-description" role="status">Runtime status is available when Lossless Scaling is running.</p>
             <p id="proxyMenuStatus" class="addon-description">Saved profile changes apply on the next scaling start.</p>
-            <div class="addon-actions"><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" aria-label="Refresh Runtime Status">Refresh runtime</button></div>
+            <div class="addon-actions"><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" aria-label="Open advanced add-on panel">Open advanced panel</button></div>
           </aside>
         </div>
       </section>
@@ -808,12 +813,11 @@
             <div class="reshade-preferences-grid">
               <div class="form-group"><label for="reshadeHdrPeakNits">HDR peak brightness (nits)</label><div class="input-with-button"><input id="reshadeHdrPeakNits" type="number" min="80" max="10000" step="10" placeholder="Auto detect"><button id="autoReshadeHdrPeakBtn" class="btn btn-secondary" type="button">Auto</button></div></div>
               <div class="form-group"><label for="reshadeSdrWhiteNits">Default captured SDR white (nits)</label><input id="reshadeSdrWhiteNits" type="number" min="80" max="1000" step="1" value="400"></div>
-              <div class="form-group"><label for="reshadeOverlayHotkey">Overlay toggle hotkey</label><input id="reshadeOverlayHotkey" class="activation-key-input" type="text" value="end" maxlength="16" autocomplete="off" spellcheck="false"></div>
             </div>
             <p class="item-sub" style="white-space:normal">SDR white applies to all managed Lilium SDR-to-HDR presets. A monitor override follows LS's output display; leave it blank to use the shared default. Changes apply the next time scaling starts.</p>
             <div id="reshadeMonitorNits" class="reshade-preferences-grid" aria-label="Captured SDR white by monitor"></div>
             <p id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</p>
-            <p class="item-sub" style="white-space:normal">The Overlay toggle is enabled automatically for profiles that use ReShade. Its default hotkey is End, shared with the ReShade menu.</p>
+            <p class="item-sub" style="white-space:normal">The Overlay toggle is enabled automatically for profiles that use ReShade. Configure the ReShade menu key (End by default) in Settings → Overlay.</p>
             <p>Shader catalogs use the maintained <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup feed</a>. <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">Shader pack reference</a>.</p>
           </details>
           <div class="reshade-library">
@@ -824,6 +828,14 @@
         <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Display Commander</h3><p class="addon-description">ReShade display diagnostics and optional NVIDIA Reflex for Lossless Scaling. Enable per profile in ReShade settings.</p></div><span class="addon-badge" data-addon-badge="display-commander">Not installed</span></div><div class="addon-status" data-addon-status="display-commander">Checking installed version...</div><div class="addon-actions"><button class="btn btn-primary" data-addon-install="display-commander">Download Display Commander</button><a class="btn btn-secondary" href="https://github.com/pmnoxx/display-commander" target="_blank" rel="noopener noreferrer">Documentation</a></div></section>
         <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">Optional HDR conversion, Reflex and presentation features. Enable and configure it per profile.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
+      <section class="settings-group">
+        <h2 class="settings-group-title">Gloam HDR integration</h2>
+        <div class="settings-group-content">
+          <div class="form-group checkbox-group section-primary-toggle"><input id="gloamHdrEnabled" type="checkbox"><label for="gloamHdrEnabled">Use Gloam Cinematic HDR during HDR scaling</label></div>
+          <p class="item-sub" style="white-space:normal">Creates one profile and hidden session executable per monitor. Temporarily requests Cinematic HDR when LS presents HDR content. Turning this off stops HDR scans and the session executable; profiles and files remain for reuse. Existing foreground Gloam profiles take priority.</p>
+          <p id="gloamHdrStatus" class="item-sub" style="white-space:normal" role="status">Gloam HDR integration is off.</p>
+        </div>
+      </section>
       <section class="settings-group">
         <h2 class="settings-group-title">Sunshine / Apollo</h2>
         <div class="settings-group-content">
@@ -1057,10 +1069,11 @@
             <div class="ls-settings-column">
               <section class="ls-settings-card">
                 <h5>Scaling</h5>
-                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeScalingType" data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR (LS built-in)</option><option value="NIS">NIS</option><option value="AddonDLSS" data-addon-vendor="NVIDIA">DLSS (manager add-on)</option><option value="AddonFSR">FSR (manager add-on)</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
+                <div class="ls-setting-row"><label>Type</label><div class="ls-setting-control"><select id="nativeScalingType" data-native-key="ScalingType" data-native-default="LS1"><option value="Off">Off</option><option value="LS1">LS1</option><option value="FSR">FSR (LS built-in)</option><option value="NIS">NIS</option><option value="AddonDLSS" data-addon-vendor="NVIDIA">DLSS (manager add-on)</option><option value="AddonFSR">FSR (manager add-on)</option><option value="AddonXeSS">XeSS (manager add-on)</option><option value="Integer">Integer</option><option value="Nearest">Nearest</option><option value="SharpBilinear">Sharp Bilinear</option><option value="xBR">xBR</option><option value="Anime4K">Anime4K</option><option value="BicubicCAS">Bicubic CAS</option><option value="SGSR">SGSR</option></select></div></div>
                 <p id="profileScalingTypeHint" class="addon-description">DLSS and FSR addons use NIS under the hood and require the corresponding manager add-on to be installed.</p>
-                <div class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
+                <div id="nativeScalingSharpnessRow" class="ls-setting-row"><label>Sharpness</label><div class="ls-setting-control ls-range-control"><input data-native-key="LS1Sharpness" data-native-default="0" type="range" min="0" max="100" step="1"><output>0</output></div></div>
                 <div class="ls-setting-row"><label>Performance</label><div class="ls-setting-control ls-switch-control"><label class="ls-switch"><input data-native-key="LS1Type" data-native-default="BALANCED" data-native-checked-value="PERFORMANCE" data-native-unchecked-value="BALANCED" type="checkbox"><span class="ls-switch-track"></span></label><span class="ls-switch-state">Off</span></div></div>
+                <fieldset id="addonScalingFields" class="addon-editor-fields" style="border:0;padding:0;margin:0" hidden></fieldset>
                 <div class="ls-setting-row"><label>Mode</label><div class="ls-setting-control"><select data-native-key="ScalingMode" data-native-default="Auto"><option value="Auto">Auto</option><option value="Custom">Custom</option></select></div></div>
                 <div class="ls-setting-row"><label>Fit</label><div class="ls-setting-control"><select data-native-key="ScalingFitMode" data-native-default="Fullscreen"><option value="Fullscreen">Fullscreen</option><option value="AspectRatio">Aspect ratio</option></select></div></div>
               </section>
@@ -1113,12 +1126,12 @@
         <details id="profileAddonsPanel" class="settings-group profile-settings-group profile-major-panel">
           <summary class="settings-group-title">Add-ons for this profile</summary>
           <div class="settings-group-content">
-            <div class="addon-profile-intro"><p>Turn on the add-ons you need, then open a card to fine-tune them. Changes made during scaling apply on the next scaling start.</p><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable optional add-ons</button></div>
+            <div class="addon-profile-intro"><p>Choose upscalers in Scaling above. Enable extra features here; detailed tuning is available in the advanced panel while scaling. Panel edits are saved to the active profile. Profile changes apply on the next scaling start.</p><button id="openProfileAddonPanelBtn" class="btn btn-secondary" type="button">Advanced panel (active profile)</button><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable extra features</button></div>
             <p id="addonHostNotice" class="profile-warning" hidden>The addon host is disabled. Enable it in Add-ons to run these settings.</p>
-            <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an add-on or setting..." aria-label="Find an add-on or setting" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
+            <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an extra feature..." aria-label="Find an extra feature" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
             <span id="addonEditorStatus" class="addon-editor-status" role="status" aria-live="polite">Loading add-on settings...</span>
             <div id="addonEditorCards" class="addon-editor-grid"></div>
-            <details class="addon-manager-advanced"><summary>Saved compatibility settings (read only)</summary><div id="addonManagerFields" class="addon-editor-fields"></div></details>
+            <div id="addonManagerFields" hidden></div>
           </div>
         </details>
 
@@ -1801,6 +1814,7 @@
             }
           } else if (msg.type === 'INITIAL_STATE' || msg.type === 'STATE_UPDATE') {
             setCompanionConnected(true);
+            if (msg.gloamHdrStatus) document.getElementById('gloamHdrStatus').textContent = msg.gloamHdrStatus.message || '';
             if ('componentOperation' in msg) renderComponentOperation(msg.componentOperation);
             renderRuntime(msg);
             renderDynamicLimiterStatus(msg.dynamicLimiter);
@@ -2119,7 +2133,13 @@
       const button = document.getElementById('openProxyMenuBtn');
       if (!button) return;
       button.hidden = !(runtimeScalingActive && (!controlSettings || controlSettings.addonManagerEnabled !== false));
-      button.title = 'Show the running Companion Addon Host.';
+      button.title = 'Show the advanced add-on panel for the active profile.';
+      const profileButton = document.getElementById('openProfileAddonPanelBtn');
+      if (profileButton) {
+        const profileId = document.getElementById('profileId')?.value;
+        profileButton.disabled = button.hidden || !profileId || profileId !== runtimeActiveProfile?.id;
+        profileButton.title = profileButton.disabled ? 'Activate and scale this profile to open its advanced panel.' : button.title;
+      }
     }
 
     function renderUpdatePreferences() {
@@ -2151,21 +2171,19 @@
       document.getElementById('overrideLosslessHotkey').checked = !!controlSettings.overrideLosslessHotkey;
       const overrideHotkey = controlSettings.overrideHotkey || controlSettings.hotkey || { modifiers: ['ctrl', 'alt'], key: 's' };
       const overrideModifiers = overrideHotkey.modifiers || [];
-      document.getElementById('overrideHotkeyKey').value = overrideHotkey.key || 's';
-      document.getElementById('overrideHotkeyCtrl').checked = overrideModifiers.includes('ctrl');
-      document.getElementById('overrideHotkeyAlt').checked = overrideModifiers.includes('alt');
-      document.getElementById('overrideHotkeyShift').checked = overrideModifiers.includes('shift');
-      document.getElementById('overrideHotkeyWin').checked = overrideModifiers.includes('win');
+      document.getElementById('overrideHotkeyKey').value = [...overrideModifiers, overrideHotkey.key || 's'].join('+');
       document.getElementById('reshadeOverlayHotkey').value = controlSettings.reshadeOverlayHotkey || 'end';
       document.getElementById('addonManagerEnabled').checked = controlSettings.addonManagerEnabled !== false;
       document.getElementById('sunshineMatchEncoderGpu').checked = controlSettings.sunshineMatchEncoderGpu !== false;
+      document.getElementById('gloamHdrEnabled').checked = controlSettings.gloamHdrEnabled === true;
+      document.getElementById('gloamHdrStatus').textContent = controlSettings.gloamHdrStatus?.message || 'Gloam HDR integration is off.';
       renderProxyMenuAction();
       renderOverrideHotkeySettings();
       document.getElementById('snapNearFullscreenWindowsToMonitor').checked = controlSettings.snapNearFullscreenWindowsToMonitor !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
       document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
-      const overlayHotkeys = {profile_editor: 'delete', addon_manager: 'insert', performance_graph: '=', special_k_panel: '-', ...controlSettings.overlayHotkeys};
-      for (const [id, key] of [['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph'], ['overlaySpecialKPanelHotkey', 'special_k_panel']]) {
+      const overlayHotkeys = {overlay_toggle: 'ctrl+home', profile_editor: 'delete', addon_manager: 'insert', performance_graph: '=', special_k_panel: '-', ...controlSettings.overlayHotkeys};
+      for (const [id, key] of [['overlayToggleHotkey', 'overlay_toggle'], ['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph'], ['overlaySpecialKPanelHotkey', 'special_k_panel']]) {
         document.getElementById(id).value = overlayHotkeys[key];
       }
       renderGpuRoutingSettings();
@@ -2208,18 +2226,13 @@
 
     function renderOverrideHotkeySettings() {
       const enabled = document.getElementById('overrideLosslessHotkey').checked;
-      document.querySelectorAll('#overrideHotkeySettings input').forEach(input => input.disabled = !enabled);
+      document.querySelectorAll('#overrideHotkeySettings input, #overrideHotkeySettings button').forEach(input => input.disabled = !enabled);
       document.getElementById('overrideHotkeySettings').style.opacity = enabled ? '1' : '0.48';
     }
 
     function overrideHotkeyPayload() {
-      return {
-        key: document.getElementById('overrideHotkeyKey').value.trim().toLowerCase(),
-        modifiers: [
-          ['overrideHotkeyCtrl', 'ctrl'], ['overrideHotkeyAlt', 'alt'],
-          ['overrideHotkeyShift', 'shift'], ['overrideHotkeyWin', 'win']
-        ].filter(([id]) => document.getElementById(id).checked).map(([, value]) => value)
-      };
+      const parts = document.getElementById('overrideHotkeyKey').value.trim().toLowerCase().split('+');
+      return {key: parts.pop(), modifiers: parts};
     }
 
     function renderGpuRoutingSettings() {
@@ -3107,9 +3120,10 @@
     }
 
     function profileUpscalerChoice(nativeType, addons) {
-      if (!['NIS', 'AddonDLSS', 'AddonFSR'].includes(nativeType)) return nativeType;
+      if (!['NIS', 'AddonDLSS', 'AddonFSR', 'AddonXeSS'].includes(nativeType)) return nativeType;
       if (addons.DLSS4DLAA?._enabled === true) return 'AddonDLSS';
       if (addons.FSR3UPSC?._enabled === true) return 'AddonFSR';
+      if (addons.XESSUPSC?._enabled === true) return 'AddonXeSS';
       return 'NIS';
     }
 
@@ -3160,24 +3174,49 @@
     }
 
     function serializedScalingType(choice) {
-      return ['AddonDLSS', 'AddonFSR'].includes(choice) ? 'NIS' : choice;
+      return ['AddonDLSS', 'AddonFSR', 'AddonXeSS'].includes(choice) ? 'NIS' : choice;
     }
 
     function renderProfileScalingChoice() {
       const control = document.getElementById('nativeScalingType');
       if (!control) return;
       control.value = profileUpscalerChoice(control.value, addonEditorDraft.addons);
+      renderProfileUpscalerFields(control.value);
       const hint = document.getElementById('profileScalingTypeHint');
       if (!hint) return;
-      const addonId = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC'}[control.value];
+      const addonId = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC', AddonXeSS: 'XESSUPSC'}[control.value];
       hint.textContent = addonId
-        ? `Uses NIS in Lossless Scaling and enables the manager's ${control.value === 'AddonDLSS' ? 'DLSS' : 'FSR'} upscaler. Fine-tune it in Add-ons for this profile below.`
-        : 'DLSS and FSR addons use NIS under the hood and require the corresponding manager add-on to be installed.';
+        ? 'Selected automatically with this scaling type. More tuning is available in the advanced add-on panel.'
+        : 'Choose DLSS, FSR or XeSS to enable its add-on automatically.';
       if (addonId && controlSettings?.addonManagerEnabled === false) {
         hint.textContent += ' Enable Companion Addon Host in Add-ons to use this mode.';
       } else if (addonId && addonEditorCatalog.find(addon => addon.id === addonId)?.installed === false) {
         hint.textContent += ' This add-on is not installed; install/update Companion Addon Host first.';
       }
+    }
+
+    function renderProfileUpscalerFields(choice) {
+      const host = document.getElementById('addonScalingFields');
+      const nativeSharpness = document.getElementById('nativeScalingSharpnessRow');
+      const id = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC', AddonXeSS: 'XESSUPSC'}[choice];
+      if (nativeSharpness) nativeSharpness.hidden = !!id;
+      if (!host) return;
+      host.replaceChildren();
+      host.hidden = !id;
+      if (!id) return;
+      const values = addonEditorDraft.addons[id] ||= {};
+      const addon = addonEditorCatalog.find(addon => addon.id === id);
+      host.setAttribute('data-addon-vendor', id === 'DLSS4DLAA' ? 'NVIDIA' : '');
+      const specs = new Map((addon?.fields || []).map(spec => [spec.key, spec]));
+      // A single sharpening control follows the selected scaler. Preserve
+      // upstream's older strength scale until the user changes this value.
+      const picture = {...values};
+      if (picture.sharpen != null && !picture.sharpenScale) picture.sharpen = String(Number(picture.sharpen) / 1.6);
+      const sharpen = specs.get('sharpen') || {key: 'sharpen', label: 'Sharpening', type: 'number', min: 0, max: 1, step: 0.05, default: '0.5'};
+      addonSettingField(host, values, 'sharpen', {...sharpen, displayValue: picture.sharpen}, `addons.${id}.sharpen`);
+      if (id === 'DLSS4DLAA') ['dlaaPreset', 'companionSm86Mode'].forEach(key => {
+        if (specs.has(key)) addonSettingField(host, values, key, specs.get(key), `addons.${id}.${key}`);
+      });
     }
 
     function profileUpscalerChanged() {
@@ -3204,8 +3243,9 @@
     }
 
     function changeProfileScalingChoice(choice) {
-      const selected = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC'}[choice] || null;
+      const selected = {AddonDLSS: 'DLSS4DLAA', AddonFSR: 'FSR3UPSC', AddonXeSS: 'XESSUPSC'}[choice] || null;
       setExclusiveProfileUpscaler(addonEditorDraft.addons, selected);
+      if (selected) addonEditorDraft.addons[selected].scalerPerGame = '0';
       document.getElementById('nativeScalingType').value = choice;
       profileUpscalerChanged();
       renderAddonEditor();
@@ -3239,6 +3279,7 @@
       if (spec.hidden) return;
       if (['__proto__', 'constructor', 'prototype'].includes(key)) return;
       const current = object[key];
+      const displayed = spec.displayValue !== undefined ? spec.displayValue : current;
       const group = document.createElement('div');
       group.className = 'form-group addon-field';
       const label = document.createElement('label');
@@ -3262,12 +3303,12 @@
       input.setAttribute('aria-label', label.textContent);
       if (kind === 'checkbox') input.checked = current === undefined ? spec.default === '1' : current === true || current === 1 || current === '1';
       else {
-        input.value = current == null ? '' : current;
+        input.value = displayed == null ? '' : displayed;
         if (spec.default !== undefined) input.placeholder = `Default: ${spec.default}`;
         ['min', 'max', 'step'].forEach(name => { if (spec[name] !== undefined) input[name] = spec[name]; });
         if (kind === 'number' && !spec.step) input.step = 'any';
       }
-      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless'].includes(path);
+      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed'].includes(path);
       if (path === 'addons.DLSS4DLAA.dlaaPreset' && ['L-INT8', 'M-INT8'].includes(object.companionSm86Mode)) {
         input.disabled = true;
         input.title = 'The selected SM86 mode pins this preset.';
@@ -3278,7 +3319,10 @@
         else object[key] = kind === 'checkbox'
           ? (typeof current === 'boolean' ? input.checked : input.checked ? '1' : '0')
           : (typeof current === 'number' ? Number(input.value) : input.value);
-        if (key === 'sharpen' && /^addons\.(DLSS4DLAA|FSR3UPSC|XESSUPSC|VSRUPSC)\./.test(path)) object.sharpenScale = '1.6';
+        if (key === 'sharpen' && /^addons\.(DLSS4DLAA|FSR3UPSC|XESSUPSC|VSRUPSC)\./.test(path)) {
+          object.sharpenScale = '1.6';
+          object.scalerPerGame = '0';
+        }
         if (path === 'addons.DLSS4DLAA.companionSm86Mode') {
           const preset = {'L-INT8': '12', 'M-INT8': '13'}[input.value];
           if (preset) { object.dlaaPreset = preset; object.scalerPerGame = '0'; }
@@ -3303,7 +3347,7 @@
       Object.entries(object || {}).forEach(([key, value]) => {
         if (excluded.has(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) return;
         const path = `${prefix}.${key}`;
-        if (['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless'].includes(path)) return;
+        if (['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed'].includes(path)) return;
         if (value && typeof value === 'object') {
           const nested = document.createElement('fieldset');
           const legend = document.createElement('legend');
@@ -3364,226 +3408,93 @@
       host.replaceChildren();
       const query = (document.getElementById('addonEditorSearch')?.value || '').trim().toLowerCase();
       const view = renderAddonEditor.view || (renderAddonEditor.view = new Map());
-      const catalog = new Map(addonEditorCatalog.map(addon => [addon.id, addon]));
-      ['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].forEach(id => {
-        if (!catalog.has(id)) catalog.set(id, { id, name: id, fields: [] });
-      });
+      const basic = {DLSSNR02: ['scalePercent', 'preset', 'intensity'], WindowedMode: []};
+      const passthrough = addonEditorDraft.addons.ReShadePassthrough ||= {};
+      passthrough._enabled = !!(document.getElementById('reshadeManagedProfile').value
+        || document.getElementById('displayCommanderEnabled').checked || document.getElementById('displayCommanderReflex').checked);
       let enabledCount = 0;
       let visibleCount = 0;
-      catalog.forEach(addon => {
-        if (!['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].includes(addon.id)) return;
-        const section = addonEditorDraft.addons[addon.id];
-        const values = section && typeof section === 'object' && !Array.isArray(section)
-          ? section : (addonEditorDraft.addons[addon.id] = {});
+      addonEditorCatalog.filter(addon => Object.hasOwn(basic, addon.id)).forEach(addon => {
+        const values = addonEditorDraft.addons[addon.id] ||= {};
         if (typeof values._enabled !== 'boolean') values._enabled = false;
-        const reshadeRequired = addon.id === 'ReShadePassthrough' && !!(document.getElementById('reshadeManagedProfile').value || document.getElementById('displayCommanderEnabled').checked || document.getElementById('displayCommanderReflex').checked);
-        if (reshadeRequired) values._enabled = true;
         if (values._enabled) enabledCount++;
-        const searchable = [addon.name, addon.id, addon.summary, ...(addon.fields || []).filter(spec => !spec.hidden).map(spec => spec.label),
-          ...(addon.groups || []).map(group => group.label), ...Object.keys(values)]
-          .filter(Boolean).join(' ').toLowerCase();
-        if (query && !searchable.includes(query)) return;
+        const fields = (addon.fields || []).filter(spec => basic[addon.id].includes(spec.key) && !spec.hidden);
+        if (query && ![addon.name, addon.summary, ...fields.map(spec => spec.label)].filter(Boolean).join(' ').toLowerCase().includes(query)) return;
         visibleCount++;
-        const expanded = query ? true : view.has(addon.id) ? view.get(addon.id) : values._enabled && !reshadeRequired;
+        const expanded = !!query || (view.has(addon.id) ? view.get(addon.id) : values._enabled);
         const card = document.createElement('section');
         card.className = `addon-editor-card${values._enabled ? ' is-enabled' : ''}${expanded ? ' is-expanded' : ''}`;
-        if (addon.vendor) card.setAttribute('data-addon-vendor', addon.vendor);
         const heading = document.createElement('div');
         heading.className = 'addon-editor-heading';
-        const titleButton = document.createElement('button');
-        titleButton.type = 'button';
-        titleButton.className = 'addon-editor-title';
-        titleButton.setAttribute('aria-label', `Configure ${addon.name}`);
-        titleButton.setAttribute('aria-expanded', String(expanded));
-        const bodyId = `addon-settings-${addon.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-        titleButton.setAttribute('aria-controls', bodyId);
-        const titleCopy = document.createElement('span');
-        titleCopy.className = 'addon-editor-title-copy';
-        const category = document.createElement('span');
-        category.className = 'addon-editor-category';
-        category.textContent = addon.category || 'Add-on';
-        const title = document.createElement('span');
-        title.className = 'addon-editor-name';
-        title.textContent = addon.name;
+        const title = document.createElement('button');
+        title.type = 'button';
+        title.className = 'addon-editor-title';
+        title.setAttribute('aria-label', `Configure ${addon.name}`);
+        title.setAttribute('aria-expanded', String(expanded));
+        const copy = document.createElement('span');
+        copy.className = 'addon-editor-title-copy';
+        const name = document.createElement('span');
+        name.className = 'addon-editor-name';
+        name.textContent = addon.name;
         const description = document.createElement('span');
         description.className = 'addon-description';
-        description.textContent = addon.summary || addon.description || 'Settings saved by this add-on.';
-        titleCopy.append(category, title, description);
-        titleButton.appendChild(titleCopy);
-        heading.appendChild(titleButton);
-        const toggleArea = document.createElement('div');
-        toggleArea.className = 'addon-editor-toggle';
-        const state = document.createElement('span');
-        state.className = `addon-editor-state${addon.installed === false ? ' is-unavailable' : ''}`;
-        state.textContent = reshadeRequired ? 'Automatic' : addon.installed === false ? 'Not installed' : values._enabled ? 'On' : 'Off';
-        toggleArea.appendChild(state);
+        description.textContent = addon.id === 'DLSSNR02'
+          ? 'Enhance captured frames before frame generation. The capture GPU selects the backend automatically.'
+          : 'Virtual display and output positioning. Configure the layout in the advanced panel.';
+        copy.append(name, description);
+        title.appendChild(copy);
         const toggle = document.createElement('label');
         toggle.className = 'ls-switch';
         const enabled = document.createElement('input');
         enabled.type = 'checkbox';
-        enabled.id = `addon-toggle-${addon.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+        enabled.id = `addon-toggle-${addon.id}`;
         enabled.checked = values._enabled;
-        enabled.disabled = reshadeRequired || (addon.installed === false && !values._enabled);
-        if (addon.vendor) {
-          enabled.setAttribute('data-addon-vendor', addon.vendor);
-          enabled.setAttribute('data-base-disabled', String(enabled.disabled));
-          enabled.disabled = enabled.disabled || !addonVendorDetected(addon.vendor);
-        }
-        if (addon.installed === false) enabled.title = 'Install the addon host in Add-ons to use this processor.';
+        enabled.disabled = addon.installed === false && !values._enabled;
         enabled.setAttribute('aria-label', `Enable ${addon.name}`);
         const track = document.createElement('span');
         track.className = 'ls-switch-track';
         toggle.append(enabled, track);
-        toggleArea.appendChild(toggle);
-        heading.appendChild(toggleArea);
-        card.appendChild(heading);
+        heading.append(title, toggle);
         const settings = document.createElement('fieldset');
-        settings.className = 'addon-editor-body';
-        if (addon.vendor) {
-          settings.setAttribute('data-addon-vendor', addon.vendor);
-          settings.disabled = !addonVendorDetected(addon.vendor);
-          settings.appendChild(addonVendorNote(addon.vendor));
-        }
-        settings.id = bodyId;
+        settings.className = 'addon-editor-body addon-editor-fields';
+        settings.id = `addon-settings-${addon.id}`;
         settings.hidden = !expanded;
-        titleButton.addEventListener('click', () => {
-          const open = settings.hidden;
-          settings.hidden = !open;
-          view.set(addon.id, open);
-          card.className = `addon-editor-card${values._enabled ? ' is-enabled' : ''}${open ? ' is-expanded' : ''}`;
-          titleButton.setAttribute('aria-expanded', String(open));
+        title.setAttribute('aria-controls', settings.id);
+        title.addEventListener('click', () => {
+          settings.hidden = !settings.hidden;
+          view.set(addon.id, !settings.hidden);
+          card.className = `addon-editor-card${values._enabled ? ' is-enabled' : ''}${settings.hidden ? '' : ' is-expanded'}`;
+          title.setAttribute('aria-expanded', String(!settings.hidden));
         });
         enabled.addEventListener('change', () => {
           values._enabled = enabled.checked;
           view.set(addon.id, enabled.checked);
-          if (addon.id === 'DLSSNR02' && enabled.checked) {
-            configureNeuralCapture();
-            renderAddonEditor();
-            document.getElementById(enabled.id)?.focus?.({preventScroll: true});
-            return;
-          }
-          if (['DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'VSRUPSC'].includes(addon.id)) {
-            if (enabled.checked) {
-              setExclusiveProfileUpscaler(addonEditorDraft.addons, addon.id);
-              document.getElementById('nativeScalingType').value = 'NIS';
-            }
-            profileUpscalerChanged();
-            renderAddonEditor();
-            document.getElementById(enabled.id)?.focus?.({preventScroll: true});
-            return;
-          }
-          addonEditorChanged();
+          if (addon.id === 'DLSSNR02' && enabled.checked) configureNeuralCapture();
+          else addonEditorChanged();
           renderAddonEditor();
           document.getElementById(enabled.id)?.focus?.({preventScroll: true});
         });
-        const knownKeys = new Set(['_enabled', ...(addon.fields || []).map(spec => spec.key)]);
-        const specs = new Map((addon.fields || []).map(spec => [spec.key, spec]));
-        const grouped = new Set();
-        (addon.groups || []).forEach(group => {
-          const keys = [...new Set(group.keys || [])].filter(key => specs.has(key) && !specs.get(key).hidden && !grouped.has(key));
-          if (!keys.length) return;
-          const section = document.createElement(group.expanded ? 'section' : 'details');
-          section.className = 'addon-field-group';
-          if (group.vendor) section.setAttribute('data-addon-vendor', group.vendor);
-          const groupTitle = document.createElement(group.expanded ? 'h6' : 'summary');
-          groupTitle.textContent = group.label;
-          section.appendChild(groupTitle);
-          if (group.vendor) section.appendChild(addonVendorNote(group.vendor));
-          if (!group.expanded) {
-            const groupKey = `group:${addon.id}:${group.label}`;
-            section.open = query
-              ? group.label.toLowerCase().includes(query) || keys.some(key => specs.get(key).label?.toLowerCase().includes(query))
-              : view.get(groupKey) === true;
-            section.addEventListener('toggle', () => { if (!query) view.set(groupKey, section.open); });
-          }
-          const fields = document.createElement('fieldset');
-          fields.className = 'addon-editor-fields';
-          if (group.vendor) {
-            fields.setAttribute('data-addon-vendor', group.vendor);
-            fields.disabled = !addonVendorDetected(group.vendor);
-          }
-          keys.forEach(key => {
-            grouped.add(key);
-            knownKeys.add(key);
-            addonSettingField(fields, values, key, specs.get(key), `addons.${addon.id}.${key}`);
-          });
-          section.appendChild(fields);
-          settings.appendChild(section);
-        });
-        const fields = document.createElement('div');
-        fields.className = 'addon-editor-fields';
-        specs.forEach(spec => {
-          knownKeys.add(spec.key);
-          if (!grouped.has(spec.key)) addonSettingField(fields, values, spec.key, spec, `addons.${addon.id}.${spec.key}`);
-        });
-        if (fields.children.length) settings.appendChild(fields);
-        const saved = document.createElement('details');
-        saved.className = 'addon-field-group';
-        const savedTitle = document.createElement('summary');
-        savedTitle.textContent = 'Additional saved settings';
-        const savedFields = document.createElement('div');
-        savedFields.className = 'addon-editor-fields';
-        const extraValues = Object.fromEntries(Object.entries(values).filter(([key]) => !knownKeys.has(key)));
-        if (Object.keys(extraValues).length) {
-          const help = document.createElement('p');
-          help.className = 'addon-field-help';
-          help.textContent = 'Saved compatibility values from this add-on are retained unchanged. Use the documented controls above to configure it.';
-          const raw = document.createElement('pre');
-          raw.style.whiteSpace = 'pre-wrap';
-          raw.textContent = JSON.stringify(extraValues, null, 2);
-          savedFields.append(help, raw);
-        }
-        if (savedFields.children.length) {
-          saved.append(savedTitle, savedFields);
-          const savedKey = `saved:${addon.id}`;
-          saved.open = query ? Object.keys(values).some(key => !knownKeys.has(key) && key.toLowerCase().includes(query))
-            : view.get(savedKey) === true;
-          saved.addEventListener('toggle', () => { if (!query) view.set(savedKey, saved.open); });
-          settings.appendChild(saved);
-        }
-        if (addon.description && addon.summary) {
-          const notes = document.createElement('details');
-          notes.className = 'addon-notes addon-field-group';
-          const notesKey = `notes:${addon.id}`;
-          notes.open = view.get(notesKey) === true;
-          notes.addEventListener('toggle', () => view.set(notesKey, notes.open));
-          const noteTitle = document.createElement('summary');
-          noteTitle.textContent = 'Compatibility & requirements';
-          const noteText = document.createElement('p');
-          noteText.textContent = addon.description;
-          notes.append(noteTitle, noteText);
-          settings.appendChild(notes);
-        }
-        if (!settings.children.length) {
-          const empty = document.createElement('p');
-          empty.className = 'addon-field-help';
-          empty.textContent = 'No additional controls for this add-on.';
-          settings.appendChild(empty);
-        }
-        card.appendChild(settings);
+        fields.forEach(spec => addonSettingField(settings, values, spec.key, spec, `addons.${addon.id}.${spec.key}`));
+        const note = document.createElement('p');
+        note.className = 'addon-field-help';
+        note.textContent = 'More settings are available in the advanced add-on panel for the active profile.';
+        settings.appendChild(note);
+        card.append(heading, settings);
         host.appendChild(card);
       });
       if (!visibleCount) {
         const empty = document.createElement('p');
         empty.className = 'addon-editor-empty';
-        empty.textContent = 'No add-ons match. Try a name such as DLSS, picture or AMD.';
+        empty.textContent = 'No add-ons match. Upscalers are configured in Scaling above.';
         host.appendChild(empty);
       }
       const summary = document.getElementById('addonEditorSummary');
       if (summary) summary.textContent = `${enabledCount} enabled${query ? ` · ${visibleCount} matching` : ' for this profile'}`;
       const hostNotice = document.getElementById('addonHostNotice');
       if (hostNotice) hostNotice.hidden = controlSettings?.addonManagerEnabled !== false;
-      const globalHost = document.getElementById('addonManagerFields');
-      globalHost.replaceChildren();
-      const explanation = document.createElement('p');
-      explanation.className = 'addon-field-help';
-      explanation.textContent = 'Host startup, overlay input and backend selection are managed automatically. Unrecognized and legacy values are retained for compatibility; they are not supported profile controls. Disable all processing also disables saved optional add-ons.';
-      const saved = document.createElement('pre');
-      saved.style.whiteSpace = 'pre-wrap';
-      saved.textContent = JSON.stringify({global: addonEditorDraft.global, addons: Object.fromEntries(
-        Object.entries(addonEditorDraft.addons).filter(([id]) => !['DLSSNR02', 'DLSS4DLAA', 'FSR3UPSC', 'XESSUPSC', 'WindowedMode', 'ReShadePassthrough'].includes(id)))}, null, 2);
-      globalHost.append(explanation, saved);
+      document.getElementById('addonManagerFields')?.replaceChildren();
       renderProfileScalingChoice();
+      renderProxyMenuAction();
       applyAddonVendorAvailability();
     }
 
@@ -4621,7 +4532,7 @@
     });
     document.getElementById('disableOptionalAddonsBtn').onclick = () => {
       Object.entries(addonEditorDraft.addons).forEach(([id, values]) => {
-        if (id !== 'ReShadePassthrough' && values && typeof values === 'object') values._enabled = false;
+        if (['DLSSNR02', 'LSC-AMDNR', 'WindowedMode'].includes(id) && values && typeof values === 'object') values._enabled = false;
       });
       renderAddonEditor();
       addonEditorChanged();
@@ -4706,10 +4617,12 @@
           reshadeOverlayHotkey: document.getElementById('reshadeOverlayHotkey').value.trim().toLowerCase(),
           addonManagerEnabled: document.getElementById('addonManagerEnabled').checked,
           sunshineMatchEncoderGpu: document.getElementById('sunshineMatchEncoderGpu').checked,
+          gloamHdrEnabled: document.getElementById('gloamHdrEnabled').checked,
           snapNearFullscreenWindowsToMonitor: document.getElementById('snapNearFullscreenWindowsToMonitor').checked,
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
           overlayIndicatorEnabled: document.getElementById('overlayIndicatorEnabled').checked,
           overlayHotkeys: {
+            overlay_toggle: document.getElementById('overlayToggleHotkey').value.trim(),
             profile_editor: document.getElementById('overlayProfileEditorHotkey').value.trim(),
             addon_manager: document.getElementById('overlayAddonManagerHotkey').value.trim(),
             performance_graph: document.getElementById('overlayPerformanceGraphHotkey').value.trim(),
@@ -4755,11 +4668,88 @@
       saveGeneralSettings();
     }
 
+    function shortcutFromKeyEvent(event, modifiers = true) {
+      const aliases = {ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+        ' ': 'space', PageUp: 'pageup', PageDown: 'pagedown', CapsLock: 'capslock'};
+      if (['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'Dead', 'Unidentified'].includes(event.key)) return null;
+      const punctuation = {Equal: '=', Minus: '-'};
+      const key = punctuation[event.code] || aliases[event.key] || event.key.toLowerCase();
+      if (!/^(?:[a-z0-9=\-]|f(?:[1-9]|1[0-9]|2[0-4])|home|end|pageup|pagedown|insert|delete|space|enter|tab|backspace|up|down|left|right|capslock|pause|printscreen|scrolllock|numlock)$/.test(key)) return null;
+      if (!modifiers && (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey)) return null;
+      return [...(modifiers ? [[event.ctrlKey, 'ctrl'], [event.altKey, 'alt'],
+        [event.shiftKey, 'shift'], [event.metaKey, 'win']].filter(([held]) => held).map(([, name]) => name) : []), key].join('+');
+    }
+
+    let activeKeyPicker = null;
+    function installKeyPicker(id, modifiers = true, clearable = true, allowWindows = true) {
+      const input = document.getElementById(id);
+      if (!input) return;
+      input.readOnly = true;
+      input.parentElement.classList.add('hotkey-picker');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-secondary';
+      button.textContent = 'Set key';
+      button.setAttribute('aria-label', `Set shortcut for ${input.labels?.[0]?.textContent || id}`);
+      let listening = false;
+      const cancel = () => {
+        listening = false;
+        input.parentElement.classList.remove('is-recording');
+        button.textContent = 'Set key';
+        document.removeEventListener('keydown', capture, true);
+        document.removeEventListener('pointerdown', outside, true);
+        window.removeEventListener('blur', cancel);
+        if (activeKeyPicker === cancel) activeKeyPicker = null;
+      };
+      const capture = event => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (event.key === 'Escape') { cancel(); return; }
+        if (!allowWindows && event.metaKey) { button.textContent = 'No Win key'; return; }
+        const binding = shortcutFromKeyEvent(event, modifiers);
+        if (!binding || event.repeat) return;
+        input.value = binding;
+        cancel();
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+      };
+      const outside = event => { if (!input.parentElement.contains(event.target)) cancel(); };
+      const start = () => {
+        if (input.disabled) return;
+        if (listening) { cancel(); return; }
+        if (activeKeyPicker) activeKeyPicker();
+        listening = true;
+        input.parentElement.classList.add('is-recording');
+        activeKeyPicker = cancel;
+        button.textContent = 'Recording…';
+        document.addEventListener('keydown', capture, true);
+        document.addEventListener('pointerdown', outside, true);
+        window.addEventListener('blur', cancel);
+      };
+      button.onclick = start;
+      input.onclick = start;
+      input.addEventListener('keydown', event => {
+        if (!listening && ['Enter', ' '].includes(event.key)) { event.preventDefault(); start(); }
+      });
+      input.parentElement.appendChild(button);
+      if (clearable) {
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'btn btn-secondary';
+        clear.textContent = 'Clear';
+        clear.setAttribute('aria-label', `Clear shortcut for ${input.labels?.[0]?.textContent || id}`);
+        clear.onclick = () => { cancel(); input.value = ''; input.dispatchEvent(new Event('change', {bubbles: true})); };
+        input.parentElement.appendChild(clear);
+      }
+    }
+    ['overlayToggleHotkey', 'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey',
+      'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey'].forEach(id => installKeyPicker(id));
+    installKeyPicker('reshadeOverlayHotkey', true, false, false);
+    installKeyPicker('overrideHotkeyKey', true, false);
+
     [
-      'runAtStartup', 'overlayIndicatorEnabled', 'addonManagerEnabled', 'sunshineMatchEncoderGpu',
-      'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey', 'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey',
-      'overrideLosslessHotkey', 'overrideHotkeyCtrl', 'overrideHotkeyAlt',
-      'overrideHotkeyShift', 'overrideHotkeyWin',
+      'runAtStartup', 'overlayIndicatorEnabled', 'addonManagerEnabled', 'sunshineMatchEncoderGpu', 'gloamHdrEnabled',
+      'overlayToggleHotkey', 'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey', 'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey',
+      'overrideLosslessHotkey',
       'preferredScalingGpu',
       'snapNearFullscreenWindowsToMonitor',
       'minimizeOtherWindowsOnScale', 'processLassoPerformanceModeScaling',
@@ -4812,13 +4802,12 @@
       ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
       ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
     };
-    document.getElementById('openProxyMenuBtn').onclick = () => {
+    function openAdvancedAddonPanel() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const status = document.getElementById('proxyMenuStatus');
-      status.textContent = 'Settings apply through a safe profile reload. Host updates are bundled with Companion.';
-      status.hidden = false;
-      ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
-    };
+      ws.send(JSON.stringify({ type: 'OPEN_PROXY_MENU' }));
+    }
+    document.getElementById('openProxyMenuBtn').onclick = openAdvancedAddonPanel;
+    document.getElementById('openProfileAddonPanelBtn').onclick = openAdvancedAddonPanel;
     function downloadBenchmarkTool(provider, button) {
       button.disabled = true;
       document.getElementById('performanceBenchmarkStatus').textContent = 'Downloading and verifying release asset...';

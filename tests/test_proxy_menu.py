@@ -49,9 +49,10 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
             result = controller.open()
 
         self.assertTrue(result["opened"])
-        user32.ShowWindowAsync.assert_called_once_with(8123, controller.SW_RESTORE)
-        user32.BringWindowToTop.assert_called_once_with(8123)
-        user32.SetForegroundWindow.assert_called_once_with(8123)
+        self.assertEqual(user32.ShowWindowAsync.call_args.args[0].value, 8123)
+        self.assertEqual(user32.ShowWindowAsync.call_args.args[1], controller.SW_RESTORE)
+        self.assertEqual(user32.BringWindowToTop.call_args.args[0].value, 8123)
+        self.assertEqual(user32.SetForegroundWindow.call_args.args[0].value, 8123)
 
     def test_open_can_show_configuration_without_an_active_profile(self):
         controller = LosslessProxyMenuController(AppState())
@@ -60,10 +61,11 @@ class LosslessProxyMenuControllerTests(unittest.TestCase):
             SetForegroundWindow=Mock(return_value=1),
         )
         with (
-            patch.object(controller, "_find_windows", return_value=[8123]),
+            patch.object(controller, "_find_windows", return_value=[8123]) as find_windows,
             patch("companion.services.proxy_menu.ctypes.windll.user32", user32),
         ):
-            result = controller.open()
+            result = controller.open(123)
+        find_windows.assert_called_once_with(123)
         self.assertTrue(result["opened"])
 
     def test_embed_reparents_echo_and_detach_restores_it(self):

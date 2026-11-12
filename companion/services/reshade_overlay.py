@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from ctypes import wintypes
 from .input_simulator import InputSimulator
 from .overlay_shortcuts import (DEFAULT_OVERLAY_HOTKEYS, ACTION_LABELS, parse_shortcut,
@@ -24,41 +25,68 @@ def menu_hotkey_label(status: dict, fallback: str) -> str:
 
 class ReShadeOverlayController:
     def __init__(self, manager, state, indicator, listener=None, open_profile=None, foreground_check=None,
-                 performance_graph=None):
+                 performance_graph=None, open_addon_panel=None):
         self.manager, self.state, self.indicator = manager, state, indicator
         self.listener, self.open_profile = listener, open_profile
         self.performance_graph = performance_graph
+        self.open_addon_panel = open_addon_panel
         self.foreground_check = foreground_check or self._foreground_allowed
         self.active = False
         self.profile_id = None
         self.host_pid = None
+        self._session = None
+        self._manual_active = None
+        self._native_active = False
+        self._last_status = {}
+        self._lock = threading.RLock()
         self._special_k_loaded = False
         self._special_k_binding = "ctrl+shift+backspace"
         self._special_k_custom = False
         self._callbacks = {name: (lambda name=name: self.dispatch_action(name)) for name in DEFAULT_OVERLAY_HOTKEYS}
 
+    def _current_profile(self):
+        return self.state.current_active_profile or next(
+            (profile for profile in self.manager.config.profiles if profile.is_default), None)
+
     def eligible(self) -> bool:
-        profile, config = self.state.current_active_profile, self.manager.config
-        return bool(profile and self.state.is_scaling_active and config.addon_manager_enabled
+        profile, config = self._current_profile(), self.manager.config
+        return bool(profile and self.state.is_scaling_active
                     and config.overlay_indicator_enabled and not self.state.benchmark_mode_active
-                    and not self.state.update_in_progress and not self.manager.repair_session
-                    and (profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)))
+                    and not self.state.update_in_progress and not self.manager.repair_session)
 
     def update(self, status: dict) -> None:
+        with self._lock:
+            self._update(status)
+
+    def _update(self, status: dict) -> None:
+        self._last_status = status
+        eligible = self.eligible()
+        profile = self._current_profile()
+        session = ((profile.id, self.state.scaling_target_pid, self.state.scaling_target_hwnd,
+                    self.state.last_scale_toggle_time) if eligible else None)
+        if session != self._session:
+            self._session = session
+            self._manual_active = None
+            self._native_active = False
         reshade = status.get("reshade") or {}
         if not isinstance(reshade, dict):
             reshade = {}
-        active = bool(self.eligible() and status.get("available") is True
-                      and reshade.get("interactive") is True)
+        uses_reshade = bool(profile and (profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)))
+        native_active = bool(eligible and uses_reshade and status.get("available") is True
+                             and reshade.get("interactive") is True)
+        if native_active != self._native_active:
+            self._manual_active = None
+        self._native_active = native_active
+        active = bool(eligible and (native_active if self._manual_active is None else self._manual_active))
         target = self.state.current_scaled_target or {}
         anchor = (reshade.get("presentationHwnd") or self.state.scaling_target_hwnd or target.get("hwnd"))
         if type(anchor) is not int or anchor <= 0:
             active = False
         was_active = self.active
         self.active = active
-        self.profile_id = self.state.current_active_profile.id if active else None
-        self.host_pid = status.get("pid") if active else None
-        self._special_k_loaded = bool(active and self.state.current_active_profile.graphics.special_k.enabled
+        self.profile_id = profile.id if eligible else None
+        self.host_pid = status.get("pid") if eligible else None
+        self._special_k_loaded = bool(active and profile.graphics.special_k.enabled
                                       and any(item.get("id") == "special-k" and item.get("loaded") is True
                                               for item in status.get("components", []) if isinstance(item, dict)))
         if self._special_k_loaded:
@@ -66,12 +94,14 @@ class ReShadeOverlayController:
         bindings = {**DEFAULT_OVERLAY_HOTKEYS, **self.manager.config.overlay_hotkeys}
         actions = {}
         hints = []
-        if active:
+        if active and uses_reshade:
             hints.append({"key": menu_hotkey_label(reshade, self.manager.config.reshade_overlay_hotkey),
                           "label": "Toggle ReShade menu"})
-            for name in DEFAULT_OVERLAY_HOTKEYS:
+        for name in DEFAULT_OVERLAY_HOTKEYS:
+            if (name == "overlay_toggle" and eligible) or (name != "overlay_toggle" and active):
                 binding = bindings[name]
                 if (name == "special_k_panel" and (not self._special_k_loaded or self._special_k_custom)
+                        or name == "addon_manager" and (self.open_addon_panel is None or not self.manager.config.addon_manager_enabled)
                         or name == "performance_graph" and self.performance_graph is None):
                     continue
                 try:
@@ -82,9 +112,11 @@ class ReShadeOverlayController:
                 if parsed and parsed[:2] != (native_mask, reshade.get("hotkeyVk")):
                     actions[name] = {"binding": binding, "callback": self._callbacks[name]}
         if self.listener is not None:
+            if not self.foreground_check():
+                actions = {}
             self.listener.set_overlay_actions(actions)
             for name, item in actions.items():
-                if self.listener.overlay_registered.get(name) == item["binding"]:
+                if active and self.listener.overlay_registered.get(name) == item["binding"]:
                     hints.append({"key": parse_shortcut(item["binding"])[2], "label": ACTION_LABELS[name]})
         if active and self._special_k_loaded and self._special_k_custom:
             hints.append({"key": parse_shortcut(self._special_k_binding)[2], "label": "Special K panel"})
@@ -92,7 +124,8 @@ class ReShadeOverlayController:
         if was_active and not active:
             if self.performance_graph is not None:
                 self.performance_graph(False)
-            self.indicator.log("Overlay closed", kind="info")
+            if eligible:
+                self.indicator.log("Overlay closed", kind="info")
 
     def _foreground_allowed(self) -> bool:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -103,12 +136,26 @@ class ReShadeOverlayController:
         return pid.value in (self.host_pid, self.state.scaling_target_pid)
 
     def dispatch_action(self, action: str) -> bool:
-        profile = self.state.current_active_profile
-        if (not self.active or not self.eligible() or not profile or profile.id != self.profile_id
+        with self._lock:
+            return self._dispatch_action(action)
+
+    def _dispatch_action(self, action: str) -> bool:
+        profile = self._current_profile()
+        if (not self.eligible() or not profile or profile.id != self.profile_id
+                or self._session != (profile.id, self.state.scaling_target_pid,
+                                     self.state.scaling_target_hwnd, self.state.last_scale_toggle_time)
                 or not self.foreground_check()):
             return False
-        if action in {"profile_editor", "addon_manager"} and self.open_profile is not None:
-            return bool(self.open_profile(profile.id, "addons" if action == "addon_manager" else None))
+        if action == "overlay_toggle":
+            self._manual_active = not self.active
+            self.update(self._last_status)
+            return True
+        if not self.active:
+            return False
+        if action == "profile_editor" and self.open_profile is not None:
+            return bool(self.open_profile(profile.id, None))
+        if action == "addon_manager" and self.open_addon_panel is not None and self.manager.config.addon_manager_enabled:
+            return bool(self.open_addon_panel())
         if action == "performance_graph" and self.performance_graph is not None:
             return bool(self.performance_graph())
         if action == "special_k_panel" and self._special_k_loaded:
@@ -117,4 +164,10 @@ class ReShadeOverlayController:
         return False
 
     def clear(self) -> None:
-        self.update({"available": False})
+        with self._lock:
+            self._manual_active = None
+            self._update({"available": False})
+            self._session = None
+            self.profile_id = None
+            if self.listener is not None:
+                self.listener.set_overlay_actions({})

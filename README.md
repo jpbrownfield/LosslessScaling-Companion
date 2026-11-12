@@ -33,9 +33,11 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Sets ReShade's `PresetPath` and `StartupPresetPath` in `ReShade.ini` beside Lossless Scaling, with the legacy `CurrentPresetPath` kept synchronized.
    - Enables the selected shader techniques when a preset is first created, including all three built-in presets. Later deliberate technique toggles, ordering, shader arguments and preset preprocessor definitions are saved to that named shared preset and reused by every application profile selecting it.
    - Enables ReShade preset autosave and editable shader parameters. Companion captures runtime preset writes about once per second, on overlay close, at shutdown and before deployment changes. Deployment snapshots and capture receipts preserve newer shared edits; conflicting runtime values remain in the preset's `.runtime-capture-*.json` receipt. The general SDR-white/monitor and HDR-peak controls retain ownership of their luminance values. ReShade's menu/runtime configuration remains managed separately from shader presets.
+   - Deployed presets remain writable in the private LS runtime. Legacy external presets use editable private copies, retaining edits across profile switches while leaving their source files untouched. ReShade's child-process base path is pinned to that private runtime.
    - Triggers ReShade reload hotkeys on profile activation.
 
 5. **Lossless Scaling Add-ons:**
+   - **Gloam HDR:** An optional Add-ons toggle creates a uniquely named hidden session executable and a Cinematic HDR running-app profile for each identified monitor. Setup backs up and merges Gloam schema-4 settings while Gloam is closed; quit/reopen Gloam once if setup is pending. During scaling, the bundled host samples a 256×144 grid twice per second and asynchronously reads four counters. scRGB highlights must exceed the monitor's actual Windows SDR-white level for three observations before switching; HDR10/PQ presentation is explicit HDR evidence. Confirmed HDR stays latched through dark scenes until scaling stops, the monitor changes, or HDR output ends. Scans stop after confirmation. Turning the feature off immediately releases its sampler control and session helper while retaining profiles/executables. Helpers exit on EOF, parent exit, or an eight-second heartbeat timeout. Gloam foreground profiles retain priority. The Application Tests panel includes GPU-fixture, provisioning, helper-lifetime and live-presentation checks; it reports requests separately from Gloam's effective policy, which Gloam does not expose externally.
    - **Sunshine / Apollo:** A checkbox under Add-ons, enabled by default, temporarily matches the scaling GPU to the hardware encoder GPU during a connected streaming session. It reads the running host's log, keeps the selected output monitor, and restores normal profile/default GPU routing after disconnect. Missing logs, software encoders, and ambiguous GPU names leave normal routing in place.
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
@@ -43,11 +45,13 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - ReShade profile settings offer separate **Display Commander** and **Inject NVIDIA Reflex** switches. Reflex enables Display Commander and ReShade even without a shader preset, and disables Special K Reflex for that profile. Download Display Commander from Add-ons first; ReShade Full Add-On 6.6.2 or later is required. Its foreground/background FPS limiters stay disabled. These controls affect LS, not the captured game's simulation or render queue. Display Commander updates are installed manually from its Add-ons card.
    - The profile editor lists supported image processors and display/input features with a master on/off switch. Internal reporters, automatic AMD backend routing and retired integrations do not appear as separate processors. Host startup flags and unrecognized saved values are retained in the read-only advanced view. Numeric tuning values are parameters of the parent feature, so they do not each have an enable switch. Overlay input is automatic while ReShade is enabled; upscaler selections stay synchronized with Scaling Type.
    - Managed Lilium SDR-to-HDR presets prepare captured SDR before inverse tone mapping: linear scRGB is normalized using its 80-nit reference, HDR10 is decoded to linear BT.709, and Lilium uses linear input without another gamma decode. Captured SDR white defaults to **400 nits**, configured once in **Add-ons ? ReShade ? HDR display & menu settings**. Each identified monitor can override it; blank monitor entries inherit the shared default. Overrides use the monitor device identity and apply to LS's selected output display at the next scaling start. Disconnected monitor settings are retained. This is separate from HDR peak brightness and is shared across application and shader profiles. Peak brightness remains separately controlled by the HDR display setting. Use an SDR source with Windows HDR and LS HDR support; native HDR, Windows Auto HDR, RTX HDR or Special K conversion must not feed a second SDR-to-HDR conversion. Imported or explicitly input-tuned presets retain their input path. Peak refresh preserves other shader edits.
-   - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion headless/status bridge. Deployment is transactional; addon-host updates ship with Companion.
+   - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion panel/status bridge. Deployment is transactional; addon-host updates ship with Companion.
    - Saves one complete addon configuration per profile. Built-in controls edit inactive and active profiles; active changes apply through the safe stopped-process reload workflow.
    - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; the **Overlay toggle** is enabled automatically for ReShade profiles when needed.
-   - While the Overlay toggle is on, a yellow border and an **Overlay active** card identify the interaction mode. Lower-right hints show the actual ReShade menu key and the configured Companion shortcuts: **Delete** opens the current profile, **Insert** opens its Add-ons section, **=** toggles a live application FPS/frame-time graph, and **-** opens Special K when loaded. A custom Special K panel binding takes priority. Configure or disable these shortcuts in **Settings → Overlay**. The graph requires verified PresentMon from Performance & Benchmark and captures only the current application; it stops when the overlay is closed. The headless host does not create an add-on manager GUI.
+   - While the Overlay toggle is on, a yellow border and an **Overlay active** card identify the interaction mode. Lower-right hints show the actual ReShade menu key and the configured Companion shortcuts: **Delete** opens the current profile, **Insert** opens the advanced addon manager panel, **=** toggles a live application FPS/frame-time graph, and **-** opens Special K when loaded. A custom Special K panel binding takes priority. Configure or disable these shortcuts in **Settings → Overlay**. The graph requires verified PresentMon from Performance & Benchmark and captures only the current application; it stops when the overlay is closed. The addon manager starts hidden and can be opened from the overlay or Add-ons. Scaling selects DLSS, FSR or XeSS automatically; sharpening and DLSS model settings live with Scaling. The basic addon editor keeps DLSS 5 and virtual-display controls, with detailed tuning in the native panel. Panel edits are captured into the active profile.
+   - **Ctrl+Home** independently opens or closes Companion's overlay while scaling, including profiles without ReShade or native interaction telemetry. Both this binding and ReShade's configuration-menu key (**End** by default) are under **Settings → Overlay**. All overlay shortcuts and the scaling hotkey override use **Set key** buttons to record complete combinations, with no modifier checkboxes; Escape cancels and Clear disables optional shortcuts. ReShade supports Ctrl/Alt/Shift combinations and keeps its menu configuration synchronized with the input handler. External presets receive a seed ReShade configuration on a clean runtime.
    - Overlay text, cards, hotkey hints and the performance graph scale with the target monitor's resolution: 1080p uses the base size, 1440p uses 1.33× and 4K uses 2×.
+   - Profile icons are cached under the settings directory's `icon-cache` folder across Companion and application restarts. Executable updates invalidate cached resources; changing a profile's target requests a new icon.
    - Focusing an executable profile prepares it silently. Scaling notifications appear when a scaling request begins; each toast fades over seven seconds before the cards below it move up.
    - Add-on edits made during scaling are saved immediately and deployed after scaling stops. Unknown saved settings remain available in the editor and are preserved.
    - Keeps bounded runtime logs in `%LOCALAPPDATA%\LosslessScalingHelper\logs\companion.log` and includes the recent log tail in diagnostic downloads.
@@ -489,7 +493,7 @@ component folder and `Global` configuration to hide its HUD and startup banner.
 Its explicit injection mode selects D3D11 through the clone's `SpecialK.d3d11`
 marker. Changes require restarting the managed LS process.
 
-The addon host is pinned to FriedSnowman build-5 with Companion overlay revision 5.
+The addon host is pinned to FriedSnowman build-7 with Companion overlay revision 1.
 The build verifies source/release archive digests, compiles the host, and retains
 the release's unchanged NR/upscaler binaries, corresponding source and licences.
 Run `python scripts/build_addon_manager.py` before packaging. Companion's controls
@@ -511,7 +515,7 @@ manifest checksum without changing its slot name.
 Host status comes from the loaded LS process and is checked against its PID,
 creation time and a fresh sample. The host's capture diagnostics are advisory;
 scaling confirmation continues to use native LS log/window evidence. The
-headless host is pinned for the process lifetime and settings use stopped reloads.
+managed host is pinned for the process lifetime and settings use stopped reloads.
 GPU image quality and performance require live validation on supported hardware;
 the synthetic smoke test validates startup, IPC and shutdown only.
 
@@ -534,6 +538,34 @@ The workflow creates release tag `v1.2.3` and attaches the elevated
 version is embedded in the packaged executable for update comparison.
 Release versions are immutable through this shortcut, so reusing an existing
 `@x.x.x` value fails instead of replacing its asset.
+
+The **Update FriedSnowman and release Companion** workflow checks his latest
+stable addon-manager release daily at 09:23 UTC, and can also be run manually.
+When a newer build appears, it pins the exact source commit and SHA-256 archive
+digests on an automation branch, then runs the existing full Windows application
+build, Python/JavaScript tests, native host smoke tests and NR routing tests.
+The host is rebuilt with Companion's integration patches. Upstream addon binaries
+and matching source/licences are retained in the bundle.
+Both the legacy ZIP and Build 7's standalone installer are supported. The verified
+installer is used only with `--extract` inside the build folder.
+
+After those checks pass, the workflow advances `main` without force and publishes
+the next sequential Companion release. It attaches the installer and checksum,
+plus `LSAddonManager-Companion.zip` and its checksum. Companion's existing updater
+detects the new installer release normally. A failed patch, build, test, checksum,
+or concurrent change to `main` prevents publication; uploaded files remain in a
+draft until promotion succeeds. Interrupted publication can be retried without
+allocating another version when the automation commit is still at the head of
+`main`, or when its original candidate draft is still available.
+
+This automation becomes active after these workflow changes reach `main`.
+It uses the repository's `GITHUB_TOKEN` with Contents write permission and needs
+permission to advance `main`. Branch protection must allow that automation;
+otherwise the run fails and leaves the release in draft. The workflow does not
+disable protection or merge incompatible upstream changes. Native smoke tests
+cover startup and integration; live GPU image quality/performance still require
+hardware validation. The panel window smoke test reports a skip when the runner
+has no hardware D3D11 device; headless host and routing checks still run.
 
 To stage all non-ignored changes, commit and push the next sequential release
 from `main`, use the repository-root helper:
@@ -562,7 +594,7 @@ LosslessProxy by FrankBarretta. The host is MIT; the replacement Neural Renderin
 addon is GPL-3.0-only. Matching NR source and our patched host source ship with
 the package. Other runtimes retain their own licences. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
-[upstream notice](https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md).
+[upstream notice](https://github.com/FriedSnowman/ls-addon-manager/blob/build-7/NOTICE.md).
 
 ---
 

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from ..core.models import ManagedPackageConfig, Profile, SpecialKConfig
 from .asset_store import AssetStore
-from .input_simulator import InputSimulator
+from .overlay_shortcuts import reshade_key_data
 from .deployment_manager import DeploymentManager
 from .addon_host import addon_version_key
 from . import sm86_sr, amd_nr, display_commander
@@ -444,16 +444,17 @@ class GraphicsResolver:
             addons["LSP-NeuralRender"] = existing
 
         if reshade_bridge_enabled:
+            vk, ctrl, shift, alt = reshade_key_data(reshade_overlay_hotkey)
             existing_bridge = addons.get("LSP-ReShade", {})
             if not isinstance(existing_bridge, dict):
                 existing_bridge = {}
             existing_bridge.update(
                 {
                     "enabled": True,
-                    "hotkey_vk": str(InputSimulator.vk_from_string(reshade_overlay_hotkey)),
-                    "hotkey_ctrl": "0",
-                    "hotkey_alt": "0",
-                    "hotkey_shift": "0",
+                    "hotkey_vk": str(vk),
+                    "hotkey_ctrl": str(ctrl),
+                    "hotkey_alt": str(alt),
+                    "hotkey_shift": str(shift),
                     "hotkey_win": "0",
                 }
             )
@@ -508,11 +509,13 @@ class GraphicsResolver:
 
     def _blank_neural_reshade_config(self, profile_id: str, overlay_hotkey: Optional[str] = None) -> Path:
         """Generate the safe baseline INI used until a named ReShade config is selected."""
+        key_data = reshade_key_data(overlay_hotkey) if overlay_hotkey else (0, 0, 0, 0)
+        overlay_key = ",".join(map(str, key_data))
         return self.store.write_generated_text(
             profile_id,
             "ReShade.ini",
             "[GENERAL]\nPerformanceMode=1\n\n"
-            f"[INPUT]\nKeyOverlay={InputSimulator.vk_from_string(overlay_hotkey) if overlay_hotkey else 0},0,0,0\n\n"
+            f"[INPUT]\nKeyOverlay={overlay_key}\n\n"
             "[ADDON]\nAddonPath=.\\\n\n"
             "[OVERLAY]\nTutorialProgress=4\nShowForceLoadEffectsButton=0\n",
         )
@@ -647,7 +650,10 @@ class GraphicsResolver:
                         if item["relative_path"].replace("\\", "/").casefold() != "reshade.ini"
                     ]
                 files.extend(recipe_files)
-                if graphics.display_commander.enabled and not has_selected_reshade_config:
+                # External preset swaps need a seed INI too: a clean private
+                # runtime may have none, and the swap cannot create one.
+                has_managed_reshade_config = bool(profile.reshade and profile.reshade.managed_profile_id)
+                if not has_managed_reshade_config:
                     files = [item for item in files if item["relative_path"].casefold() != "reshade.ini"]
                     files.append(dict(relative_path="ReShade.ini",
                         source_path=str(self._blank_neural_reshade_config(profile.id, reshade_overlay_hotkey)),

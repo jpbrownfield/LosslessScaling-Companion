@@ -8,7 +8,7 @@ import os
 import re
 import time
 
-MANAGED_HOST_VERSION = "build-5-lsc.5"
+MANAGED_HOST_VERSION = "build-7-lsc.1"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 
@@ -33,7 +33,8 @@ def validate_status(payload, instance, *, now=None):
     if (not math.isfinite(created) or not math.isfinite(sampled) or abs(created - instance[1]) > 0.01
             or not -2 <= current - sampled <= 3):
         raise ValueError("Host telemetry is stale or belongs to another process instance")
-    if payload.get("headless") is not True or not re.fullmatch(r"build-\d+-lsc\.\d+", str(payload.get("hostVersion", ""))):
+    managed = payload.get("headless") is True or (payload.get("headless") is False and payload.get("managed") is True)
+    if not managed or not re.fullmatch(r"build-\d+-lsc\.\d+", str(payload.get("hostVersion", ""))):
         raise ValueError("The running host does not implement Companion's bridge")
     if not isinstance(payload.get("addons"), list) or not isinstance(payload.get("metrics"), dict):
         raise ValueError("Host telemetry is malformed")
@@ -68,7 +69,7 @@ def _read_pipe(pid, timeout_ms=500):
         kernel.WaitNamedPipeW(name, min(timeout_ms, 100))
         pipe = kernel.CreateFileW(name, 0xC0000000, 0, None, 3, 0x40000000, None)
     if pipe == ctypes.c_void_p(-1).value:
-        raise OSError("The headless addon host is not running")
+        raise OSError("The managed addon host is not running")
 
     def transfer(function, buffer, size):
         operation = Overlapped()
@@ -113,8 +114,15 @@ def runtime_status(executable):
         return unavailable
     try:
         payload = _read_pipe(instance[0])
-        if configured_process(executable) != instance:
-            raise ValueError("Lossless Scaling restarted while reading host telemetry")
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        # Manual Companion controls still need to recognize the configured LS
+        # presentation window when an older host has no telemetry pipe.
+        current = configured_process(executable)
+        return {"available": False, "reason": str(error),
+                **({"pid": instance[0]} if current == instance else {})}
+    if configured_process(executable) != instance:
+        return {"available": False, "reason": "Lossless Scaling restarted while reading host telemetry"}
+    try:
         return validate_status(payload, instance)
     except (OSError, ValueError, TypeError, RecursionError) as error:
-        return {"available": False, "reason": str(error)}
+        return {"available": False, "reason": str(error), "pid": instance[0]}

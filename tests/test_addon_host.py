@@ -20,6 +20,23 @@ from companion.services.asset_store import AssetStore
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def manager_hardware_available():
+    """The upstream window needs a hardware D3D11 device; hosted CI may lack one."""
+    import ctypes
+    try:
+        create = ctypes.WinDLL("d3d11.dll", winmode=0x800).D3D11CreateDevice
+        create.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint,
+                           ctypes.POINTER(ctypes.c_uint), ctypes.c_uint, ctypes.c_uint,
+                           ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_void_p]
+        create.restype = ctypes.c_long
+        levels = (ctypes.c_uint * 2)(0xB000, 0xA000)
+        feature = ctypes.c_uint()
+        # Null device/context outputs query support without retaining a device.
+        return create(None, 1, None, 0, levels, 2, 7, None, ctypes.byref(feature), None) >= 0
+    except (OSError, AttributeError):
+        return False
+
+
 class AddonHostTests(unittest.TestCase):
     def sample(self, **changes):
         return {"schema": 1, "pid": 123, "createdAt": 900.0, "sampledAt": 1000.0,
@@ -40,6 +57,7 @@ class AddonHostTests(unittest.TestCase):
 
     def test_status_requires_exact_process_instance_and_fresh_sample(self):
         self.assertTrue(validate_status(self.sample(), (123, 900), now=1001)["available"])
+        self.assertTrue(validate_status(self.sample(headless=False, managed=True), (123, 900), now=1001)["available"])
         for payload in (self.sample(pid=456), self.sample(createdAt=899), self.sample(sampledAt=990),
                         self.sample(sampledAt=float("nan")), self.sample(schema=2),
                         self.sample(headless=False), self.sample(metrics=[])):
@@ -50,6 +68,14 @@ class AddonHostTests(unittest.TestCase):
         with patch("companion.services.adapter_report.configured_process", side_effect=[(123, 900), (123, 950)]), \
              patch("companion.services.addon_host._read_pipe", return_value=self.sample()):
             self.assertFalse(runtime_status("LosslessScaling.exe")["available"])
+
+    def test_missing_telemetry_keeps_only_a_reverified_scaling_process_identity(self):
+        for current, has_pid in (((123, 900), True), ((123, 950), False), (None, False)):
+            with patch("companion.services.adapter_report.configured_process", side_effect=[(123, 900), current]), \
+                    patch("companion.services.addon_host._read_pipe", side_effect=OSError("No status pipe")):
+                result = runtime_status("LosslessScaling.exe")
+                self.assertFalse(result["available"])
+                self.assertEqual("pid" in result, has_pid)
 
     def test_bundled_host_stages_offline_and_deploys_matching_sources(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,6 +145,9 @@ class NativeAddonHostTests(unittest.TestCase):
                         except (OSError, ValueError):
                             time.sleep(0.05)
                     self.assertIsNotNone(status, "The real host did not publish component status")
+                    self.assertFalse(status["hdrProbe"]["enabled"])
+                    self.assertEqual(status["hdrProbe"]["scans"], 0)
+                    self.assertEqual(status["hdrProbe"]["sampleDeviceName"], "")
                     if scenario == "valid":
                         self.assertEqual(status["startupError"], "", status.get("components"))
                         self.assertEqual(status["components"][0]["id"], "custom-fixture")
@@ -208,6 +237,15 @@ class NativeAddonHostTests(unittest.TestCase):
                             process.communicate(timeout=10)
 
     def test_real_host_is_headless_and_reports_addon_errors_without_a_model(self):
+        self._check_real_host(True)
+
+    def test_real_host_panel_starts_hidden_and_reopens(self):
+        if not manager_hardware_available():
+            self.skipTest("Native manager panel requires a hardware D3D11 device; other native host tests still run")
+        self._check_real_host(False)
+
+    def _check_real_host(self, headless):
+        import ctypes
         import psutil
         from companion.services.proxy_menu import AddonManagerMenuController
         archive = ROOT / "build/native" / MANAGED_HOST_ARCHIVE
@@ -223,8 +261,10 @@ class NativeAddonHostTests(unittest.TestCase):
                         bundle.extract(name, root)
             helper = root / "addons/LSC-AdapterReport"
             self.assertTrue((helper / "LSC_AdapterReport.dll").is_file(), "The host package must include its GPU reporter")
-            config = {"global": {"auto_load": True, "companion": {"headless": True}},
-                      "addons": {"DLSSNR02": {"_enabled": True}, "LSC-AdapterReport": {"_enabled": True}}}
+            config = {"global": {"auto_load": True, "companion": {"headless": headless, "managed": True},
+                                 "ui": {"open_on_start": False, "hotkey_enabled": False}},
+                      "addons": {"DLSSNR02": {"_enabled": True, "localStructure": "0.65", "skinStructure": "-1"},
+                                 "LSC-AdapterReport": {"_enabled": True}}}
             (root / "addons/config.json").write_text(json.dumps(config))
             environment = {**os.environ, "LOCALAPPDATA": str(root / "local-app-data")}
             process = subprocess.Popen([str(root / "LosslessScaling.exe")], cwd=root,
@@ -237,23 +277,60 @@ class NativeAddonHostTests(unittest.TestCase):
                 while time.monotonic() < deadline and process.poll() is None:
                     try:
                         status = validate_status(_read_pipe(process.pid), instance)
+                        if not headless and (not AddonManagerMenuController._find_windows(process.pid) or not any(
+                                item["id"] == "LSC-AdapterReport" and item["loaded"] for item in status["addons"])):
+                            time.sleep(0.05)
+                            continue
                         break
                     except (OSError, ValueError):
                         time.sleep(0.05)
                 self.assertIsNotNone(status, "The real host did not publish bridge status")
                 self.assertEqual(status["startupError"], "")
                 self.assertEqual(status["hostVersion"], MANAGED_HOST_VERSION)
+                log = (root / "logs/LSAddonManager.log").read_text(encoding="utf-8", errors="replace")
+                self.assertIn("FPS counter position override ready", log,
+                              "Managed startup must retain upstream's FPS drawing hook")
                 self.assertIs(status["reshade"]["interactive"], False)
                 self.assertIsInstance(status["reshade"]["hotkeyVk"], int)
                 self.assertFalse(status["capture"]["runtimeVerified"], "Synthetic LS must be rejected by the runtime gate")
                 neural = next(item for item in status["addons"] if item["id"] == "DLSSNR02")
                 self.assertTrue(neural["loaded"])
                 self.assertFalse(neural["faulted"])
+                # In panel mode LoadAddons publishes loaded modules before the
+                # GUI creates ImGui and calls AddonInitialize. Wait for that
+                # initialization's saved migration rather than racing the GUI.
+                deadline = time.monotonic() + 5
+                while True:
+                    saved = json.loads((root / "addons/config.json").read_text(encoding="utf-8"))
+                    if float(saved["addons"]["DLSSNR02"]["skinStructure"]) >= 0 or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                self.assertAlmostEqual(float(saved["addons"]["DLSSNR02"]["skinStructure"]), 0.65)
                 adapter = next(item for item in status["addons"] if item["id"] == "LSC-AdapterReport")
                 self.assertTrue(adapter["loaded"])
                 self.assertFalse(adapter["faulted"])
                 self.assertEqual(adapter["error"], "")
-                self.assertEqual(AddonManagerMenuController._find_windows(process.pid), [])
+                self.assertEqual(status["headless"], headless)
+                windows = AddonManagerMenuController._find_windows(process.pid)
+                if headless:
+                    self.assertEqual(windows, [])
+                else:
+                    from companion.core.state import AppState
+                    self.assertEqual(len(windows), 1)
+                    hwnd = ctypes.wintypes.HWND(windows[0])
+                    user32 = ctypes.windll.user32
+                    self.assertFalse(user32.IsWindowVisible(hwnd))
+                    controller = AddonManagerMenuController(AppState())
+                    for _ in range(2):
+                        self.assertTrue(controller.open(process.pid)["opened"])
+                        deadline = time.monotonic() + 5
+                        while not user32.IsWindowVisible(hwnd) and time.monotonic() < deadline:
+                            time.sleep(0.05)
+                        self.assertTrue(user32.IsWindowVisible(hwnd))
+                        # Synchronous close proves the GUI is pumping messages.
+                        reply = ctypes.c_size_t()
+                        self.assertTrue(user32.SendMessageTimeoutW(hwnd, 0x0010, 0, 0, 2, 2000, ctypes.byref(reply)))
+                        self.assertFalse(user32.IsWindowVisible(hwnd))
                 # A second client proves the first connection was acknowledged and retired.
                 self.assertEqual(_read_pipe(process.pid)["pid"], process.pid)
                 process.communicate(b"\n", timeout=10)

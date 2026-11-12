@@ -2,6 +2,7 @@
 // Companion owns settings through stopped-profile deployment. This endpoint is
 // read-only telemetry: no commands, paths, configuration, or GPU frame data.
 #include "companion_bridge.h"
+#include "hdr_probe.h"
 #include "component_loader.h"
 #include "d3d11_hook.h"
 #include "real_frame_hook.h"
@@ -21,6 +22,9 @@
 namespace lsc {
 namespace {
 std::atomic<bool> headless{false};
+std::atomic<bool> managed{false};
+void (*startPanel)(eam::AddonManager*) = nullptr;
+std::function<void()> initializeFeatures;
 std::atomic<unsigned> scalingVendor{0};
 std::atomic<unsigned> nrDriverVendor{0};
 std::atomic<bool> blockSm86{false};
@@ -126,7 +130,7 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
     json sr;{std::lock_guard<std::mutex> lock(sm86Mutex);sr=sm86;}
     const auto vendor=scalingVendor.load();
     json result={{"schema",1},{"pid",GetCurrentProcessId()},{"createdAt",Seconds(created)},
-        {"sampledAt",Seconds(now)},{"headless",true},{"hostVersion",LSC_HOST_VERSION},
+        {"sampledAt",Seconds(now)},{"headless",headless.load()},{"managed",true},{"hostVersion",LSC_HOST_VERSION},
         {"startupError",startupError},{"addons",json::array()},{"metrics",json::object()},
         {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
     auto& config=eam::ConfigManager::Instance();
@@ -153,10 +157,17 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"runtimeVerified",d.runtimeVerified},{"adapter",d.adapter},{"hookError",d.hookError},
         {"error",d.captureError},{"width",d.width},{"height",d.height},{"captures",d.captures},
         {"lastCaptureTick",d.lastCapture}};
+    const auto hdr=HdrProbeSnapshot();
+    result["hdrProbe"]={{"enabled",hdr.enabled},{"ready",hdr.ready},{"scans",hdr.scans},
+        {"sampledTick",hdr.sampledTick},{"presentTick",hdr.presentTick},{"pixels",hdr.pixels},
+        {"highlights",hdr.highlights},{"gamut",hdr.gamut},{"peakNits",hdr.peakNits},
+        {"sampleDeviceName",hdr.sampleDeviceName},{"sampleWhiteNits",hdr.sampleWhiteNits},
+        {"colorSpace",hdr.colorSpace},{"format",hdr.format},{"deviceName",hdr.deviceName},{"error",hdr.error}};
     return result;
 }
 
 DWORD WINAPI Run(void* parameter) {
+    StartHdrProbe();
     auto* manager=static_cast<eam::AddonManager*>(parameter);
     std::string startupError;
     try {
@@ -180,15 +191,21 @@ DWORD WINAPI Run(void* parameter) {
             }
         }
         D3D11Hook::InstallDispatchHooks();
-        // Keep the SDK's shared ImGui context for addon initialization. No HWND,
-        // swapchain, icons, fonts, UI render loop, or GPU-stat sampler is created.
-        ImGui::CreateContext();
-        manager->LoadAddons();
-        manager->InitializeAddons(ImGui::GetCurrentContext());
-        LOG_INFO("Companion", "Headless host ready (%s)", LSC_HOST_VERSION);
+        if (initializeFeatures) initializeFeatures();
+        if (headless.load()) {
+            // Retain the headless harness and older managed configurations.
+            ImGui::CreateContext();
+            manager->LoadAddons();
+            manager->InitializeAddons(ImGui::GetCurrentContext());
+        } else {
+            // The GUI owns addon loading and the shared ImGui context. Its
+            // hidden loop blocks in WaitMessage until Companion opens it.
+            startPanel(manager);
+        }
+        LOG_INFO("Companion", "Managed host ready (%s)", LSC_HOST_VERSION);
     } catch (const std::exception& error) {
         startupError=error.what();
-        LOG_ERROR("Companion", "Headless startup: %s", error.what());
+        LOG_ERROR("Companion", "Managed startup: %s", error.what());
     }
     const std::wstring name=L"\\\\.\\pipe\\LSCompanionAddonStatus-"+std::to_wstring(GetCurrentProcessId());
     // A fresh snapshot is sent only to a reader. Overlapped writes have a bounded
@@ -233,6 +250,7 @@ DWORD WINAPI Run(void* parameter) {
 }
 }
 bool IsHeadless() { return headless.load(); }
+bool IsManagedHost() { return managed.load(); }
 void ObserveRealFrameAdapter(unsigned vendor) {
     scalingVendor.store(vendor);
     nvidiaSrModule.store(GetModuleHandleW(L"DLSS4DLAA.dll"));
@@ -258,15 +276,22 @@ bool AllowDispatchModule(void* module) {
     if(module&&module==nvidiaNrModule.load()&&amd)return false;
     return true;
 }
-bool StartHeadless(eam::AddonManager* manager) {
-    if (!eam::ConfigManager::Instance().GlobalGetOr<bool>("companion","headless",false)) return false;
+bool StartManagedHost(eam::AddonManager* manager, void (*panel)(eam::AddonManager*), std::function<void()> beforeAddons) {
+    auto& config=eam::ConfigManager::Instance();
+    const bool withoutPanel=config.GlobalGetOr<bool>("companion","headless",false);
+    if (!withoutPanel && !config.GlobalGetOr<bool>("companion","managed",false)) return false;
+    if (!withoutPanel && !panel) return false;
     // Lifetime is the LS process. Explicit unload is intentionally disabled; host
     // upgrades and settings changes go through Companion's stopped reload path.
     HMODULE module=nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_PIN,
-        reinterpret_cast<LPCWSTR>(&StartHeadless),&module)) return false;
+        reinterpret_cast<LPCWSTR>(&StartManagedHost),&module)) return false;
+    headless.store(withoutPanel);
+    managed.store(true);
+    startPanel=panel;
+    initializeFeatures=std::move(beforeAddons);
     HANDLE worker=CreateThread(nullptr,0,Run,manager,0,nullptr);
-    if (!worker) { LOG_ERROR("Companion","Could not start headless worker");return false; }
-    headless.store(true);CloseHandle(worker);return true;
+    if (!worker) { managed.store(false);LOG_ERROR("Companion","Could not start managed worker");return false; }
+    CloseHandle(worker);return true;
 }
 }

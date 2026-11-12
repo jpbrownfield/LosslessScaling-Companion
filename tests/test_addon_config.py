@@ -11,6 +11,38 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_native_fps_corner_survives_panel_capture_and_profile_materialization(self):
+        import json
+        for corner in range(4):
+            with self.subTest(corner=corner), tempfile.TemporaryDirectory() as directory:
+                manager = SimpleNamespace(config_dir=directory, config=SimpleNamespace(default_addon_config={}), save_config=Mock())
+                service = AddonConfigService(manager)
+                live = Path(directory) / "addons/config.json"
+                live.parent.mkdir()
+                feature = {"_enabled": True, "fps_counter_corner": str(corner)}
+                live.write_text(json.dumps({"addons": {"LosslessScalingOverrides": feature}}))
+                profile = Profile(name="Game")
+                self.assertTrue(service.capture(profile, str(Path(directory) / "LosslessScaling.exe")))
+                materialized = service.materialize(profile, reshade_enabled=False)
+                result = json.loads(materialized.read_text())
+                self.assertEqual(result["addons"]["LosslessScalingOverrides"], feature)
+
+    def test_panel_upscaler_selection_updates_scaling_alias_and_keeps_advanced_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SimpleNamespace(config_dir=directory, config=SimpleNamespace(default_addon_config={}), save_config=Mock())
+            service = AddonConfigService(manager)
+            live = Path(directory) / "addons/config.json"
+            live.parent.mkdir()
+            live.write_text('{"addons":{"XESSUPSC":{"_enabled":true,"sharpen":"0.7","scalerEdges":"0.4"}}}')
+            profile = Profile(name="Game", native_scaling_settings={"ScalingType": "LS1"})
+            self.assertTrue(service.capture(profile, str(Path(directory) / "LosslessScaling.exe")))
+            self.assertEqual(profile.native_scaling_settings["ScalingType"], "NIS")
+            self.assertEqual(profile.addon_config["addons"]["XESSUPSC"]["scalerEdges"], "0.4")
+            config = service.effective(profile, reshade_enabled=False)
+            self.assertFalse(config["global"]["companion"]["headless"])
+            self.assertTrue(config["global"]["companion"]["managed"])
+            self.assertFalse(config["global"]["ui"]["open_on_start"])
+
     def test_hidden_controls_replace_unsafe_saved_values_without_enabling_processors(self):
         from companion.services.addon_schema import ADDONS, MANAGED_DEFAULTS
 
@@ -40,7 +72,8 @@ class AddonConfigServiceTests(unittest.TestCase):
         result = service.effective(profile, reshade_enabled=False)
         self.assertEqual(result["global"]["future"], 7)
         self.assertTrue(result["addons"]["Future"]["_enabled"])
-        self.assertTrue(result["global"]["companion"]["headless"])
+        self.assertFalse(result["global"]["companion"]["headless"])
+        self.assertTrue(result["global"]["companion"]["managed"])
 
     def test_echo_attribution_is_shipped_and_visible(self):
         root = Path(__file__).resolve().parents[1]
@@ -74,7 +107,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         self.assertEqual(result["global"]["custom"]["keep"], 7)
         self.assertEqual(result["addons"]["FutureAddon"]["setting"], "value")
         self.assertFalse(result["global"]["ui"]["open_on_start"])
-        self.assertTrue(result["global"]["companion"]["headless"])
+        self.assertFalse(result["global"]["companion"]["headless"])
 
     def test_reshade_forces_echo_passthrough(self):
         profile = Profile(name="Game", reshade=ReshadeConfig(enabled=True))
@@ -84,6 +117,37 @@ class AddonConfigServiceTests(unittest.TestCase):
         passthrough = result["addons"]["ReShadePassthrough"]
         self.assertTrue(passthrough["_enabled"])
         self.assertEqual(passthrough["hotkey_vk"], "35")
+
+    def test_current_menu_key_replaces_stale_profile_key_and_modifier_flags(self):
+        profile = Profile(name="Game", addon_config={"addons": {"ReShadePassthrough": {
+            "hotkey_vk": "36", "hotkey_ctrl": "1", "hotkey_alt": "1", "hotkey_shift": "1"}}})
+        result = self.service().effective(profile, reshade_enabled=True, hotkey_vk=35)
+        binding = result["addons"]["ReShadePassthrough"]
+        self.assertEqual(binding["hotkey_vk"], "35")
+        self.assertEqual([binding[key] for key in ("hotkey_ctrl", "hotkey_alt", "hotkey_shift")], ["0"] * 3)
+
+    def test_native_passthrough_supports_the_same_keys_as_the_settings_picker(self):
+        from companion.services.automation import AutomationController
+
+        self.assertEqual(AutomationController._echo_hotkey_vk("f24"), 0x87)
+        self.assertEqual(AutomationController._echo_hotkey_vk("1"), ord("1"))
+
+    def test_reshade_combination_keeps_native_modifiers_in_sync(self):
+        from companion.services.overlay_shortcuts import reshade_key_data
+
+        for shortcut, expected in (("end", (35, 0, 0, 0)),
+                                   ("ctrl+alt+f9", (120, 1, 0, 1)),
+                                   ("shift+f10", (121, 0, 1, 0))):
+            with self.subTest(shortcut=shortcut):
+                profile = Profile(name="Game")
+                config = self.service().effective(profile, reshade_enabled=True, hotkey=shortcut)
+                native = config["addons"]["ReShadePassthrough"]
+                self.assertEqual(reshade_key_data(shortcut), expected)
+                self.assertEqual(tuple(int(native[key]) for key in
+                    ("hotkey_vk", "hotkey_ctrl", "hotkey_shift", "hotkey_alt")), expected)
+        for shortcut in ("", "ctrl", "ctrl+ctrl+f9", "win+f9"):
+            with self.subTest(shortcut=shortcut), self.assertRaises(ValueError):
+                reshade_key_data(shortcut)
 
     def test_legacy_neural_selection_does_not_implicitly_enable_echo_dlss5(self):
         profile = Profile(name="Game")
@@ -201,7 +265,7 @@ class AddonConfigServiceTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "companion" / "ui" / "dashboard.html"
         ).read_text(encoding="utf-8")
         self.assertIn('id="addonManagerEnabled"', dashboard)
-        self.assertIn("Refresh runtime", dashboard)
+        self.assertIn("Open advanced panel", dashboard)
         self.assertIn("Add-ons for this profile", dashboard)
         self.assertIn('id="addonEditorCards"', dashboard)
         self.assertNotIn('id="echoConfigJson"', dashboard)

@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import threading
 import time
+import tempfile
 
 from PIL import Image
 import psutil
@@ -109,12 +110,62 @@ def executable_icon_png(path: Path, size: int = 64) -> bytes | None:
 class ProfileIconService:
     """Bounded resource cache shared by all profiles pointing at the same app."""
 
-    def __init__(self):
+    def __init__(self, cache_dir: Path | None = None):
         self._lock = threading.Lock()
         self._icons = OrderedDict()
         self._names = OrderedDict()
         self._process_paths = {}
         self._process_paths_until = 0.0
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+
+    def _disk_icon(self, version: str) -> bytes | None:
+        if self.cache_dir is None:
+            return None
+        try:
+            record = json.loads((self.cache_dir / f"{version}.json").read_text(encoding="utf-8"))
+            source = Path(record["path"])
+            if not source.is_absolute() or str(source).startswith(("\\\\", "//")):
+                return None
+            try:
+                info = source.stat()
+                if [info.st_mtime_ns, info.st_size] != record["signature"]:
+                    return None
+            except OSError:
+                pass  # Keep the last icon when an application is unavailable.
+            icon = self.cache_dir / f"{version}.png"
+            if icon.stat().st_size > 1024 * 1024:
+                return None
+            data = icon.read_bytes()
+            with Image.open(BytesIO(data)) as picture:
+                if picture.format != "PNG" or picture.size != (64, 64):
+                    return None
+                picture.verify()
+            return data
+        except (OSError, ValueError, KeyError, TypeError, Image.DecompressionBombError):
+            return None
+
+    def _save_disk_icon(self, version: str, path: Path, info, data: bytes) -> None:
+        if self.cache_dir is None:
+            return
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            record = json.dumps({"path": str(path), "signature": [info.st_mtime_ns, info.st_size]})
+            for suffix, content in (("png", data), ("json", record.encode("utf-8"))):
+                handle, temporary = tempfile.mkstemp(dir=self.cache_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(handle, "wb") as stream:
+                        stream.write(content)
+                    os.replace(temporary, self.cache_dir / f"{version}.{suffix}")
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            records = sorted(self.cache_dir.glob("????????????????.json"), key=lambda item: item.stat().st_mtime)
+            for old in records[:-256]:
+                if len(old.stem) == 16 and all(char in "0123456789abcdef" for char in old.stem):
+                    old.with_suffix(".png").unlink(missing_ok=True)
+                    old.unlink(missing_ok=True)
+        except OSError:
+            pass  # Extraction still works if the optional cache cannot be saved.
 
     @staticmethod
     def targets(profile: Profile, lossless_exe: str | None) -> list[str]:
@@ -177,6 +228,10 @@ class ProfileIconService:
 
     def png(self, profile: Profile, lossless_exe: str | None = None) -> bytes | None:
         with self._lock:
+            version = self.version(profile, lossless_exe)
+            saved = self._disk_icon(version)
+            if saved:
+                return saved
             targets = self.targets(profile, lossless_exe)
             candidates, names = [], []
             for value in targets:
@@ -217,6 +272,7 @@ class ProfileIconService:
                         while len(self._icons) > 128:
                             self._icons.popitem(last=False)
                     if data:
+                        self._save_disk_icon(version, path, info, data)
                         return data
                 except (OSError, ValueError):
                     continue

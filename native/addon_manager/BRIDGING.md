@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
-The source of truth is `upstream.lock.json`. Initial baseline: **build-5**, commit
-`417c292aefa32ef5e36696975813a24037ef2564`; Companion revision **4**. This replaces
+The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **1**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -29,6 +29,16 @@ are incorporated by rebuilding and releasing Companion.
 
 ## Deliberate patch surface
 
+Build 7 keeps the upstream FPS-counter placement hook in both managed startup
+modes, after dispatch hooks and before addons initialize. The GUI still starts
+hidden and responds to Companion's shortcuts. Managed mode suppresses upstream's
+update-consent dialog and directs users to Companion for host updates; stock
+unmanaged behavior is unchanged. Profile snapshots retain the native panel's
+`LosslessScalingOverrides` settings without adding another basic editor control.
+Build 7 migrates legacy negative NR `skinStructure` values to the saved local
+structure strength once; the current skin slider is explicit and ranges from
+0 to 2. Companion preserves older saved values for that native migration.
+
 Revision 4 adds `component_loader.{h,cpp}` and the exported
 `LSCInitializeComponents` entry point. The mandatory managed startup hook calls
 it before LS Main and graphics initialization. The loader validates the complete
@@ -45,16 +55,20 @@ only Companion's managed LS copy and private settings; see
 the files `companion_bridge.{h,cpp}`, the host target's source/version
 definition, and these edits to `manager/src/core/main.cpp`:
 
-1. Select our worker when `global.companion.headless` is true. Ordinary upstream
-   GUI startup remains available when it is false.
+1. Select our managed worker when `global.companion.managed` is true, retaining
+   `headless` for legacy configurations and smoke tests.
 2. Pin the host for the process lifetime. Installation/settings changes require
    Companion's existing stopped-process reload.
 3. Skip GPU/thread destruction during process termination under the loader lock.
-   Windows reclaims the process; the headless host cannot be explicitly unloaded.
 
-The headless worker installs the existing dispatch hooks and initializes the
-existing addons with a shared ImGui context. It creates no manager HWND,
-swapchain, fonts, GUI render loop, or GUI GPU sampler. The rendering pipeline,
+The managed worker initializes components, SM86 routing and dispatch hooks before
+starting the upstream GUI. The GUI owns addon loading and its shared ImGui context.
+`global.ui.open_on_start` is false: the window starts hidden and blocks in
+`WaitMessage` without drawing until opened. A `WM_SHOWWINDOW` patch keeps the GUI's
+hidden state synchronized when Companion restores its HWND from an overlay action.
+The status pipe remains read only and reports `managed: true, headless: false`;
+legacy headless workers report `headless: true`. Both retain process identity and
+freshness checks. The rendering pipeline,
 model forwarder, shaders, SDK method order, and addon lifecycle are unchanged.
 
 Revision 2 adds an optional preloader for **sdli1995/dlssg_for_sm86 0.4.1 SR**.
@@ -123,8 +137,9 @@ PID, process instance, schema, size and freshness, and has a bounded read timeou
 The pipe accepts only a delivery acknowledgement; it has no command interface.
 Overlay controls use this verified toggle state to show the yellow border,
 persistent status card, and scoped configurable shortcuts. The native menu key
-is never registered or swallowed by Companion. The headless host has no manager
-window; the add-on shortcut opens the current profile's Add-ons section instead.
+is never registered or swallowed by Companion. The add-on shortcut restores and
+focuses the manager window belonging to the verified managed LS process. Its
+WM_SHOWWINDOW handler resumes rendering; closing the panel hides it again.
 
 Telemetry is advisory: missing captures, NR disabled, or a waiting/error status
 must never be interpreted as proof that scaling is active or stopped. Scaling
@@ -199,9 +214,19 @@ results. Run the native tests alongside the original headless/SM86 smoke tests.
 
 ## Incorporating an upstream release
 
+`.github/workflows/update-friedsnowman.yml` automates compatible stable updates.
+It stages the lock and Python host version on a candidate branch and reuses the
+full Windows release build before advancing main and publishing a new Companion
+installer and addon-host ZIP. Exact patch anchors remain mandatory: upstream
+drift fails the run and requires the manual review below. The addon host is never
+replaced with the stock upstream DLL. See the README's release instructions for
+permissions, recovery and hardware validation limits.
+
 1. Review the release's host API, ImGui revision, NR schema/defaults, capture
    shader/runtime checks, licences and payload layout. Update the lock's commit,
-   tag and both archive digests. Increment `companion_revision` and `version`.
+   tag, `release_asset` filename and both archive digests. Increment
+   `companion_revision` and `version`. Legacy locks without `release_asset` use
+   the ZIP filename; current releases use the standalone EXE's `--extract` mode.
 2. Run the builder. If an anchor fails, review that upstream change and update
    `prepare.py`; do not weaken the exact-match check. Inspect the generated host
    diff against a clean archive of the pinned commit.

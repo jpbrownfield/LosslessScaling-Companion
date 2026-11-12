@@ -8,14 +8,44 @@ import re
 import shutil
 import tempfile
 import logging
+import hashlib
+import stat
 from pathlib import Path
 from typing import Optional, List
 from .input_simulator import InputSimulator
+from .overlay_shortcuts import reshade_key_data
 
 logger = logging.getLogger("LSCompanion.ReshadeManager")
 
 
 class ReshadeManager:
+    @staticmethod
+    def _editable_preset(installation: Path, source: Path) -> Path:
+        """Edit a private runtime copy, retaining edits across profile switches."""
+        key = hashlib.sha256(os.path.normcase(str(source.resolve())).encode("utf-8")).hexdigest()[:16]
+        folder = installation / ".companion" / "reshade-presets" / key
+        if not folder.resolve().is_relative_to(installation.resolve()):
+            raise ValueError("ReShade preset cache must remain inside the private LS runtime")
+        folder.mkdir(parents=True, exist_ok=True)
+        destination, receipt = folder / "preset.ini", folder / "source.sha256"
+        content = source.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        previous = receipt.read_text(encoding="ascii") if receipt.is_file() else ""
+        if not destination.is_file() or previous != digest:
+            handle, temporary = tempfile.mkstemp(dir=folder, suffix=".tmp")
+            try:
+                with os.fdopen(handle, "wb") as output:
+                    output.write(content)
+                if destination.exists():
+                    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+                os.replace(temporary, destination)
+                receipt.write_text(digest, encoding="ascii")
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+        return destination
+
     @staticmethod
     def _is_lossless_scaling_ini(path: Path) -> bool:
         valid = (
@@ -46,7 +76,8 @@ class ReshadeManager:
         return None
 
     @staticmethod
-    def swap_preset(reshade_ini_path: str, new_preset_path: str, backup: bool = True) -> bool:
+    def swap_preset(reshade_ini_path: str, new_preset_path: str, backup: bool = True,
+                    *, overlay_hotkey: Optional[str] = None) -> bool:
         """
         Updates the CurrentPresetPath in the given ReShade.ini file.
         """
@@ -60,6 +91,8 @@ class ReshadeManager:
             logger.warning(f"Preset file does not exist at: {new_preset_path} (swapping anyway)")
 
         try:
+            if preset_file.is_file():
+                preset_file = ReshadeManager._editable_preset(ini_file.parent, preset_file)
             if backup:
                 bak_path = ini_file.with_suffix(".ini.bak")
                 if not bak_path.exists():
@@ -80,6 +113,28 @@ class ReshadeManager:
                 body = pattern.sub(lambda _: value, body) if pattern.search(body) else body.rstrip() + "\n" + value + "\n"
             new_content = (content[:match.start()] + match.group(1) + body + content[match.end():]
                            if match else "[GENERAL]\n" + body.lstrip() + "\n" + content)
+            install = re.compile(r"(?ims)(^\[INSTALL\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)")
+            section = install.search(new_content)
+            base_path = f"BasePath={ini_file.parent.resolve()}\n"
+            if section:
+                settings = re.sub(r"(?im)^BasePath\s*=.*(?:\r?\n|$)", "", section.group(2))
+                new_content = (new_content[:section.start()] + section.group(1) + base_path + settings
+                               + new_content[section.end():])
+            else:
+                new_content += "\n[INSTALL]\n" + base_path
+
+            if overlay_hotkey is not None:
+                # External presets used to keep an imported Home binding or
+                # KeyOverlay=0 even though the host watched Companion's End key.
+                key = "KeyOverlay=" + ",".join(map(str, reshade_key_data(overlay_hotkey))) + "\n"
+                input_section = re.compile(r"(?ims)(^\[INPUT\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)")
+                section = input_section.search(new_content)
+                if section:
+                    settings = re.sub(r"(?im)^KeyOverlay\s*=.*(?:\r?\n|$)", "", section.group(2))
+                    new_content = (new_content[:section.start()] + section.group(1) + key + settings
+                                   + new_content[section.end():])
+                else:
+                    new_content += "\n[INPUT]\n" + key
 
             handle, temp_name = tempfile.mkstemp(
                 prefix=f".{ini_file.name}.", suffix=".tmp", dir=ini_file.parent
@@ -89,6 +144,8 @@ class ReshadeManager:
                     stream.write(new_content)
                     stream.flush()
                     os.fsync(stream.fileno())
+                if ini_file.exists():
+                    ini_file.chmod(ini_file.stat().st_mode | stat.S_IWUSR)
                 os.replace(temp_name, ini_file)
             finally:
                 if os.path.exists(temp_name):
@@ -149,6 +206,8 @@ class ReshadeManager:
                     shutil.copyfileobj(source, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
+                if ini_file.exists():
+                    ini_file.chmod(ini_file.stat().st_mode | stat.S_IWUSR)
                 os.replace(temp_name, ini_file)
             finally:
                 if os.path.exists(temp_name):

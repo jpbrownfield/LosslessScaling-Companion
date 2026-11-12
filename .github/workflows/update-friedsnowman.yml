@@ -1,0 +1,83 @@
+name: Update FriedSnowman and release Companion
+
+on:
+  schedule:
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: friedsnowman-auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare pinned upstream update
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      metadata: ${{ steps.update.outputs.metadata }}
+      source_sha: ${{ steps.update.outputs.source_sha }}
+      version: ${{ steps.update.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Detect stable upstream release and stage candidate source
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/update_addon_manager.py prepare
+
+  build:
+    name: Build and test candidate release
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      # The reusable workflow declares a publisher job for normal releases;
+      # that job is skipped here. Its native build job explicitly uses read only.
+      contents: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      release_version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Promote tested pins and publish new release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # Execute release orchestration from the trusted workflow revision,
+      # never from downloaded upstream sources or release artifacts.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.installer_artifact }}
+          merge-multiple: true
+          path: release-artifacts
+      - name: Verify artifacts, fast-forward main and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_METADATA: ${{ needs.prepare.outputs.metadata }}
+        run: python scripts/update_addon_manager.py publish

@@ -40,6 +40,9 @@ VK_MAPPINGS = {
     'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22,
     'insert': 0x2D, 'delete': 0x2E,
     'space': 0x20, 'enter': 0x0D, 'tab': 0x09, 'escape': 0x1B,
+    'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28,
+    'capslock': 0x14, 'pause': 0x13, 'printscreen': 0x2C,
+    'scrolllock': 0x91, 'numlock': 0x90,
 }
 
 # Add a-z and 0-9

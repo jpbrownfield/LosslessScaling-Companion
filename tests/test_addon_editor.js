@@ -19,7 +19,7 @@ class Element {
 }
 
 function editor() {
-  const nodes = Object.fromEntries(['addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'displayCommanderEnabled', 'displayCommanderReflex', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'nativeFrameGenerationType', 'nativeCaptureApi', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
+  const nodes = Object.fromEntries(['addonScalingFields', 'nativeScalingSharpnessRow', 'addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'displayCommanderEnabled', 'displayCommanderReflex', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'nativeFrameGenerationType', 'nativeCaptureApi', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
   nodes.profileId.value = 'inactive-game-profile';
   nodes.nativeScalingType.value = 'NIS';
   nodes.nativeScalingType.dataset = {nativeKey: 'ScalingType', nativeAvailable: 'true'};
@@ -44,12 +44,12 @@ function editor() {
         {key: 'dlaaPreset', label: 'DLSS upscaling preset', type: 'select', options: [['12', 'L'], ['13', 'M']]},
         {key: 'companionSm86Mode', label: 'SM86 optimized Super Resolution', type: 'select',
           options: [['Off', 'Off'], ['L-INT8', 'L-INT8'], ['M-INT8', 'M-INT8']]}]},
-      {id: 'FSR3UPSC', name: 'FSR Upscaler', fields: []}],
+      {id: 'FSR3UPSC', name: 'FSR Upscaler', fields: []}, {id: 'XESSUPSC', name: 'XeSS Upscaler', fields: []}],
     addonEditorDraft: {global: {custom: 17}, addons: {DLSSNR02: {enabled: true}, Future: {numeric: 2, text: 'keep', nested: {flag: true}}}},
     addonEditorTimer: null, addonEditorGeneration: 0, editingOriginalProfile: {},
     addonScalingSavePending: false, controlSettings: {addonManagerEnabled: true},
     scheduleProfileAutosave: delay => profileSaves.push(delay),
-    renderFrameGenerationModeSettings: () => {},
+    renderFrameGenerationModeSettings: () => {}, renderProxyMenuAction: () => {},
     setTimeout: () => 1, clearTimeout: () => {}, structuredClone,
     ws: {readyState: 1, send: data => sent.push(JSON.parse(data))}, WebSocket: {OPEN: 1},
   });
@@ -58,7 +58,7 @@ function editor() {
   context.renderAddonEditor();
   function find(label) {
     const walk = node => node['aria-label'] === label ? node : node.children.map(walk).find(Boolean);
-    return walk(nodes.addonEditorCards) || walk(nodes.addonManagerFields);
+    return walk(nodes.addonEditorCards) || walk(nodes.addonManagerFields) || walk(nodes.addonScalingFields);
   }
   function savedJson() {
     const values = [];
@@ -97,7 +97,7 @@ test('known numeric settings use upstream strings and unknown numeric values are
   resolution.value = '60';
   resolution.events.change();
   assert.equal(find('numeric'), undefined, 'unknown values are compatibility data, not editable controls');
-  assert.equal(savedJson().find(value => value.addons).addons.Future.numeric, 2);
+  assert.equal(context.addonEditorDraft.addons.Future.numeric, 2);
   context.saveAddonEditor();
   assert.equal(sent[0].config.addons.DLSSNR02.scalePercent, '60');
   assert.equal(sent[0].config.addons.Future.numeric, 2);
@@ -107,7 +107,8 @@ test('known numeric settings use upstream strings and unknown numeric values are
 test('INT8 selection pins L/M, locks its standard preset and saves independently of NR', () => {
   const {context, find, sent} = editor();
   context.addonEditorDraft.addons.DLSSNR02.preset = '2';
-  context.addonEditorDraft.addons.DLSS4DLAA._enabled = true;
+  context.addonEditorDraft.addons.DLSS4DLAA = {_enabled: true};
+  context.renderAddonEditor();
   for (const [mode, preset] of [['L-INT8', '12'], ['M-INT8', '13']]) {
     const backend = find('SM86 optimized Super Resolution');
     backend.value = mode;
@@ -139,37 +140,19 @@ test('the entire dashboard script parses', () => {
   new vm.Script(html.slice(html.indexOf('<script>') + 8, html.indexOf('</script>')));
 });
 
-test('physical inventory gates exclusive controls while shared NR and FSR stay editable', () => {
+test('DLSS scaling fields respect inventory and advanced backend controls stay in the panel', () => {
   const {context, nodes, find} = editor();
-  const nr = context.addonEditorCatalog[0];
-  nr.fields.push({key: 'amdModelPath', label: 'AMD model', type: 'text'},
-    {key: 'flowQuality', label: 'NVIDIA flow', type: 'number'});
-  nr.groups = [{label: 'AMD inference', vendor: 'AMD', keys: ['amdModelPath']},
-    {label: 'NVIDIA optical flow', vendor: 'NVIDIA', keys: ['flowQuality']}];
-  context.addonEditorCatalog[1].vendor = 'NVIDIA';
-  context.addonEditorDraft.addons.DLSS4DLAA._enabled = true;
-  const groupFields = vendor => {
-    const walk = node => node.tag === 'fieldset' && node['data-addon-vendor'] === vendor
-      ? node : node.children.map(walk).find(Boolean);
-    return walk(nodes.addonEditorCards);
-  };
-  for (const vendors of [[], ['AMD'], ['NVIDIA'], ['AMD', 'NVIDIA']]) {
-    context.controlSettings.gpuInventory = {gpus: vendors.map(vendor => ({vendor}))};
-    context.renderAddonEditor();
-    assert.equal(find('Enable DLSS Upscaler').disabled, !vendors.includes('NVIDIA'));
-    assert.equal(groupFields('AMD').disabled, !vendors.includes('AMD'));
-    assert.equal(groupFields('NVIDIA').disabled, !vendors.includes('NVIDIA'));
-    assert.equal(find('Enable DLSS 5').disabled, false);
-    assert.equal(find('Enable FSR Upscaler').disabled, false);
-    assert.equal(context.addonEditorDraft.addons.DLSS4DLAA._enabled, true);
-  }
-  context.controlSettings.gpuInventory = {gpus: []};
-  context.applyAddonVendorAvailability();
-  assert.equal(groupFields('AMD').disabled, true);
-  context.controlSettings.gpuInventory = {gpus: [{deviceId: 'PCI\\VEN_1002'}, {deviceId: 'PCI\\VEN_10DE'}]};
-  context.applyAddonVendorAvailability();
-  assert.equal(groupFields('AMD').disabled, false);
-  assert.equal(groupFields('NVIDIA').disabled, false);
+  context.addonEditorCatalog[0].fields.push({key: 'amdModelPath', label: 'AMD model', type: 'text'});
+  context.addonEditorDraft.addons.DLSS4DLAA = {_enabled: true};
+  context.renderAddonEditor();
+  assert.equal(find('AMD model'), undefined);
+  assert.equal(find('Enable DLSS Upscaler'), undefined);
+  assert.equal(find('Enable FSR Upscaler'), undefined);
+  assert.ok(find('Enable DLSS 5'));
+  assert.ok(find('DLSS upscaling preset'));
+  assert.equal(context.addonVendorDetected('NVIDIA'), false);
+  context.controlSettings.gpuInventory = {gpus: [{deviceId: 'PCI\\VEN_10DE'}]};
+  assert.equal(context.addonVendorDetected('NVIDIA'), true);
 });
 
 test('hidden managed controls do not reappear as additional saved settings', () => {
@@ -189,7 +172,7 @@ test('host housekeeping fields stay hidden while unknown host settings survive',
   assert.equal(find('auto load'), undefined);
   assert.equal(find('open on start'), undefined);
   assert.equal(find('custom Ui'), undefined);
-  assert.equal(savedJson().find(value => value.global).global.ui.customUi, 'keep');
+  assert.equal(context.addonEditorDraft.global.ui.customUi, 'keep');
 });
 
 test('live scaling status immediately follows Scale Now inside the sidebar', () => {
@@ -259,19 +242,20 @@ test('reopening NIS profiles recognizes enabled addon modes but does not infer o
   assert.equal(context.profileUpscalerChoice('LS1', {DLSS4DLAA: {_enabled: true}}), 'LS1');
 });
 
-test('add-on card toggles stay synchronized with the scaling dropdown and compound save', () => {
+test('XeSS is selected through Scaling with no duplicate upscaler toggles', () => {
   const {context, nodes, find, sent} = editor();
-  const enabled = find('Enable FSR Upscaler');
-  enabled.checked = true;
-  enabled.events.change();
-  assert.equal(nodes.nativeScalingType.value, 'AddonFSR');
+  context.changeProfileScalingChoice('AddonXeSS');
+  assert.equal(nodes.nativeScalingType.value, 'AddonXeSS');
   assert.equal(context.nativeSettingsPayload().ScalingType, 'NIS');
+  assert.equal(context.addonEditorDraft.addons.XESSUPSC._enabled, true);
+  assert.equal(find('Enable XeSS Upscaler'), undefined);
+  assert.ok(find('Sharpening'));
+  assert.equal(nodes.nativeScalingSharpnessRow.hidden, true);
   context.saveAddonEditor();
-  assert.equal(sent.length, 0);
-  const disabled = find('Enable FSR Upscaler');
-  disabled.checked = false;
-  disabled.events.change();
-  assert.equal(nodes.nativeScalingType.value, 'NIS');
+  assert.equal(sent.length, 0, 'scaling and enable flags save together');
+  context.changeProfileScalingChoice('NIS');
+  assert.equal(context.addonEditorDraft.addons.XESSUPSC._enabled, false);
+  assert.equal(nodes.nativeScalingSharpnessRow.hidden, false);
 });
 
 test('missing manager or upscaler is explained without enabling the global add-on toggle', () => {
@@ -307,7 +291,7 @@ test('search changes presentation without saving or discarding unmatched setting
   const before = JSON.stringify(context.addonEditorDraft);
   nodes.addonEditorSearch.value = 'resolution';
   context.renderAddonEditor();
-  assert.equal(nodes.addonEditorCards.children.length, 2, 'both working resolution and Super Resolution match');
+  assert.equal(nodes.addonEditorCards.children.length, 1, 'search only shows basic external features');
   assert.ok(find('Resolution'));
   assert.equal(nodes.addonEditorCards.children[0].children[1].hidden, false);
   assert.equal(JSON.stringify(context.addonEditorDraft), before);
@@ -318,38 +302,40 @@ test('search changes presentation without saving or discarding unmatched setting
   assert.equal(JSON.stringify(context.addonEditorDraft), before);
 });
 
-test('grouped fields appear once, advanced groups collapse, and unknown values stay visible', () => {
-  const {context, nodes, find, savedJson} = editor();
-  context.addonEditorCatalog[0].groups = [
-    {label: 'Quality', keys: ['scalePercent'], expanded: true},
-    {label: 'Advanced', keys: ['scalePercent', 'not-in-this-version']},
-  ];
+test('basic controls retain advanced and unknown values without exposing them', () => {
+  const {context, find, sent} = editor();
+  context.addonEditorCatalog[0].fields.push({key: 'flowQuality', label: 'Optical flow quality', type: 'number'});
+  context.addonEditorDraft.addons.DLSSNR02.flowQuality = '3';
   context.addonEditorDraft.addons.DLSSNR02.futureValue = 7;
   context.renderAddonEditor();
-  const controls = [];
-  const visit = node => { if (node['aria-label'] === 'Resolution') controls.push(node); node.children.forEach(visit); };
-  visit(nodes.addonEditorCards);
-  assert.equal(controls.length, 1);
+  assert.equal(find('Optical flow quality'), undefined);
   assert.equal(find('future Value'), undefined);
-  assert.equal(savedJson().find(value => value.futureValue).futureValue, 7);
-  assert.equal(savedJson().find(value => value.addons).addons.Future.numeric, 2);
+  const resolution = find('Resolution');
+  resolution.value = '75';
+  resolution.events.change();
+  context.saveAddonEditor();
+  const saved = sent.at(-1).config.addons;
+  assert.equal(saved.DLSSNR02.flowQuality, '3');
+  assert.equal(saved.DLSSNR02.futureValue, 7);
+  assert.equal(saved.Future.nested.flag, true);
 });
 
-test('advanced group disclosure survives a rerender and can be found by its heading', () => {
-  const {context, nodes} = editor();
-  context.addonEditorCatalog[0].groups = [{label: 'Model tuning', keys: ['scalePercent']}];
+test('sharpening follows the selected scaler and migrates legacy strength only on edit', () => {
+  const {context, nodes, find} = editor();
+  context.addonEditorDraft.addons.DLSS4DLAA = {_enabled: true, sharpen: '0.8'};
   context.renderAddonEditor();
-  let group = nodes.addonEditorCards.children[0].children[1].children[0];
-  assert.equal(group.open, false);
-  group.open = true;
-  group.events.toggle();
-  context.renderAddonEditor();
-  group = nodes.addonEditorCards.children[0].children[1].children[0];
-  assert.equal(group.open, true);
-  nodes.addonEditorSearch.value = 'model tuning';
-  context.renderAddonEditor();
-  assert.equal(nodes.addonEditorCards.children.length, 1);
-  assert.equal(nodes.addonEditorCards.children[0].children[1].children[0].open, true);
+  assert.equal(find('Sharpening').value, '0.5');
+  assert.equal(context.addonEditorDraft.addons.DLSS4DLAA.sharpen, '0.8');
+  const sharpness = find('Sharpening');
+  sharpness.value = '0.7';
+  sharpness.events.change();
+  assert.equal(context.addonEditorDraft.addons.DLSS4DLAA.sharpen, '0.7');
+  assert.equal(context.addonEditorDraft.addons.DLSS4DLAA.sharpenScale, '1.6');
+  assert.equal(context.addonEditorDraft.addons.DLSS4DLAA.scalerPerGame, '0');
+  context.changeProfileScalingChoice('AddonFSR');
+  assert.equal(find('DLSS upscaling preset'), undefined);
+  assert.equal(find('Sharpening').value, '');
+  assert.equal(nodes.nativeScalingSharpnessRow.hidden, true);
 });
 
 test('included shader presets have edit controls and imported presets have named delete controls', () => {

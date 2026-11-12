@@ -135,7 +135,7 @@ class BundledArchiveReleaseProvider(ReleaseProvider):
 
 
 class BundledAddonManagerReleaseProvider(BundledArchiveReleaseProvider):
-    """Only Companion-reviewed host builds may replace the headless integration."""
+    """Only Companion-reviewed host builds may replace the managed integration."""
 
     cache_identity = MANAGED_HOST_VERSION
 
@@ -146,10 +146,10 @@ class BundledAddonManagerReleaseProvider(BundledArchiveReleaseProvider):
         archive = self.archive_path()
         return [ReleaseInfo(
             provider=self.provider_id, version=MANAGED_HOST_VERSION,
-            name="Companion Addon Host (FriedSnowman build-5)",
+            name=f"Companion Addon Host (FriedSnowman {MANAGED_HOST_VERSION.split('-lsc.')[0]})",
             published_at=None, prerelease=False,
-            html_url="https://github.com/FriedSnowman/ls-addon-manager/releases/tag/build-5",
-            notes="Pinned upstream addon suite with Companion's headless host and status bridge. Updated with Companion.",
+            html_url=f"https://github.com/FriedSnowman/ls-addon-manager/releases/tag/{MANAGED_HOST_VERSION.split('-lsc.')[0]}",
+            notes="Pinned upstream addon suite with Companion's on-demand panel and status bridge. Updated with Companion.",
             assets=[ReleaseAsset(name=self.archive_name, url=f"bundled://{self.archive_name}",
                                  size=archive.stat().st_size, digest=f"sha256:{AssetStore.sha256(archive)}")],
         )]

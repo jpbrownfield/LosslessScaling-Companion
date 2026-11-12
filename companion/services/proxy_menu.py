@@ -17,7 +17,7 @@ logger = logging.getLogger("LSCompanion.AddonMenu")
 
 
 class AddonManagerMenuController:
-    """Keep Echo's manager hidden until the user explicitly requests it."""
+    """Keep the native manager hidden until the user explicitly requests it."""
 
     WINDOW_CLASS = "LSAddonManagerClass"
     SW_HIDE = 0
@@ -55,6 +55,8 @@ class AddonManagerMenuController:
     @classmethod
     def _find_windows(cls, pid: Optional[int] = None) -> List[int]:
         user32 = ctypes.windll.user32
+        user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
         matches: List[int] = []
 
         def callback(hwnd, _extra):
@@ -92,7 +94,7 @@ class AddonManagerMenuController:
                 ctypes.windll.user32, "ShowWindowAsync", ctypes.windll.user32.ShowWindow
             )
             for hwnd in windows:
-                show_window(hwnd, self.SW_HIDE)
+                show_window(wintypes.HWND(hwnd), self.SW_HIDE)
             return len(windows)
 
     def suppress_startup_window(self, pid: int, timeout: float = 8.0) -> None:
@@ -115,13 +117,13 @@ class AddonManagerMenuController:
             daemon=True,
         ).start()
 
-    def open(self) -> dict:
-        """Restore and focus the existing Echo manager window."""
+    def open(self, pid: Optional[int] = None) -> dict:
+        """Restore and focus the existing manager for the requested LS process."""
         embedded_hwnd = int(self._embedded.get("hwnd") or 0) if self._embedded else 0
         windows = (
             [embedded_hwnd]
-            if embedded_hwnd and ctypes.windll.user32.IsWindow(embedded_hwnd)
-            else self._find_windows()
+            if pid is None and embedded_hwnd and ctypes.windll.user32.IsWindow(embedded_hwnd)
+            else self._find_windows(pid)
         )
         if not windows:
             return {
@@ -134,9 +136,10 @@ class AddonManagerMenuController:
         show_window = getattr(user32, "ShowWindowAsync", user32.ShowWindow)
         with self._lock:
             self._visible_requested = True
-        show_window(hwnd, self.SW_RESTORE)
-        user32.BringWindowToTop(hwnd)
-        focused = bool(user32.SetForegroundWindow(hwnd))
+        # Explicit HWNDs preserve 64-bit handles at the ctypes boundary.
+        show_window(wintypes.HWND(hwnd), self.SW_RESTORE)
+        user32.BringWindowToTop(wintypes.HWND(hwnd))
+        focused = bool(user32.SetForegroundWindow(wintypes.HWND(hwnd)))
         logger.info("Opened Companion Addon Host (HWND %s)", hwnd)
         return {"opened": True, "focused": focused, "hwnd": hwnd}
 
