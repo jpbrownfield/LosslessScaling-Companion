@@ -1,5 +1,7 @@
 import unittest
 import tempfile
+import json
+import re
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import Mock
@@ -82,7 +84,10 @@ class AddonConfigServiceTests(unittest.TestCase):
         spec = (root / "LosslessCompanion.spec").read_text(encoding="utf-8")
         self.assertIn("Copyright (c) 2026 Echo-Storm", notice)
         self.assertIn("FrankBarretta", notice)
-        self.assertIn("FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md", dashboard)
+        pin = json.loads((root / "native/addon_manager/upstream.lock.json").read_text(encoding="utf-8"))
+        attribution_url = f"https://github.com/{pin['repository']}/releases"
+        links = dict(re.findall(r'<a id="([^"]+)" href="([^"]+)"', dashboard))
+        self.assertEqual(links.get("addonHostReleaseLink"), attribution_url)
         self.assertIn('("THIRD_PARTY_NOTICES.md", ".")', spec)
         self.assertIn('copy_metadata("py7zr", recursive=True)', spec)
 

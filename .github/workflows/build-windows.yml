@@ -91,24 +91,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
           node tests/check_javascript.js companion/ui/dashboard.html
           if ($LASTEXITCODE -ne 0) { throw "Dashboard JavaScript validation failed" }
-          node tests/test_addon_editor.js
-          if ($LASTEXITCODE -ne 0) { throw "Addon editor tests failed" }
-          node tests/test_component_updates.js
-          if ($LASTEXITCODE -ne 0) { throw "Component update UI tests failed" }
-          node tests/test_extension_background.js
-          if ($LASTEXITCODE -ne 0) { throw "Browser extension tests failed" }
-          node tests/test_notifications.js
-          if ($LASTEXITCODE -ne 0) { throw "Notification UI tests failed" }
-          node tests/test_profile_navigation.js
-          if ($LASTEXITCODE -ne 0) { throw "Profile navigation UI tests failed" }
-          node tests/test_profile_icons.js
-          if ($LASTEXITCODE -ne 0) { throw "Profile icon UI tests failed" }
-          node tests/test_update_lock.js
-          if ($LASTEXITCODE -ne 0) { throw "Update maintenance UI tests failed" }
-          node tests/test_dashboard_session.js
-          if ($LASTEXITCODE -ne 0) { throw "Dashboard session renewal tests failed" }
-          node tests/test_dashboard_connection.js
-          if ($LASTEXITCODE -ne 0) { throw "Dashboard connection health tests failed" }
+          foreach ($testFile in (Get-ChildItem -LiteralPath tests -Filter 'test_*.js' -File | Sort-Object Name)) {
+            node $testFile.FullName
+            if ($LASTEXITCODE -ne 0) { throw "JavaScript tests failed: $($testFile.Name)" }
+          }
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1

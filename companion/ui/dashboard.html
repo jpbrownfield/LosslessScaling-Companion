@@ -711,7 +711,7 @@
               <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
               <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
               <div id="gpuIndexRefreshStatus" class="item-sub" style="white-space:normal" aria-live="polite"></div>
-              <p class="item-sub" style="white-space:normal;margin-top:8px">Auto follows the display containing the app. Moving it to another GPU’s display briefly restarts scaling with the updated GPU and display.</p>
+              <p class="item-sub" style="white-space:normal;margin-top:8px">Auto uses the GPU connected to the app’s monitor. Choose a GPU to use it by default.</p>
             </section>
             <section class="general-settings-section" aria-label="Window behavior">
               <h3>Window behavior</h3>
@@ -2301,14 +2301,8 @@
       if (!(inventory.gpus || []).length) {
         status.innerHTML = '<span class="integration-status missing">No physical GPU detected</span><div class="integration-path">Display routing is unavailable in this session.</div>';
       } else {
-        status.innerHTML = `<span class="integration-status detected">${inventory.gpus.length} GPU${inventory.gpus.length === 1 ? '' : 's'} detected</span><div class="integration-path">${escapeHtml((inventory.gpus || []).map(gpu => `${gpu.vendor}: ${gpu.name}`).join(' | '))}</div>`;
+        status.innerHTML = `<span class="integration-status detected">${inventory.gpus.length} GPU${inventory.gpus.length === 1 ? '' : 's'} detected</span>`;
       }
-      (controlSettings.gpuRoutingWarnings || []).forEach(warning => {
-        const line = document.createElement('div');
-        line.className = 'integration-path';
-        line.textContent = warning;
-        status.appendChild(line);
-      });
       renderSpecialKSettings();
       applyAddonVendorAvailability();
     }

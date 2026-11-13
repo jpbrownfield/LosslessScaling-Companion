@@ -15,14 +15,12 @@ jobs:
           cache: pip
       - run: python -m pip install -r companion/requirements.txt pytest
       - run: python -m pytest -v
-      - run: node tests/check_javascript.js
-      - run: node tests/test_addon_editor.js
-      - run: node tests/test_component_updates.js
-      - run: node tests/test_extension_background.js
-      - run: node tests/test_notifications.js
-      - run: node tests/test_dashboard_navigation.js
-      - run: node tests/test_profile_navigation.js
-      - run: node tests/test_profile_icons.js
-      - run: node tests/test_update_lock.js
-      - run: node tests/test_dashboard_session.js
-      - run: node tests/test_dashboard_connection.js
+      - name: Run JavaScript tests
+        shell: pwsh
+        run: |
+          node tests/check_javascript.js
+          if ($LASTEXITCODE -ne 0) { throw "JavaScript validation failed" }
+          foreach ($testFile in (Get-ChildItem -LiteralPath tests -Filter 'test_*.js' -File | Sort-Object Name)) {
+            node $testFile.FullName
+            if ($LASTEXITCODE -ne 0) { throw "JavaScript tests failed: $($testFile.Name)" }
+          }
