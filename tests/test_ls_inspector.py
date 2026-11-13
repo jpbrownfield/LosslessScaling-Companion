@@ -8,6 +8,19 @@ from companion.services.ls_inspector import LosslessScalingInspector
 
 
 class LosslessScalingInspectorTests(unittest.TestCase):
+    def test_confirmation_debug_snapshot_exposes_stale_evidence_and_log_paths(self):
+        inspector, log = self.echo_inspector()
+        with patch.object(inspector, "_candidate_log_files", return_value=[]):
+            inspector.begin_scaling_confirmation(True)
+            inspector._confirmation_requires_log = True
+            snapshot = inspector.confirmation_debug_snapshot()
+        self.assertEqual(snapshot["addonLogs"], [str(log)])
+        self.assertEqual(snapshot["logs"], [])
+        self.assertTrue(snapshot["requiresFreshLog"])
+        self.assertEqual(snapshot["baselineSequence"], snapshot["currentSequence"])
+        self.assertFalse(snapshot["stableOverlay"])
+        self.assertIn("lastTarget", snapshot)
+
     def echo_inspector(self, history=""):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -125,6 +138,24 @@ class LosslessScalingInspectorTests(unittest.TestCase):
                 with patch.object(inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)):
                     self.assertIsNone(inspector.probe_scaling_state())
                     self.assertTrue(inspector.probe_scaling_state())
+
+    def test_restart_discards_old_addon_stop_before_confirming_default_overlay(self):
+        inspector, log = self.echo_inspector()
+        log.write_text(self.echo_line(0), encoding="utf-8")
+        with patch.object(inspector, "_candidate_log_files", return_value=[]), patch.object(
+            inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)
+        ):
+            self.assertTrue(inspector._parse_echo_updates())
+            self.assertFalse(inspector._log_state)
+            inspector.begin_scaling_confirmation(True)
+            self.assertIsNone(inspector.probe_scaling_state())
+            self.assertIsNone(inspector.probe_scaling_state())
+            # A ReShade/DLSS host may stop between monitor ticks. The new
+            # process must not inherit its old state or log requirement.
+            inspector.reset_runtime_state()
+            inspector.begin_scaling_confirmation(True)
+            self.assertIsNone(inspector.probe_scaling_state())
+            self.assertTrue(inspector.probe_scaling_state())
 
     def test_existing_log_history_is_not_replayed_as_current_state(self):
         with tempfile.TemporaryDirectory() as directory:

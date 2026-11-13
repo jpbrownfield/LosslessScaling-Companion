@@ -47,7 +47,7 @@ HINT_HEIGHT = 180
 GRAPH_WIDTH = 380
 GRAPH_HEIGHT = 174
 BORDER_PX = 8
-BORDER_RADIUS = 24
+BORDER_RADIUS = 10
 BORDER_ANIM_MS = 16
 BORDER_LAP_SECONDS = 5.2
 BORDER_BREATHE_SECONDS = 4.8
@@ -174,8 +174,14 @@ def _border_mesh(width: int, height: int):
         for band in range(len(bands) - 1):
             a = index * len(bands) + band
             b = a + len(bands)
-            triangles.extend((_GradientTriangle(a, b, a + 1),
-                              _GradientTriangle(a + 1, b, b + 1)))
+            for first, second, third in ((a, b, a + 1), (a + 1, b, b + 1)):
+                x1, y1, _ = points[first]
+                x2, y2, _ = points[second]
+                x3, y3, _ = points[third]
+                # Tight curves can round adjacent vertices onto the same pixel.
+                # GradientFill rejects triangles with no drawable area.
+                if (x2 - x1) * (y3 - y1) != (y2 - y1) * (x3 - x1):
+                    triangles.append(_GradientTriangle(first, second, third))
     return samples, points, (_GradientTriangle * len(triangles))(*triangles)
 
 

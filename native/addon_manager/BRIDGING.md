@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **1**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **4**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -66,10 +66,47 @@ starting the upstream GUI. The GUI owns addon loading and its shared ImGui conte
 `global.ui.open_on_start` is false: the window starts hidden and blocks in
 `WaitMessage` without drawing until opened. A `WM_SHOWWINDOW` patch keeps the GUI's
 hidden state synchronized when Companion restores its HWND from an overlay action.
-The status pipe remains read only and reports `managed: true, headless: false`;
+The status pipe reports `managed: true, headless: false`;
 legacy headless workers report `headless: true`. Both retain process identity and
 freshness checks. The rendering pipeline,
 model forwarder, shaders, SDK method order, and addon lifecycle are unchanged.
+
+Build 7 Companion revision 2 accepts two one-byte delivery receipts in addition
+to the existing `1` acknowledgement: `E` enables overlay input passthrough and
+`D` disables it. No configuration or paths are accepted. The Python client checks
+the pipe server PID, process creation time, telemetry freshness and control
+capability before issuing either request. The existing native passthrough
+watcher applies it; `controlPending` remains true until window changes finish.
+Companion waits for confirmed native state before updating the overlay. Managed
+profiles set `ReShadePassthrough.companion_control=1`, so the ReShade menu key
+does not also toggle passthrough or trigger an automatic click/key replay.
+Focus loss restores window styles without taking focus back. The native
+`eam_featurestest companion` test checks explicit, repeated enable/disable and
+window-procedure restoration using an off-screen window without moving focus.
+
+Build 7 Companion revision 3 separates `controlRequested` (the remembered
+overlay preference) from `interactive` (effective passthrough). Focus loss
+suspends input and demotes the presentation with `HWND_NOTOPMOST` and
+`SWP_NOACTIVATE`. Focus returning to the remembered game process or LS restores
+passthrough and topmost. Explicit close, target/session loss and shutdown cancel
+the preference. Window restoration explicitly restores Z order, preserving an
+originally topmost presentation when closing while focused. The native off-screen
+test simulates focus transitions and verifies resume, cancellation, topmost
+restoration and unchanged foreground focus.
+
+Revision 4 renders the manager panel with a separate WARP software D3D11 device.
+Loading the system DLLs alone cannot bypass ReShade's process-wide detours;
+ReShade explicitly excludes WARP devices and their swap chains. LS's rendering
+and add-on devices are unchanged. The panel keeps its existing hidden/minimized
+render-loop suspension. `lsc_panel_test` checks the software adapter, absence of
+ReShade device/swap-chain proxies, exact pixel colors, resize and presentation.
+Pass an absolute path to an official ReShade DLL to exercise its hooks; create
+an isolated `ReShade.ini` beside the test executable first. The hardware positive
+control is skipped if only Microsoft's Basic Render Driver is available, which
+ReShade also excludes. See ReShade's [D3D11 device creation](https://github.com/crosire/reshade/blob/v6.8.0/source/d3d11/d3d11.cpp#L128)
+and [swap-chain wrapping](https://github.com/crosire/reshade/blob/v6.8.0/source/dxgi/dxgi.cpp#L316).
+The Add-ons card reads the bundled version from `lossless-scaling-deployment.json`
+inside the archive; `MANAGED_HOST_VERSION` remains the expected native contract.
 
 Revision 2 adds an optional preloader for **sdli1995/dlssg_for_sm86 0.4.1 SR**.
 It is independent of FriedSnowman's renderer and can be disabled by choosing Off.

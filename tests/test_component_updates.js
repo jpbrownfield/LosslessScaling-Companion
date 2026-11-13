@@ -28,6 +28,8 @@ function dashboard() {
       createElement: tag => new Element(tag), querySelectorAll: () => []},
     localStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value)},
     updateAddonInstallButtons() {}, updateAddonDownloadLinks() {}, setGraphicsStatus() {},
+    addonDownloadIsCurrent: () => false,
+    addonVersionIsCurrent: (current, latest) => current === latest,
     normalizedAddonVersion: value => String(value || '').replace(/^v/, ''),
     confirmDialog: async () => true,
     crypto: {randomUUID: () => 'test-operation'},

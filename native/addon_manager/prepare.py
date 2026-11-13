@@ -27,9 +27,84 @@ def patch_managed_startup(main):
         'eam::GuiManager::StartGuiThread(manager); }' + setup + '))\n        ' + before)
 
 
+def patch_passthrough(manager: Path):
+    source = manager / "src/features/reshade_passthrough.cpp"
+    header = manager / "src/features/reshade_passthrough.h"
+    replace_once(header, 'void ForcePassthroughForTest(bool on);',
+                 'bool CompanionControlAvailable();\nbool CompanionControlPending();\n'
+                 'bool CompanionOverlayRequested();\nvoid CompanionFocusForTest(int focused);\n'
+                 'void RequestCompanionPassthrough(bool on);\n\n'
+                 'void ForcePassthroughForTest(bool on);')
+    control = (Path(__file__).parent / "passthrough_control.inc").read_text(encoding="utf-8")
+    replace_once(source, 'void Watch() {', control + '\nvoid Watch() {')
+    replace_once(source, '        if (g_passthroughOn && !FocusIsOurs()) {',
+                 '        ApplyCompanionRequest();\n'
+                 '        if (g_companionControlled) UpdateCompanionFocus();\n'
+                 '        if (!g_companionControlled && g_passthroughOn && !FocusIsOurs()) {')
+    replace_once(source, 'if (down && !wasDown && !g_simulating && FocusIsOurs()) {',
+                 'if (!g_companionControlled && down && !wasDown && !g_simulating && FocusIsOurs()) {')
+    replace_once(source, '    LoadSettings();\n    g_running = true;',
+                 '    LoadSettings();\n'
+                 '    g_companionControlled = Cfg().Get(kId, "companion_control", "0") == "1";\n'
+                 '    g_companionRequest = -1;\n    g_companionWanted = false;\n'
+                 '    g_companionFocusForTest = -1;\n    g_running = true;')
+    replace_once(source, '    g_passthroughOn = false;\n    RestoreAll();',
+                 '    if (g_companionControlled) { g_companionRequest=0; ApplyCompanionRequest(); }\n'
+                 '    g_passthroughOn = false;\n    RestoreAll();')
+    replace_once(source, 'void ForcePassthroughForTest(bool on) {',
+                 'bool CompanionControlAvailable() { return g_running && g_companionControlled; }\n'
+                 'bool CompanionControlPending() { return g_companionApplying || g_companionRequest >= 0; }\n'
+                 'bool CompanionOverlayRequested() { return g_companionWanted; }\n'
+                 'void CompanionFocusForTest(int focused) { g_companionFocusForTest=focused; }\n'
+                 'void RequestCompanionPassthrough(bool on) {\n'
+                 '    if (CompanionControlAvailable()) g_companionRequest = on ? 1 : 0;\n}\n\n'
+                 'void ForcePassthroughForTest(bool on) {')
+    replace_once(source, 'void RenderOptions() {',
+                 'void RenderOptions() {\n    if (g_companionControlled) {\n'
+                 '        ImGui::TextDisabled("Input passthrough follows Companion overlay toggle.");\n'
+                 '        return;\n    }')
+    # Select the presentation rather than the hidden/auxiliary manager window.
+    replace_once(source,
+                 '        if (BelongsToUs(hwnd) && IsWindowVisible(hwnd)) { *(HWND*)out = hwnd; return FALSE; }',
+                 '        wchar_t cls[64]{};GetClassNameW(hwnd,cls,64);\n'
+                 '        if (!BelongsToUs(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) ||\n'
+                 '            wcscmp(cls,L"LSAddonManagerClass")==0) return TRUE;\n'
+                 '        RECT rect{},best{};GetWindowRect(hwnd,&rect);\n'
+                 '        if (*(HWND*)out) GetWindowRect(*(HWND*)out,&best);\n'
+                 '        if ((rect.right-rect.left)*static_cast<long long>(rect.bottom-rect.top) >\n'
+                 '            (best.right-best.left)*static_cast<long long>(best.bottom-best.top)) *(HWND*)out=hwnd;')
+    replace_once(manager / "src/features/reshade_windows.cpp",
+                 'exStyle & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED)',
+                 'exStyle & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)')
+    # GWL_EXSTYLE alone does not undo HWND_TOPMOST. Restore Z order explicitly,
+    # and never activate a window while yielding focus to another application.
+    replace_once(manager / "src/features/reshade_windows.cpp",
+                 'SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);',
+                 'SetWindowPos(hwnd, (s.exStyle & WS_EX_TOPMOST) ? HWND_TOPMOST : HWND_NOTOPMOST,\n'
+                 '                         0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_FRAMECHANGED);')
+    test = manager / "tools/features_test.cpp"
+    harness = (Path(__file__).parent / "passthrough_test.inc").read_text(encoding="utf-8")
+    replace_once(test, 'int main(int argc, char** argv) {', harness + '\nint main(int argc, char** argv) {')
+    replace_once(test, '    printf("== the list of features\\n");',
+                 '    if (argc>1 && !strcmp(argv[1], "companion")) {\n'
+                 '        CompanionPassthroughOnce();\n'
+                 '        std::error_code ec;fs::remove_all(dir,ec);return g_fail ? 1 : 0;\n    }\n\n'
+                 '    printf("== the list of features\\n");')
+
+
 def prepare(source: Path):
     overlay = Path(__file__).resolve().parent
     manager = source / "manager"
+    patch_passthrough(manager)
+    # ReShade also detours the system D3D11 entry points. Its D3D11 hook skips
+    # WARP devices, so keep the small manager UI on software rendering. LS and
+    # the add-ons retain their existing hardware devices and rendering paths.
+    window_device = manager / "src/gui/window/window_device.cpp"
+    replace_once(window_device, 'D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels',
+                 'D3D_DRIVER_TYPE_WARP, nullptr, 0, levels')
+    replace_once(manager / "src/gui/window/window_device.h",
+                 'and is created from the system\'s d3d11.dll and dxgi.dll directly so a ReShade sitting in the folder cannot get in between.',
+                 'and uses the system WARP software renderer, which ReShade skips even when it hooks system D3D11 calls.')
     host_h = manager / "src/host/host_impl.h"
     host_cpp = manager / "src/host/host_impl.cpp"
     replace_once(host_h, 'private:\n', 'private:\n    friend struct CompanionRoutingTest;\n')
@@ -101,7 +176,7 @@ def prepare(source: Path):
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
@@ -111,10 +186,12 @@ def prepare(source: Path):
                      '  target_compile_definitions(${test_target} PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
                      'endforeach()\n'
                      'target_compile_definitions(Lossless PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
-                     'target_compile_options(Lossless PRIVATE /MP4)\n'
+                     'target_compile_options(Lossless PRIVATE /MP4 /FS)\n'
                      'set_property(TARGET Lossless PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")\n'
                      'add_executable(lsc_headless_smoke src/core/headless_smoke.cpp)\n'
                      'add_library(lsc_fake_engine SHARED src/core/fake_engine.cpp)\n'
+                     'add_executable(lsc_panel_test src/core/panel_test.cpp src/gui/window/window_device.cpp)\n'
+                     'target_link_libraries(lsc_panel_test d3d11 dxgi user32)\n'
                      'set_target_properties(lsc_fake_engine PROPERTIES OUTPUT_NAME "Lossless_original")\n'
                      'get_target_property(routing_sources eam_coretest SOURCES)\n'
                      'list(REMOVE_ITEM routing_sources tools/core_test.cpp)\n'
@@ -122,7 +199,7 @@ def prepare(source: Path):
                      'get_target_property(routing_includes eam_coretest INCLUDE_DIRECTORIES)\n'
                      'target_include_directories(lsc_routing_test PRIVATE ${routing_includes})\n'
                      'target_compile_definitions(lsc_routing_test PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
-                     'target_compile_options(lsc_routing_test PRIVATE /MP4)\n'
+                     'target_compile_options(lsc_routing_test PRIVATE /MP4 /FS)\n'
                      'target_link_libraries(lsc_routing_test d3d11 dxgi d3dcompiler bcrypt minhook)\n'
                      'foreach(vendor DLSSNR02 LSC_AMDNR)\n'
                      '  add_library(lsc_fixture_${vendor} SHARED src/core/routing_fixture.cpp)\n'

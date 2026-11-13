@@ -107,6 +107,7 @@ class CompanionApplication:
             self.state,
             lossless_settings=self.ls_settings,
             proxy_menu=self.proxy_menu,
+            on_lossless_scaling_started=self.ls_inspector.reset_runtime_state,
         )
         self.release_manager = ReleaseManager(
             self.asset_store,
@@ -141,6 +142,9 @@ class CompanionApplication:
             )
             self.automation.scaling_confirmation_end = (
                 self.ls_inspector.end_scaling_confirmation
+            )
+            self.automation.scaling_confirmation_diagnostics = (
+                self.ls_inspector.confirmation_debug_snapshot
             )
         self.process_watcher.on_profile_changed = (
             lambda profile, exe_path=None, **kwargs:

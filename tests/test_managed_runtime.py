@@ -75,6 +75,98 @@ class ManagedRuntimeTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("updated", self.runtime.settings.read_text())
 
+    def rebuild(self, executable):
+        with patch("companion.services.managed_runtime.bootstrap_directory", return_value=self.bootstrap):
+            return self.runtime.rebuild(executable, self.source / "LosslessScaling.exe", self.store)
+
+    def test_rebuild_repairs_files_and_preserves_settings_source_and_old_deployment(self):
+        from companion.services.deployment_manager import DeploymentManager
+        executable = self.prepare()
+        self.store.managed_runtime = self.runtime
+        deployed = self.root / "addon.dll"
+        deployed.write_bytes(b"managed addon")
+        files = [dict(relative_path="Lossless.dll", source_path=str(deployed))]
+        manager = DeploymentManager(self.store)
+        manager.apply(profile_id="effects", lossless_scaling_exe=str(executable), files=files)
+        old_manifest = manager.manifest_path
+        old_manifest_bytes = old_manifest.read_bytes()
+        (executable.parent / "Lossless.dll").write_bytes(b"corrupted engine")
+        (executable.parent / ".companion/bootstrap" / BOOTSTRAP_FILES[0]).write_bytes(b"corrupted hook")
+        configurations = {
+            self.runtime.settings: b"<Settings><Keep>latest</Keep></Settings>",
+            self.runtime.settings.with_suffix(".xml.bak"): b"<Settings><Keep>original</Keep></Settings>",
+            self.root / "config/settings.json": b'{"my": "settings"}',
+            self.root / "config/profile-settings/profile.json": b'{"profile": "settings"}',
+            executable.parent / "ReShade.ini": b"[GENERAL]\nPresetPath=mine.ini\n",
+            executable.parent / "presets/mine.ini": b"[Effect]\nValue=17\n",
+            executable.parent / "addons/test/settings.json": b'{"strength": 0.7}',
+        }
+        for path, data in configurations.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        source_before = {p: p.read_bytes() for p in self.source.rglob("*") if p.is_file()}
+        self.assertEqual(self.rebuild(executable), executable)
+        self.runtime.validate(executable)
+        self.assertEqual((executable.parent / "Lossless.dll").read_bytes(), b"Lossless.dll")
+        self.assertEqual((executable.parent / ".companion/bootstrap" / BOOTSTRAP_FILES[0]).read_bytes(), BOOTSTRAP_FILES[0].encode())
+        for path, data in {**configurations, **source_before}.items():
+            self.assertEqual(path.read_bytes(), data, str(path))
+        archived = list((self.runtime.root / "installations").glob(".replaced-*/app/Lossless.dll"))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].read_bytes(), b"corrupted engine")
+        self.assertEqual(old_manifest.read_bytes(), old_manifest_bytes)
+        self.assertEqual(manager._read_manifest(str(executable))["files"], [])
+        self.assertNotEqual(manager.manifest_path, old_manifest)
+        manager.apply(profile_id="effects", lossless_scaling_exe=str(executable), files=files)
+        self.assertEqual((executable.parent / "Lossless.dll").read_bytes(), b"managed addon")
+        independent = DeploymentManager(AssetStore(str(self.store.root)))
+        self.assertEqual(independent._read_manifest(str(executable))["profile_id"], "effects")
+        self.assertEqual(independent.manifest_path, manager.manifest_path)
+        manager.apply(profile_id=None, lossless_scaling_exe=str(executable), files=[])
+        self.assertEqual((executable.parent / "Lossless.dll").read_bytes(), b"Lossless.dll")
+        self.assertEqual(self.prepare(), executable, "startup must reuse the repaired clone")
+
+    def test_failed_rebuild_commit_restores_original_clone(self):
+        executable = self.prepare()
+        (executable.parent / "Lossless.dll").write_bytes(b"old clone")
+        before = {p.relative_to(executable.parent): p.read_bytes()
+                  for p in executable.parent.rglob("*") if p.is_file()}
+        settings = self.runtime.settings.read_bytes()
+        rename = Path.rename
+
+        def locked_staging(path, target):
+            if path.name.startswith(".preparing-"):
+                raise PermissionError("scanner lock")
+            return rename(path, target)
+
+        with patch.object(Path, "rename", locked_staging), patch("companion.services.managed_runtime.time.sleep"):
+            with self.assertRaises(PermissionError):
+                self.rebuild(executable)
+        self.assertEqual({p.relative_to(executable.parent): p.read_bytes()
+                          for p in executable.parent.rglob("*") if p.is_file()}, before)
+        self.assertEqual(self.runtime.settings.read_bytes(), settings)
+        self.runtime.validate(executable)
+
+    def test_rebuild_refuses_external_targets_and_never_recreates_missing_settings(self):
+        executable = self.prepare()
+        with self.assertRaisesRegex(RuntimeError, "restricted"):
+            self.rebuild(self.source / "LosslessScaling.exe")
+        self.runtime.settings.unlink()
+        with self.assertRaisesRegex(RuntimeError, "will not recreate"):
+            self.rebuild(executable)
+        self.assertFalse(self.runtime.settings.exists())
+
+    def test_rebuild_with_missing_source_keeps_current_clone_and_settings(self):
+        executable = self.prepare()
+        marker = (executable.parent / MARKER).read_bytes()
+        settings = self.runtime.settings.read_bytes()
+        (self.source / "Lossless.dll").unlink()
+        with self.assertRaisesRegex(RuntimeError, "source LS installation is incomplete"):
+            self.rebuild(executable)
+        self.assertEqual((executable.parent / MARKER).read_bytes(), marker)
+        self.assertEqual(self.runtime.settings.read_bytes(), settings)
+        self.assertTrue(executable.is_file())
+
     def test_missing_recorded_engine_backup_does_not_clone_the_installed_wrapper(self):
         with patch("companion.services.deployment_manager.DeploymentManager._read_manifest", return_value={
             "files": [{"relative_path": "Lossless.dll", "original_backup": str(self.root / "missing-original.dll")}]

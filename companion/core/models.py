@@ -7,6 +7,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator, model_validator
 import uuid
 
+from .keyboard_keys import PUNCTUATION_KEYS, normalize_key_name
+
 
 class HotkeyConfig(BaseModel):
     modifiers: List[str] = Field(default_factory=lambda: ["ctrl", "alt"])
@@ -31,10 +33,9 @@ class HotkeyConfig(BaseModel):
     @field_validator("key")
     @classmethod
     def validate_key(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        normalized = {"oemplus": "=", "oemminus": "-"}.get(normalized, normalized)
-        if not normalized or len(normalized) > 16 or (normalized not in {"=", "-"} and not normalized.replace("_", "").isalnum()):
-            raise ValueError("hotkey key must be a short letter, number, or named key")
+        normalized = normalize_key_name(value)
+        if not normalized or len(normalized) > 16 or (normalized not in PUNCTUATION_KEYS and not normalized.replace("_", "").isalnum()):
+            raise ValueError("hotkey key must be a letter, number, supported punctuation key, or named key")
         return normalized
 
 

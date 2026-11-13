@@ -74,7 +74,7 @@ ADDONS = [
                  flag("position_mode", "Position beside the game"),
                  choice("position_side", "Position", [["0", "Left"], ["1", "Right"], ["2", "Above"], ["3", "Below"]])]),
     dict(id="ReShadePassthrough", name="Overlay toggle",
-         description="Enabled automatically while ReShade is in use, including Display Commander without a shader preset. Its overlay hotkey follows General Settings.",
+         description="Available while ReShade is in use, including Display Commander without a shader preset. Companion's overlay shortcut enables or disables input passthrough; the ReShade menu shortcut opens its menu after the overlay is enabled.",
          fields=[flag("auto_click_repress", "Click and repeat the overlay hotkey", "1")]),
 ]
 
@@ -111,7 +111,7 @@ PRESENTATION = {
     "XESSUPSC": dict(summary="XeSS upscaling, with independent picture controls.", category="Upscaling",
         groups=[dict(label="Picture adjustments", keys=[f["key"] for f in PICTURE], expanded=True)]),
     "WindowedMode": dict(summary="Position the scaled output beside the game or on part of a display.", category="Display"),
-    "ReShadePassthrough": dict(summary="Lets mouse and keyboard input reach the ReShade menu. Enabled automatically while ReShade is in use.", category="Input"),
+    "ReShadePassthrough": dict(summary="Lets mouse and keyboard input reach ReShade while Companion's overlay is open.", category="Input"),
 }
 for addon in ADDONS:
     addon.update(PRESENTATION.get(addon["id"], {}))

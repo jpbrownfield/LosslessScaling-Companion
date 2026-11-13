@@ -124,11 +124,19 @@
     .pack-link { color:var(--accent); font-size:12px; }
     .monitor-identity { display:block; color:var(--text-muted); font-size:11px; font-weight:normal; margin-top:4px; }
     .addon-description { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-    .runtime-log { max-height:480px; min-height:160px; overflow:auto; border:1px solid var(--card-border); border-radius:8px; background:var(--surface-bg); font:12px/1.5 Consolas,monospace; }
-    .runtime-log-entry { padding:8px 12px; border-bottom:1px solid var(--card-border); white-space:pre-wrap; overflow-wrap:anywhere; }
+    .runtime-log { max-height:600px; min-height:180px; overflow:auto; border:1px solid var(--card-border); border-radius:8px; background:var(--surface-bg); font:12px/1.6 Consolas,monospace; }
+    .runtime-log-entry { padding:12px 16px; border-bottom:1px solid var(--card-border); overflow-wrap:anywhere; border-left:3px solid transparent; }
     .runtime-log-entry[data-level="WARNING"] { border-left:3px solid #fbbf24; }
     .runtime-log-entry[data-level="ERROR"] { border-left:3px solid var(--danger); }
-    .runtime-log-meta { color:var(--text-muted); }
+    .runtime-log-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--text-muted); margin-bottom:6px; }
+    .runtime-log-event { display:grid; grid-template-columns:minmax(100px,160px) minmax(0,1fr); gap:12px; padding:5px 0; }
+    .runtime-log-source { color:var(--text-muted); font-size:11px; }
+    .runtime-log-event[data-level="ERROR"] .runtime-log-source { color:var(--danger); font-weight:700; }
+    .runtime-log-event[data-level="WARNING"] .runtime-log-source { color:#fbbf24; }
+    .runtime-log-message { white-space:pre-wrap; }
+    .runtime-scaling-status { white-space:pre-wrap; padding:12px; border:1px solid var(--card-border); border-radius:8px; }
+    .runtime-scaling-status[data-state="error"] { border-color:var(--danger); color:var(--danger); }
+    @media (max-width:600px) { .runtime-log-event { grid-template-columns:1fr; gap:0; } .runtime-log-meta { flex-wrap:wrap; } }
     .runtime-log * { font-family:inherit; }
     .diagnostic-summary { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; }
     .diagnostic-results { display:grid; gap:8px; margin-top:12px; }
@@ -340,7 +348,6 @@
     .profile-empty strong { font-size: 18px; font-weight: 600; }
     .profile-empty p { max-width: 350px; color: var(--text-muted); font-size: 13px; }
     .profile-empty .btn { margin-top: 8px; padding-inline: 18px; }
-    .save-feedback:not(:empty) { padding: 12px 18px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--surface-raised); box-shadow: 0 8px 30px #0005; font-size: 12px; color: var(--text); }
     .notification-bell { width: 38px; height: 38px; background: transparent; }
     .notification-bell:hover { background: var(--surface-bg); border-color: var(--text-muted); }
     .notification-popover { top: 49px; border-radius: 12px; }
@@ -463,8 +470,8 @@
     .addon-host-runtime { display:flex; flex-direction:column; gap:12px; padding:24px; border-left:1px solid var(--card-border); background:rgba(10,15,22,.3); }
     .addon-runtime-title { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:650; }
     .addon-runtime-title::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--text-muted); }
-    #addonRuntimeStatus { white-space:pre-line; overflow-wrap:anywhere; font-size:12px; line-height:1.75; }
-    #addonRuntimeStatus[data-state="error"] { color:#fca5a5; }
+    #addonRuntimeStatus, #profileAddonRuntimeStatus { white-space:pre-line; overflow-wrap:anywhere; font-size:12px; line-height:1.75; }
+    #addonRuntimeStatus[data-state="error"], #profileAddonRuntimeStatus[data-state="error"] { color:#fca5a5; }
     .addon-host-toggle { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:13px 15px; border:1px solid var(--card-border); border-radius:9px; background:var(--surface-bg); }
     .addon-host-toggle strong { display:block; font-size:13px; font-weight:600; }
     .addon-host-toggle p { color:var(--text-muted); font-size:12px; margin-top:2px; }
@@ -636,7 +643,6 @@
       <div class="runtime-status" aria-label="Companion status">
         <div id="statusPill" class="status-pill inactive" role="status" aria-live="polite">Connecting to Companion…</div>
         <div id="simulationBadge" class="integration-status detected" hidden>Simulation</div>
-        <div id="controlSettingsStatus" class="save-feedback" role="status" aria-live="polite"></div>
       </div>
     </div>
   </aside>
@@ -674,7 +680,7 @@
               <div id="overrideHotkeySettings" class="form-row hotkey-settings">
                 <div class="form-group"><label for="overrideHotkeyKey">Scaling shortcut</label><input id="overrideHotkeyKey" type="text" value="ctrl+alt+s" maxlength="64" autocomplete="off" spellcheck="false"></div>
               </div>
-              <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches. Click Set key and press the full combination, such as Ctrl+Alt+S.</p>
+              <p class="item-sub" style="white-space:normal">Use this shortcut to scale the focused app with its matching profile, or Default when no profile matches. Click Set key and press the full combination.</p>
             </section>
             <section class="general-settings-section" aria-label="Overlay &amp; menu shortcuts">
               <h3>Overlay &amp; menu shortcuts</h3>
@@ -692,7 +698,7 @@
                 <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
                 <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
               </div>
-              <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, Ctrl+Home opens or closes Companion's overlay. End opens ReShade's shader and preset menu when ReShade is enabled. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
+              <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, the Companion overlay shortcut opens or closes the overlay and enables or disables input passthrough for ReShade. Open the Companion overlay first, then use the ReShade configuration menu shortcut for its shader and preset menu. Switching to another app temporarily suspends interaction; returning to the game or Lossless Scaling restores it if the overlay was left on. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. Punctuation and numpad operators are supported; shifted symbols are shown as Shift plus the base key. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
             </section>
           </div>
         </section>
@@ -780,7 +786,7 @@
             </div>
             <div class="addon-status" data-addon-status="ls-addon-manager">Checking installed version...</div>
             <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install bundled host</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button></div>
-            <details class="addon-notes"><summary>About the host &amp; updates</summary><p>Runs inside Lossless Scaling. Its advanced panel starts hidden; open it while scaling from here or with the overlay shortcut. The suite updates together with Companion. By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on FrankBarretta's LosslessProxy. MIT host; GPL-3.0-only Neural Rendering. <a href="https://github.com/FriedSnowman/ls-addon-manager/blob/build-5/NOTICE.md" target="_blank" rel="noopener noreferrer">Licenses &amp; upstream notices</a>.</p></details>
+            <details class="addon-notes"><summary>About the host &amp; updates</summary><p>Runs inside Lossless Scaling. Its advanced panel starts hidden; open it while scaling from here or with the overlay shortcut. The suite updates together with Companion. By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on FrankBarretta's LosslessProxy. MIT host; GPL-3.0-only Neural Rendering. <a id="addonHostReleaseLink" href="https://github.com/FriedSnowman/ls-addon-manager/releases" target="_blank" rel="noopener noreferrer">Bundled upstream release &amp; notices</a>.</p></details>
           </div>
           <aside class="addon-host-runtime" aria-label="Addon host runtime status">
             <div class="addon-runtime-title">Runtime status</div>
@@ -806,7 +812,7 @@
             <p class="addon-vendor-note" data-addon-vendor-note="AMD" hidden></p>
             <p class="addon-description">The AMD backend for Neural Rendering. Selected automatically when LS captures on a compatible AMD GPU.</p>
             <div class="addon-status" data-addon-status="amd-neural-render-runtime">Checking installed version...</div>
-            <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="amd-neural-render-runtime">Download runtime (547 MB)</button><button class="btn btn-secondary" type="button" data-addon-check="amd-neural-render-runtime">Check version</button></div>
+            <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="amd-neural-render-runtime">Download runtime</button><button class="btn btn-secondary" type="button" data-addon-check="amd-neural-render-runtime">Check version</button></div>
             <details class="addon-notes"><summary>Requirements &amp; source</summary><p>Requires Windows HIP, compatible hardware and the original signed NR 310.9.16 model. Set a separate AMD model path in the profile if needed. Use FSR, XeSS or NIS for upscaling; AMD DLSS upscaling is not included. Small Ryzen iGPUs can test capture and flow; inference needs supported HIP hardware. Runtime by <a href="https://github.com/RedDukeDev/dlss5-nr-amd-custom" target="_blank" rel="noopener noreferrer">RedDukeDev</a>; compute flow from FriedSnowman's MIT upscaler.</p></details>
           </fieldset>
         </div>
@@ -815,7 +821,7 @@
         <section class="addon-card addon-card-wide">
           <div class="addon-card-header"><div><h3>ReShade</h3><p class="addon-description">Run shader presets inside Lossless Scaling. Choose a different preset in each profile.</p></div><span class="addon-badge" data-addon-badge="reshade">Not downloaded</span></div>
           <div class="addon-status" data-addon-status="reshade">Checking configured Downloads folders...</div>
-          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
+          <div class="addon-actions"><a id="reshadeDownloadLink" class="btn btn-primary" href="https://reshade.me/" target="_blank" rel="noopener noreferrer" data-addon-download="reshade">Download Full Add-On build</a><button class="btn btn-secondary" type="button" data-addon-check="reshade">Check version</button></div>
           <details class="addon-notes reshade-preferences">
             <summary>HDR display &amp; menu settings</summary>
             <div class="reshade-preferences-grid">
@@ -825,7 +831,7 @@
             <p class="item-sub" style="white-space:normal">SDR white applies to all managed Lilium SDR-to-HDR presets. Each value follows LS's output display; leave it blank to use the saved default (400 nits initially). Changes apply the next time scaling starts.</p>
             <div id="reshadeMonitorNits" aria-label="Captured SDR white by monitor"></div>
             <p id="reshadeHdrPeakStatus" class="item-sub" style="white-space:normal">Detecting the active HDR display...</p>
-            <p class="item-sub" style="white-space:normal">The Overlay toggle is enabled automatically for profiles that use ReShade. Configure the ReShade menu key (End by default) in Settings → Overlay.</p>
+            <p class="item-sub" style="white-space:normal">Companion's overlay shortcut enables or disables input passthrough for ReShade. Open the overlay first, then press the ReShade menu key. Configure both shortcuts in Settings → Overlay.</p>
             <p>Shader catalogs use the maintained <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup feed</a>. <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">Shader pack reference</a>.</p>
           </details>
           <div class="reshade-library">
@@ -920,18 +926,29 @@
         <section class="settings-group" aria-labelledby="runtimeLogTitle">
           <h2 id="runtimeLogTitle" class="settings-group-title">Log</h2>
           <div class="settings-group-content">
-            <p class="item-sub" style="white-space:normal">Timestamped companion activity, warnings, and errors. The live view retains up to 1,000 entries from the last 24 hours of this session. The text log keeps the last 24 hours, capped at 10 MB by removing the oldest entries.</p>
+            <p class="item-sub" style="white-space:normal">Events are grouped by second and shown in your local timezone. Every message is retained within its group, including errors. The live view keeps up to 1,000 events from this session's last 24 hours; the text log keeps 24 hours, capped at 10 MB.</p>
+            <p id="runtimeScalingStatus" class="runtime-scaling-status" role="status" aria-live="polite">No scaling command pending.</p>
+            <div id="controlSettingsStatus" class="item-sub" role="status" aria-live="polite" style="white-space:pre-wrap"></div>
             <div class="diagnostic-summary">
               <label for="runtimeLogLevel">Level</label>
               <select id="runtimeLogLevel"><option value="ALL">All levels</option><option value="WARNING">Warnings and errors</option><option value="ERROR">Errors</option><option value="INFO">Info</option></select>
               <input id="runtimeLogSearch" type="search" placeholder="Search messages or sources" aria-label="Search log" style="flex:1;min-width:180px">
               <button id="pauseRuntimeLogBtn" class="btn btn-secondary" type="button" aria-pressed="false">Pause</button>
+              <button id="copyRuntimeLogBtn" class="btn btn-secondary" type="button">Copy shown events</button>
               <button id="downloadRuntimeLogBtn" class="btn btn-secondary" type="button">Download shown entries</button>
               <label><input id="runtimeLogFollow" type="checkbox" checked> Follow latest</label>
             </div>
             <p id="runtimeLogStatus" class="item-sub" role="status">Connecting to companion log...</p>
             <p id="runtimeLogPath" class="item-sub" style="white-space:normal;overflow-wrap:anywhere"></p>
             <div id="runtimeLogEntries" class="runtime-log" role="region" aria-label="Companion log entries" tabindex="0"></div>
+          </div>
+        </section>
+        <section class="settings-group" aria-labelledby="cloneRecoveryTitle">
+          <h2 id="cloneRecoveryTitle" class="settings-group-title">Cloned installation recovery</h2>
+          <div class="settings-group-content">
+            <p class="item-sub" style="white-space:normal">Stops Lossless Scaling and rebuilds its cloned program files from the source installation. Your settings, profiles, presets and backups are kept. Start scaling again when the rebuild finishes.</p>
+            <button id="rebuildCloneBtn" class="btn btn-secondary" type="button">Rebuild cloned installation</button>
+            <p id="cloneRebuildStatus" class="item-sub" role="status" aria-live="polite"></p>
           </div>
         </section>
         <h2 class="settings-group-title">Application tests</h2>
@@ -1135,6 +1152,7 @@
           <summary class="settings-group-title">Add-ons for this profile</summary>
           <div class="settings-group-content">
             <div class="addon-profile-intro"><p>Choose upscalers in Scaling above. Enable extra features here; detailed tuning is available in the advanced panel while scaling. Panel edits are saved to the active profile. Profile changes apply on the next scaling start.</p><button id="openProfileAddonPanelBtn" class="btn btn-secondary" type="button">Advanced panel (active profile)</button><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable extra features</button></div>
+            <div class="addon-runtime-profile"><strong>Live runtime (active profile)</strong><p id="profileAddonRuntimeStatus" class="addon-description" role="status">Checking the running Lossless Scaling instance. This reports the active profile, including when you are editing another profile.</p></div>
             <p id="addonHostNotice" class="profile-warning" hidden>The addon host is disabled. Enable it in Add-ons to run these settings.</p>
             <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an extra feature..." aria-label="Find an extra feature" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
             <span id="addonEditorStatus" class="addon-editor-status" role="status" aria-live="polite">Loading add-on settings...</span>
@@ -1239,7 +1257,7 @@
       <form id="reshadeProfileForm">
         <input id="reshadeProfileId" type="hidden">
         <div class="form-group"><label>Profile Name</label><input id="reshadeProfileName" required maxlength="120" placeholder="e.g. HDR Clarity"></div>
-        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. The Overlay toggle follows the configured ReShade menu shortcut.</p>
+        <p class="item-sub" style="white-space:normal">Companion keeps this preset's menu and no-menu ReShade INIs synchronized. Companion's overlay shortcut toggles input passthrough; the ReShade menu shortcut opens the preset menu after the overlay is enabled.</p>
         <div class="shader-toolbar"><input id="reshadeShaderSearch" class="search-input" type="search" aria-label="Search shaders or packs" placeholder="Search shader names or packs..." autocomplete="off"><label><input id="reshadeSelectedOnly" type="checkbox"> Selected only</label></div>
         <p id="reshadeShaderSummary" class="shader-selection-summary" role="status"></p>
         <p class="item-sub" style="white-space:normal">Shader files are grouped by pack. Group checkboxes select or clear the visible results. Changes save automatically.</p>
@@ -1728,6 +1746,7 @@
           wsLastReceived = Date.now();
           if (msg.type === 'PONG') return;
           if (msg.type === 'RUNTIME_LOGS') { receiveRuntimeLogs(msg); return; }
+          if (msg.type === 'CLONE_REBUILD_STATUS') { renderCloneRebuildStatus(msg); return; }
           if (Number.isInteger(msg.stateRevision)) {
             if (msg.stateRevision < lastStateRevision) return;
             lastStateRevision = msg.stateRevision;
@@ -1855,6 +1874,7 @@
             }
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
+            if (msg.action === 'REBUILD_CLONED_INSTALLATION') renderCloneRebuildStatus({busy: false, success: false, message: errorText});
             if (msg.code === 'DASHBOARD_CAPABILITY_REQUIRED' || errorText === 'Dashboard capability token required') {
               profileSaveInFlight = reshadeSaveInFlight = generalSettingsSaveInFlight = false;
               refreshDashboardSession();
@@ -1949,18 +1969,7 @@
             setGraphicsStatus(msg.deleted ? 'ReShade profile deleted.' : 'ReShade profile was already absent.');
             ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
           } else if (msg.type === 'GRAPHICS_RELEASES') {
-            const latest = (msg.releases || [])[0];
-            if (latest) {
-              latestAddonVersions[msg.provider] = latest.version;
-              updateAddonInstallButtons();
-            }
-            const status = document.querySelector(`[data-addon-status="${msg.provider}"]`);
-            if (status) status.textContent = latest ? `Latest official version: ${latest.version}` : 'No release found.';
-            if (msg.provider === 'reshade' && latest && /^\d+(?:\.\d+)+$/.test(latest.version)) {
-              document.getElementById('reshadeDownloadLink').href = `https://reshade.me/downloads/ReShade_Setup_${latest.version}_Addon.exe`;
-            }
-            updateAddonDownloadLinks();
-            setGraphicsStatus(latest ? `${msg.provider}: ${latest.version} is the latest official version.` : `No release found for ${msg.provider}.`);
+            renderGraphicsReleases(msg);
           } else if (msg.type === 'GRAPHICS_RELEASE_STAGED') {
             addonAutoImportInFlight.delete(msg.package.provider);
             setGraphicsStatus(`Installed ${msg.package.provider} ${msg.package.version}; it is ready for profiles.`);
@@ -1982,6 +1991,7 @@
           } else if (msg.type === 'COMPONENT_OPERATION') {
             renderComponentOperation(msg);
           } else if (msg.type === 'ADDON_UPDATES') {
+            renderAddonReleaseUrls(msg.releaseUrls || {});
             renderAddonUpdateNotice(msg.updates || [], msg.latestVersions || {});
           } else if (msg.type === 'COMPANION_UPDATE_STATUS') {
             companionUpdateBusy = false;
@@ -2099,6 +2109,7 @@
     }
 
     function renderRuntime(msg) {
+      if (msg.scalingControl) renderRuntimeScalingStatus(msg.scalingControl);
       if (Object.prototype.hasOwnProperty.call(msg, 'isScalingActive')) {
         runtimeScalingActive = !!msg.isScalingActive;
         renderProxyMenuAction();
@@ -2106,6 +2117,10 @@
       if (Object.prototype.hasOwnProperty.call(msg, 'activeProfile')) {
         runtimeActiveProfile = msg.activeProfile;
         renderProxyMenuAction();
+      }
+      if (msg.scalingControl?.state === 'error') {
+        setRuntimeStatus(msg.scalingControl.message || 'Scaling failed', 'not-found');
+        return;
       }
       if (msg.scalingControl?.state === 'pending') {
         setRuntimeStatus(msg.scalingControl.message || 'Scaling command pending…', 'inactive');
@@ -2459,8 +2474,7 @@
       graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
       ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime', 'display-commander'].forEach(provider => {
-        const packages = graphicsPackages.filter(item => item.provider === provider);
-        const latest = packages[packages.length - 1];
+        const latest = newestAddonPackage(provider);
         const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
         const status = document.querySelector(`[data-addon-status="${provider}"]`);
         if (!badge || !status) return;
@@ -2555,40 +2569,94 @@
     }
 
     function normalizedAddonVersion(value) {
-      const text = String(value || '').trim().toLowerCase();
-      const numbers = text.match(/\d+/g);
-      return numbers ? numbers.map(part => Number(part)).join('.') : text.replace(/^v/, '');
+      const text = String(value || '').trim().toLowerCase().replace(/^sk[_-]/, '').replaceAll('_', '.');
+      const build = text.match(/^build-(\d+)(?:-lsc\.(\d+))?$/);
+      if (build) return `build-${Number(build[1])}-lsc.${Number(build[2] || 0)}`;
+      if (/^v?\d+(?:\.\d+)+$/.test(text)) {
+        const parts = text.replace(/^v/, '').split('.').map(Number);
+        while (parts.length > 1 && parts.at(-1) === 0) parts.pop();
+        return parts.join('.');
+      }
+      return text;
+    }
+
+    function addonVersionIsCurrent(current, latest) {
+      const left = normalizedAddonVersion(current), right = normalizedAddonVersion(latest);
+      if (!left || !right) return false;
+      if (left === right) return true;
+      const build = /^build-\d+-lsc\.\d+$/;
+      if (!(build.test(left) && build.test(right))
+          && !(/^\d+(?:\.\d+)*$/.test(left) && /^\d+(?:\.\d+)*$/.test(right))) return false;
+      const before = left.match(/\d+/g).map(Number), after = right.match(/\d+/g).map(Number);
+      for (let i = 0; i < Math.max(before.length, after.length); i++) {
+        if ((before[i] || 0) !== (after[i] || 0)) return (before[i] || 0) > (after[i] || 0);
+      }
+      return true;
+    }
+
+    function newestAddonPackage(provider) {
+      return graphicsPackages.filter(item => item.provider === provider)
+        .sort((a, b) => String(a.version).localeCompare(String(b.version), undefined, {numeric: true})).at(-1);
+    }
+
+    function addonDownloadIsCurrent(provider) {
+      const latest = latestAddonVersions[provider];
+      const source = graphicsExternalSources[provider] || {};
+      let current = graphicsPackages.some(item => item.provider === provider && addonVersionIsCurrent(item.version, latest))
+        || !!source.detected && addonVersionIsCurrent(source.version, latest);
+      if (provider === 'lsp-neural-render') {
+        // The bundle also needs its proxy and a validated model runtime.
+        current = current && graphicsPackages.some(item => item.provider === 'lossless-proxy'
+          && addonVersionIsCurrent(item.version, latestAddonVersions['lossless-proxy'])) && dlssnrRuntimes.length > 0;
+      }
+      return current;
+    }
+
+    function renderAddonVersionStatus(provider) {
+      const status = document.querySelector(`[data-addon-status="${provider}"]`);
+      if (!status) return;
+      const installed = newestAddonPackage(provider);
+      const source = graphicsExternalSources[provider] || {};
+      const latest = latestAddonVersions[provider];
+      const local = installed?.version || (source.detected ? source.version : '');
+      const description = installed ? `Installed version: ${installed.version}.`
+        : source.detected ? `${source.message || `Detected version: ${source.version}.`} Installing automatically...`
+        : source.message || 'Not installed.';
+      const available = provider === 'ls-addon-manager' ? 'Bundled version' : 'Latest version';
+      status.textContent = description + (latest
+        ? ` ${available}: ${latest}.${addonVersionIsCurrent(local, latest) ? ' Up to date.' : ''}` : '');
+    }
+
+    function renderAddonReleaseUrls(urls) {
+      const host = document.getElementById('addonHostReleaseLink');
+      if (host && urls['ls-addon-manager']) host.href = urls['ls-addon-manager'];
+    }
+
+    function renderGraphicsReleases(msg) {
+      const latest = (msg.releases || [])[0];
+      if (latest) {
+        latestAddonVersions[msg.provider] = latest.version;
+        renderAddonReleaseUrls({[msg.provider]: latest.html_url});
+      }
+      updateAddonInstallButtons();
+      updateAddonDownloadLinks();
+      setGraphicsStatus(latest ? `${msg.provider}: latest available version ${latest.version}.` : `No release found for ${msg.provider}.`);
     }
 
     function updateAddonInstallButtons() {
       document.querySelectorAll('[data-addon-install]').forEach(button => {
         if (!button.dataset.installLabel) button.dataset.installLabel = button.textContent.trim();
         const provider = button.dataset.addonInstall;
-        const latestVersion = latestAddonVersions[provider];
-        let latestDownloaded = !!latestVersion && graphicsPackages.some(item =>
-          item.provider === provider
-          && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestVersion)
-        );
-        if (provider === 'lsp-neural-render') {
-          const latestProxyVersion = latestAddonVersions['lossless-proxy'];
-          const latestProxyDownloaded = !!latestProxyVersion && graphicsPackages.some(item =>
-            item.provider === 'lossless-proxy'
-            && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestProxyVersion)
-          );
-          // This is a bundle button. A cached NeuralRender archive alone is
-          // not an installed bundle and must never disable dependency repair.
-          latestDownloaded = latestDownloaded
-            && latestProxyDownloaded
-            && dlssnrRuntimes.length > 0;
-        }
+        const latestDownloaded = addonDownloadIsCurrent(provider);
         const busy = !!componentOperation?.busy || companionUpdateBusy;
         button.disabled = latestDownloaded || busy;
         button.textContent = busy && componentOperation?.provider === provider
           ? componentProgressLabel(componentOperation) : latestDownloaded
-          ? 'Latest version already downloaded'
+          ? 'Up to date'
           : button.dataset.installLabel;
         button.classList.toggle('btn-primary', !latestDownloaded);
         button.classList.toggle('btn-secondary', latestDownloaded);
+        renderAddonVersionStatus(provider);
       });
     }
 
@@ -2596,24 +2664,21 @@
       document.querySelectorAll('[data-addon-download]').forEach(link => {
         if (!link.dataset.downloadLabel) link.dataset.downloadLabel = link.textContent.trim();
         const provider = link.dataset.addonDownload;
-        const latestVersion = latestAddonVersions[provider];
-        const source = graphicsExternalSources[provider] || {};
-        const staged = graphicsPackages.some(item =>
-          item.provider === provider
-          && latestVersion
-          && normalizedAddonVersion(item.version) === normalizedAddonVersion(latestVersion)
-        );
-        const detected = !!source.detected && !!latestVersion
-          && normalizedAddonVersion(source.version) === normalizedAddonVersion(latestVersion);
-        const latestDownloaded = staged || detected;
+        const latestDownloaded = addonDownloadIsCurrent(provider);
         const busy = !!componentOperation?.busy || companionUpdateBusy;
         link.setAttribute('aria-disabled', latestDownloaded || busy ? 'true' : 'false');
+        link.tabIndex = latestDownloaded || busy ? -1 : 0;
         link.textContent = busy && componentOperation?.provider === provider
           ? componentProgressLabel(componentOperation) : latestDownloaded
-          ? 'Latest version already downloaded'
+          ? 'Up to date'
           : link.dataset.downloadLabel;
         link.classList.toggle('btn-primary', !latestDownloaded);
         link.classList.toggle('btn-secondary', latestDownloaded);
+        renderAddonVersionStatus(provider);
+        const latest = latestAddonVersions[provider];
+        if (provider === 'reshade' && /^\d+(?:\.\d+)+$/.test(latest || '')) {
+          link.href = `https://reshade.me/downloads/ReShade_Setup_${latest}_Addon.exe`;
+        }
       });
     }
 
@@ -2692,8 +2757,8 @@
         const download = document.createElement('button');
         download.className = 'btn btn-primary';
         download.dataset.componentDownload = item.provider;
-        const complete = operation?.phase === 'complete' && !!operation.version
-          && normalizedAddonVersion(operation.version) === normalizedAddonVersion(item.latestVersion);
+        const complete = addonVersionIsCurrent(item.currentVersion, item.latestVersion) || (operation?.phase === 'complete' && !!operation.version
+          && addonVersionIsCurrent(operation.version, item.latestVersion));
         download.disabled = !!componentOperation?.busy || companionUpdateBusy || complete;
         download.textContent = operation?.busy ? componentProgressLabel(operation) : complete ? 'Downloaded' : 'Download';
         download.onclick = () => installGraphicsAddon(item.provider);
@@ -3408,46 +3473,61 @@
     }
 
     function renderAddonRuntimeStatus(status) {
-      const output = document.getElementById('addonRuntimeStatus');
-      if (!output) return;
-      if (!status.available) {
-        output.setAttribute('data-state', 'unavailable');
-        output.textContent = status.reason || 'Addon host is not running.';
-        return;
-      }
-      const backend = status.neuralBackend || 'waiting';
-      const neuralId = backend === 'AMD' || backend === 'unsupported' ? 'LSC-AMDNR' : 'DLSSNR02';
-      const neural = (status.addons || []).find(addon => addon.id === neuralId);
-      const times = status.metrics && status.metrics[neuralId] || {};
-      const total = ['prepare_ms', 'flow_ms', 'model_ms', 'composition_ms']
-        .reduce((sum, key) => sum + (Number.isFinite(times[key]) ? times[key] : 0), 0);
-      const loadError = neural?.enabled && (neural.faulted || neural.loaded === false)
-        ? 'Neural Rendering is enabled but its backend did not load. Check the host installation and runtime error.' : '';
-      const state = status.startupError || neural?.error || loadError || neural?.status
-        || (neural ? neural.enabled ? 'Waiting for runtime status' : 'Neural Rendering is disabled'
-          : 'No Neural Rendering status reported');
-      output.setAttribute('data-state', status.startupError || neural?.error || loadError || neural?.level >= 2 ? 'error' : 'available');
-      output.textContent = `${status.hostVersion} | ${backend === 'waiting' ? 'Waiting for capture GPU' : backend}\n${state}`;
-      if (backend === 'NVIDIA' && neural?.enabled) output.textContent += total > 0
-        ? `\nLast completed NR GPU stages: ${total.toFixed(2)} ms`
-        : '\nNo completed NR GPU stages reported recently';
-      if (backend === 'AMD') {
-        if (Number.isFinite(times.compute_device)) output.textContent += `\nCompute device ${times.compute_device}`;
-        const results = Number.isFinite(times.results) ? times.results : 0;
-        output.textContent += results > 0
-          ? `\n${Number(times.inference_fps || 0).toFixed(1)} NR evaluations/s, result age ${times.result_age || 0} frames, flow ${Number(times.flow_ms || 0).toFixed(2)} ms`
-          : '\nNo inference result confirmed';
-      }
-      if (status.capture && status.capture.support && status.capture.support !== 'Ready') {
-        output.textContent += `\nCapture: ${status.capture.error || status.capture.hookError || status.capture.support}`;
-      }
-      const sr = status.sm86Sr;
-      if (sr && sr.mode !== 'Off') output.textContent += `\nSM86 ${sr.mode}: ${sr.error ||
-        (sr.gateAllowed ? 'device gate accepted; frame inference unverified' : sr.loaderReady ? 'proxy loaded; awaiting device gate' : 'proxy not loaded')}`;
-      const upscaler = (status.addons || []).find(addon => addon.id === 'DLSS4DLAA');
-      if (sr && sr.mode !== 'Off' && upscaler && (upscaler.error || upscaler.status)) {
-        output.textContent += `\nDLSS upscaler: ${upscaler.error || upscaler.status}`;
-      }
+      const outputs = ['addonRuntimeStatus', 'profileAddonRuntimeStatus']
+        .map(id => document.getElementById(id)).filter(Boolean);
+      outputs.forEach(output => {
+        if (!status.available) {
+          output.setAttribute('data-state', 'unavailable');
+          output.textContent = status.reason || 'Addon host is not running.';
+          return;
+        }
+        const backend = status.neuralBackend || 'waiting';
+        const neuralId = backend === 'AMD' || backend === 'unsupported' ? 'LSC-AMDNR' : 'DLSSNR02';
+        const neural = (status.addons || []).find(addon => addon.id === neuralId);
+        const times = status.metrics && status.metrics[neuralId] || {};
+        const total = ['prepare_ms', 'flow_ms', 'model_ms', 'composition_ms']
+          .reduce((sum, key) => sum + (Number.isFinite(times[key]) ? times[key] : 0), 0);
+        const loadError = neural?.enabled && (neural.faulted || neural.loaded === false)
+          ? 'Neural Rendering is enabled but its backend did not load. Check the host installation and runtime error.' : '';
+        const state = status.startupError || neural?.error || loadError || neural?.status
+          || (neural ? neural.enabled ? 'Waiting for runtime status' : 'Neural Rendering is disabled'
+            : 'No Neural Rendering status reported');
+        output.setAttribute('data-state', status.startupError || neural?.error || loadError || neural?.level >= 2 ? 'error' : 'available');
+        output.textContent = `${status.hostVersion} | ${backend === 'waiting' ? 'Waiting for capture GPU' : backend}\n${state}`;
+        if (backend === 'NVIDIA' && neural?.enabled) output.textContent += total > 0
+          ? `\nLast completed NR GPU stages: ${total.toFixed(2)} ms`
+          : '\nNo completed NR GPU stages reported recently';
+        if (backend === 'AMD') {
+          if (Number.isFinite(times.compute_device)) output.textContent += `\nCompute device ${times.compute_device}`;
+          const results = Number.isFinite(times.results) ? times.results : 0;
+          output.textContent += results > 0
+            ? `\n${Number(times.inference_fps || 0).toFixed(1)} NR evaluations/s, result age ${times.result_age || 0} frames, flow ${Number(times.flow_ms || 0).toFixed(2)} ms`
+            : '\nNo inference result confirmed';
+        }
+        if (status.capture && status.capture.support && status.capture.support !== 'Ready') {
+          output.textContent += `\nCapture: ${status.capture.error || status.capture.hookError || status.capture.support}`;
+        }
+        const capture = status.capture || {};
+        if (capture.configured === false) output.textContent += '\nNo applied LS capture settings observed. Restart scaling from Companion with the intended profile.';
+        else if (Number.isFinite(capture.dispatches) && Number.isFinite(capture.captures)) {
+          output.textContent += `\nCapture: ${capture.captures} frames / ${capture.dispatches} compute dispatches`;
+          if (!capture.dispatches) output.textContent += '\nNo LS compute work observed. Check that scaling is active in this Lossless Scaling instance.';
+          else if (!capture.captures) output.textContent += '\nLS is rendering, but no supported capture matched. Use WGC with LSFG 3, or FG Off with Scaling Off/NIS. Collect Debug diagnostics if this persists.';
+        }
+        if (capture.configured === true) {
+          const api = {0: 'DXGI', 1: 'WGC'}[capture.captureApi] || `API ${capture.captureApi}`;
+          const fg = {0: 'Off', 1: 'LSFG 3'}[capture.frameGeneration] || `mode ${capture.frameGeneration}`;
+          const scaler = {0: 'Off', 3: 'NIS'}[capture.scaler] || `type ${capture.scaler}`;
+          output.textContent += `\nApplied capture: ${api}; FG ${fg}; Scaling ${scaler}; LS ${capture.runtimeVersion || 'unknown'}`;
+        }
+        const sr = status.sm86Sr;
+        if (sr && sr.mode !== 'Off') output.textContent += `\nSM86 ${sr.mode}: ${sr.error ||
+          (sr.gateAllowed ? 'device gate accepted; frame inference unverified' : sr.loaderReady ? 'proxy loaded; awaiting device gate' : 'proxy not loaded')}`;
+        const upscaler = (status.addons || []).find(addon => addon.id === 'DLSS4DLAA');
+        if (sr && sr.mode !== 'Off' && upscaler && (upscaler.error || upscaler.status)) {
+          output.textContent += `\nDLSS upscaler: ${upscaler.error || upscaler.status}`;
+        }
+      });
     }
 
     function renderAddonEditor() {
@@ -4097,6 +4177,7 @@
     let runtimeLogPaused = false;
     let runtimeLogPendingAt = 0;
     let runtimeLogGap = false;
+    const runtimeLogDateFormatters = new Map();
 
     function requestRuntimeLogs() {
       if (document.hidden || document.getElementById('testingPanel').hidden || runtimeLogPaused) return;
@@ -4116,9 +4197,68 @@
         && (!query || `${entry.message} ${entry.source}`.toLowerCase().includes(query));
     }
 
-    function runtimeLogLine(entry) {
-      // ISO timestamps include the UTC offset so exports are unambiguous.
-      return `${entry.timestamp} [${entry.level}] (${entry.source}) ${entry.message}`;
+    function runtimeLogTimestamp(timestamp, timeZone) {
+      const date = new Date(timestamp);
+      if (!Number.isFinite(date.getTime())) return String(timestamp || 'Unknown time');
+      const key = timeZone || 'local';
+      if (!runtimeLogDateFormatters.has(key)) runtimeLogDateFormatters.set(key, new Intl.DateTimeFormat('en-CA', {
+        timeZone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit',
+        hourCycle:'h23', timeZoneName:'longOffset'}));
+      const parts = runtimeLogDateFormatters.get(key).formatToParts(date);
+      const part = name => parts.find(item => item.type === name)?.value || '';
+      return `${part('year')}-${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')} ${part('timeZoneName').replace('GMT', 'UTC')}`;
+    }
+
+    function runtimeLogGroups(entries) {
+      const groups = new Map();
+      entries.forEach(entry => {
+        const second = Math.floor(new Date(entry.timestamp).getTime() / 1000);
+        const key = Number.isFinite(second) ? second : `unknown-${entry.id}`;
+        if (!groups.has(key)) groups.set(key, {timestamp: entry.timestamp, entries: []});
+        groups.get(key).entries.push(entry);
+      });
+      return [...groups.values()];
+    }
+
+    function runtimeLogEventText(entry) {
+      const milliseconds = new Date(entry.timestamp).getMilliseconds();
+      return `.${Number.isFinite(milliseconds) ? String(milliseconds).padStart(3, '0') : '???'} [${entry.level}] (${entry.source}) ${entry.message}`;
+    }
+
+    function runtimeLogGroupText(group) {
+      return runtimeLogTimestamp(group.timestamp) + '\n' + group.entries.map(entry => '  ' + runtimeLogEventText(entry).replace(/\n/g, '\n  ')).join('\n');
+    }
+
+    function shownRuntimeLogText() {
+      return runtimeLogGroups(runtimeLogEntries.filter(runtimeLogMatches)).map(runtimeLogGroupText).join('\n\n');
+    }
+
+    async function copyRuntimeLog(content, button) {
+      const label = button.textContent;
+      try {
+        await navigator.clipboard.writeText(content);
+        button.textContent = 'Copied';
+        setTimeout(() => { button.textContent = label; }, 1500);
+      } catch (_) {
+        document.getElementById('runtimeLogStatus').textContent = 'Clipboard unavailable. Use Download shown entries to save these events.';
+      }
+    }
+
+    function renderRuntimeScalingStatus(status) {
+      if (!status) return;
+      const node = document.getElementById('runtimeScalingStatus');
+      node.textContent = status.message || 'No scaling command pending.';
+      node.dataset.state = status.state || 'idle';
+    }
+
+    function renderCloneRebuildStatus(status) {
+      if (!status) return;
+      const button = document.getElementById('rebuildCloneBtn');
+      button.disabled = !!status.busy;
+      button.textContent = status.busy ? 'Rebuilding cloned installation…' : 'Rebuild cloned installation';
+      const node = document.getElementById('cloneRebuildStatus');
+      node.textContent = status.message || '';
+      node.style.color = status.success === false ? 'var(--danger)' : '';
     }
 
     function renderRuntimeLogs() {
@@ -4126,14 +4266,37 @@
       const scroll = container.scrollTop;
       const entries = runtimeLogEntries.filter(runtimeLogMatches);
       const fragment = document.createDocumentFragment();
-      entries.forEach(entry => {
+      runtimeLogGroups(entries).forEach(group => {
         const row = document.createElement('div');
         row.className = 'runtime-log-entry';
-        row.dataset.level = entry.level;
+        row.dataset.level = group.entries.some(entry => entry.level === 'ERROR') ? 'ERROR'
+          : group.entries.some(entry => entry.level === 'WARNING') ? 'WARNING' : 'INFO';
         const meta = document.createElement('div');
         meta.className = 'runtime-log-meta';
-        meta.textContent = `${entry.timestamp} [${entry.level}] ${entry.source}`;
-        row.append(meta, document.createTextNode(entry.message));
+        const stamp = document.createElement('span');
+        const localTime = runtimeLogTimestamp(group.timestamp);
+        stamp.textContent = `${localTime} · ${group.entries.length} ${group.entries.length === 1 ? 'event' : 'events'}`;
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'btn btn-secondary';
+        copy.textContent = 'Copy events';
+        copy.setAttribute('aria-label', `Copy events from ${localTime}`);
+        copy.onclick = () => copyRuntimeLog(runtimeLogGroupText(group), copy);
+        meta.append(stamp, copy);
+        row.appendChild(meta);
+        group.entries.forEach(entry => {
+          const event = document.createElement('div');
+          event.className = 'runtime-log-event';
+          event.dataset.level = entry.level;
+          const source = document.createElement('div');
+          source.className = 'runtime-log-source';
+          source.textContent = `${entry.level} · ${String(entry.source || '').replace(/^LSCompanion\.?/, '') || 'Companion'}`;
+          const message = document.createElement('div');
+          message.className = 'runtime-log-message';
+          message.textContent = entry.message;
+          event.append(source, message);
+          row.appendChild(event);
+        });
         fragment.appendChild(row);
       });
       if (!entries.length) {
@@ -4149,11 +4312,14 @@
 
     function updateRuntimeLogStatus() {
       document.getElementById('runtimeLogStatus').textContent = `${runtimeLogPaused ? 'Paused' : 'Live'} · ${runtimeLogEntries.filter(runtimeLogMatches).length} shown / ${runtimeLogEntries.length} retained`
+        + ` · ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time'} · grouped by second`
         + (runtimeLogGap ? ' · Older entries expired from the live buffer; see the log file for full history.' : '');
     }
 
     function receiveRuntimeLogs(msg) {
       runtimeLogPendingAt = 0;
+      renderRuntimeScalingStatus(msg.scalingControl);
+      renderCloneRebuildStatus(msg.cloneRebuild);
       // Do not consume an in-flight batch while paused; Resume fetches it again.
       if (runtimeLogPaused) return;
       const reset = msg.reset || msg.session !== runtimeLogSession;
@@ -4182,13 +4348,22 @@
       else document.getElementById('runtimeLogStatus').textContent = 'Paused. Companion continues recording in the background.';
     };
     document.getElementById('downloadRuntimeLogBtn').onclick = () => {
-      const content = runtimeLogEntries.filter(runtimeLogMatches).map(runtimeLogLine).join('\n');
+      const content = shownRuntimeLogText();
       const url = URL.createObjectURL(new Blob([content + '\n'], {type: 'text/plain;charset=utf-8'}));
       const link = document.createElement('a');
       link.href = url;
       link.download = 'companion-log.txt';
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    document.getElementById('copyRuntimeLogBtn').onclick = function () { return copyRuntimeLog(shownRuntimeLogText(), this); };
+    document.getElementById('rebuildCloneBtn').onclick = function () {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        renderCloneRebuildStatus({busy: false, success: false, message: 'Reconnect to Companion before rebuilding.'});
+        return;
+      }
+      renderCloneRebuildStatus({busy: true, message: 'Requesting cloned installation rebuild…'});
+      ws.send(JSON.stringify({type: 'REBUILD_CLONED_INSTALLATION'}));
     };
     setInterval(requestRuntimeLogs, 1000);
 
@@ -4720,10 +4895,23 @@
     function shortcutFromKeyEvent(event, modifiers = true) {
       const aliases = {ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
         ' ': 'space', PageUp: 'pageup', PageDown: 'pagedown', CapsLock: 'capslock'};
-      if (['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'Dead', 'Unidentified'].includes(event.key)) return null;
-      const punctuation = {Equal: '=', Minus: '-'};
-      const key = punctuation[event.code] || aliases[event.key] || event.key.toLowerCase();
-      if (!/^(?:[a-z0-9=\-]|f(?:[1-9]|1[0-9]|2[0-4])|home|end|pageup|pagedown|insert|delete|space|enter|tab|backspace|up|down|left|right|capslock|pause|printscreen|scrolllock|numlock)$/.test(key)) return null;
+      if (['Control', 'Alt', 'Shift', 'Meta', 'AltGraph'].includes(event.key)) return null;
+      // Record the base key and modifiers, including Shift+digit symbols and
+      // layout dead keys. Numpad operators keep their distinct Windows keys.
+      const punctuation = {
+        Equal: '=', Minus: '-', Comma: ',', Period: '.', Slash: '/', Semicolon: ';',
+        Quote: "'", Backquote: '`', BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+        IntlBackslash: 'oem102', NumpadAdd: 'add', NumpadSubtract: 'subtract',
+        NumpadMultiply: 'multiply', NumpadDivide: 'divide', NumpadDecimal: 'decimal', NumpadComma: 'separator'
+      };
+      if (['Dead', 'Unidentified'].includes(event.key) && !punctuation[event.code]) return null;
+      const digit = /^Digit[0-9]$/.test(event.code || '') ? event.code.slice(-1) : null;
+      const key = (event.code === 'NumpadDecimal' && event.key === 'Delete') ? 'delete'
+        : punctuation[event.code] || digit || aliases[event.key] || event.key.toLowerCase();
+      const punctuationKeys = new Set(["`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/"]);
+      const keypadKeys = new Set(['oem102', 'add', 'subtract', 'multiply', 'divide', 'decimal', 'separator']);
+      if (!punctuationKeys.has(key) && !keypadKeys.has(key)
+          && !/^(?:[a-z0-9]|f(?:[1-9]|1[0-9]|2[0-4])|home|end|pageup|pagedown|insert|delete|space|enter|tab|backspace|up|down|left|right|capslock|pause|printscreen|scrolllock|numlock)$/.test(key)) return null;
       if (!modifiers && (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey)) return null;
       return [...(modifiers ? [[event.ctrlKey, 'ctrl'], [event.altKey, 'alt'],
         [event.shiftKey, 'shift'], [event.metaKey, 'win']].filter(([held]) => held).map(([, name]) => name) : []), key].join('+');
@@ -4775,10 +4963,6 @@
         window.addEventListener('blur', cancel);
       };
       button.onclick = start;
-      input.onclick = start;
-      input.addEventListener('keydown', event => {
-        if (!listening && ['Enter', ' '].includes(event.key)) { event.preventDefault(); start(); }
-      });
       input.parentElement.appendChild(button);
       if (clearable) {
         const clear = document.createElement('button');

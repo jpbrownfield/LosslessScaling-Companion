@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -17,6 +19,7 @@ from .asset_store import AssetStore
 MARKER = ".companion-runtime.json"
 BOOTSTRAP_FILES = ("LSC_StartupHook.dll", "LSC_RuntimeIsolation.dll")
 PROXY_NAMES = {"dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll", "dinput8.dll", "version.dll", "winmm.dll", "opengl32.dll"}
+logger = logging.getLogger("LSCompanion.Runtime")
 
 
 def native_settings_path() -> Path:
@@ -44,8 +47,11 @@ class ManagedRuntime:
         self.settings = self.local / "Lossless Scaling/Settings.xml"
 
     def prepare(self, source_exe: Path, store: AssetStore, *, seed_settings: Path | None = None,
-                bootstrap: Path | None = None) -> Path:
+                bootstrap: Path | None = None, rebuild_executable: Path | None = None) -> Path:
         source_exe = Path(source_exe).resolve(strict=True)
+        started = time.monotonic()
+        logger.info("Managed LS initialization: source=%s; private settings=%s; rebuild=%s",
+                    source_exe, self.settings, rebuild_executable is not None)
         source = source_exe.parent
         if source_exe.name.casefold() != "losslessscaling.exe" or source.is_relative_to(self.root):
             raise RuntimeError("A real source LS installation outside the managed runtime is required")
@@ -63,7 +69,9 @@ class ManagedRuntime:
         # Recover stock bytes into the clone from existing ownership records,
         # including users whose source already contains our engine wrapper.
         from .deployment_manager import DeploymentManager
-        previous = DeploymentManager(store)
+        # The live store may be bound to the clone. Source ownership must be
+        # read independently, without treating the source as a mutation target.
+        previous = DeploymentManager(AssetStore(str(store.root)))
         manifest = previous._read_manifest(str(source_exe))
         originals = {item["relative_path"].replace("\\", "/"): item.get("original_backup")
                      for item in manifest.get("files", [])}
@@ -79,9 +87,26 @@ class ManagedRuntime:
                       *(bootstrap / name for name in BOOTSTRAP_FILES)]
         fingerprint = hashlib.sha256("".join(AssetStore.sha256(path) for path in identities).encode()).hexdigest()[:24]
         directory = self.root / "installations" / fingerprint
+        replaced = None
+        generation = None
+        if rebuild_executable is not None:
+            current = Path(rebuild_executable).absolute()
+            directory = current.parent.parent
+            if (current != current.resolve() or directory.parent != self.root / "installations"
+                    or not re.fullmatch(r"[0-9a-f]{24}", directory.name)
+                    or current.parent.name != "app" or current.name != "LosslessScaling.exe"):
+                raise RuntimeError("Recovery is restricted to a managed installation directory")
+            record = json.loads((current.parent / MARKER).read_text(encoding="utf-8"))
+            if (Path(record.get("root", "")).resolve() != self.root
+                    or Path(record.get("source", "")).resolve() != source_exe
+                    or Path(record.get("settings", "")).resolve() != self.settings):
+                raise RuntimeError("Managed runtime recovery identity is invalid")
+            generation = uuid.uuid4().hex
+            replaced = directory.with_name(".replaced-" + generation)
         app = directory / "app"
         executable = app / "LosslessScaling.exe"
-        if not executable.is_file():
+        if rebuild_executable is not None or not executable.is_file():
+            logger.info("Preparing clean LS program files: fingerprint=%s; destination=%s", fingerprint, app)
             staging = self.root / "installations" / (".preparing-" + uuid.uuid4().hex)
             staging.mkdir(parents=True)
             clone = staging / "app"
@@ -110,21 +135,46 @@ class ManagedRuntime:
             options.setdefault("configProperties", {})["System.StartupHookProvider.IsSupported"] = True
             options["configProperties"]["STARTUP_HOOKS"] = str(app / ".companion/bootstrap/LSC_StartupHook.dll")
             (clone / runtime_config.name).write_text(json.dumps({"runtimeOptions": options}, indent=2), encoding="utf-8")
+            if rebuild_executable is not None:
+                # Keep user configuration byte-for-byte. Runtime metadata and
+                # add-on manifests are regenerated with the program files.
+                for item in app.rglob("*"):
+                    relative = item.relative_to(app)
+                    if item.is_symlink() or getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
+                        raise RuntimeError(f"Managed LS contains a linked path: {relative}")
+                    if (item.is_file() and ".companion" not in {part.casefold() for part in relative.parts}
+                            and item.suffix.casefold() in {".ini", ".bak", ".cfg", ".conf", ".toml", ".yaml", ".yml", ".xml", ".json"}
+                            and item.name.casefold() not in {MARKER, "addon.json"}
+                            and not item.name.casefold().endswith((".runtimeconfig.json", ".deps.json"))):
+                        target = clone / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, target)
             AssetStore._atomic_json(clone / MARKER, {
                 "schema": 1, "root": str(self.root), "source": str(source_exe),
                 "localAppData": str(self.local), "roamingAppData": str(self.roaming),
                 "settings": str(self.settings), "fingerprint": fingerprint,
                 "bootstrapHashes": {name: AssetStore.sha256(private / name) for name in BOOTSTRAP_FILES},
+                **({"deploymentGeneration": generation} if generation else {}),
             })
+            if replaced is not None:
+                # Both paths were checked above and remain inside installations.
+                # Retain the old files; a failed commit restores them in place.
+                directory.rename(replaced)
+                logger.info("Previous cloned files preserved at %s", replaced)
             # Windows scanners can briefly hold newly copied executables open.
-            for attempt in range(10):
-                try:
-                    staging.rename(directory)
-                    break
-                except PermissionError:
-                    if attempt == 9:
-                        raise
-                    time.sleep(0.05 * (attempt + 1))
+            try:
+                for attempt in range(10):
+                    try:
+                        staging.rename(directory)
+                        break
+                    except PermissionError:
+                        if attempt == 9:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            except Exception:
+                if replaced is not None:
+                    replaced.rename(directory)
+                raise
         self.local.mkdir(parents=True, exist_ok=True)
         self.roaming.mkdir(parents=True, exist_ok=True)
         if not self.settings.exists():
@@ -140,13 +190,25 @@ class ManagedRuntime:
                     element.text = value
             tree.write(self.settings, encoding="utf-8", xml_declaration=True)
         self.validate(executable)
+        logger.info("Managed LS initialization complete in %.2fs: clone=%s; settings=%s",
+                    time.monotonic() - started, executable, self.settings)
         return executable
+
+    def rebuild(self, executable: Path, source_exe: Path, store: AssetStore) -> Path:
+        """Replace a stopped clone's files, retaining settings and the old clone."""
+        # A rebuild must never import, recreate or reset settings.
+        if not self.settings.is_file():
+            raise RuntimeError("Private settings are missing; file recovery will not recreate them")
+        return self.prepare(source_exe, store, rebuild_executable=executable)
 
     def validate(self, executable: Path) -> dict:
         executable = Path(executable).resolve()
         if not executable.is_relative_to(self.root / "installations"):
             raise RuntimeError("LS operations are restricted to the Companion-managed clone")
         record = json.loads((executable.parent / MARKER).read_text(encoding="utf-8"))
+        generation = record.get("deploymentGeneration")
+        if generation is not None and (not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation)):
+            raise RuntimeError("Managed runtime deployment generation is invalid")
         if (record.get("schema") != 1 or Path(record.get("root", "")).resolve() != self.root
                 or Path(record.get("settings", "")).resolve() != self.settings.resolve()
                 or Path(record.get("localAppData", "")).resolve() != self.local.resolve()
@@ -215,6 +277,8 @@ def await_isolation(pid: int, receipt: Path | None, token: str | None, *, timeou
     if receipt is None:
         return
     import psutil
+    started = time.monotonic()
+    logger.info("LS startup: waiting for private settings isolation, PID=%s, timeout=%.1fs", pid, timeout)
     try:
         process = psutil.Process(pid)
         process.create_time()  # Cache the launched incarnation before waiting.
@@ -227,6 +291,8 @@ def await_isolation(pid: int, receipt: Path | None, token: str | None, *, timeou
             payload = json.loads(receipt.read_text())
             if (payload.get("pid") == pid and payload.get("token") == token and payload.get("verified") is True
                     and Path(payload.get("settings", "")).resolve() == expected_settings.resolve()):
+                logger.info("LS private settings isolation verified in %.2fs: PID=%s; settings=%s",
+                            time.monotonic() - started, pid, expected_settings)
                 return
         except (OSError, ValueError):
             pass
@@ -234,6 +300,8 @@ def await_isolation(pid: int, receipt: Path | None, token: str | None, *, timeou
             break
         time.sleep(0.05)
     # Kill only the child this launch created. Never fall back to the source exe.
+    logger.error("LS private settings isolation failed after %.2fs: PID=%s; receipt present=%s; settings=%s",
+                 time.monotonic() - started, pid, receipt.is_file(), expected_settings)
     try:
         if process is not None and process.is_running():
             process.kill()

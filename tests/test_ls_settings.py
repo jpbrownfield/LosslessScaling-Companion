@@ -13,7 +13,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "lossless_scaling" / "Settings.xm
 
 class LosslessSettingsXmlTests(unittest.TestCase):
     def test_punctuation_scaling_shortcuts_round_trip_through_native_key_names(self):
-        for key, native_key in (("=", "OemPlus"), ("-", "OemMinus")):
+        for key, native_key in (("=", "OemPlus"), ("-", "OemMinus"), (",", "OemComma")):
             with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
                 target = Path(directory) / "Settings.xml"
                 shutil.copy2(FIXTURE, target)

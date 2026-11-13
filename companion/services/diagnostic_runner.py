@@ -1499,8 +1499,23 @@ class DiagnosticRunner:
         config = self.server.config
         listener = self.server.hotkey_listener
         running = bool(listener and getattr(listener, "_thread", None) and listener._thread.is_alive())
-        status = "pass" if (not config.override_lossless_hotkey or running) else "fail"
-        return self._result(status, "Hotkey configuration is valid and the required listener is running." if status == "pass" else "Hotkey override is enabled but its listener is not running.", overrideEnabled=config.override_lossless_hotkey, listenerRunning=running, globalHotkey=config.global_hotkey.model_dump(), overrideHotkey=config.override_hotkey.model_dump())
+        overlay_required = config.overlay_indicator_enabled and any(config.overlay_hotkeys.values())
+        requested = {name: item["binding"] for name, item in
+                     dict(getattr(listener, "_overlay_actions", {}) or {}).items()}
+        registered = dict(getattr(listener, "overlay_registered", {}) or {})
+        unavailable = {name: binding for name, binding in requested.items()
+                       if registered.get(name) != binding}
+        if (config.override_lossless_hotkey or overlay_required) and not running:
+            status, summary = "fail", "The hotkey listener required by scaling or overlay shortcuts is not running."
+        elif unavailable:
+            status, summary = "warn", "Some requested overlay shortcuts are not registered; registration may be pending or another application may own the keys."
+        else:
+            status, summary = "pass", "Hotkey listener and requested overlay registrations are ready. In-game delivery and ReShade menu interaction require a live check."
+        return self._result(status, summary, overrideEnabled=config.override_lossless_hotkey,
+            listenerRunning=running, globalHotkey=config.global_hotkey.model_dump(),
+            overrideHotkey=config.override_hotkey.model_dump(), overlayEnabled=config.overlay_indicator_enabled,
+            overlayHotkeys=dict(config.overlay_hotkeys), reshadeMenuHotkey=config.reshade_overlay_hotkey,
+            overlayRequested=requested, overlayRegistered=registered, overlayUnavailable=unavailable)
 
     def _assets(self) -> Dict:
         packages = self.server.asset_store.list_packages()

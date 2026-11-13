@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Companion owns settings through stopped-profile deployment. This endpoint is
-// read-only telemetry: no commands, paths, configuration, or GPU frame data.
+// bounded telemetry plus an explicit on/off request for overlay input passthrough.
+// No paths, configuration writes, or GPU frame data are accepted.
 #include "companion_bridge.h"
 #include "hdr_probe.h"
 #include "component_loader.h"
@@ -135,6 +136,9 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
     auto& config=eam::ConfigManager::Instance();
     result["reshade"]={{"interactive",!eam::features::reshade::Status().empty()},
+        {"controlAvailable",eam::features::reshade::CompanionControlAvailable()},
+        {"controlPending",eam::features::reshade::CompanionControlPending()},
+        {"controlRequested",eam::features::reshade::CompanionOverlayRequested()},
         {"hotkeyVk",std::atoi(config.Get("ReShadePassthrough","hotkey_vk","35").c_str())},
         {"ctrl",config.Get("ReShadePassthrough","hotkey_ctrl","0")=="1"},
         {"alt",config.Get("ReShadePassthrough","hotkey_alt","0")=="1"},
@@ -156,7 +160,9 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
     result["capture"]={{"support",support ? support : "Ready"},{"runtimeVersion",d.runtimeVersion},
         {"runtimeVerified",d.runtimeVerified},{"adapter",d.adapter},{"hookError",d.hookError},
         {"error",d.captureError},{"width",d.width},{"height",d.height},{"captures",d.captures},
-        {"lastCaptureTick",d.lastCapture}};
+        {"lastCaptureTick",d.lastCapture},{"configured",d.configured},{"dispatches",d.dispatches},
+        {"lastDispatchTick",d.lastDispatch},{"settingsAppliedTick",d.settingsAt},
+        {"captureApi",d.capture},{"frameGeneration",d.fg},{"scaler",d.scaler},{"hdr",d.hdr}};
     const auto hdr=HdrProbeSnapshot();
     result["hdrProbe"]={{"enabled",hdr.enabled},{"ready",hdr.ready},{"scans",hdr.scans},
         {"sampledTick",hdr.sampledTick},{"presentTick",hdr.presentTick},{"pixels",hdr.pixels},
@@ -235,13 +241,17 @@ DWORD WINAPI Run(void* parameter) {
                         GetOverlappedResult(pipe,&write,&transferred,TRUE);
                     }
                     // DisconnectNamedPipe discards unread buffered data. Let the
-                    // client acknowledge delivery, with a bounded wait and no commands.
+                    // client acknowledge delivery. E/D request passthrough on/off;
+                    // the native watcher owns the transition, without replaying a key.
                     ResetEvent(connection.hEvent);
                     OVERLAPPED receipt{};receipt.hEvent=connection.hEvent;char ack=0;
-                    if (!ReadFile(pipe,&ack,1,&transferred,&receipt) && GetLastError()==ERROR_IO_PENDING) {
+                    bool received=ReadFile(pipe,&ack,1,&transferred,&receipt)!=FALSE;
+                    if (!received && GetLastError()==ERROR_IO_PENDING) {
                         if (WaitForSingleObject(receipt.hEvent,500)!=WAIT_OBJECT_0) CancelIoEx(pipe,&receipt);
-                        GetOverlappedResult(pipe,&receipt,&transferred,TRUE);
+                        received=GetOverlappedResult(pipe,&receipt,&transferred,TRUE)!=FALSE;
                     }
+                    if (received && transferred==1 && (ack=='E' || ack=='D'))
+                        eam::features::reshade::RequestCompanionPassthrough(ack=='E');
                 }
             } catch (const std::exception& error) { LOG_WARN("Companion","Status snapshot: %s",error.what()); }
         }

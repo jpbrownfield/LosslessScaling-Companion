@@ -36,7 +36,7 @@ test('key picker records named keys, modifiers, punctuation and supported naviga
   assert.equal(context.shortcutFromKeyEvent(key('+', {code: 'Equal', shiftKey: true})), 'shift+=');
   assert.equal(context.shortcutFromKeyEvent(key('ArrowDown')), 'down');
   assert.equal(context.shortcutFromKeyEvent(key('Control')), null);
-  assert.equal(context.shortcutFromKeyEvent(key('+', {code: 'NumpadAdd'})), null);
+  assert.equal(context.shortcutFromKeyEvent(key('+', {code: 'NumpadAdd'})), 'add');
   assert.equal(context.shortcutFromKeyEvent(key('F8', {ctrlKey: true}), false), null);
 });
 
@@ -97,4 +97,66 @@ test('disabled scaling picker cannot start recording', () => {
   input.disabled = true;
   input.parentElement.children[0].onclick();
   assert.equal(documentHandlers.has('keydown'), false);
+});
+
+
+test('displayed keys do not start recording by click or keyboard focus', () => {
+  const {inputs, documentHandlers} = environment();
+  const input = inputs.get('overlayToggleHotkey');
+  input.onclick?.();
+  input.handlers.get('keydown')?.(key('Enter'));
+  input.handlers.get('keydown')?.(key(' '));
+  assert.equal(documentHandlers.has('keydown'), false);
+  input.parentElement.children[0].onclick();
+  assert.equal(documentHandlers.has('keydown'), true);
+});
+
+test('Alt+comma records for overlay, ReShade and scaling, including shifted comma', () => {
+  const {inputs, documentHandlers, context} = environment();
+  for (const id of ['overlayToggleHotkey', 'reshadeOverlayHotkey', 'overrideHotkeyKey']) {
+    const input = inputs.get(id);
+    input.parentElement.children[0].onclick();
+    documentHandlers.get('keydown')(key('Alt', {altKey: true}));
+    documentHandlers.get('keydown')(key(',', {code: 'Comma', altKey: true}));
+    assert.equal(input.value, 'alt+,');
+    assert.equal(input.changes, 1);
+    assert.equal(documentHandlers.has('keydown'), false);
+  }
+  assert.equal(context.shortcutFromKeyEvent(key('<', {code: 'Comma', altKey: true, shiftKey: true})), 'alt+shift+,');
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(overrideHotkeyPayload())', context)),
+    {key: ',', modifiers: ['alt']});
+});
+
+
+test('every standard punctuation symbol and keypad operator records across all shortcut pickers', () => {
+  const cases = JSON.parse(fs.readFileSync('tests/fixtures/punctuation_hotkeys.json', 'utf8'));
+  const {inputs, documentHandlers, context} = environment();
+  const recordedSymbols = new Set();
+  for (const entry of cases) {
+    for (const shifted of [false, true]) {
+      const symbol = shifted ? entry.shifted : entry.unshifted;
+      if (symbol === null) continue;
+      recordedSymbols.add(symbol);
+      for (const id of ['overlayToggleHotkey', 'reshadeOverlayHotkey', 'overrideHotkeyKey']) {
+        const input = inputs.get(id);
+        input.parentElement.children[0].onclick();
+        documentHandlers.get('keydown')(key(symbol, {code: entry.code, altKey: true, shiftKey: shifted}));
+        assert.equal(input.value, `alt+${shifted ? 'shift+' : ''}${entry.canonical}`, `${id}: ${entry.code} / ${symbol}`);
+        assert.equal(documentHandlers.has('keydown'), false);
+      }
+      assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(overrideHotkeyPayload())', context)),
+        {key: entry.canonical, modifiers: shifted ? ['alt', 'shift'] : ['alt']});
+    }
+  }
+  for (let code = 33; code < 127; code++) {
+    const symbol = String.fromCharCode(code);
+    if (!/[a-z0-9]/i.test(symbol)) assert.ok(recordedSymbols.has(symbol), `Missing ASCII punctuation ${symbol}`);
+  }
+});
+
+test('layout dead keys can be bound and keypad Delete retains its actual identity', () => {
+  const {context} = environment();
+  assert.equal(context.shortcutFromKeyEvent(key('Dead', {code: 'Quote', ctrlKey: true})), "ctrl+'");
+  assert.equal(context.shortcutFromKeyEvent(key('Dead', {code: ''})), null);
+  assert.equal(context.shortcutFromKeyEvent(key('Delete', {code: 'NumpadDecimal'})), 'delete');
 });

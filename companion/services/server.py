@@ -152,6 +152,8 @@ class CompanionWebSocketServer:
         self.graphics_source_importer = GraphicsSourceImporter(self.asset_store)
         self.diagnostic_runner = DiagnosticRunner(self)
         self.diagnostics_task: Optional[asyncio.Task] = None
+        self.clone_rebuild_task: Optional[asyncio.Task] = None
+        self.clone_rebuild_status = {"busy": False, "message": "Rebuild the managed program files while preserving settings."}
         self._diagnostics_selected_test: Optional[str] = None
         self.last_diagnostics_result: Optional[Dict] = None
         self._last_diagnostics_archive: Optional[Path] = None
@@ -273,6 +275,9 @@ class CompanionWebSocketServer:
         if self.diagnostics_task:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.diagnostics_task
+        if self.clone_rebuild_task:
+            await self.clone_rebuild_task
+            self.clone_rebuild_task = None
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -453,6 +458,11 @@ class CompanionWebSocketServer:
         except (ValueError, TypeError):
             return await self._process_message(websocket, raw_message)
         action = message.get("type") if isinstance(message, dict) else None
+        if (self.clone_rebuild_task and not self.clone_rebuild_task.done()
+                and isinstance(action, str) and not (action.startswith("GET_") or action == "PING")):
+            await websocket.send(json.dumps({"type": "ERROR", "action": action,
+                                            "message": "The cloned installation is rebuilding. Wait for it to finish."}))
+            return
         if (self.state.update_in_progress and websocket is not self._automatic_update_client
                 and not (isinstance(action, str) and (action.startswith("GET_") or action == "PING"))):
             await websocket.send(json.dumps({"type": "ERROR", "action": action,
@@ -541,6 +551,7 @@ class CompanionWebSocketServer:
 
             dashboard_messages = {
                 "GET_RUNTIME_LOGS",
+                "REBUILD_CLONED_INSTALLATION",
                 "UPDATE_LOSSLESS_PROFILE", "SET_EDITOR_ACTIVITY",
                 "IMPORT_LOSSLESS_PROFILE",
                 "SET_ACTIVE_PROFILE",
@@ -591,7 +602,9 @@ class CompanionWebSocketServer:
                 if type(since) is not int or since < 0:
                     raise ValueError("Log cursor must be a non-negative integer")
                 await websocket.send(json.dumps({"type": "RUNTIME_LOGS", **self.runtime_logs.snapshot(since, msg.get("session", "")),
-                    "path": str(self.profile_manager.config_dir / "logs" / "companion.log")}))
+                    "path": str(self.profile_manager.config_dir / "logs" / "companion.log"),
+                    "scalingControl": dict(self.state.scaling_control_status),
+                    "cloneRebuild": dict(self.clone_rebuild_status)}))
                 return
             if (isinstance(msg_type, str) and not msg_type.startswith("GET_")
                     and msg_type not in {"PING", "SET_EDITOR_ACTIVITY", "EMBED_ADDON_MENU", "DETACH_ADDON_MENU"}):
@@ -615,6 +628,20 @@ class CompanionWebSocketServer:
                 str(msg_type).startswith("GET_") or msg_type in {"PING", "OPEN_CONFIG_FOLDER"}
             ):
                 raise ValueError("Repair saved settings and restart Companion before changing other settings or scaling")
+            if msg_type == "REBUILD_CLONED_INSTALLATION":
+                if ((self.diagnostics_task and not self.diagnostics_task.done())
+                        or self.component_install_lock.locked()
+                        or self.state.benchmark_mode_active or self.state.update_in_progress):
+                    raise RuntimeError("Finish downloads, updates or live tests before rebuilding the clone")
+                self.clone_rebuild_status = {"busy": True, "message": "Stopping LS and rebuilding the cloned program files…"}
+                # Keep idle GPU work and automatic updates out until the
+                # background worker finishes, while log reads stay available.
+                with self._gpu_activity_lock:
+                    self._active_requests += 1
+                self._active_mutations += 1
+                self.clone_rebuild_task = asyncio.create_task(self._run_clone_rebuild())
+                await websocket.send(json.dumps({"type": "CLONE_REBUILD_STATUS", **self.clone_rebuild_status}))
+                return
             if msg_type == "RETRY_DEPLOYMENT_RECOVERY":
                 if self.state.is_scaling_active:
                     raise ValueError("Stop scaling before retrying deployment recovery")
@@ -1382,6 +1409,7 @@ class CompanionWebSocketServer:
                         self.automation.addon_configs.mark_edited(active)
                 if reshade_hotkey_changed:
                     await asyncio.to_thread(self.reshade_profiles.sync_all_configs)
+                    await asyncio.to_thread(self.automation.queue_reshade_hotkey_reload)
                 await asyncio.to_thread(
                     self.automation.reconcile_window_management_setting
                 )
@@ -1403,7 +1431,7 @@ class CompanionWebSocketServer:
             if msg_type == "CHECK_GRAPHICS_RELEASES":
                 provider = str(msg.get("provider") or "")
                 channel = str(msg.get("channel") or "stable")
-                releases = await asyncio.to_thread(self.release_manager.check, provider, channel=channel)
+                releases = await asyncio.to_thread(self.release_manager.check, provider, channel=channel, force=True)
                 await websocket.send(json.dumps({
                     "type": "GRAPHICS_RELEASES",
                     "provider": provider,
@@ -2324,6 +2352,21 @@ class CompanionWebSocketServer:
             ),
         ], body
 
+    async def _run_clone_rebuild(self) -> None:
+        try:
+            result = await self._run_background_thread(self.automation.rebuild_cloned_installation)
+            self.clone_rebuild_status = {"busy": False, "success": True, **result}
+        except Exception as error:
+            logger.exception("Requested clone rebuild failed")
+            self.clone_rebuild_status = {"busy": False, "success": False, "message": str(error)}
+        finally:
+            with self._gpu_activity_lock:
+                self._active_requests -= 1
+            self._active_mutations -= 1
+        payload = json.dumps({"type": "CLONE_REBUILD_STATUS", **self.clone_rebuild_status})
+        await asyncio.gather(*(client.send(payload) for client in tuple(self.clients)), return_exceptions=True)
+        self.state.publish_change()
+
     async def _run_diagnostics(self, selected_test: Optional[str] = None) -> None:
         try:
             result = await self._run_background_thread(
@@ -2451,14 +2494,22 @@ class CompanionWebSocketServer:
             return addon_version_key(left) == addon_version_key(right)
         def normalize(value: str):
             text = str(value or "").strip().casefold()
-            numbers = tuple(int(part) for part in re.findall(r"\d+", text))
-            return numbers or text.removeprefix("v")
+            text = re.sub(r"^sk[_-]", "", text).replace("_", ".").removeprefix("v")
+            if re.fullmatch(r"\d+(?:\.\d+)*", text):
+                numbers = [int(part) for part in text.split(".")]
+                while len(numbers) > 1 and numbers[-1] == 0:
+                    numbers.pop()
+                return tuple(numbers)
+            return text
 
         return bool(normalize(left)) and normalize(left) == normalize(right)
 
     async def _refresh_addon_updates(self, *, force: bool) -> Dict:
         async with self.addon_update_lock:
             providers = ("ls-addon-manager", "reshade", "special-k")
+            # Cards need release metadata on first load, including backends
+            # which are optional and are not part of automatic installation.
+            check_providers = (*providers, "sm86-sr", "amd-neural-render-runtime", "display-commander")
 
             async def check(provider: str):
                 try:
@@ -2477,7 +2528,7 @@ class CompanionWebSocketServer:
                     return provider, None
 
             checked, sources = await asyncio.gather(
-                asyncio.gather(*(check(provider) for provider in providers)),
+                asyncio.gather(*(check(provider) for provider in check_providers)),
                 self._run_background_thread(GraphicsSourceDetector.status),
             )
             latest = {provider: release for provider, release in checked if release}
@@ -2541,6 +2592,10 @@ class CompanionWebSocketServer:
                 "updates": updates,
                 "latestVersions": {
                     provider: str(release.get("version") or "")
+                    for provider, release in latest.items()
+                },
+                "releaseUrls": {
+                    provider: str(release.get("html_url") or "")
                     for provider, release in latest.items()
                 },
             }

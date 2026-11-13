@@ -43,7 +43,7 @@ class BorderAnimationTests(unittest.TestCase):
         gdi.PtInRegion.restype = ctypes.c_bool
         region = presenter._rounded_border_region(640, 360)
         try:
-            for point in ((320, 7), (7, 180), (10, 10), (630, 10), (630, 350), (10, 350)):
+            for point in ((320, 7), (7, 180), (4, 4), (635, 4), (635, 355), (4, 355)):
                 self.assertTrue(gdi.PtInRegion(region, *point), point)
             for point in ((0, 0), (639, 0), (639, 359), (0, 359), (320, 8), (320, 180)):
                 self.assertFalse(gdi.PtInRegion(region, *point), point)

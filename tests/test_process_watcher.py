@@ -12,6 +12,23 @@ from companion.services.process_watcher import ProcessInfo, ProcessWatcher
 
 
 class ProcessWatcherScalingControlTests(unittest.TestCase):
+    def test_initialization_failure_logs_the_stage_and_exception(self):
+        watcher, settings = self.make_watcher()
+        settings.native_auto_scale_enabled.return_value = False
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "LosslessScaling.exe"
+            executable.write_bytes(b"fixture")
+            watcher.profile_manager.config.lossless_scaling_exe_path = str(executable)
+            with patch.object(watcher, "check_is_lossless_scaling_running", return_value=False), patch(
+                "companion.services.process_watcher.launch_hidden", side_effect=RuntimeError("isolation receipt missing")
+            ), self.assertLogs("LSCompanion.ProcessWatcher", level="INFO") as recorded:
+                self.assertFalse(watcher.launch_lossless_scaling(force=True))
+            messages = "\n".join(recorded.output)
+            self.assertIn(str(executable), messages)
+            self.assertIn("launch guarded process and verify private settings", messages)
+            self.assertIn("RuntimeError: isolation receipt missing", messages)
+            self.assertFalse(watcher.state.lossless_scaling_running)
+
     def make_watcher(self):
         config = SimpleNamespace(
             lossless_control_configured=True,
@@ -103,6 +120,7 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             osd.write_text("[SpecialK.OSD]\nShow=false", encoding="utf-8")
             process = SimpleNamespace(pid=4242)
             launch_events = []
+            watcher.on_lossless_scaling_started = Mock(side_effect=lambda: launch_events.append("reset"))
             with (
                 patch.object(watcher, "check_is_lossless_scaling_running", return_value=False),
                 patch("companion.services.process_watcher.launch_hidden", return_value=None),
@@ -129,7 +147,12 @@ class ProcessWatcherScalingControlTests(unittest.TestCase):
             self.assertEqual(kwargs["env"]["SPECIALK_PATH"], str(osd.parent.parent.resolve()))
             self.assertEqual(kwargs["env"]["RESHADE_BASE_PATH_OVERRIDE"], str(executable.parent.resolve()))
             suppress.assert_called_once_with(4242)
-            self.assertEqual(launch_events, ["popen", "suppress", "sleep"])
+            self.assertEqual(launch_events, ["popen", "reset", "suppress", "sleep"])
+            self.assertEqual(watcher.lossless_launch_generation, 1)
+            with patch.object(watcher, "check_is_lossless_scaling_running", return_value=True):
+                self.assertTrue(watcher.launch_lossless_scaling(force=True))
+            self.assertEqual(watcher.lossless_launch_generation, 1)
+            watcher.on_lossless_scaling_started.assert_called_once_with()
 
     def test_startup_suppression_keeps_watching_after_first_window(self):
         watcher, _settings = self.make_watcher()

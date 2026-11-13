@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from .asset_store import AssetStore, UnsafeAssetError
 from .external_process import external_dll_search
-from .addon_host import MANAGED_HOST_VERSION, MANAGED_HOST_ARCHIVE
+from .addon_host import MANAGED_HOST_ARCHIVE
 from . import sm86_sr, amd_nr
 
 
@@ -137,18 +137,33 @@ class BundledArchiveReleaseProvider(ReleaseProvider):
 class BundledAddonManagerReleaseProvider(BundledArchiveReleaseProvider):
     """Only Companion-reviewed host builds may replace the managed integration."""
 
-    cache_identity = MANAGED_HOST_VERSION
+    @property
+    def cache_identity(self):
+        return self._bundle_version(self.archive_path())
+
+    @staticmethod
+    def _bundle_version(archive):
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                manifest = json.loads(bundle.read("lossless-scaling-deployment.json"))
+            version = manifest["version"]
+            if not isinstance(version, str) or not re.fullmatch(r"build-\d+-lsc\.\d+", version):
+                raise ValueError("Invalid managed host version")
+            return version
+        except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as error:
+            raise RuntimeError("Bundled addon host has no valid version manifest; reinstall or rebuild Companion") from error
 
     def __init__(self):
         super().__init__("ls-addon-manager", MANAGED_HOST_ARCHIVE)
 
     def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
         archive = self.archive_path()
+        version = self._bundle_version(archive)
         return [ReleaseInfo(
-            provider=self.provider_id, version=MANAGED_HOST_VERSION,
-            name=f"Companion Addon Host (FriedSnowman {MANAGED_HOST_VERSION.split('-lsc.')[0]})",
+            provider=self.provider_id, version=version,
+            name=f"Companion Addon Host (FriedSnowman {version.split('-lsc.')[0]})",
             published_at=None, prerelease=False,
-            html_url=f"https://github.com/FriedSnowman/ls-addon-manager/releases/tag/{MANAGED_HOST_VERSION.split('-lsc.')[0]}",
+            html_url=f"https://github.com/FriedSnowman/ls-addon-manager/releases/tag/{version.split('-lsc.')[0]}",
             notes="Pinned upstream addon suite with Companion's on-demand panel and status bridge. Updated with Companion.",
             assets=[ReleaseAsset(name=self.archive_name, url=f"bundled://{self.archive_name}",
                                  size=archive.stat().st_size, digest=f"sha256:{AssetStore.sha256(archive)}")],

@@ -5,7 +5,7 @@
   "source_sha256": "6b6635187159e3b4add4819db5fe06b3f16a528eae8c1c0d7948990d1ba44596",
   "release_sha256": "1a091d1b4aadca9504061614ca32fe8e133fa8e8fedebb4cdcdfa5c44ca6fdb8",
   "release_asset": "LSAddonManager-build-7-x64.exe",
-  "companion_revision": 1,
-  "version": "build-7-lsc.1",
+  "companion_revision": 4,
+  "version": "build-7-lsc.4",
   "bridge_protocol": 1
 }

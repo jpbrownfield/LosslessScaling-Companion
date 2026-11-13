@@ -242,7 +242,7 @@ class LosslessScalingInspector:
 
     @staticmethod
     def _lossless_exe_directories(configured_exe: Optional[str] = None) -> List[Path]:
-        """Collect candidate LS install dirs: configured path + running process."""
+        """Use the configured installation, or discover one when unconfigured."""
         directories: List[Path] = []
         if configured_exe:
             try:
@@ -251,6 +251,9 @@ class LosslessScalingInspector:
                     directories.append(parent)
             except Exception:
                 pass
+            # A Steam/source copy can run beside the private managed instance.
+            # Its logs cannot confirm a command sent to the configured copy.
+            return directories
         try:
             for process in psutil.process_iter(["name", "exe"]):
                 try:
@@ -290,6 +293,8 @@ class LosslessScalingInspector:
             os.path.expandvars(r"%APPDATA%\Lossless Scaling\*.log"),
             os.path.expandvars(r"%APPDATA%\Lossless Scaling\logs\*.log"),
         ]
+        if self.lossless_exe_path:
+            candidate_patterns = []
         # Resolve the real install dir instead of a hardcoded C:\ Steam path
         # (the user's install may live on another drive, e.g. J:\Steam).
         for directory in self._lossless_exe_directories(self.lossless_exe_path):
@@ -456,6 +461,22 @@ class LosslessScalingInspector:
             self._confirmation_requires_log = False
             self._echo_confirmation_started_at = None
 
+    def confirmation_debug_snapshot(self) -> Dict:
+        """Explain unavailable or stale evidence without dumping entire log files."""
+        with self._inspection_lock:
+            return {
+                "clone": self.lossless_exe_path,
+                "logs": [str(path) for path in self._candidate_log_files()],
+                "addonLogs": [str(path) for path in self._echo_log_files()],
+                "requiresFreshLog": self._confirmation_requires_log,
+                "baselineSequence": self._confirmation_baseline,
+                "currentSequence": self._log_event_sequence,
+                "logState": self._log_state,
+                "addonEventSeen": self._echo_event_seen,
+                "stableOverlay": self._overlay_stable_present,
+                "lastTarget": self.last_known_target.to_dict(),
+            }
+
     @classmethod
     def _window_title(cls, hwnd) -> str:
         try:
@@ -469,7 +490,7 @@ class LosslessScalingInspector:
             return ""
 
     @classmethod
-    def detect_lossless_scaling_overlay_window(cls) -> Tuple[bool, Optional[int]]:
+    def detect_lossless_scaling_overlay_window(cls, executable: Optional[str] = None) -> Tuple[bool, Optional[int]]:
         """
         Detects whether Lossless Scaling has instantiated its DirectX top-most
         presentation overlay window. Returns (is_overlay_active, overlay_hwnd).
@@ -482,6 +503,7 @@ class LosslessScalingInspector:
         """
         overlay_found = False
         overlay_hwnd = None
+        wanted = str(Path(os.path.expandvars(executable)).resolve()).casefold() if executable else None
 
         # Enum all top-level windows looking for LosslessScaling.exe's render overlay
         def enum_cb(hwnd, extra):
@@ -501,6 +523,8 @@ class LosslessScalingInspector:
                 proc = psutil.Process(pid.value)
                 if (proc.name() or "").casefold() != "losslessscaling.exe":
                     return True
+                if wanted and str(Path(proc.exe()).resolve()).casefold() != wanted:
+                    return True
             except Exception:
                 return True
 
@@ -509,6 +533,15 @@ class LosslessScalingInspector:
                 ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
                 if not style and not ex_style:
                     # Stale/torn-down handle: real windows always report style bits.
+                    return True
+                # The advanced panel and WPF settings window are control
+                # surfaces, even if embedded, maximized, or made topmost.
+                class_name = ctypes.create_unicode_buffer(256)
+                if not user32.GetClassNameW(wintypes.HWND(hwnd), class_name, len(class_name)):
+                    return True
+                if class_name.value == "LSAddonManagerClass" or class_name.value.startswith("HwndWrapper["):
+                    return True
+                if style & (0x40000000 | 0x00C00000):  # WS_CHILD / WS_CAPTION
                     return True
                 title = cls._window_title(hwnd)
                 title_lower = title.casefold()
@@ -603,7 +636,7 @@ class LosslessScalingInspector:
         """
         # 1. Check Win32 DirectX overlay (debounced: a single-frame match
         # must not flip the reported state)
-        raw_overlay_present, _ = self.detect_lossless_scaling_overlay_window()
+        raw_overlay_present, _ = self.detect_lossless_scaling_overlay_window(self.lossless_exe_path)
         is_overlay_present = self._stable_overlay_present(raw_overlay_present)
 
         # 2. Check logs for new events

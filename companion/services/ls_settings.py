@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..core.models import HotkeyConfig
+from ..core.keyboard_keys import NATIVE_KEY_NAMES, normalize_key_name
 
 
 logger = logging.getLogger("LSCompanion.LosslessSettings")
@@ -209,7 +210,7 @@ class LosslessSettingsXml:
         hotkey_changed = False
         if hotkey is not None:
             native_key = (self._text(root, "Hotkey") or "").strip().casefold()
-            native_key = {"oemplus": "=", "oemminus": "-"}.get(native_key, native_key)
+            native_key = normalize_key_name(native_key)
             native_modifiers = self._parse_modifiers(self._text(root, "HotkeyModifierKeys"))
             hotkey_changed = native_key != hotkey.key.casefold() or native_modifiers != hotkey.modifiers
         auto_scale_changed = disable_auto_scale and any(
@@ -243,7 +244,7 @@ class LosslessSettingsXml:
             modifier_node = root.find("HotkeyModifierKeys")
             if modifier_node is None:
                 modifier_node = ET.SubElement(root, "HotkeyModifierKeys")
-            serialized_key = {"=": "OemPlus", "-": "OemMinus"}.get(hotkey.key, hotkey.key.upper())
+            serialized_key = NATIVE_KEY_NAMES.get(hotkey.key, hotkey.key.upper())
             serialized_modifiers = self._serialize_modifiers(hotkey.modifiers)
             if (key_node.text or "") != serialized_key or (modifier_node.text or "") != serialized_modifiers:
                 key_node.text = serialized_key

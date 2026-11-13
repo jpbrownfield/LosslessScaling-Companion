@@ -55,6 +55,7 @@ class ProcessWatcher:
         lossless_settings: Optional[LosslessSettingsXml] = None,
         proxy_menu: Optional[AddonManagerMenuController] = None,
         on_scaling_target_closed: Optional[Callable] = None,
+        on_lossless_scaling_started: Optional[Callable[[], None]] = None,
     ):
         self.profile_manager = profile_manager
         self.state = state
@@ -63,6 +64,8 @@ class ProcessWatcher:
         self._recent_unscaled_foreground: Optional[Tuple[float, ProcessInfo]] = None
         self.on_profile_changed = on_profile_changed
         self.on_scaling_target_closed = on_scaling_target_closed
+        self.on_lossless_scaling_started = on_lossless_scaling_started
+        self.lossless_launch_generation = 0
         self.lossless_settings = lossless_settings
         self.proxy_menu = proxy_menu or AddonManagerMenuController(state)
 
@@ -498,16 +501,25 @@ class ProcessWatcher:
 
         executable = Path(cfg.lossless_scaling_exe_path)
         runtime = getattr(self.profile_manager, "managed_runtime", None)
-        if runtime is not None:
-            runtime.validate(executable)
+        started = time.monotonic()
+        stage = "validate managed program files"
+        logger.info("LS startup requested: clone=%s; force=%s; managed=%s", executable, force, runtime is not None)
+        try:
+            if runtime is not None:
+                runtime.validate(executable)
+        except Exception:
+            logger.exception("LS initialization failed at %s", stage)
+            return False
         if not executable.is_file():
             logger.error("Lossless Scaling executable not found: %s", executable)
             return False
 
         try:
             logger.info("Launching Lossless Scaling hidden: %s", executable)
+            stage = "launch guarded process and verify private settings"
             pid = launch_hidden(executable)
             if pid is None:
+                logger.info("Native launch guard unavailable; using hidden process launch with isolation verification")
                 startup_info = subprocess.STARTUPINFO()
                 startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startup_info.wShowWindow = 0  # SW_HIDE
@@ -527,17 +539,25 @@ class ProcessWatcher:
                     )
                 pid = process.pid
                 await_isolation(pid, receipt, token)
+            logger.info("LS managed child initialized: PID=%s; elapsed=%.2fs", pid, time.monotonic() - started)
             self.state.lossless_scaling_running = True
+            self.lossless_launch_generation += 1
+            if self.on_lossless_scaling_started is not None:
+                stage = "reset scaling observation history"
+                self.on_lossless_scaling_started()
             # Retain the polling safety net for security policies that allow
             # hook registration but prevent loading the DLL inside LS.
+            stage = "hide startup windows"
             self._suppress_startup_window(pid)
             self.proxy_menu.suppress_startup_window(pid)
             # Allow the process to create its window and register global hotkeys before
             # profile runtime actions are sent.
             time.sleep(1.0)
+            logger.info("LS launch completed in %.2fs: PID=%s; launch generation=%s; readiness is checked on scale start",
+                        time.monotonic() - started, pid, self.lossless_launch_generation)
             return True
         except Exception as exc:
-            logger.error("Failed to launch Lossless Scaling: %s", exc)
+            logger.exception("LS initialization failed at %s after %.2fs: %s", stage, time.monotonic() - started, exc)
             self.state.lossless_scaling_running = False
             return False
 

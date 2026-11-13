@@ -1,4 +1,4 @@
-"""Read-only, bounded telemetry from Companion's in-LS FriedSnowman host."""
+"""Bounded telemetry and overlay input control for Companion's in-LS host."""
 from __future__ import annotations
 import ctypes
 from ctypes import wintypes
@@ -8,7 +8,7 @@ import os
 import re
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.1"
+MANAGED_HOST_VERSION = "build-7-lsc.4"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 
@@ -41,7 +41,7 @@ def validate_status(payload, instance, *, now=None):
     return {**payload, "available": True}
 
 
-def _read_pipe(pid, timeout_ms=500):
+def _read_pipe(pid, timeout_ms=500, *, acknowledge=None):
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class Overlapped(ctypes.Structure):
@@ -98,8 +98,12 @@ def _read_pipe(pid, timeout_ms=500):
         size = transfer(kernel.ReadFile, buffer, MAX_STATUS_BYTES + 1)
         if not 0 < size <= MAX_STATUS_BYTES:
             raise ValueError("Host telemetry exceeded its size limit")
-        transfer(kernel.WriteFile, ctypes.create_string_buffer(b"1"), 1)
-        return json.loads(buffer.raw[:size])
+        payload = json.loads(buffer.raw[:size])
+        receipt = acknowledge(payload) if acknowledge is not None else b"1"
+        if receipt not in (b"1", b"E", b"D"):
+            raise ValueError("Unsupported host receipt")
+        transfer(kernel.WriteFile, ctypes.create_string_buffer(receipt), 1)
+        return payload
     finally:
         kernel.CloseHandle(pipe)
 
@@ -126,3 +130,43 @@ def runtime_status(executable):
         return validate_status(payload, instance)
     except (OSError, ValueError, TypeError, RecursionError) as error:
         return {"available": False, "reason": str(error), "pid": instance[0]}
+
+
+def set_passthrough(executable, enabled: bool, *, expected_pid=None, timeout=1.5):
+    """Request an explicit state and return only after fresh telemetry confirms it."""
+    from .adapter_report import configured_process
+    if type(enabled) is not bool:
+        raise ValueError("Passthrough state must be a boolean")
+    instance = configured_process(executable)
+    if not instance or expected_pid is not None and instance[0] != expected_pid:
+        raise ValueError("Lossless Scaling changed before the overlay request")
+
+    def acknowledge(payload):
+        status = validate_status(payload, instance)
+        if configured_process(executable) != instance:
+            raise ValueError("Lossless Scaling restarted before the overlay request")
+        if (status.get("reshade") or {}).get("controlAvailable") is not True:
+            raise ValueError("Restart Lossless Scaling with the updated Companion host to control passthrough")
+        return b"E" if enabled else b"D"
+
+    _read_pipe(instance[0], acknowledge=acknowledge)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if configured_process(executable) != instance:
+            raise ValueError("Lossless Scaling restarted during the overlay request")
+        try:
+            status = validate_status(_read_pipe(instance[0]), instance)
+        except OSError:
+            # The host retires each pipe after its receipt. A reader can arrive
+            # between DisconnectNamedPipe and the next CreateNamedPipe.
+            time.sleep(0.025)
+            continue
+        if configured_process(executable) != instance:
+            raise ValueError("Lossless Scaling restarted during the overlay request")
+        reshade = status.get("reshade") or {}
+        requested = reshade.get("controlRequested", reshade.get("interactive"))
+        if (reshade.get("controlAvailable") is True and reshade.get("controlPending") is not True
+                and requested is enabled):
+            return status
+        time.sleep(0.025)
+    raise TimeoutError("The addon host did not confirm the requested passthrough state")

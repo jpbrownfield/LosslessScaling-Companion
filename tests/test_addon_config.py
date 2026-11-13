@@ -117,6 +117,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         passthrough = result["addons"]["ReShadePassthrough"]
         self.assertTrue(passthrough["_enabled"])
         self.assertEqual(passthrough["hotkey_vk"], "35")
+        self.assertEqual(passthrough["companion_control"], "1")
 
     def test_current_menu_key_replaces_stale_profile_key_and_modifier_flags(self):
         profile = Profile(name="Game", addon_config={"addons": {"ReShadePassthrough": {

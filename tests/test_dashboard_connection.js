@@ -67,7 +67,7 @@ test('replaced sockets cannot send heartbeats and timers are cleaned up', () => 
 test('pending scaling commands are visible without claiming scaling is active', () => {
   const status = [];
   const context = vm.createContext({runtimeScalingActive: false, runtimeActiveProfile: null,
-    renderProxyMenuAction() {}, setRuntimeStatus: (...args) => status.push(args)});
+    renderProxyMenuAction() {}, renderRuntimeScalingStatus() {}, setRuntimeStatus: (...args) => status.push(args)});
   const runtimeCode = html.slice(html.indexOf('    function renderRuntime(msg)'), html.indexOf('    function activeProfileUsesProxy()'));
   vm.runInContext(runtimeCode, context);
   context.renderRuntime({isScalingActive: false, scalingControl: {state: 'pending', message: 'Waiting for scaling confirmation'}});

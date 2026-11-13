@@ -178,6 +178,7 @@ class AddonConfigService:
             data["addons"].setdefault(addon_id, {}).update(defaults)
 
         data["addons"]["ReShadePassthrough"]["_enabled"] = bool(reshade_enabled)
+        data["addons"]["ReShadePassthrough"]["companion_control"] = "1"
         if reshade_enabled:
             passthrough = data["addons"].setdefault("ReShadePassthrough", {})
             if not isinstance(passthrough, dict):

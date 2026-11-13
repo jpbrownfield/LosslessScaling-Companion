@@ -4,7 +4,9 @@ from __future__ import annotations
 import ctypes
 import threading
 from ctypes import wintypes
+from ..core.keyboard_keys import PUNCTUATION_KEYS, KEY_LABELS
 from .input_simulator import InputSimulator
+from .addon_host import set_passthrough
 from .overlay_shortcuts import (DEFAULT_OVERLAY_HOTKEYS, ACTION_LABELS, parse_shortcut,
                                 special_k_menu_hotkey)
 
@@ -16,7 +18,7 @@ def menu_hotkey_label(status: dict, fallback: str) -> str:
     names = {8: "Backspace", 9: "Tab", 13: "Enter", 19: "Pause", 20: "Caps Lock",
              27: "Esc", 32: "Space", 33: "Page Up", 34: "Page Down", 35: "End",
              36: "Home", 37: "Left", 38: "Up", 39: "Right", 40: "Down",
-             45: "Insert", 46: "Delete"}
+             45: "Insert", 46: "Delete", **{vk: KEY_LABELS[key] for key, (_, vk) in PUNCTUATION_KEYS.items()}}
     key = (chr(vk) if 48 <= vk <= 57 or 65 <= vk <= 90 else f"F{vk - 111}" if 112 <= vk <= 135
            else names.get(vk, f"VK {vk}"))
     return "+".join([label for flag, label in (("ctrl", "Ctrl"), ("alt", "Alt"), ("shift", "Shift"))
@@ -25,11 +27,12 @@ def menu_hotkey_label(status: dict, fallback: str) -> str:
 
 class ReShadeOverlayController:
     def __init__(self, manager, state, indicator, listener=None, open_profile=None, foreground_check=None,
-                 performance_graph=None, open_addon_panel=None):
+                 performance_graph=None, open_addon_panel=None, passthrough_control=None):
         self.manager, self.state, self.indicator = manager, state, indicator
         self.listener, self.open_profile = listener, open_profile
         self.performance_graph = performance_graph
         self.open_addon_panel = open_addon_panel
+        self.passthrough_control = passthrough_control or self._set_passthrough
         self.foreground_check = foreground_check or self._foreground_allowed
         self.active = False
         self.profile_id = None
@@ -37,12 +40,15 @@ class ReShadeOverlayController:
         self._session = None
         self._manual_active = None
         self._native_active = False
+        self._native_requested = False
         self._last_status = {}
         self._lock = threading.RLock()
         self._special_k_loaded = False
         self._special_k_binding = "ctrl+shift+backspace"
         self._special_k_custom = False
         self._callbacks = {name: (lambda name=name: self.dispatch_action(name)) for name in DEFAULT_OVERLAY_HOTKEYS}
+        self.indicator.set_visibility_check(
+            lambda: not self.state.is_scaling_active or self.foreground_check())
 
     def _current_profile(self):
         return self.state.current_active_profile or next(
@@ -61,13 +67,22 @@ class ReShadeOverlayController:
     def _update(self, status: dict) -> None:
         self._last_status = status
         eligible = self.eligible()
+        was_open = self.active or self._native_requested
+        if not eligible and (self._native_active or self._native_requested):
+            self._release_passthrough()
         profile = self._current_profile()
         session = ((profile.id, self.state.scaling_target_pid, self.state.scaling_target_hwnd,
                     self.state.last_scale_toggle_time) if eligible else None)
         if session != self._session:
+            if eligible and self._session is not None and self._native_requested:
+                self._release_passthrough()
+                status = {**status, "reshade": {**(status.get("reshade") or {}),
+                          "interactive": False, "controlRequested": False}}
+                self._last_status = status
             self._session = session
             self._manual_active = None
             self._native_active = False
+            self._native_requested = False
         reshade = status.get("reshade") or {}
         if not isinstance(reshade, dict):
             reshade = {}
@@ -78,12 +93,13 @@ class ReShadeOverlayController:
         if native_active != self._native_active:
             self._manual_active = None
         self._native_active = native_active
-        active = bool(eligible and (native_active if self._manual_active is None else self._manual_active))
+        self._native_requested = bool(eligible and live_reshade
+                                      and reshade.get("controlRequested", native_active) is True)
+        active = bool(eligible and (native_active if uses_reshade else self._manual_active))
         target = self.state.current_scaled_target or {}
         anchor = (reshade.get("presentationHwnd") or self.state.scaling_target_hwnd or target.get("hwnd"))
         if type(anchor) is not int or anchor <= 0:
             active = False
-        was_active = self.active
         self.active = active
         self.profile_id = profile.id if eligible else None
         self.host_pid = status.get("pid") if eligible else None
@@ -124,23 +140,44 @@ class ReShadeOverlayController:
         if active and self._special_k_loaded and self._special_k_custom:
             hints.append({"key": parse_shortcut(self._special_k_binding)[2], "label": "Special K panel"})
         self.indicator.set_reshade_context(active, anchor_hwnd=anchor if active else None, hints=hints)
-        if was_active and not active:
+        if was_open and not active and not self._native_requested:
             if self.performance_graph is not None:
                 self.performance_graph(False)
             if eligible:
                 self.indicator.log("Overlay closed", kind="info")
 
     def _foreground_allowed(self) -> bool:
-        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        user32 = ctypes.windll.user32
+        # HWND is pointer-sized. ctypes otherwise assumes a signed 32-bit int.
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        hwnd = user32.GetForegroundWindow()
         if not hwnd:
             return False
         pid = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
-        return pid.value in (self.host_pid, self.state.scaling_target_pid)
+        if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+            return False
+        target = self.state.current_scaled_target or {}
+        # Native scaling detection can supply the target before automation has
+        # copied its identity into scaling_target_pid.
+        target_pid = self.state.scaling_target_pid or target.get("pid")
+        return pid.value in (self.host_pid, target_pid)
 
     def dispatch_action(self, action: str) -> bool:
         with self._lock:
             return self._dispatch_action(action)
+
+    def _set_passthrough(self, enabled: bool) -> dict:
+        return set_passthrough(self.manager.config.lossless_scaling_exe_path, enabled,
+                               expected_pid=self.host_pid)
+
+    def _release_passthrough(self) -> None:
+        try:
+            self.passthrough_control(False)
+        except (OSError, ValueError):
+            pass  # The host may already have stopped with the scaling session.
 
     def _dispatch_action(self, action: str) -> bool:
         profile = self._current_profile()
@@ -150,6 +187,17 @@ class ReShadeOverlayController:
                 or not self.foreground_check()):
             return False
         if action == "overlay_toggle":
+            uses_reshade = bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled))
+            if uses_reshade:
+                desired = not self._native_requested
+                try:
+                    status = self.passthrough_control(desired)
+                except (OSError, ValueError) as error:
+                    self.indicator.log(f"Overlay input unavailable: {error}", kind="error")
+                    return False
+                self._manual_active = None
+                self.update(status)
+                return self._native_requested is desired
             self._manual_active = not self.active
             self.update(self._last_status)
             return True
@@ -168,6 +216,13 @@ class ReShadeOverlayController:
 
     def clear(self) -> None:
         with self._lock:
+            suspended = self._native_requested and not self.active
+            if self._native_active or self._native_requested:
+                self._release_passthrough()
+                self._native_active = False
+                self._native_requested = False
+            if suspended and self.performance_graph is not None:
+                self.performance_graph(False)
             self._manual_active = None
             self._update({"available": False})
             self._session = None

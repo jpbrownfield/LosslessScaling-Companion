@@ -11,7 +11,7 @@ import zipfile
 
 from companion.services.addon_host import (
     MANAGED_HOST_VERSION, MANAGED_HOST_ARCHIVE, _read_pipe,
-    addon_version_key, runtime_status, validate_status,
+    addon_version_key, runtime_status, validate_status, set_passthrough,
 )
 from companion.services.automatic_updates import newer_addon_version
 from companion.services.release_providers import BundledAddonManagerReleaseProvider, ReleaseManager, ProviderRegistry
@@ -47,6 +47,73 @@ class AddonHostTests(unittest.TestCase):
         self.assertEqual(pin["version"], MANAGED_HOST_VERSION)
         self.assertEqual(pin["bridge_protocol"], 1)
         self.assertEqual(pin["version"], f"{pin['tag']}-lsc.{pin['companion_revision']}")
+
+    def test_passthrough_command_is_explicit_and_waits_for_confirmed_native_state(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                before = self.sample(reshade={"interactive": not enabled, "controlAvailable": True})
+                after = self.sample(reshade={"interactive": enabled, "controlAvailable": True})
+                receipts = []
+
+                def read(pid, **kwargs):
+                    self.assertEqual(pid, 123)
+                    if "acknowledge" in kwargs:
+                        receipts.append(kwargs["acknowledge"](before))
+                        return before
+                    return after
+
+                with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                        patch("companion.services.addon_host.time.time", return_value=1001), \
+                        patch("companion.services.addon_host._read_pipe", side_effect=read):
+                    result = set_passthrough("LS.exe", enabled, expected_pid=123)
+                self.assertIs(result["reshade"]["interactive"], enabled)
+                self.assertEqual(receipts, [b"E" if enabled else b"D"])
+
+    def test_passthrough_rejects_older_host_stale_data_and_process_replacement_before_command(self):
+        for payload in (self.sample(), self.sample(sampledAt=990),
+                        self.sample(pid=456), self.sample(createdAt=850)):
+            def read(pid, **kwargs):
+                return kwargs["acknowledge"](payload)
+            with self.subTest(payload=payload), \
+                    patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                    patch("companion.services.addon_host.time.time", return_value=1001), \
+                    patch("companion.services.addon_host._read_pipe", side_effect=read), self.assertRaises(ValueError):
+                set_passthrough("LS.exe", True, expected_pid=123)
+        with patch("companion.services.adapter_report.configured_process", return_value=(456, 900)), \
+                patch("companion.services.addon_host._read_pipe") as read, self.assertRaises(ValueError):
+            set_passthrough("LS.exe", True, expected_pid=123)
+        read.assert_not_called()
+
+    def test_passthrough_confirmation_tolerates_pipe_recreation(self):
+        before = self.sample(reshade={"interactive": False, "controlAvailable": True})
+        after = self.sample(reshade={"interactive": True, "controlAvailable": True})
+        reads = iter((OSError("Pipe is being recreated"), after))
+
+        def read(pid, **kwargs):
+            if "acknowledge" in kwargs:
+                self.assertEqual(kwargs["acknowledge"](before), b"E")
+                return before
+            result = next(reads)
+            if isinstance(result, OSError):
+                raise result
+            return result
+
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host.time.sleep"), \
+                patch("companion.services.addon_host._read_pipe", side_effect=read):
+            self.assertTrue(set_passthrough("LS.exe", True)["reshade"]["interactive"])
+
+    def test_passthrough_can_confirm_remembered_preference_while_suspended(self):
+        payload = self.sample(reshade={"interactive": False, "controlAvailable": True,
+                                      "controlRequested": True})
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", return_value=payload):
+            self.assertFalse(set_passthrough("LS.exe", True)["reshade"]["interactive"])
+            with patch("companion.services.addon_host.time.monotonic", side_effect=[0, 0, 2]), \
+                    patch("companion.services.addon_host.time.sleep"), self.assertRaises(TimeoutError):
+                set_passthrough("LS.exe", False)
 
     def test_builds_sort_numerically_and_compare_companion_revisions(self):
         self.assertGreater(addon_version_key("build-10-lsc.1"), addon_version_key("build-9-lsc.3"))
@@ -85,7 +152,7 @@ class AddonHostTests(unittest.TestCase):
                 bundle.writestr("Lossless.dll", b"host")
                 bundle.writestr("addons/DLSSNR02/NeuralRendering-source.zip", b"corresponding source")
                 bundle.writestr("licenses/LSAddonManager/CompanionHost-source.zip", b"host source")
-                bundle.writestr("lossless-scaling-deployment.json", json.dumps({"schema_version": 1, "files": [
+                bundle.writestr("lossless-scaling-deployment.json", json.dumps({"schema_version": 1, "version": MANAGED_HOST_VERSION, "files": [
                     {"source": path, "destination": path, "role": "addon_manager_support"}
                     for path in ("addons/DLSSNR02/NeuralRendering-source.zip", "licenses/LSAddonManager/CompanionHost-source.zip")]}))
             provider = BundledAddonManagerReleaseProvider()
@@ -98,6 +165,32 @@ class AddonHostTests(unittest.TestCase):
                 package = manager.stage_release("ls-addon-manager", release["version"], release["assets"][0]["name"], "test-host")
             self.assertEqual(package["version"], MANAGED_HOST_VERSION)
             self.assertTrue((Path(package["payload_path"]) / "addons/DLSSNR02/NeuralRendering-source.zip").is_file())
+
+    def test_bundled_version_and_cache_identity_follow_the_actual_archive_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / MANAGED_HOST_ARCHIVE
+            provider = BundledAddonManagerReleaseProvider()
+            registry = ProviderRegistry()
+            registry.providers = {"ls-addon-manager": provider}
+            manager = ReleaseManager(AssetStore(str(root / "store")), registry)
+            with patch.object(provider, "archive_path", return_value=archive):
+                for version in ("build-92-lsc.8", "build-93-lsc.1"):
+                    with zipfile.ZipFile(archive, "w") as bundle:
+                        bundle.writestr("lossless-scaling-deployment.json", json.dumps({"version": version}))
+                    release = manager.check("ls-addon-manager")[0]
+                    self.assertEqual(release["version"], version)
+                    self.assertTrue(release["html_url"].endswith(version.split("-lsc.")[0]))
+                    self.assertEqual(provider.cache_identity, version)
+
+    def test_bundled_host_does_not_invent_a_version_for_invalid_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / MANAGED_HOST_ARCHIVE
+            for manifest in ({}, {"version": "unknown"}, [], {"version": [7]}):
+                with zipfile.ZipFile(archive, "w") as bundle:
+                    bundle.writestr("lossless-scaling-deployment.json", json.dumps(manifest))
+                with self.subTest(manifest=manifest), self.assertRaisesRegex(RuntimeError, "version manifest"):
+                    BundledAddonManagerReleaseProvider._bundle_version(archive)
 
 
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_ADDON_HOST") == "1",
@@ -239,12 +332,15 @@ class NativeAddonHostTests(unittest.TestCase):
     def test_real_host_is_headless_and_reports_addon_errors_without_a_model(self):
         self._check_real_host(True)
 
+    def test_real_host_panel_starts_hidden_with_software_rendering(self):
+        self._check_real_host(False, reopen=False)
+
     def test_real_host_panel_starts_hidden_and_reopens(self):
         if not manager_hardware_available():
             self.skipTest("Native manager panel requires a hardware D3D11 device; other native host tests still run")
         self._check_real_host(False)
 
-    def _check_real_host(self, headless):
+    def _check_real_host(self, headless, *, reopen=True):
         import ctypes
         import psutil
         from companion.services.proxy_menu import AddonManagerMenuController
@@ -264,7 +360,8 @@ class NativeAddonHostTests(unittest.TestCase):
             config = {"global": {"auto_load": True, "companion": {"headless": headless, "managed": True},
                                  "ui": {"open_on_start": False, "hotkey_enabled": False}},
                       "addons": {"DLSSNR02": {"_enabled": True, "localStructure": "0.65", "skinStructure": "-1"},
-                                 "LSC-AdapterReport": {"_enabled": True}}}
+                                 "LSC-AdapterReport": {"_enabled": True},
+                                 "ReShadePassthrough": {"_enabled": True, "companion_control": "1"}}}
             (root / "addons/config.json").write_text(json.dumps(config))
             environment = {**os.environ, "LOCALAPPDATA": str(root / "local-app-data")}
             process = subprocess.Popen([str(root / "LosslessScaling.exe")], cwd=root,
@@ -287,6 +384,14 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertIsNotNone(status, "The real host did not publish bridge status")
                 self.assertEqual(status["startupError"], "")
                 self.assertEqual(status["hostVersion"], MANAGED_HOST_VERSION)
+                self.assertTrue(status["reshade"]["controlAvailable"])
+                # Exercise the actual pipe receipt and watcher without taking
+                # focus or enabling input on the user's desktop.
+                controlled = set_passthrough(str(root / "LosslessScaling.exe"), False,
+                                             expected_pid=process.pid)
+                self.assertFalse(controlled["reshade"]["interactive"])
+                self.assertFalse(controlled["reshade"]["controlRequested"])
+                self.assertFalse(controlled["reshade"]["controlPending"])
                 log = (root / "logs/LSAddonManager.log").read_text(encoding="utf-8", errors="replace")
                 self.assertIn("FPS counter position override ready", log,
                               "Managed startup must retain upstream's FPS drawing hook")
@@ -321,7 +426,7 @@ class NativeAddonHostTests(unittest.TestCase):
                     user32 = ctypes.windll.user32
                     self.assertFalse(user32.IsWindowVisible(hwnd))
                     controller = AddonManagerMenuController(AppState())
-                    for _ in range(2):
+                    for _ in range(2 if reopen else 0):
                         self.assertTrue(controller.open(process.pid)["opened"])
                         deadline = time.monotonic() + 5
                         while not user32.IsWindowVisible(hwnd) and time.monotonic() < deadline:

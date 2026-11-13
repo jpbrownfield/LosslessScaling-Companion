@@ -61,3 +61,36 @@ test('NR runtime distinguishes waiting and enabled settings from completed GPU w
   assert.match(runtimeStatus({...active, metrics: {DLSSNR02: {model_ms: 5.3, flow_ms: 2}}}).textContent,
     /Last completed NR GPU stages: 7.30 ms/);
 });
+const assertRuntimeCapture = (capture) => runtimeStatus({neuralBackend: 'NVIDIA',
+  addons: [{id: 'DLSSNR02', enabled: true, loaded: true, status: 'Waiting for a real capture'}], capture}).textContent;
+
+test('capture status distinguishes missing settings, idle hooks and unmatched rendering', () => {
+  assert.match(assertRuntimeCapture({configured: false, dispatches: 0, captures: 0}), /No applied LS capture settings/);
+  assert.match(assertRuntimeCapture({configured: true, dispatches: 0, captures: 0, captureApi: 1,
+    frameGeneration: 1, scaler: 3, runtimeVersion: '3.2.2.0'}), /No LS compute work observed/);
+  const unmatched = assertRuntimeCapture({configured: true, dispatches: 150, captures: 0,
+    captureApi: 1, frameGeneration: 1, scaler: 3, runtimeVersion: '3.2.2.0'});
+  assert.match(unmatched, /0 frames \/ 150 compute dispatches/);
+  assert.match(unmatched, /no supported capture matched/);
+  assert.match(unmatched, /Applied capture: WGC; FG LSFG 3; Scaling NIS; LS 3.2.2.0/);
+  const ready = assertRuntimeCapture({configured: true, dispatches: 150, captures: 50,
+    captureApi: 1, frameGeneration: 0, scaler: 3, runtimeVersion: '3.2.2.0'});
+  assert.match(ready, /50 frames \/ 150 compute dispatches/);
+  assert.doesNotMatch(ready, /no supported capture matched|No LS compute/);
+});
+
+test('runtime status reaches both global and profile views and clears stale success on disconnect', () => {
+  const nodes = Object.fromEntries(['addonRuntimeStatus', 'profileAddonRuntimeStatus'].map(id => [id, {
+    setAttribute(_, value) { this.state = value; }, textContent: ''}]));
+  const context = {document: {getElementById(id) { return nodes[id]; }}};
+  vm.runInNewContext(html.slice(runtimeStart, runtimeEnd), context);
+  context.renderAddonRuntimeStatus({available: true, hostVersion: 'test', neuralBackend: 'NVIDIA',
+    addons: [{id: 'DLSSNR02', enabled: true, loaded: true, status: 'Waiting'}]});
+  assert.equal(nodes.profileAddonRuntimeStatus.textContent, nodes.addonRuntimeStatus.textContent);
+  assert.match(nodes.profileAddonRuntimeStatus.textContent, /NVIDIA/);
+  context.renderAddonRuntimeStatus({available: false, reason: 'Lossless Scaling stopped'});
+  for (const node of Object.values(nodes)) {
+    assert.equal(node.state, 'unavailable');
+    assert.equal(node.textContent, 'Lossless Scaling stopped');
+  }
+});

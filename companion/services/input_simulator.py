@@ -8,6 +8,8 @@ import time
 from typing import List, Union
 from ctypes import wintypes
 
+from ..core.keyboard_keys import PUNCTUATION_KEYS, normalize_key_name
+
 # Win32 Constants
 INPUT_KEYBOARD = 1
 KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -16,7 +18,8 @@ KEYEVENTF_SCANCODE = 0x0008
 
 # Key mapping table: Name -> Virtual Key Code
 VK_MAPPINGS = {
-    '=': 0xBB, 'equals': 0xBB, '-': 0xBD, 'minus': 0xBD, 'backspace': 0x08,
+    **{key: vk for key, (_, vk) in PUNCTUATION_KEYS.items()},
+    'backspace': 0x08,
     'ctrl': 0x11,
     'control': 0x11,
     'lctrl': 0xA2,
@@ -103,11 +106,9 @@ user32.MapVirtualKeyW.restype = wintypes.UINT
 class InputSimulator:
     @staticmethod
     def vk_from_string(key_name: str) -> int:
-        clean = key_name.lower().strip()
+        clean = normalize_key_name(key_name)
         if clean in VK_MAPPINGS:
             return VK_MAPPINGS[clean]
-        if len(clean) == 1:
-            return ord(clean.upper())
         raise ValueError(f"Unknown key name: {key_name}")
 
     @classmethod
@@ -116,7 +117,7 @@ class InputSimulator:
         flags = KEYEVENTF_SCANCODE
         if keyup:
             flags |= KEYEVENTF_KEYUP
-        if is_extended or vk_code in [0x5B, 0x5C, 0x24, 0x23, 0x21, 0x22, 0x2D, 0x2E]:
+        if is_extended or vk_code in [0x5B, 0x5C, 0x24, 0x23, 0x21, 0x22, 0x2D, 0x2E, 0x6F]:
             flags |= KEYEVENTF_EXTENDEDKEY
 
         inp = INPUT()

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import configparser
 from pathlib import Path
+from ..core.keyboard_keys import KEY_LABELS
 from .input_simulator import InputSimulator
 
 DEFAULT_OVERLAY_HOTKEYS = {
@@ -29,7 +30,7 @@ def parse_shortcut(value: str):
         raise ValueError(f"Invalid overlay shortcut: {value}")
     vk = InputSimulator.vk_from_string(key)
     mask = sum(MODIFIERS[part] for part in modifiers)
-    label_key = {"=": "=", "-": "-", "pageup": "Page Up", "pagedown": "Page Down"}.get(key, key.title())
+    label_key = {**KEY_LABELS, "pageup": "Page Up", "pagedown": "Page Down"}.get(key, key.title())
     label = "+".join([part.title() for part in MODIFIERS if part in modifiers] + [label_key])
     return mask, vk, label
 

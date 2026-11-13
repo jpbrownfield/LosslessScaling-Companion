@@ -148,12 +148,16 @@ def build(cache: Path):
     subprocess.run([cmake, "-S", str(source / "manager"), "-B", str(work / "host"), "-A", "x64",
         f'-DLSC_HOST_VERSION={lock["version"]}', f'-DEAM_BUILD_NUMBER={tag.removeprefix("build-")}',
         *dependency_options], check=True)
-    targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_routing_test"]
+    targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_panel_test", "lsc_routing_test", "eam_featurestest"]
     fps_test = (source / "manager/tools/fps_counter_test.cpp").is_file()
     if fps_test:
         targets.extend(("eam_fpstest", "eam_updatetest"))
     subprocess.run([cmake, "--build", str(work / "host"), "--config", "Release", "--target",
                     *targets, "--parallel", "4"], check=True)
+    subprocess.run([str(work / "host/Release/eam_featurestest.exe"), "companion"],
+                   check=True, cwd=work, timeout=60)
+    subprocess.run([str(work / "host/Release/lsc_panel_test.exe")],
+                   check=True, cwd=work, timeout=60)
     if fps_test:
         for name, args in (("eam_fpstest", ()), ("eam_fpstest", ("foreign",)), ("eam_updatetest", ())):
             subprocess.run([str(work / "host/Release" / (name + ".exe")), *args],
@@ -247,6 +251,7 @@ def build(cache: Path):
     for name in ("lsc_headless_smoke.exe", "Lossless_original.dll"):
         shutil.copy2(work / "host/Release" / name, smoke / name)
     shutil.copy2(work / "host/Release/lsc_routing_test.exe", smoke / "lsc_routing_test.exe")
+    shutil.copy2(work / "host/Release/lsc_panel_test.exe", smoke / "lsc_panel_test.exe")
     shutil.copytree(work / "host/Release/routing-fixtures", smoke / "routing-fixtures", dirs_exist_ok=True)
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(payload.rglob("*")):

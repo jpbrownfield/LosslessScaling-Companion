@@ -56,9 +56,18 @@ class DeploymentManager:
         """Scope ownership and backups to one resolved installation directory."""
         root = root.resolve()
         runtime = getattr(self.store, "managed_runtime", None)
+        generation = None
         if runtime is not None:
-            runtime.validate(root / "LosslessScaling.exe")
-        key = hashlib.sha256(os.path.normcase(str(root)).encode("utf-8")).hexdigest()
+            generation = runtime.validate(root / "LosslessScaling.exe").get("deploymentGeneration")
+        else:
+            from .managed_runtime import MARKER
+            marker = root / MARKER
+            if marker.is_file():
+                generation = json.loads(marker.read_text(encoding="utf-8")).get("deploymentGeneration")
+        identity = os.path.normcase(str(root))
+        if generation:
+            identity += "\0" + generation
+        key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
         base = self.store.deployments / self.TARGET_ID
         self.manifest_path = base / "installations" / key / "active-manifest.json"
         self.backup_root = self.store.backups / self.TARGET_ID / "installations" / key
@@ -66,7 +75,7 @@ class DeploymentManager:
         self.preinsert = self.backup_root / "preinsert"
         self.installation_root = root
         legacy_path = base / "active-manifest.json"
-        if self.manifest_path.exists() or not legacy_path.is_file():
+        if generation or self.manifest_path.exists() or not legacy_path.is_file():
             return
         legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
         if not legacy.get("files"):

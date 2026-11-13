@@ -80,8 +80,15 @@ class AutomationController:
         self.window_manager = window_manager or MonitorWindowManager()
         self.scaling_state_probe = scaling_state_probe
         self._last_confirmation_wrong_target_pid: Optional[int] = None
+        self._scaling_confirmation_failed = False
+        self._failed_scaling_expected_active: Optional[bool] = None
+        self._consecutive_failed_starts = 0
+        self._clone_rebuild_attempted = False
+        self._clone_rebuild_pending = False
+        self._ready_launch_generation = 0
         self.scaling_confirmation_begin: Optional[Callable[[bool], None]] = None
         self.scaling_confirmation_end: Optional[Callable[[], None]] = None
+        self.scaling_confirmation_diagnostics: Optional[Callable[[], dict]] = None
         self.nvidia_profile_manager = nvidia_profile_manager or NvidiaProfileManager(
             receipt_path=Path(profile_manager.config_dir) / "nvidia-profile-rollback.json"
         )
@@ -150,6 +157,10 @@ class AutomationController:
             logger.debug("Stopped target PID %s is no longer available", pid)
 
     def _auto_scaling_suppressed(self, pid: Optional[int]) -> bool:
+        # After an ambiguous toggle, another automatic start could stop a
+        # session which actually started. Wait for an explicit recovery action.
+        if self._scaling_confirmation_failed:
+            return True
         # Prune exited processes even when the next trigger targets another app.
         for stopped_pid, birth in list(self._manually_stopped_processes.items()):
             try:
@@ -353,12 +364,28 @@ class AutomationController:
                 return False
             if not active:
                 self._pending_profile_restart = None
-            if not force and self.state.is_scaling_active == active:
-                logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
-                return False
+            else:
+                self._clear_missing_scaling_session()
             selected = profile or self.state.current_active_profile
             if active and self._is_automatic_start(reason) and self._auto_scaling_suppressed(target_pid):
-                logger.info("Skipped %s auto-scale for manually stopped PID %s", reason, target_pid)
+                logger.info("Skipped %s auto-scale for PID %s after a manual stop or unconfirmed scaling request", reason, target_pid)
+                return False
+            if (self._scaling_confirmation_failed
+                    or (active and reason in self.INSTANT_STOP_REASONS
+                        and self._consecutive_failed_starts >= 3 and not self._clone_rebuild_attempted)):
+                controlled_test = (self.state.benchmark_mode_active or self._verifying_route
+                                   or self._targeted_gpu_test_active)
+                if reason not in self.INSTANT_STOP_REASONS and not controlled_test:
+                    logger.info("Skipped %s after an unconfirmed toggle; waiting for explicit recovery", reason)
+                    return False
+                if not self._recover_unconfirmed_scaling(
+                        allow_rebuild=active and reason in self.INSTANT_STOP_REASONS):
+                    return False
+                if not active:
+                    self._set_control_status("confirmed", "Scaling stopped after an unconfirmed request")
+                    return True
+            if not force and self.state.is_scaling_active == active:
+                logger.info("Scaling already %s; ignored %s request", "active" if active else "idle", reason)
                 return False
             stopped_pid = self.state.scaling_target_pid if not active else None
             logger.info("Scaling %s requested: reason=%s, profile=%s, PID=%s, HWND=%s, force=%s",
@@ -368,6 +395,29 @@ class AutomationController:
             self._cancel_delayed_scale()
             if active and not self._targeted_gpu_test_active:
                 self._announce_scaling_start(selected, target_hwnd)
+            if active and self._clone_rebuild_pending:
+                # A clean clone has a new deployment generation. Apply the
+                # selected profile before launching. The foreground hotkey
+                # path may have already applied it immediately after recovery.
+                try:
+                    pending = self.deployment_manager.needs_change(
+                        selected.id if selected else None,
+                        self.resolve_deployment_files(selected, target_hwnd=target_hwnd),
+                        lossless_scaling_exe=self.profile_manager.config.lossless_scaling_exe_path)
+                    if pending:
+                        self.activate_profile(selected, force=True, suppress_auto_scale=True,
+                                              target_pid=target_pid, target_hwnd=target_hwnd, for_scaling=True)
+                        pending = self.deployment_manager.needs_change(
+                            selected.id if selected else None,
+                            self.resolve_deployment_files(selected, target_hwnd=target_hwnd),
+                            lossless_scaling_exe=self.profile_manager.config.lossless_scaling_exe_path)
+                except Exception:
+                    logger.exception("Could not verify the rebuilt LS deployment")
+                    pending = True
+                if pending:
+                    self._set_control_status("error", "Could not apply the selected profile to rebuilt Lossless Scaling")
+                    return False
+                self._clone_rebuild_pending = False
             if active and not self.state.is_scaling_active and self._pending_native_profiles:
                 try:
                     self._flush_pending_native_profiles()
@@ -397,6 +447,7 @@ class AutomationController:
                     self._set_control_status("error", "Could not refresh Lossless Scaling deployment before scaling")
                     return False
             runtime_providers = self._runtime_providers(selected)
+            launched_for_start = False
             configured_exe = self.profile_manager.config.lossless_scaling_exe_path
             if (
                 active
@@ -423,9 +474,35 @@ class AutomationController:
                         self.process_watcher.launch_lossless_scaling(force=True)
                     self._set_control_status("error", str(error))
                     return False
-                if self.process_watcher and changed and not self.process_watcher.launch_lossless_scaling(force=True):
-                    self._set_control_status("error", "Could not restart Lossless Scaling with graphics add-ons")
-                    return False
+                if self.process_watcher and changed:
+                    if not self.process_watcher.launch_lossless_scaling(force=True):
+                        self._record_scaling_failure(True)
+                        self._set_control_status("error", "Could not restart Lossless Scaling with graphics add-ons")
+                        return False
+                    launched_for_start = True
+            if active and self.process_watcher:
+                # An already prepared profile can skip every deployment/restart
+                # branch. Explicit scaling must still work when LS was closed.
+                if not self.process_watcher.check_is_lossless_scaling_running():
+                    self._set_control_status("pending", "Starting Lossless Scaling")
+                    if not self.process_watcher.launch_lossless_scaling(force=True):
+                        self._record_scaling_failure(True)
+                        self._set_control_status("error", "Could not start Lossless Scaling")
+                        return False
+                    launched_for_start = True
+                generation = getattr(self.process_watcher, "lossless_launch_generation", 0)
+                # Profile activation, XML edits and instant-stop relaunches can
+                # all start LS before this method is entered.
+                if type(generation) is int and generation > self._ready_launch_generation:
+                    launched_for_start = True
+                if launched_for_start:
+                    self._set_control_status("pending", "Waiting for Lossless Scaling startup")
+                    if not self._wait_for_ls_ready():
+                        self._record_scaling_failure(True)
+                        self._set_control_status("error", "Lossless Scaling did not become ready after launch")
+                        return False
+                    if type(generation) is int:
+                        self._ready_launch_generation = generation
             if not active and self.state.is_scaling_active and reason in self.INSTANT_STOP_REASONS:
                 # User-toggled stop with confirmed scaling: kill LS now instead
                 # of sending the toggle hotkey and waiting up to 8s for the
@@ -552,7 +629,7 @@ class AutomationController:
             max_attempts = (
                 self.AUTO_SCALE_MAX_ATTEMPTS if automatic_activation else 1
             )
-            if active and automatic_activation:
+            if active and (automatic_activation or launched_for_start):
                 # Cold LS starts need longer to confirm the first toggle.
                 confirmation_timeout = 15.0
             else:
@@ -667,6 +744,7 @@ class AutomationController:
                         park_runtime_on_stop=False,
                     )
                     if not recovered:
+                        self._record_scaling_failure(active)
                         self._set_control_status(
                             "error",
                             "Wrong scaling target was detected but could not be stopped safely",
@@ -690,9 +768,10 @@ class AutomationController:
                         wrong_target_pid,
                     )
             if not confirmed:
+                self._record_scaling_failure(active)
                 self._set_control_status(
                     "error",
-                    f"Lossless Scaling did not confirm {'activation' if active else 'deactivation'}",
+                    f"Lossless Scaling did not confirm {'activation' if active else 'deactivation'}; automatic scaling is paused. Use the scale hotkey or Scale Now to restart LS and retry.",
                 )
                 logger.error(
                     "Lossless Scaling did not confirm the requested %s state after the %s hotkey",
@@ -708,6 +787,10 @@ class AutomationController:
                     pass
                 return False
             self.state.mark_scaling_toggled(active)
+            self._scaling_confirmation_failed = False
+            self._failed_scaling_expected_active = None
+            if active:
+                self._reset_scaling_failure_streak()
             if not active:
                 self.overlay_indicator.end_scaling()
             self._set_control_status(
@@ -783,8 +866,14 @@ class AutomationController:
         """Wait for an authoritative LS overlay/log observation when available."""
         self._last_confirmation_wrong_target_pid = None
         if self.scaling_state_probe is None:
+            logger.warning("Scaling confirmation is unavailable: no LS observation probe is configured")
             return True
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        samples = 0
+        last_observation = None
+        logger.info("Scaling confirmation started: expected=%s, PID=%s, HWND=%s, timeout=%.1fs",
+                    "active" if expected else "idle", target_pid, target_hwnd, timeout)
         while time.monotonic() < deadline:
             if expected and target_pid and target_hwnd and self.process_watcher:
                 if not self.process_watcher.maintain_scaling_target_foreground(
@@ -798,6 +887,8 @@ class AutomationController:
                     return False
             try:
                 observation = self.scaling_state_probe()
+                samples += 1
+                last_observation = observation
             except Exception:
                 logger.exception("Lossless Scaling confirmation probe failed")
                 return False
@@ -818,9 +909,19 @@ class AutomationController:
                     and observed_pid != target_pid
                 ):
                     self._last_confirmation_wrong_target_pid = observed_pid
+                    logger.error("Scaling confirmation found the wrong target: expected PID=%s; observed=%s",
+                                 target_pid, observation)
                     return False
+                logger.info("Scaling confirmed after %.2fs (%s checks): %s", time.monotonic() - started, samples, observation)
                 return True
             time.sleep(0.075)
+        logger.error("Scaling not confirmed after %.2fs (%s checks): expected=%s, PID=%s, HWND=%s; last observation=%s",
+                     time.monotonic() - started, samples, expected, target_pid, target_hwnd, last_observation)
+        if self.scaling_confirmation_diagnostics is not None:
+            try:
+                logger.error("LS confirmation evidence: %s", self.scaling_confirmation_diagnostics())
+            except Exception:
+                logger.exception("Could not collect LS confirmation evidence")
         return False
 
     def _set_control_status(self, state: str, message: str) -> None:
@@ -828,6 +929,114 @@ class AutomationController:
             logger.log(logging.ERROR if state == "error" else logging.INFO,
                        "Scaling control [%s]: %s", state, message)
         self.state.scaling_control_status = {"state": state, "message": message}
+
+    def _record_scaling_failure(self, active: bool) -> None:
+        self._scaling_confirmation_failed = True
+        self._failed_scaling_expected_active = active
+        if active and not (self.state.benchmark_mode_active or self._verifying_route
+                           or self._targeted_gpu_test_active):
+            self._consecutive_failed_starts += 1
+            logger.warning("Consecutive failed scaling starts: %s", self._consecutive_failed_starts)
+
+    def _reset_scaling_failure_streak(self) -> None:
+        self._consecutive_failed_starts = 0
+        self._clone_rebuild_attempted = False
+
+    def _rebuild_clone_files(self) -> None:
+        runtime = getattr(self.profile_manager, "managed_runtime", None)
+        if runtime is None:
+            raise RuntimeError("No managed Lossless Scaling runtime is available")
+        cfg = self.profile_manager.config
+        if not cfg.lossless_scaling_exe_path or not cfg.lossless_source_exe_path:
+            raise RuntimeError("The source installation and cloned executable must be configured before rebuilding")
+        started = time.monotonic()
+        logger.warning("Clone rebuild started: source=%s; clone=%s; private settings=%s (preserved)",
+                       cfg.lossless_source_exe_path, cfg.lossless_scaling_exe_path,
+                       cfg.lossless_settings_xml_path)
+        runtime.rebuild(Path(cfg.lossless_scaling_exe_path), Path(cfg.lossless_source_exe_path), self.asset_store)
+        self._clone_rebuild_pending = True
+        self._reshade_inis.clear()
+        self._last_verified_route_key = None
+        logger.warning("Clone rebuild completed in %.2fs; settings, profiles and old clone were preserved",
+                       time.monotonic() - started)
+
+    def rebuild_cloned_installation(self) -> dict:
+        """Debug action: stop LS and rebuild files without launching or scaling."""
+        with self._lock:
+            if (self.profile_manager.repair_session or self.state.update_in_progress
+                    or self.state.benchmark_mode_active or self.state.gpu_mapping_in_progress):
+                raise RuntimeError("Finish settings repair, updates, GPU checks or live tests before rebuilding")
+            if self.process_watcher is None:
+                raise RuntimeError("No Lossless Scaling process controller is available")
+            self._cancel_delayed_scale()
+            self._set_control_status("pending", "Stopping Lossless Scaling to rebuild the cloned installation")
+            try:
+                if (self.process_watcher.check_is_lossless_scaling_running()
+                        and not self.process_watcher.stop_lossless_scaling()):
+                    raise RuntimeError("Could not stop Lossless Scaling; the clone was left unchanged")
+                self._clone_rebuild_attempted = True
+                self._set_control_status("pending", "Rebuilding cloned Lossless Scaling program files")
+                self._rebuild_clone_files()
+            except Exception as error:
+                self._scaling_confirmation_failed = True
+                self._failed_scaling_expected_active = None
+                self._set_control_status("error", f"Clone rebuild failed: {error}")
+                logger.exception("Debug clone rebuild failed")
+                raise
+            self._reset_scaling_to_idle()
+            message = "Cloned installation rebuilt. Settings preserved. Start scaling when ready."
+            self._set_control_status("confirmed", message)
+            return {"path": self.profile_manager.config.lossless_scaling_exe_path,
+                    "settingsPreserved": True, "message": message}
+
+    def _reset_scaling_to_idle(self) -> None:
+        self._pending_profile_restart = None
+        self.state.mark_scaling_toggled(False)
+        self.state.scaling_owner_profile_id = None
+        self.state.scaling_trigger = None
+        self.state.scaling_target_pid = None
+        self.state.scaling_target_hwnd = None
+        self.state.scaling_target_verified_for_minimization = False
+        self.overlay_indicator.end_scaling()
+        self._scaling_confirmation_failed = False
+        self._failed_scaling_expected_active = None
+
+    def _recover_unconfirmed_scaling(self, *, allow_rebuild: bool = True) -> bool:
+        """Establish a known idle state before another explicit scaling toggle."""
+        with self._lock:
+            rebuild_due = (allow_rebuild and self._consecutive_failed_starts >= 3
+                           and not self._clone_rebuild_attempted
+                           and not (self.state.benchmark_mode_active or self._verifying_route
+                                    or self._targeted_gpu_test_active))
+            if not self._scaling_confirmation_failed and not rebuild_due:
+                return True
+            if self.process_watcher is None:
+                self._set_control_status("error", "Restart Lossless Scaling before retrying the unconfirmed scaling request")
+                return False
+            self._set_control_status("pending", "Resetting Lossless Scaling after an unconfirmed request")
+            try:
+                stopped = (not self.process_watcher.check_is_lossless_scaling_running()
+                           or self.process_watcher.stop_lossless_scaling())
+            except Exception:
+                logger.exception("Could not reset the unconfirmed scaling process")
+                stopped = False
+            if not stopped:
+                self._set_control_status("error", "Could not stop Lossless Scaling for recovery; automatic scaling remains paused")
+                return False
+            if rebuild_due:
+                # One rebuild per failure streak, including a failed rebuild.
+                # Never rebuild recursively or in response to automatic events.
+                self._clone_rebuild_attempted = True
+                self._set_control_status("pending", "Rebuilding Lossless Scaling program files after three failed starts")
+                try:
+                    self._rebuild_clone_files()
+                except Exception as error:
+                    logger.exception("Could not rebuild the managed LS program files")
+                    self._set_control_status("error", f"Could not rebuild Lossless Scaling program files: {error}")
+                    return False
+            self._reset_scaling_to_idle()
+            logger.info("Unconfirmed scaling reset to idle; the explicit request may launch a fresh LS process")
+            return True
 
     def _instant_stop_scaling(
         self,
@@ -899,11 +1108,12 @@ class AutomationController:
         def fire() -> None:
             self._delayed_scale_timer = None
             logger.info("Scale Now timer elapsed; activating the foreground target")
+            self._clear_missing_scaling_session()
             if self.state.is_scaling_active:
                 logger.info("Scale Now skipped; scaling is already active")
                 self._set_control_status("confirmed", "Scale Now skipped; scaling is already active")
                 return
-            self.handle_override_hotkey()
+            self._scale_foreground()
 
         timer = threading.Timer(delay, fire)
         timer.daemon = True
@@ -929,10 +1139,20 @@ class AutomationController:
 
     def handle_override_hotkey(self) -> bool:
         """Route the user's proxy hotkey through the profile for the foreground window."""
-        if self.state.update_in_progress:
-            return False
         if not self.profile_manager.config.override_lossless_hotkey:
             return False
+        return self._scale_foreground()
+
+    def _clear_missing_scaling_session(self) -> None:
+        if (self.state.is_scaling_active and self.process_watcher
+                and not self.process_watcher.check_is_lossless_scaling_running()):
+            self.reconcile_observed_scaling_state(False)
+
+    def _scale_foreground(self) -> bool:
+        """Shared explicit scale action for the shortcut and delayed Scale Now."""
+        if self.state.update_in_progress:
+            return False
+        self._clear_missing_scaling_session()
         action = ("stopping scaling"
                   if self.state.is_scaling_active else "starting scaling")
         try:
@@ -978,6 +1198,8 @@ class AutomationController:
                 )
         if not target:
             self._set_control_status("error", "No foreground window was available for scaling")
+            return False
+        if not self._recover_unconfirmed_scaling():
             return False
         try:
             self.overlay_indicator.set_border(
@@ -1057,6 +1279,11 @@ class AutomationController:
                         and hwnd == self.state.scaling_target_hwnd):
                     self._remember_manual_stop(pid)
             self.state.is_scaling_active = active
+            if active is self._failed_scaling_expected_active:
+                self._scaling_confirmation_failed = False
+                self._failed_scaling_expected_active = None
+            if active:
+                self._reset_scaling_failure_streak()
             if active and target:
                 try:
                     observed_pid = int(target.get("pid") or 0) or None
@@ -1373,6 +1600,16 @@ class AutomationController:
                     profile = self.profile_manager.get_profile_by_id(active.id) or active
                     if self.addon_configs.has_pending(profile):
                         self.activate_profile(profile, force=True, suppress_auto_scale=True)
+
+    def queue_reshade_hotkey_reload(self) -> None:
+        """ReShade and the host read menu bindings at startup; use the normal safe reload."""
+        with self._lock:
+            profile = self.state.current_active_profile
+            if not profile or not (profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled)):
+                return
+            self.addon_configs.mark_edited(profile)
+            if self.state.is_scaling_active:
+                self._queue_profile_restart(profile)
 
     def save_addon_config(self, profile_id: str, data: Dict) -> Profile:
         """Serialize profile edits with deployment and scaling transitions."""
@@ -1736,8 +1973,12 @@ class AutomationController:
         """
         if self.process_watcher is None:
             return False
-        deadline = time.monotonic() + max(1.0, timeout)
+        started = time.monotonic()
+        deadline = started + max(1.0, timeout)
+        logger.info("LS startup readiness: waiting for %.1fs of continuous process uptime (timeout %.1fs)",
+                    min_uptime_seconds, timeout)
         first_seen = None
+        interruptions = 0
         while time.monotonic() < deadline:
             try:
                 running = bool(
@@ -1747,11 +1988,20 @@ class AutomationController:
             if running:
                 if first_seen is None:
                     first_seen = time.monotonic()
+                    logger.info("LS startup readiness: managed process detected")
                 if time.monotonic() - first_seen >= max(0.0, min_uptime_seconds):
+                    logger.info("LS startup readiness passed after %.2fs (%s process interruptions)",
+                                time.monotonic() - started, interruptions)
                     return True
             else:
+                if first_seen is not None:
+                    interruptions += 1
+                    logger.warning("LS exited during startup readiness; restarting the stability timer")
                 first_seen = None
             time.sleep(0.25)
+        logger.error("LS initialization timed out after %.2fs: process detected=%s; interruptions=%s; clone=%s",
+                     time.monotonic() - started, first_seen is not None, interruptions,
+                     self.profile_manager.config.lossless_scaling_exe_path)
         return False
 
     def _scale_until_frames(self, profile: Optional[Profile], reason: str,
@@ -3426,7 +3676,7 @@ class AutomationController:
         if reshade_swapped and profile.reshade and profile.reshade.reload_hotkey:
             ReshadeManager.trigger_reshade_reload(profile.reshade.reload_hotkey)
         if not suppress_auto_scale and self._auto_scaling_suppressed(target_pid):
-            logger.info("Automatic scaling skipped: PID %s was manually stopped", target_pid)
+            logger.info("Automatic scaling skipped for PID %s after a manual stop or unconfirmed request", target_pid)
             return
         if (
             not profile.is_default

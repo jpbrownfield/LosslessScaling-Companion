@@ -233,6 +233,13 @@ class OverlayIndicator:
         self._pump_thread: Optional[threading.Thread] = None
         self._last_signature: Optional[tuple] = None
         self._last_present_at = 0.0
+        self._visibility_check: Callable[[], bool] = lambda: True
+
+    def set_visibility_check(self, check: Callable[[], bool]) -> None:
+        """Hide presentation without discarding the active scaling session."""
+        with self._lock:
+            self._visibility_check = check
+        self.tick()
 
     def _get_presenter(self) -> Optional[Presenter]:
         """Return the presenter, creating the Win32 one on first use."""
@@ -452,6 +459,9 @@ class OverlayIndicator:
                 # Serialize the snapshot and its presentation with end_scaling:
                 # an older pump tick must not re-queue cards after dismissal.
                 moment = _time.monotonic() if now is None else now
+                if not self._visibility_check():
+                    self._present([], None, None, None, now=moment)
+                    return
                 pulse = bool(border_state) and (int(moment * 4) % 2 == 0)
                 self._present(lines, border_state, border_anchor, anchor_hwnd,
                               pulse, now=moment, context=context)

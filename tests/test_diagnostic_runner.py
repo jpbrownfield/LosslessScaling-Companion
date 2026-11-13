@@ -12,6 +12,28 @@ from companion.services.diagnostic_runner import DiagnosticRunner
 
 
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_overlay_requires_listener_even_without_scaling_override(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        config = AppConfig(override_lossless_hotkey=False)
+        runner.server = SimpleNamespace(config=config, hotkey_listener=None)
+        result = runner._hotkeys()
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["details"]["overlayHotkeys"], config.overlay_hotkeys)
+        config.overlay_indicator_enabled = False
+        self.assertEqual(runner._hotkeys()["status"], "pass")
+
+    def test_hotkey_diagnostic_reports_unregistered_overlay_binding(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        listener = SimpleNamespace(_thread=Mock(),
+            _overlay_actions={"overlay_toggle": {"binding": "ctrl+home"}}, overlay_registered={})
+        listener._thread.is_alive.return_value = True
+        runner.server = SimpleNamespace(config=AppConfig(), hotkey_listener=listener)
+        result = runner._hotkeys()
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["details"]["overlayUnavailable"], {"overlay_toggle": "ctrl+home"})
+        listener.overlay_registered["overlay_toggle"] = "ctrl+home"
+        self.assertEqual(runner._hotkeys()["status"], "pass")
+
     def test_reshade_requires_deployed_module_and_fresh_runtime_initialization(self):
         root = Path("diagnostic-ls").resolve()
         profile = Profile(name="ReShade", reshade=ReshadeConfig(enabled=True))

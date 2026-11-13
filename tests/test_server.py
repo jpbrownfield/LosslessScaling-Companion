@@ -117,6 +117,67 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
             self.assertNotIn("entries", json.loads(websocket.messages[-1]))
 
+    async def test_clone_rebuild_requires_dashboard_and_rejects_live_tests(self):
+        for authority in ("readonly", "extension", "dashboard"):
+            websocket = self.FakeWebSocket()
+            self.server.client_authority[websocket] = authority
+            self.state.benchmark_mode_active = authority == "dashboard"
+            with patch.object(self.automation, "rebuild_cloned_installation") as rebuild:
+                await self.server.process_message(websocket, '{"type":"REBUILD_CLONED_INSTALLATION"}')
+                self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+                rebuild.assert_not_called()
+
+    async def test_clone_rebuild_runs_in_background_and_logs_remain_readable(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        started, release = threading.Event(), threading.Event()
+        workers = []
+
+        def rebuild():
+            workers.append(threading.get_ident())
+            started.set()
+            release.wait(5)
+            return {"settingsPreserved": True, "message": "Rebuilt; settings preserved"}
+
+        with patch.object(self.automation, "rebuild_cloned_installation", side_effect=rebuild) as run:
+            try:
+                await self.server.process_message(websocket, '{"type":"REBUILD_CLONED_INSTALLATION"}')
+                self.assertTrue(json.loads(websocket.messages[-1])["busy"])
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                self.assertEqual(self.server._active_mutations, 1)
+                self.assertEqual(self.server._active_requests, 1)
+                self.assertNotEqual(workers, [threading.get_ident()])
+                await self.server.process_message(websocket, '{"type":"REBUILD_CLONED_INSTALLATION"}')
+                self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+                self.state.scaling_control_status = {"state": "error", "message": "Scaling did not confirm"}
+                await asyncio.wait_for(self.server.process_message(websocket, '{"type":"GET_RUNTIME_LOGS"}'), 1)
+                result = json.loads(websocket.messages[-1])
+                self.assertEqual(result["type"], "RUNTIME_LOGS")
+                self.assertTrue(result["cloneRebuild"]["busy"])
+                self.assertEqual(result["scalingControl"]["state"], "error")
+            finally:
+                release.set()
+                if self.server.clone_rebuild_task:
+                    await asyncio.wait_for(self.server.clone_rebuild_task, 2)
+            run.assert_called_once()
+        self.assertTrue(self.server.clone_rebuild_status["success"])
+        self.assertTrue(self.server.clone_rebuild_status["settingsPreserved"])
+        self.assertEqual(self.server._active_mutations, 0)
+        self.assertEqual(self.server._active_requests, 0)
+
+    async def test_clone_rebuild_failure_is_retained_for_debug_polling(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        with patch.object(self.automation, "rebuild_cloned_installation", side_effect=OSError("clone locked")):
+            await self.server.process_message(websocket, '{"type":"REBUILD_CLONED_INSTALLATION"}')
+            await self.server.clone_rebuild_task
+        await self.server.process_message(websocket, '{"type":"GET_RUNTIME_LOGS"}')
+        result = json.loads(websocket.messages[-1])
+        self.assertFalse(result["cloneRebuild"]["busy"])
+        self.assertFalse(result["cloneRebuild"]["success"])
+        self.assertIn("clone locked", result["cloneRebuild"]["message"])
+        self.assertTrue(any("Requested clone rebuild failed" in item["message"] for item in result["entries"]))
+
     async def test_runtime_logs_remain_readable_during_gpu_mapping_and_updates(self):
         import logging
         websocket = self.FakeWebSocket()
@@ -499,6 +560,26 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         saved = ProfileManager(self.manager.config_dir).config
         self.assertEqual(saved.overlay_hotkeys["overlay_toggle"], "end")
         self.assertEqual(saved.reshade_overlay_hotkey, "home")
+
+    async def test_changing_reshade_menu_key_queues_safe_reload_for_active_scaling(self):
+        from companion.core.models import Profile, ReshadeConfig
+        self.server.startup_manager = FakeStartupManager()
+        self.server.reshade_profiles.sync_all_configs = Mock()
+        profile = Profile(name="Game", reshade=ReshadeConfig(enabled=True))
+        self.manager.add_or_update_profile(profile)
+        self.state.current_active_profile = profile
+        self.state.is_scaling_active = True
+        self.state.scaling_target_pid, self.state.scaling_target_hwnd = 42, 82
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        await self.server.process_message(websocket, json.dumps({
+            "type": "SAVE_GENERAL_SETTINGS", "overlayHotkeys": {"overlay_toggle": "end"},
+            "reshadeOverlayHotkey": "home",
+        }))
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "GENERAL_SETTINGS_SAVED")
+        self.assertTrue(self.automation.addon_configs.has_pending(profile))
+        self.assertTrue(self.automation.profile_reload_pending(profile.id))
+        self.assertTrue(self.state.is_scaling_active)
 
     async def test_general_gpu_edit_applies_route_once_and_unrelated_saves_do_not_reload(self):
         self.server.startup_manager = FakeStartupManager()
@@ -1078,10 +1159,10 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Revert All Lossless Scaling Settings and Remove Addon Files", body)
             self.assertIn("Lossless Scaling Add-ons", body)
             self.assertIn('data-addon-install="ls-addon-manager"', body)
-            self.assertIn('Latest version already downloaded', body)
+            self.assertIn("? 'Up to date'", body)
             self.assertIn('function updateAddonInstallButtons()', body)
             self.assertIn("if (provider === 'lsp-neural-render')", body)
-            self.assertIn("&& latestProxyDownloaded", body)
+            self.assertIn("addonVersionIsCurrent(item.version, latestAddonVersions['lossless-proxy'])", body)
             self.assertIn("&& dlssnrRuntimes.length > 0", body)
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
@@ -1389,6 +1470,15 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Confirm the warning", websocket.messages[-1])
         self.server.release_manager.check.assert_not_called()
 
+    def test_addon_version_equality_preserves_families_and_normalizes_numeric_versions(self):
+        for current, latest, expected in (
+            ("6.8", "v6.8.0", True), ("SK_26_6_13_7", "26.6.13.7", True),
+            ("6.8.0-beta", "6.8.0", False), ("build-7-lsc.4", "7.4", False),
+            ("build-7-lsc.3", "build-7-lsc.4", False), ("", "", False),
+        ):
+            with self.subTest(current=current, latest=latest):
+                self.assertEqual(self.server._same_addon_version(current, latest), expected)
+
     async def test_daily_update_status_compares_installed_and_detected_versions(self):
         self.server.release_manager = Mock()
         versions = {
@@ -1396,9 +1486,12 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "lsp-neural-render": "v1.0.0",
             "reshade": "6.8.0",
             "special-k": "SK_26_6_13_7",
+            "sm86-sr": "0.4.1",
+            "amd-neural-render-runtime": "1.3.2",
+            "display-commander": "2.0.0",
         }
         self.server.release_manager.check.side_effect = lambda provider, **_: [
-            {"version": versions[provider]}
+            {"version": versions[provider], "html_url": f"https://example.test/{provider}/{versions[provider]}"}
         ]
         self.server.asset_store = Mock()
         self.server.asset_store.list_packages.return_value = [
@@ -1419,6 +1512,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             [item["provider"] for item in status["updates"]],
             ["ls-addon-manager", "reshade"],
         )
+        for provider in ("sm86-sr", "amd-neural-render-runtime", "display-commander"):
+            self.assertEqual(status["latestVersions"][provider], versions[provider])
+        self.assertEqual(status["releaseUrls"]["ls-addon-manager"], "https://example.test/ls-addon-manager/v2.0.0")
 
     async def test_readonly_local_client_cannot_mutate_profiles(self):
         websocket = self.FakeWebSocket()

@@ -32,7 +32,11 @@ def environment():
     listener = Mock(overlay_registered=dict(config.overlay_hotkeys))
     opener = Mock(return_value=True)
     controller = ReShadeOverlayController(manager, state, indicator, listener, opener,
-                                         foreground_check=lambda: True, open_addon_panel=Mock(return_value=True))
+                                         foreground_check=lambda: True, open_addon_panel=Mock(return_value=True),
+                                         passthrough_control=Mock(side_effect=lambda enabled: {
+                                             **controller._last_status, "available": True,
+                                             "reshade": {**controller._last_status.get("reshade", {}),
+                                                         "interactive": enabled, "controlRequested": enabled}}))
     return controller, manager, state, listener, opener, seen
 
 
@@ -41,6 +45,109 @@ def status(active=True, **extra):
 
 
 class ReShadeOverlayTests(unittest.TestCase):
+    def test_suspended_overlay_keeps_graph_and_resumes_without_closed_toast(self):
+        controller, _, _, listener, _, seen = environment()
+        controller.performance_graph = Mock(return_value=True)
+        controller.update(status())
+        controller.indicator.set_performance_graph({"fps": 60})
+        controller.foreground_check = lambda: False
+        controller.update(status(False, reshade={"interactive": False, "controlRequested": True}))
+        self.assertFalse(controller.active)
+        self.assertTrue(controller._native_requested)
+        self.assertIsNone(seen[-1])
+        controller.performance_graph.assert_not_called()
+        self.assertFalse(any(line.text == "Overlay closed" for line in controller.indicator._state.current))
+        listener.set_overlay_actions.assert_called_with({})
+        controller.foreground_check = lambda: True
+        controller.update(status(True, reshade={"interactive": True, "controlRequested": True}))
+        self.assertTrue(controller.active)
+        self.assertEqual(seen[-1]["performance_graph"], {"fps": 60})
+
+    def test_toggle_cancels_suspended_preference_before_native_resume(self):
+        controller, _, _, _, _, _ = environment()
+        controller.update(status(False, reshade={"interactive": False, "controlRequested": True}))
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        controller.passthrough_control.assert_called_once_with(False)
+        self.assertFalse(controller._native_requested)
+        self.assertFalse(controller.active)
+
+    def test_target_change_and_shutdown_cancel_suspended_preference(self):
+        for cleanup in ("target", "shutdown"):
+            with self.subTest(cleanup=cleanup):
+                controller, _, state, _, _, _ = environment()
+                controller.performance_graph = Mock()
+                suspended = status(False, reshade={"interactive": False, "controlRequested": True})
+                controller.update(suspended)
+                if cleanup == "target":
+                    state.scaling_target_hwnd = 99
+                    controller.update(suspended)
+                else:
+                    controller.clear()
+                controller.passthrough_control.assert_called_once_with(False)
+                self.assertFalse(controller._native_requested)
+                controller.performance_graph.assert_called_once_with(False)
+
+    def test_alt_tab_hides_scaling_border_and_restores_it_without_stopping_session(self):
+        controller, _, state, listener, _, seen = environment()
+        controller.update(status(False))
+        controller.foreground_check = lambda: False
+        controller.indicator.tick()
+        self.assertIsNone(seen[-1])
+        controller.update(status(False))
+        listener.set_overlay_actions.assert_called_with({})
+        self.assertTrue(state.is_scaling_active)
+        self.assertEqual(controller.indicator._state.border.state, "active")
+        controller.foreground_check = lambda: True
+        controller.indicator.tick()
+        self.assertEqual(seen[-1]["border"], "active")
+        controller.update(status(False))
+        self.assertIn("overlay_toggle", listener.set_overlay_actions.call_args.args[0])
+
+    def test_alt_tab_hides_manual_overlay_hints_and_graph_then_restores_them(self):
+        controller, _, _, _, _, seen = environment()
+        controller.update(status(False))
+        controller.dispatch_action("overlay_toggle")
+        controller.indicator.set_performance_graph({"fps": 60})
+        controller.foreground_check = lambda: False
+        controller.indicator.tick()
+        self.assertIsNone(seen[-1])
+        self.assertFalse(controller.dispatch_action("profile_editor"))
+        controller.foreground_check = lambda: True
+        controller.indicator.tick()
+        self.assertTrue(controller.active)
+        self.assertEqual(seen[-1]["border"], "reshade")
+        self.assertTrue(seen[-1]["hotkey_hints"])
+        self.assertEqual(seen[-1]["performance_graph"], {"fps": 60})
+
+    def test_foreground_check_handles_native_target_and_pointer_sized_windows(self):
+        controller, _, state, _, _, _ = environment()
+        state.scaling_target_pid = None
+        state.current_scaled_target = {"pid": 42, "hwnd": 82}
+        fake = Mock()
+        fake.GetForegroundWindow.return_value = 0x123456789
+
+        def identify(hwnd, pointer):
+            self.assertEqual(hwnd, 0x123456789)
+            ctypes.cast(pointer, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value = 42
+            return 1
+
+        fake.GetWindowThreadProcessId.side_effect = identify
+        with patch("companion.services.reshade_overlay.ctypes.windll.user32", fake):
+            self.assertTrue(controller._foreground_allowed())
+            self.assertEqual(fake.GetForegroundWindow.restype, ctypes.wintypes.HWND)
+            state.scaling_target_pid = 99
+            self.assertFalse(controller._foreground_allowed())
+            state.scaling_target_pid = None
+            state.current_scaled_target = {"pid": 99}
+            self.assertFalse(controller._foreground_allowed())
+            controller.host_pid = 42
+            self.assertTrue(controller._foreground_allowed())
+            fake.GetWindowThreadProcessId.side_effect = None
+            fake.GetWindowThreadProcessId.return_value = 0
+            self.assertFalse(controller._foreground_allowed())
+            fake.GetForegroundWindow.return_value = None
+            self.assertFalse(controller._foreground_allowed())
+
     def test_scaling_stop_cleanup_does_not_create_an_overlay_closed_toast(self):
         controller, _, state, listener, _, seen = environment()
         controller.update(status())
@@ -50,6 +157,15 @@ class ReShadeOverlayTests(unittest.TestCase):
         self.assertFalse(controller.active)
         self.assertIsNone(seen[-1])
         self.assertEqual(controller.indicator._state.current, [])
+        listener.set_overlay_actions.assert_called_with({})
+        controller.passthrough_control.assert_called_once_with(False)
+
+    def test_shutdown_releases_native_input_before_clearing_controls(self):
+        controller, _, _, listener, _, _ = environment()
+        controller.update(status())
+        controller.clear()
+        controller.passthrough_control.assert_called_once_with(False)
+        self.assertFalse(controller.active)
         listener.set_overlay_actions.assert_called_with({})
 
     def test_live_toggle_sets_yellow_border_and_persistent_status_then_restores_scaling(self):
@@ -151,15 +267,26 @@ class ReShadeOverlayTests(unittest.TestCase):
         controller.update(status(False))
         self.assertFalse(controller.active)
 
-    def test_manually_closed_native_overlay_waits_for_next_native_toggle(self):
+    def test_overlay_toggle_sets_native_passthrough_on_and_off_without_replaying_menu_key(self):
         controller, _, _, _, _, _ = environment()
-        controller.update(status())
-        controller.dispatch_action("overlay_toggle")
-        controller.update(status())
-        self.assertFalse(controller.active)
         controller.update(status(False))
-        controller.update(status(True))
-        self.assertTrue(controller.active)
+        with patch("companion.services.reshade_overlay.InputSimulator.trigger_hotkey") as key:
+            self.assertTrue(controller.dispatch_action("overlay_toggle"))
+            controller.passthrough_control.assert_called_with(True)
+            self.assertTrue(controller.active)
+            self.assertTrue(controller.dispatch_action("overlay_toggle"))
+            controller.passthrough_control.assert_called_with(False)
+            self.assertFalse(controller.active)
+            key.assert_not_called()
+
+    def test_failed_passthrough_request_does_not_claim_overlay_is_active(self):
+        controller, _, _, _, _, seen = environment()
+        controller.update(status(False))
+        controller.passthrough_control.side_effect = TimeoutError("Host did not enable input")
+        self.assertFalse(controller.dispatch_action("overlay_toggle"))
+        self.assertFalse(controller.active)
+        self.assertEqual(seen[-1]["border"], "active")
+        self.assertIn("Overlay input unavailable", seen[-1]["lines"][-1]["text"])
 
     def test_native_scaling_without_a_matched_profile_can_open_default_profile_controls(self):
         controller, manager, state, _, opener, _ = environment()
@@ -223,6 +350,22 @@ class OverlayShortcutTests(unittest.TestCase):
         for invalid in ({"profile_editor": "insert"}, {"unknown": "f8"}, {"profile_editor": "bad+key"}):
             with self.assertRaises(ValueError):
                 validate_overlay_hotkeys(invalid)
+
+    def test_alt_comma_validates_registers_and_labels_the_windows_oem_key(self):
+        from companion.core.models import HotkeyConfig
+        from companion.services.overlay_shortcuts import reshade_key_data
+        self.assertEqual(HotkeyConfig(modifiers=["alt"], key=",").key, ",")
+        self.assertEqual(HotkeyConfig(key="OemComma").key, ",")
+        self.assertEqual(parse_shortcut("alt+,")[:2], (1, 0xBC))
+        self.assertEqual(reshade_key_data("alt+,"), (0xBC, 0, 0, 1))
+        self.assertEqual(menu_hotkey_label({"hotkeyVk": 0xBC, "alt": True}, ""), "Alt+,")
+        bindings = validate_overlay_hotkeys({"overlay_toggle": "alt+,"})
+        listener = GlobalHotkeyListener(SimpleNamespace(config=AppConfig()), AppState(), lambda: None)
+        with patch("companion.services.hotkey_listener.ctypes.windll.user32") as fake:
+            fake.RegisterHotKey.return_value = True
+            listener.set_overlay_actions({"overlay_toggle": {"binding": bindings["overlay_toggle"], "callback": lambda: None}})
+            listener._sync_registration()
+            self.assertEqual(fake.RegisterHotKey.call_args.args[-2:], (0x4001, 0xBC))
 
     def test_special_k_reads_private_utf16_config_and_native_default(self):
         with tempfile.TemporaryDirectory() as directory:
