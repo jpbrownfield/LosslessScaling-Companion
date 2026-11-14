@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 
 internal class StartupHook
 {
+    static readonly object Initialization = new object();
+    static bool initialized;
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr LoadLibraryExW(string path, IntPtr file, uint flags);
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true)]
@@ -23,6 +25,16 @@ internal class StartupHook
     static string Escape(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     public static void Initialize()
+    {
+        lock (Initialization)
+        {
+            if (initialized) return;
+            InitializeCore();
+            initialized = true;
+        }
+    }
+
+    static void InitializeCore()
     {
         string root = AppContext.BaseDirectory;
         if (!File.Exists(Path.Combine(root, ".companion-runtime.json")))
@@ -57,7 +69,20 @@ internal class StartupHook
         }
         string payload = "{\"schema\":1,\"pid\":" + GetCurrentProcessId() + ",\"token\":\"" + token +
             "\",\"verified\":true,\"settings\":\"" + Escape(settings) + "\"}";
-        File.WriteAllText(receipt + ".tmp", payload);
-        File.Move(receipt + ".tmp", receipt);
+        // LS can restart itself after applying its GPU preference. Its child
+        // inherits this launch contract, but must not overwrite the parent's
+        // identity or collide with its completed receipt/temporary file.
+        string processReceipt = receipt + "." + GetCurrentProcessId();
+        string temporary = processReceipt + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, payload);
+            File.Move(temporary, processReceipt);
+            // Retain the original first-writer receipt for older launchers.
+            // New launchers prefer the PID-specific receipt above.
+            try { File.Copy(processReceipt, receipt, false); }
+            catch (IOException) when (File.Exists(receipt)) { }
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }

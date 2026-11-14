@@ -6,11 +6,14 @@ import json
 import math
 import os
 import re
+import logging
+import struct
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.4"
+MANAGED_HOST_VERSION = "build-7-lsc.7"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
+logger = logging.getLogger("LSCompanion.AddonHost")
 
 
 def addon_version_key(value: object) -> tuple:
@@ -100,9 +103,10 @@ def _read_pipe(pid, timeout_ms=500, *, acknowledge=None):
             raise ValueError("Host telemetry exceeded its size limit")
         payload = json.loads(buffer.raw[:size])
         receipt = acknowledge(payload) if acknowledge is not None else b"1"
-        if receipt not in (b"1", b"E", b"D"):
+        if receipt not in (b"1", b"E", b"D") and not (
+                isinstance(receipt, bytes) and len(receipt) == 16 and receipt[:4] == b"E\0\0\0"):
             raise ValueError("Unsupported host receipt")
-        transfer(kernel.WriteFile, ctypes.create_string_buffer(receipt), 1)
+        transfer(kernel.WriteFile, ctypes.create_string_buffer(receipt), len(receipt))
         return payload
     finally:
         kernel.CloseHandle(pipe)
@@ -132,25 +136,41 @@ def runtime_status(executable):
         return {"available": False, "reason": str(error), "pid": instance[0]}
 
 
-def set_passthrough(executable, enabled: bool, *, expected_pid=None, timeout=1.5):
+def set_passthrough(executable, enabled: bool, *, expected_pid=None, target_pid=None, target_hwnd=None, timeout=1.5):
     """Request an explicit state and return only after fresh telemetry confirms it."""
     from .adapter_report import configured_process
     if type(enabled) is not bool:
         raise ValueError("Passthrough state must be a boolean")
+    if (target_pid is not None or target_hwnd is not None) and not (
+            type(target_pid) is int and 0 < target_pid <= 0xFFFFFFFF
+            and type(target_hwnd) is int and 0 < target_hwnd <= 0xFFFFFFFFFFFFFFFF):
+        raise ValueError("Overlay input needs a valid scaling target process and window")
     instance = configured_process(executable)
     if not instance or expected_pid is not None and instance[0] != expected_pid:
         raise ValueError("Lossless Scaling changed before the overlay request")
 
     def acknowledge(payload):
         status = validate_status(payload, instance)
-        if configured_process(executable) != instance:
-            raise ValueError("Lossless Scaling restarted before the overlay request")
+        # The pipe's server PID and this fresh snapshot's creation time already
+        # bind the request to this incarnation. Do not enumerate every process
+        # inside the host's short delivery-receipt deadline.
         if (status.get("reshade") or {}).get("controlAvailable") is not True:
+            if (status.get("reshade") or {}).get("controlError"):
+                raise ValueError(status["reshade"]["controlError"])
             raise ValueError("Restart Lossless Scaling with the updated Companion host to control passthrough")
+        if enabled and addon_version_key(status["hostVersion"]) < addon_version_key("build-7-lsc.6"):
+            raise ValueError("Update the Companion add-on manager to build-7-lsc.6 or newer and restart Lossless Scaling before opening overlay input")
+        if enabled and target_pid is not None:
+            if (status.get("reshade") or {}).get("controlProtocol", 1) < 2:
+                raise ValueError("Update the Companion add-on manager and restart LS to enable overlay input reliably")
+            return struct.pack("<c3xIQ", b"E", target_pid, target_hwnd)
         return b"E" if enabled else b"D"
 
+    logger.info("Overlay input request: enabled=%s; host PID=%s; target PID=%s, HWND=%s",
+                enabled, instance[0], target_pid, target_hwnd)
     _read_pipe(instance[0], acknowledge=acknowledge)
     deadline = time.monotonic() + timeout
+    status = None
     while time.monotonic() < deadline:
         if configured_process(executable) != instance:
             raise ValueError("Lossless Scaling restarted during the overlay request")
@@ -167,6 +187,16 @@ def set_passthrough(executable, enabled: bool, *, expected_pid=None, timeout=1.5
         requested = reshade.get("controlRequested", reshade.get("interactive"))
         if (reshade.get("controlAvailable") is True and reshade.get("controlPending") is not True
                 and requested is enabled):
+            logger.info("Overlay input confirmed: requested=%s; interactive=%s; host=%s",
+                        requested, reshade.get("interactive"), status.get("hostVersion"))
             return status
+        if reshade.get("controlPending") is not True and reshade.get("controlError"):
+            logger.error("Overlay input rejected by host: %s", reshade)
+            raise ValueError(reshade["controlError"])
         time.sleep(0.025)
-    raise TimeoutError("The addon host did not confirm the requested passthrough state")
+    detail = (status or {}).get("reshade", {})
+    logger.error("Overlay input confirmation timed out: enabled=%s; host PID=%s; target PID=%s, HWND=%s; last status=%s",
+                 enabled, instance[0], target_pid, target_hwnd, detail)
+    raise TimeoutError(f"The addon host did not confirm overlay input (host {(status or {}).get('hostVersion', 'unknown')}; "
+                       f"requested={detail.get('controlRequested')}, pending={detail.get('controlPending')}, "
+                       f"interactive={detail.get('interactive')}). See Debug for details.")

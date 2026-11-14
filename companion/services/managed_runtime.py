@@ -285,10 +285,11 @@ def await_isolation(pid: int, receipt: Path | None, token: str | None, *, timeou
     except psutil.NoSuchProcess:
         process = None
     expected_settings = receipt.parent.parent / "data/LocalAppData/Lossless Scaling/Settings.xml"
+    process_receipt = Path(str(receipt) + f".{pid}")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            payload = json.loads(receipt.read_text())
+            payload = json.loads((process_receipt if process_receipt.is_file() else receipt).read_text())
             if (payload.get("pid") == pid and payload.get("token") == token and payload.get("verified") is True
                     and Path(payload.get("settings", "")).resolve() == expected_settings.resolve()):
                 logger.info("LS private settings isolation verified in %.2fs: PID=%s; settings=%s",
@@ -300,8 +301,8 @@ def await_isolation(pid: int, receipt: Path | None, token: str | None, *, timeou
             break
         time.sleep(0.05)
     # Kill only the child this launch created. Never fall back to the source exe.
-    logger.error("LS private settings isolation failed after %.2fs: PID=%s; receipt present=%s; settings=%s",
-                 time.monotonic() - started, pid, receipt.is_file(), expected_settings)
+    logger.error("LS private settings isolation failed after %.2fs: PID=%s; receipt=%s; present=%s; settings=%s",
+                 time.monotonic() - started, pid, process_receipt, process_receipt.is_file() or receipt.is_file(), expected_settings)
     try:
         if process is not None and process.is_running():
             process.kill()

@@ -179,7 +179,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     D3D_FEATURE_LEVEL feature_level{};
     const D3D_FEATURE_LEVEL requested[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, requested, 2,
+        nullptr,
+#ifdef LSC_BENCHMARK_TEST_WARP
+        // The input integration fixture uses the real benchmark window on
+        // machines without a hardware GPU. Production benchmarks stay native.
+        D3D_DRIVER_TYPE_WARP,
+#else
+        D3D_DRIVER_TYPE_HARDWARE,
+#endif
+        nullptr, 0, requested, 2,
         D3D11_SDK_VERSION, &swap_desc, &swap_chain, &device, &feature_level, &context);
     if (FAILED(hr)) return 4;
 

@@ -30,13 +30,17 @@ def patch_managed_startup(main):
 def patch_passthrough(manager: Path):
     source = manager / "src/features/reshade_passthrough.cpp"
     header = manager / "src/features/reshade_passthrough.h"
+    replace_once(source, '#include <atomic>', '#include <atomic>\n#include <mutex>\n#include <map>\n#include <MinHook.h>\n#include "../core/hook_util.h"')
     replace_once(header, 'void ForcePassthroughForTest(bool on);',
                  'bool CompanionControlAvailable();\nbool CompanionControlPending();\n'
                  'bool CompanionOverlayRequested();\nvoid CompanionFocusForTest(int focused);\n'
-                 'void RequestCompanionPassthrough(bool on);\n\n'
+                 'const char* CompanionControlError();\n'
+                 'void RequestCompanionPassthrough(bool on, unsigned long targetPid=0, unsigned long long targetHwnd=0);\n\n'
                  'void ForcePassthroughForTest(bool on);')
     control = (Path(__file__).parent / "passthrough_control.inc").read_text(encoding="utf-8")
-    replace_once(source, 'void Watch() {', control + '\nvoid Watch() {')
+    focus = (Path(__file__).parent / "passthrough_focus.inc").read_text(encoding="utf-8")
+    replace_once(source, 'void Watch() {',
+                 'void ProtectCompanionPresentation(HWND hwnd, bool enabled);\n' + control + '\n' + focus + '\nvoid Watch() {')
     replace_once(source, '        if (g_passthroughOn && !FocusIsOurs()) {',
                  '        ApplyCompanionRequest();\n'
                  '        if (g_companionControlled) UpdateCompanionFocus();\n'
@@ -46,18 +50,26 @@ def patch_passthrough(manager: Path):
     replace_once(source, '    LoadSettings();\n    g_running = true;',
                  '    LoadSettings();\n'
                  '    g_companionControlled = Cfg().Get(kId, "companion_control", "0") == "1";\n'
+                 '    g_companionError = 0;\n'
+                 '    if (g_companionControlled && !InstallCompanionFocusGuard()) g_companionError = 5;\n'
                  '    g_companionRequest = -1;\n    g_companionWanted = false;\n'
                  '    g_companionFocusForTest = -1;\n    g_running = true;')
     replace_once(source, '    g_passthroughOn = false;\n    RestoreAll();',
                  '    if (g_companionControlled) { g_companionRequest=0; ApplyCompanionRequest(); }\n'
                  '    g_passthroughOn = false;\n    RestoreAll();')
     replace_once(source, 'void ForcePassthroughForTest(bool on) {',
-                 'bool CompanionControlAvailable() { return g_running && g_companionControlled; }\n'
+                 'bool CompanionControlAvailable() { return g_running && g_companionControlled && g_focusGuardReady; }\n'
                  'bool CompanionControlPending() { return g_companionApplying || g_companionRequest >= 0; }\n'
                  'bool CompanionOverlayRequested() { return g_companionWanted; }\n'
+                 'const char* CompanionControlError() { return CompanionErrorText(); }\n'
                  'void CompanionFocusForTest(int focused) { g_companionFocusForTest=focused; }\n'
-                 'void RequestCompanionPassthrough(bool on) {\n'
-                 '    if (CompanionControlAvailable()) g_companionRequest = on ? 1 : 0;\n}\n\n'
+                 'void RequestCompanionPassthrough(bool on, unsigned long targetPid, unsigned long long targetHwnd) {\n'
+                 '    if (!CompanionControlAvailable()) return;\n'
+                 '    std::lock_guard<std::mutex> lock(g_companionRequestMutex);\n'
+                 '    g_companionRequestTarget=reinterpret_cast<HWND>(targetHwnd);\n'
+                 '    g_companionRequestTargetPid=targetPid;\n'
+                 '    g_companionError=0;\n'
+                 '    g_companionRequest = on ? 1 : 0;\n}\n\n'
                  'void ForcePassthroughForTest(bool on) {')
     replace_once(source, 'void RenderOptions() {',
                  'void RenderOptions() {\n    if (g_companionControlled) {\n'
@@ -68,11 +80,16 @@ def patch_passthrough(manager: Path):
                  '        if (BelongsToUs(hwnd) && IsWindowVisible(hwnd)) { *(HWND*)out = hwnd; return FALSE; }',
                  '        wchar_t cls[64]{};GetClassNameW(hwnd,cls,64);\n'
                  '        if (!BelongsToUs(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) ||\n'
-                 '            wcscmp(cls,L"LSAddonManagerClass")==0) return TRUE;\n'
+                 '            wcscmp(cls,L"LSAddonManagerClass")==0 ||\n'
+                 '            (!g_ignoreFocusForTest && wcscmp(cls,L"LosslessScaling")!=0)) return TRUE;\n'
                  '        RECT rect{},best{};GetWindowRect(hwnd,&rect);\n'
                  '        if (*(HWND*)out) GetWindowRect(*(HWND*)out,&best);\n'
                  '        if ((rect.right-rect.left)*static_cast<long long>(rect.bottom-rect.top) >\n'
                  '            (best.right-best.left)*static_cast<long long>(best.bottom-best.top)) *(HWND*)out=hwnd;')
+    replace_once(source, '        if (BelongsToUs(top) && IsWindowVisible(top) && !IsManagerWindow(top)) {',
+                 '        wchar_t cls[64]{};GetClassNameW(top,cls,64);\n'
+                 '        if (BelongsToUs(top) && IsWindowVisible(top) && !IsManagerWindow(top) &&\n'
+                 '                (g_ignoreFocusForTest || wcscmp(cls,L"LosslessScaling")==0)) {')
     replace_once(manager / "src/features/reshade_windows.cpp",
                  'exStyle & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED)',
                  'exStyle & ~(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)')
@@ -176,13 +193,18 @@ def prepare(source: Path):
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
-                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp)\n'
+                     'foreach(feature_test eam_featurestest eam_fpstest)\n'
+                     '  if(TARGET ${feature_test})\n'
+                     '    target_sources(${feature_test} PRIVATE src/core/hook_util.cpp)\n'
+                     '  endif()\n'
+                     'endforeach()\n'
+                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp)\n'
                      'foreach(test_target eam_uipreview eam_coretest eam_sampletest eam_guitest eam_captureprobe)\n'
-                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp)\n'
+                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp)\n'
                      '  target_compile_definitions(${test_target} PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
                      'endforeach()\n'
                      'target_compile_definitions(Lossless PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
@@ -192,6 +214,9 @@ def prepare(source: Path):
                      'add_library(lsc_fake_engine SHARED src/core/fake_engine.cpp)\n'
                      'add_executable(lsc_panel_test src/core/panel_test.cpp src/gui/window/window_device.cpp)\n'
                      'target_link_libraries(lsc_panel_test d3d11 dxgi user32)\n'
+                     'add_executable(lsc_cursor_test src/core/cursor_test.cpp src/core/cursor_guard.cpp src/core/hook_util.cpp)\n'
+                     'target_include_directories(lsc_cursor_test PRIVATE ${minhook_SOURCE_DIR}/include)\n'
+                     'target_link_libraries(lsc_cursor_test user32 minhook)\n'
                      'set_target_properties(lsc_fake_engine PROPERTIES OUTPUT_NAME "Lossless_original")\n'
                      'get_target_property(routing_sources eam_coretest SOURCES)\n'
                      'list(REMOVE_ITEM routing_sources tools/core_test.cpp)\n'

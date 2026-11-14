@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **4**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **7**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -28,6 +28,60 @@ not replace our host with an unreviewed upstream release. New upstream versions
 are incorporated by rebuilding and releasing Companion.
 
 ## Deliberate patch surface
+
+Revision 7 protects the shared system cursor used by LS's cursor watcher.
+The supplied, verified LS 3.2.2.0 engine loads OCR_NORMAL with LR_SHARED and
+passes that same handle to SetSystemCursor while the pointer is outside the
+capture. SetSystemCursor consumes its input; shared cursor handles must not be
+passed to it. The guard replaces only the forwarded engine's SetSystemCursor
+import. A replacement of a system cursor with its own current shared handle
+becomes a successful no-op. Private replacements and errors still reach the
+original API with their ownership semantics. Other modules' imports, system
+cursor schemes, visibility counts and game cursor settings are unchanged.
+The import hook remains pinned for the process lifetime, independently of
+ReShade and whether passthrough is enabled. `cursor` telemetry reports guard
+installation, Windows errors and suppressed self-replacement count.
+
+Companion also requests WM_SETCURSOR when the verified scaled game regains
+focus, with at most three attempts on subsequent process-monitor ticks. The
+recipient must remain in the target process and its foreground window family,
+with the pointer inside the game's client area. A bounded SendMessageTimeout
+lets the game select its own shape (including intentionally no cursor). This
+does not inject mouse movement, force an arrow, change ShowCursor counts,
+reload a system cursor theme or take focus. Stop, target/session changes and
+focus loss cancel pending requests. Cursor snapshots and message outcomes are
+logged for diagnosis. Software-drawn cursors or engine-side capture failures
+may still require a game-specific fix; full Alt-Tab acceptance needs a desktop.
+
+`lsc_cursor_test` checks private/error forwarding with a spy (no global cursor
+changes), actual PE import interception, repeated LS-style shared-handle calls
+and a real off-screen game window restoring a custom cursor via WM_SETCURSOR.
+The real-engine headless test additionally verifies guard installation and
+native status with the supplied LS engine. Neither claims live Alt-Tab coverage.
+See Microsoft's [SetSystemCursor ownership contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setsystemcursor)
+and [WM_SETCURSOR handling](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-setcursor).
+
+Revision 6 keeps LS capture running when Companion activates the presentation
+for overlay keyboard input. The managed app and native engine both subscribe
+to foreground WinEvents; a process-local guard wraps those LS subscriptions and
+omits only foreground notifications for the protected presentation. ReShade,
+other add-on callbacks, and foreground changes to other applications remain
+unchanged. The guard and callback registry stay pinned with the host, and
+successful UnhookWinEvent calls retire their registry entries. A failed guard
+installation disables managed input control and publishes the native error.
+Settings/manager windows are excluded from presentation selection and subclassing.
+
+LS can destroy and recreate its presentation during focus suspension. The watcher
+releases the old input hooks, preserves the requested state while the same game
+window remains alive, and attaches to the replacement. Target closure or an
+explicit disable clears the preference. Control stays pending through the initial
+window changes; unexpected presentation loss during enable is logged explicitly.
+The desktop integration test loads the packaged DLL, registers an LS-style
+foreground-stop listener, and tests real keyboard input and presentation replacement.
+
+Revision 5 added the 16-byte `E` receipt (`<c3xIQ`: command, target PID, full-width
+HWND) under `reshade.controlProtocol=2`. The target is verified directly instead
+of inferred from windows between LS and the game in Z order. `D` is still one byte.
 
 Build 7 keeps the upstream FPS-counter placement hook in both managed startup
 modes, after dispatch hooks and before addons initialize. The GUI still starts

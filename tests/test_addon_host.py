@@ -1,4 +1,5 @@
 import json
+import struct
 import os
 from pathlib import Path
 import shutil
@@ -68,6 +69,60 @@ class AddonHostTests(unittest.TestCase):
                     result = set_passthrough("LS.exe", enabled, expected_pid=123)
                 self.assertIs(result["reshade"]["interactive"], enabled)
                 self.assertEqual(receipts, [b"E" if enabled else b"D"])
+
+    def test_passthrough_sends_the_verified_game_pid_and_full_width_hwnd(self):
+        before = self.sample(reshade={"interactive": False, "controlAvailable": True, "controlProtocol": 2})
+        after = self.sample(reshade={"interactive": True, "controlRequested": True, "controlAvailable": True})
+        receipts = []
+
+        def read(_pid, **kwargs):
+            if "acknowledge" in kwargs:
+                receipts.append(kwargs["acknowledge"](before))
+                return before
+            return after
+
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", side_effect=read):
+            self.assertTrue(set_passthrough("LS.exe", True, target_pid=42, target_hwnd=0x123456789)["reshade"]["interactive"])
+        self.assertEqual(receipts, [struct.pack("<c3xIQ", b"E", 42, 0x123456789)])
+
+    def test_overlay_request_rejects_old_control_protocol_and_invalid_targets(self):
+        old = self.sample(reshade={"interactive": False, "controlAvailable": True})
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", side_effect=lambda _pid, **kw: kw["acknowledge"](old)):
+            with self.assertRaisesRegex(ValueError, "Update the Companion add-on manager"):
+                set_passthrough("LS.exe", True, target_pid=42, target_hwnd=82)
+        for pid, hwnd in ((42, None), (None, 82), (True, 82), (42, 0), (-1, 82)):
+            with self.subTest(pid=pid, hwnd=hwnd), self.assertRaises(ValueError):
+                set_passthrough("LS.exe", True, target_pid=pid, target_hwnd=hwnd)
+
+    def test_native_rejection_is_reported_instead_of_a_generic_confirmation_timeout(self):
+        status = self.sample(reshade={"interactive": False, "controlAvailable": True,
+                                      "controlError": "The scaled game window changed or closed"})
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", return_value=status):
+            with self.assertRaisesRegex(ValueError, "game window changed or closed"):
+                set_passthrough("LS.exe", True)
+
+    def test_native_foreground_guard_startup_failure_is_preserved(self):
+        status = self.sample(reshade={"controlAvailable": False,
+                                      "controlError": "The LS overlay foreground guard could not start"})
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", side_effect=lambda _pid, **kw: kw["acknowledge"](status)):
+            with self.assertRaisesRegex(ValueError, "foreground guard could not start"):
+                set_passthrough("LS.exe", True)
+
+    def test_old_host_cannot_enable_input_without_the_foreground_guard_fix(self):
+        old = self.sample(hostVersion="build-7-lsc.5", reshade={"controlAvailable": True, "controlProtocol": 2})
+        with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                patch("companion.services.addon_host.time.time", return_value=1001), \
+                patch("companion.services.addon_host._read_pipe", side_effect=lambda _pid, **kw: kw["acknowledge"](old)):
+            with self.assertRaisesRegex(ValueError, "build-7-lsc.6 or newer and restart"):
+                set_passthrough("LS.exe", True, target_pid=42, target_hwnd=82)
 
     def test_passthrough_rejects_older_host_stale_data_and_process_replacement_before_command(self):
         for payload in (self.sample(), self.sample(sampledAt=990),
@@ -196,6 +251,49 @@ class AddonHostTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_ADDON_HOST") == "1",
                      "Set LSC_TEST_ADDON_HOST=1 after building the real native host")
 class NativeAddonHostTests(unittest.TestCase):
+    def test_cursor_guard_installs_on_the_supplied_real_ls_engine(self):
+        import psutil
+        engine = ROOT / "build/overlay-input-ls/Lossless.dll"
+        if not engine.is_file():
+            self.skipTest("Extract the supplied ls.zip to build/overlay-input-ls for the real-engine cursor check")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copy2(ROOT / "build/native/addon-host-smoke/lsc_headless_smoke.exe", root / "LosslessScaling.exe")
+            shutil.copy2(engine, root / "Lossless_original.dll")
+            with zipfile.ZipFile(ROOT / "build/native" / MANAGED_HOST_ARCHIVE) as bundle:
+                (root / "Lossless.dll").write_bytes(bundle.read("Lossless.dll"))
+            (root / "addons").mkdir()
+            (root / "addons/config.json").write_text(json.dumps({"global": {
+                "auto_load": False, "companion": {"headless": True, "managed": True}}}))
+            process = subprocess.Popen([str(root / "LosslessScaling.exe")], cwd=root,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                env={**os.environ, "LOCALAPPDATA": str(root / "local")})
+            try:
+                instance = process.pid, psutil.Process(process.pid).create_time()
+                deadline = time.monotonic() + 30
+                observed = None
+                while time.monotonic() < deadline and process.poll() is None:
+                    try:
+                        observed = validate_status(_read_pipe(process.pid), instance)
+                        break
+                    except (OSError, ValueError):
+                        time.sleep(.05)
+                self.assertIsNotNone(observed, "No telemetry from the real-engine host")
+                self.assertEqual(observed["hostVersion"], MANAGED_HOST_VERSION)
+                self.assertTrue(observed["cursor"]["sharedHandleGuard"])
+                self.assertEqual(observed["cursor"]["guardError"], 0)
+                self.assertGreaterEqual(observed["cursor"]["selfReplacementsPrevented"], 0)
+                self.assertTrue(observed["capture"]["runtimeVerified"])
+                self.assertEqual(observed["startupError"], "")
+            finally:
+                try:
+                    process.communicate(b"\n", timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+            self.assertEqual(process.returncode, 0)
+
     def test_explicit_component_loads_with_arbitrary_filename_and_rejects_bad_plans(self):
         import hashlib
         import psutil
@@ -385,6 +483,13 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertEqual(status["startupError"], "")
                 self.assertEqual(status["hostVersion"], MANAGED_HOST_VERSION)
                 self.assertTrue(status["reshade"]["controlAvailable"])
+                self.assertEqual(status["reshade"]["controlProtocol"], 2)
+                # Exercise the real 16-byte command, not only a mocked client:
+                # a synthetic host has no LS presentation and must explain why
+                # it rejected the request, rather than silently timing out.
+                with self.assertRaisesRegex(ValueError, "LS presentation window was not found"):
+                    set_passthrough(str(root / "LosslessScaling.exe"), True, expected_pid=process.pid,
+                                    target_pid=os.getpid(), target_hwnd=1, timeout=3)
                 # Exercise the actual pipe receipt and watcher without taking
                 # focus or enabling input on the user's desktop.
                 controlled = set_passthrough(str(root / "LosslessScaling.exe"), False,

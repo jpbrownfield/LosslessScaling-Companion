@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import logging
 from ctypes import wintypes
+from pathlib import Path
+import psutil
 from ..core.keyboard_keys import PUNCTUATION_KEYS, KEY_LABELS
 from .input_simulator import InputSimulator
 from .addon_host import set_passthrough
 from .overlay_shortcuts import (DEFAULT_OVERLAY_HOTKEYS, ACTION_LABELS, parse_shortcut,
                                 special_k_menu_hotkey)
+logger = logging.getLogger("LSCompanion.Overlay")
 
 
 def menu_hotkey_label(status: dict, fallback: str) -> str:
@@ -42,6 +46,7 @@ class ReShadeOverlayController:
         self._native_active = False
         self._native_requested = False
         self._last_status = {}
+        self._last_binding_scope = None
         self._lock = threading.RLock()
         self._special_k_loaded = False
         self._special_k_binding = "ctrl+shift+backspace"
@@ -128,11 +133,22 @@ class ReShadeOverlayController:
                 native_mask = sum(mask for key, mask in (("ctrl", 2), ("alt", 1), ("shift", 4)) if reshade.get(key) is True)
                 # The host reports a default End binding even with ReShade
                 # disabled. Only a live ReShade session can reserve its key.
-                if parsed and (not live_reshade or parsed[:2] != (native_mask, reshade.get("hotkeyVk"))):
+                # The configured Companion toggle must stay usable if a stale
+                # host still reports the old ReShade menu binding. Other action
+                # keys continue to leave the live menu shortcut to ReShade.
+                if parsed and (name == "overlay_toggle" or not live_reshade
+                               or parsed[:2] != (native_mask, reshade.get("hotkeyVk"))):
                     actions[name] = {"binding": binding, "callback": self._callbacks[name]}
         if self.listener is not None:
-            if not self.foreground_check():
+            focused = self.foreground_check()
+            if not focused:
                 actions = {}
+            scope = (eligible, focused, tuple((name, item["binding"]) for name, item in sorted(actions.items())))
+            if scope != self._last_binding_scope:
+                logger.info("Overlay shortcut scope: eligible=%s; game/LS focused=%s; host PID=%s; target PID=%s; bindings=%s",
+                            eligible, focused, self.host_pid, self.state.scaling_target_pid,
+                            {name: item["binding"] for name, item in actions.items()})
+                self._last_binding_scope = scope
             self.listener.set_overlay_actions(actions)
             for name, item in actions.items():
                 if active and self.listener.overlay_registered.get(name) == item["binding"]:
@@ -163,15 +179,29 @@ class ReShadeOverlayController:
         # Native scaling detection can supply the target before automation has
         # copied its identity into scaling_target_pid.
         target_pid = self.state.scaling_target_pid or target.get("pid")
-        return pid.value in (self.host_pid, target_pid)
+        if pid.value in (self.host_pid, target_pid):
+            return True
+        configured = self.manager.config.lossless_scaling_exe_path
+        if self.host_pid is None and configured:
+            # A transient telemetry outage must not unregister the toggle while
+            # the verified LS presentation has focus. Check its executable,
+            # rather than trusting a same-name process or a retained stale PID.
+            try:
+                return Path(psutil.Process(pid.value).exe()).resolve() == Path(configured).resolve()
+            except (psutil.Error, OSError, ValueError):
+                return False
+        return False
 
     def dispatch_action(self, action: str) -> bool:
         with self._lock:
             return self._dispatch_action(action)
 
     def _set_passthrough(self, enabled: bool) -> dict:
+        target = self.state.current_scaled_target or {}
         return set_passthrough(self.manager.config.lossless_scaling_exe_path, enabled,
-                               expected_pid=self.host_pid)
+                               expected_pid=self.host_pid,
+                               target_pid=(self.state.scaling_target_pid or target.get("pid")) if enabled else None,
+                               target_hwnd=(self.state.scaling_target_hwnd or target.get("hwnd")) if enabled else None)
 
     def _release_passthrough(self) -> None:
         try:
@@ -193,6 +223,8 @@ class ReShadeOverlayController:
                 try:
                     status = self.passthrough_control(desired)
                 except (OSError, ValueError) as error:
+                    logger.exception("Overlay input toggle failed: desired=%s; host PID=%s; game PID=%s, HWND=%s",
+                                     desired, self.host_pid, self.state.scaling_target_pid, self.state.scaling_target_hwnd)
                     self.indicator.log(f"Overlay input unavailable: {error}", kind="error")
                     return False
                 self._manual_active = None

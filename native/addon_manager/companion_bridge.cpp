@@ -5,6 +5,7 @@
 #include "companion_bridge.h"
 #include "hdr_probe.h"
 #include "component_loader.h"
+#include "cursor_guard.h"
 #include "d3d11_hook.h"
 #include "real_frame_hook.h"
 #include "../addon/addon_manager.h"
@@ -15,6 +16,7 @@
 #include "eam/real_frame_status.h"
 #include "imgui.h"
 #include <atomic>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -135,8 +137,13 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"startupError",startupError},{"addons",json::array()},{"metrics",json::object()},
         {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
     auto& config=eam::ConfigManager::Instance();
+    result["cursor"]={{"sharedHandleGuard",cursor::Ready()},
+                      {"selfReplacementsPrevented",cursor::Prevented()},
+                      {"guardError",cursor::Error()}};
     result["reshade"]={{"interactive",!eam::features::reshade::Status().empty()},
         {"controlAvailable",eam::features::reshade::CompanionControlAvailable()},
+        {"controlProtocol",2},
+        {"controlError",eam::features::reshade::CompanionControlError()},
         {"controlPending",eam::features::reshade::CompanionControlPending()},
         {"controlRequested",eam::features::reshade::CompanionOverlayRequested()},
         {"hotkeyVk",std::atoi(config.Get("ReShadePassthrough","hotkey_vk","35").c_str())},
@@ -177,6 +184,9 @@ DWORD WINAPI Run(void* parameter) {
     auto* manager=static_cast<eam::AddonManager*>(parameter);
     std::string startupError;
     try {
+        if (cursor::Install(GetModuleHandleW(L"Lossless_original.dll")))
+            LOG_INFO("Cursor", "LS shared system cursor guard installed");
+        else LOG_WARN("Cursor", "LS shared system cursor guard unavailable (Windows error %lu)",cursor::Error());
         if (LSCInitializeComponents()!=ERROR_SUCCESS) throw std::runtime_error("Explicit component initialization failed");
         {
             std::lock_guard<std::mutex> lock(sm86Mutex);
@@ -243,15 +253,21 @@ DWORD WINAPI Run(void* parameter) {
                     // DisconnectNamedPipe discards unread buffered data. Let the
                     // client acknowledge delivery. E/D request passthrough on/off;
                     // the native watcher owns the transition, without replaying a key.
+                    // Protocol 2 uses a 16-byte E request with target PID/HWND.
                     ResetEvent(connection.hEvent);
-                    OVERLAPPED receipt{};receipt.hEvent=connection.hEvent;char ack=0;
-                    bool received=ReadFile(pipe,&ack,1,&transferred,&receipt)!=FALSE;
+                    OVERLAPPED receipt{};receipt.hEvent=connection.hEvent;unsigned char ack[16]{};
+                    bool received=ReadFile(pipe,ack,sizeof(ack),&transferred,&receipt)!=FALSE;
                     if (!received && GetLastError()==ERROR_IO_PENDING) {
                         if (WaitForSingleObject(receipt.hEvent,500)!=WAIT_OBJECT_0) CancelIoEx(pipe,&receipt);
                         received=GetOverlappedResult(pipe,&receipt,&transferred,TRUE)!=FALSE;
                     }
-                    if (received && transferred==1 && (ack=='E' || ack=='D'))
-                        eam::features::reshade::RequestCompanionPassthrough(ack=='E');
+                    if (received && transferred==1 && (ack[0]=='E' || ack[0]=='D'))
+                        eam::features::reshade::RequestCompanionPassthrough(ack[0]=='E');
+                    else if (received && transferred==16 && ack[0]=='E' && !ack[1] && !ack[2] && !ack[3]) {
+                        DWORD targetPid=0;unsigned long long targetHwnd=0;
+                        memcpy(&targetPid,ack+4,4);memcpy(&targetHwnd,ack+8,8);
+                        eam::features::reshade::RequestCompanionPassthrough(true,targetPid,targetHwnd);
+                    }
                 }
             } catch (const std::exception& error) { LOG_WARN("Companion","Status snapshot: %s",error.what()); }
         }

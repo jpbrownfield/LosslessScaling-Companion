@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 class Program
@@ -9,6 +10,15 @@ class Program
     static int Main(string[] args)
     {
         if (args.Length == 0) return 0;
+        if (args.Length > 1 && args[1] == "--relaunch")
+        {
+            var start = new ProcessStartInfo(Environment.ProcessPath) { UseShellExecute = false };
+            start.ArgumentList.Add(args[0]);
+            using var child = Process.Start(start);
+            Console.WriteLine("child=" + child.Id);
+            if (!child.WaitForExit(20000)) { child.Kill(); return 25; }
+            return child.ExitCode;
+        }
         if (args.Length > 1 && GetModuleHandleW(args[1]) == IntPtr.Zero) return 24;
         string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (!String.Equals(Path.GetFullPath(local), Path.GetFullPath(args[0]), StringComparison.OrdinalIgnoreCase)) return 21;

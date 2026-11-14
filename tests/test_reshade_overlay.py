@@ -148,6 +148,26 @@ class ReShadeOverlayTests(unittest.TestCase):
             fake.GetForegroundWindow.return_value = None
             self.assertFalse(controller._foreground_allowed())
 
+    def test_verified_ls_foreground_remains_eligible_when_telemetry_temporarily_loses_pid(self):
+        controller, manager, _, _, _, _ = environment()
+        manager.config.lossless_scaling_exe_path = "C:/LS/LosslessScaling.exe"
+        controller.host_pid = None
+        fake = Mock()
+        fake.GetForegroundWindow.return_value = 1234
+
+        def identify(_hwnd, pointer):
+            ctypes.cast(pointer, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value = 123
+            return 1
+
+        fake.GetWindowThreadProcessId.side_effect = identify
+        with patch("companion.services.reshade_overlay.ctypes.windll.user32", fake), patch(
+            "companion.services.reshade_overlay.psutil.Process"
+        ) as process:
+            process.return_value.exe.return_value = "C:/LS/LosslessScaling.exe"
+            self.assertTrue(controller._foreground_allowed())
+            process.return_value.exe.return_value = "C:/Unrelated/LosslessScaling.exe"
+            self.assertFalse(controller._foreground_allowed())
+
     def test_scaling_stop_cleanup_does_not_create_an_overlay_closed_toast(self):
         controller, _, state, listener, _, seen = environment()
         controller.update(status())
@@ -279,6 +299,18 @@ class ReShadeOverlayTests(unittest.TestCase):
             self.assertFalse(controller.active)
             key.assert_not_called()
 
+    def test_control_request_uses_the_actual_scaled_window_identity(self):
+        controller, manager, state, _, _, _ = environment()
+        controller.update(status(False))
+        with patch("companion.services.reshade_overlay.set_passthrough", return_value=status()) as request:
+            controller._set_passthrough(True)
+            request.assert_called_once_with(manager.config.lossless_scaling_exe_path, True,
+                                            expected_pid=123, target_pid=42, target_hwnd=82)
+            state.scaling_target_pid, state.scaling_target_hwnd = None, None
+            state.current_scaled_target = {"pid": 43, "hwnd": 0x123456789}
+            controller._set_passthrough(True)
+            self.assertEqual(request.call_args.kwargs["target_hwnd"], 0x123456789)
+
     def test_failed_passthrough_request_does_not_claim_overlay_is_active(self):
         controller, _, _, _, _, seen = environment()
         controller.update(status(False))
@@ -316,6 +348,14 @@ class ReShadeOverlayTests(unittest.TestCase):
         self.assertTrue(controller.dispatch_action("overlay_toggle"))
         self.assertTrue(controller.active)
         self.assertIn({"key": "Home", "label": "Toggle ReShade menu"}, seen[-1]["hotkey_hints"])
+
+    def test_stale_native_menu_binding_does_not_unregister_companion_toggle(self):
+        controller, manager, _, listener, _, _ = environment()
+        manager.config.overlay_hotkeys["overlay_toggle"] = "end"
+        manager.config.reshade_overlay_hotkey = "home"
+        controller.update(status(False, reshade={"interactive": False, "hotkeyVk": 35, "controlAvailable": True}))
+        self.assertEqual(listener.set_overlay_actions.call_args.args[0]["overlay_toggle"]["binding"], "end")
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
 
     def test_disabled_or_unavailable_reshade_does_not_reserve_host_default_end(self):
         for uses_reshade, available in ((False, True), (True, False)):

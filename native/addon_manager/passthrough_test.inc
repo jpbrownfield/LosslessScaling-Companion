@@ -22,6 +22,19 @@ static void CompanionPassthroughOnce() {
     };
     features::reshade::RequestCompanionPassthrough(false);
     Check("explicit disable restores native window input", wait(false));
+    features::reshade::RequestCompanionPassthrough(true,GetCurrentProcessId()+1,reinterpret_cast<unsigned long long>(hwnd));
+    Check("recycled or incorrect target PID cannot enable input",wait(false) &&
+          !features::reshade::CompanionOverlayRequested() && *features::reshade::CompanionControlError());
+    features::reshade::RequestCompanionPassthrough(true,GetCurrentProcessId(),1);
+    Check("closed target window cannot enable input",wait(false) &&
+          !features::reshade::CompanionOverlayRequested() && *features::reshade::CompanionControlError());
+    // Verify a real HWND/PID pair directly. No Z-order search or foreground
+    // changes are used; other overlay windows cannot be mistaken for the game.
+    features::reshade::RequestCompanionPassthrough(true,GetCurrentProcessId(),reinterpret_cast<unsigned long long>(hwnd));
+    Check("verified target enables input without guessing from Z order",wait(true));
+    Check("valid target clears the previous rejection",!*features::reshade::CompanionControlError());
+    features::reshade::RequestCompanionPassthrough(false);
+    Check("verified target can close input",wait(false));
     features::reshade::RequestCompanionPassthrough(true);
     Check("explicit enable installs native passthrough", wait(true));
     Check("enabled presentation is topmost", (GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_TOPMOST)!=0);

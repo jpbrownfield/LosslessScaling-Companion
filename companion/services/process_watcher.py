@@ -21,6 +21,7 @@ from .ls_settings import LosslessSettingsXml
 from .proxy_menu import AddonManagerMenuController
 from .startup_guard import launch_hidden
 from .external_process import external_dll_search
+from .cursor_recovery import CursorRecovery
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -62,6 +63,7 @@ class ProcessWatcher:
         self._last_foreground_pid: Optional[int] = None
         self._last_foreground_hwnd: Optional[int] = None
         self._recent_unscaled_foreground: Optional[Tuple[float, ProcessInfo]] = None
+        self._cursor_recovery = CursorRecovery()
         self.on_profile_changed = on_profile_changed
         self.on_scaling_target_closed = on_scaling_target_closed
         self.on_lossless_scaling_started = on_lossless_scaling_started
@@ -697,6 +699,7 @@ class ProcessWatcher:
     def check_foreground_and_update(self) -> Optional[ProcessInfo]:
         """Polls the foreground window, updates state, and detects profile switches."""
         info = self.get_foreground_window_info()
+        self._cursor_recovery.update(self.state, info.pid if info else 0, info.hwnd if info else 0)
         if not info:
             return None
 

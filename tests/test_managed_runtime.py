@@ -18,6 +18,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ManagedRuntimeTests(unittest.TestCase):
+    def test_pid_receipt_never_falls_back_to_a_different_identity(self):
+        from unittest.mock import Mock
+        receipt = self.runtime.root / "receipts/launch.json"
+        receipt.parent.mkdir(parents=True)
+        payload = {"pid": 123, "token": "expected", "verified": True, "settings": str(self.runtime.settings)}
+        receipt.write_text(json.dumps(payload))
+        process = Mock()
+        process.is_running.return_value = False
+        for mismatch in ({"pid": 456}, {"token": "another-launch"}):
+            with self.subTest(mismatch=mismatch):
+                Path(str(receipt) + ".123").write_text(json.dumps({**payload, **mismatch}))
+                with patch("psutil.Process", return_value=process), \
+                        self.assertRaisesRegex(RuntimeError, "did not verify"):
+                    await_isolation(123, receipt, "expected", timeout=.01)
+        process.kill.assert_not_called()
+
     def test_reshade_base_override_is_child_only_and_uses_private_installation(self):
         executable = Path(self.temp.name) / "fixture" / "LosslessScaling.exe"
         executable.parent.mkdir()
@@ -240,6 +256,32 @@ class ManagedRuntimeTests(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_RUNTIME_ISOLATION") == "1",
                      "Build the Windows isolation fixture and set LSC_TEST_RUNTIME_ISOLATION=1")
 class NativeManagedRuntimeTests(unittest.TestCase):
+    def test_relaunched_child_has_a_separate_verified_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            shutil.copytree(ROOT / "build/native/isolation-fixture", source)
+            (source / "Lossless.dll").write_bytes(b"fixture has no native engine dependency")
+            seed = root / "seed.xml"
+            seed.write_text("<Settings><Keep>original</Keep></Settings>")
+            original = seed.read_bytes()
+            runtime = ManagedRuntime(root / "config")
+            executable = runtime.prepare(source / "LosslessScaling.exe", AssetStore(root / "assets"), seed_settings=seed)
+            environment, receipt, token = launch_environment(executable)
+            process = subprocess.Popen([str(executable), str(runtime.local), "--relaunch"], env=environment,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, stderr.decode(errors="replace"))
+            child_pid = int(next(line.split(b"=", 1)[1] for line in stdout.splitlines() if line.startswith(b"child=")))
+            for pid in (process.pid, child_pid):
+                payload = json.loads(Path(str(receipt) + f".{pid}").read_text())
+                self.assertEqual(payload["pid"], pid)
+                self.assertEqual(payload["token"], token)
+                self.assertEqual(Path(payload["settings"]), runtime.settings)
+                await_isolation(pid, receipt, token)
+            self.assertEqual(json.loads(receipt.read_text())["pid"], process.pid)
+            self.assertEqual(seed.read_bytes(), original)
+
     def test_real_managed_and_native_folder_apis_and_direct_launch_guard(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
