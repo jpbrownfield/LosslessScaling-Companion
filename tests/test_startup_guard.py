@@ -72,6 +72,11 @@ class StartupGuardTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("LSC_TEST_NATIVE_STARTUP_GUARD") == "1", "Opt-in native GUI integration test")
 class NativeStartupGuardTests(unittest.TestCase):
+    # A cold CLR/WPF or driver startup can consume the old 1.2/4-second
+    # guard windows before the fixture even creates its first window.
+    GUARD_DURATION_MS = 10_000
+    FIXTURE_EXIT_GRACE_MS = 30_000
+
     def test_standalone_dxgi_probe_has_no_rendering_device_or_ls_names(self):
         from companion.services.gpu_index_refresh import fast_snapshot
         report = fast_snapshot()
@@ -86,7 +91,7 @@ class NativeStartupGuardTests(unittest.TestCase):
             token = "a1" * 32
             with patch.dict(os.environ, {"LSC_ADAPTER_REPORT_TOKEN": "inherited-untrusted-token"}):
                 pid = self.run_host(root / "build/native/startup-guard-wpf-test/LosslessScaling.exe",
-                                    4000, Path(directory), token)
+                                    self.GUARD_DURATION_MS, Path(directory), token)
                 self.assertEqual(os.environ["LSC_ADAPTER_REPORT_TOKEN"], "inherited-untrusted-token")
             report = json.loads((Path(directory) / f"ls-adapter-report-{pid}.json").read_text(encoding="utf-8"))
             self.assertEqual(report["pid"], pid)
@@ -109,18 +114,18 @@ class NativeStartupGuardTests(unittest.TestCase):
             config.parent.mkdir(parents=True)
             config.write_text("[SpecialK.OSD]\nShow=false", encoding="utf-8")
             with patch.dict(os.environ, {"SPECIALK_PATH": "external-special-k-settings"}):
-                self.run_host(host, 1200)
+                self.run_host(host, self.GUARD_DURATION_MS)
                 self.assertEqual(os.environ["SPECIALK_PATH"], "external-special-k-settings")
 
     def test_real_cross_process_hook_prevents_show_and_expires(self):
         # This is our compiled fixture, never the installed Lossless Scaling.
         root = Path(__file__).resolve().parents[1]
         host = root / "build/native/startup-guard-test/LosslessScaling.exe"
-        self.run_host(host, 1200)
+        self.run_host(host, self.GUARD_DURATION_MS)
 
     def test_real_wpf_window_stays_hidden_then_opens_normally(self):
         root = Path(__file__).resolve().parents[1]
-        self.run_host(root / "build/native/startup-guard-wpf-test/LosslessScaling.exe", 4000)
+        self.run_host(root / "build/native/startup-guard-wpf-test/LosslessScaling.exe", self.GUARD_DURATION_MS)
 
     def run_host(self, host, duration, directory=None, token=None):
         self.assertTrue(host.is_file())
@@ -154,7 +159,12 @@ class NativeStartupGuardTests(unittest.TestCase):
         process = kernel.OpenProcess(0x100000 | 0x1000 | 0x1, False, pid.value)
         try:
             self.assertTrue(process)
-            self.assertEqual(kernel.WaitForSingleObject(process, 10000), 0)
+            # The fixture verifies expiry before it exits. Give cold WPF/DXGI
+            # initialization and teardown a bounded allowance beyond the guard
+            # deadline; a fixed ten seconds could expire during a healthy run.
+            timeout = duration + self.FIXTURE_EXIT_GRACE_MS
+            wait = kernel.WaitForSingleObject(process, timeout)
+            self.assertEqual(wait, 0, f"{host} (PID {pid.value}) did not exit within {timeout} ms; wait result {wait}")
             code = wintypes.DWORD()
             self.assertTrue(kernel.GetExitCodeProcess(process, ctypes.byref(code)))
             self.assertEqual(code.value, 0, f"Native fixture failed at checkpoint {code.value}")

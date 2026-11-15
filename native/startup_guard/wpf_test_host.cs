@@ -10,6 +10,7 @@ static class StartupGuardWpfTest
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+    [DllImport("kernel32.dll")] static extern ulong GetTickCount64();
     [DllImport("Lossless.dll", CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.BStr)] static extern string GetAdapterNames();
 
@@ -32,7 +33,13 @@ static class StartupGuardWpfTest
         if (IsWindowVisible(handle)) result = 20;
         int cloaked;
         if (DwmGetWindowAttribute(handle, 14, out cloaked, 4) == 0 && cloaked == 0) result = 21;
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(4500) };
+        // Share the launcher's monotonic deadline. Cold WPF initialization
+        // must not add an arbitrary full guard interval to the exit time.
+        ulong deadline = UInt64.Parse(Environment.GetEnvironmentVariable("LSC_STARTUP_HIDE_UNTIL"));
+        ulong now = GetTickCount64();
+        var timer = new DispatcherTimer {
+            Interval = TimeSpan.FromMilliseconds(deadline > now ? deadline - now + 500 : 500)
+        };
         timer.Tick += delegate {
             timer.Stop();
             if (IsWindowVisible(handle)) result = 22;

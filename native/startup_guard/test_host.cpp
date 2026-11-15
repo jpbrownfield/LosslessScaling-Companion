@@ -53,7 +53,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     if (guarded) {
         // Process timers as an actual WPF dispatcher would. At expiry the
         // dashboard must remain hidden, uncloak, then allow a deliberate show.
-        const auto until = GetTickCount64() + 1700;
+        // The guard deadline starts in the launcher, before process startup.
+        // Observe that same deadline instead of assuming how long startup took.
+        const auto until = _wcstoui64(marker, nullptr, 10) + 250;
         while (GetTickCount64() < until) {
             MSG message{};
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
