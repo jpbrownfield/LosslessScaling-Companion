@@ -311,14 +311,36 @@ class ReShadeOverlayTests(unittest.TestCase):
             controller._set_passthrough(True)
             self.assertEqual(request.call_args.kwargs["target_hwnd"], 0x123456789)
 
-    def test_failed_passthrough_request_does_not_claim_overlay_is_active(self):
-        controller, _, _, _, _, seen = environment()
+    def test_failed_passthrough_still_opens_global_menu_and_reports_input_failure(self):
+        controller, _, _, listener, _, seen = environment()
         controller.update(status(False))
         controller.passthrough_control.side_effect = TimeoutError("Host did not enable input")
-        self.assertFalse(controller.dispatch_action("overlay_toggle"))
-        self.assertFalse(controller.active)
-        self.assertEqual(seen[-1]["border"], "active")
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertFalse(controller._native_active)
+        self.assertEqual(seen[-1]["border"], "reshade")
         self.assertIn("Overlay input unavailable", seen[-1]["lines"][-1]["text"])
+        self.assertIn("profile_editor", listener.set_overlay_actions.call_args.args[0])
+        self.assertIn({"key": "F8", "label": "ReShade input unavailable"}, seen[-1]["hotkey_hints"])
+        controller.update({"available": False})
+        self.assertTrue(controller.active)
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertFalse(controller.active)
+        self.assertEqual(controller.passthrough_control.call_args_list, [unittest.mock.call(True), unittest.mock.call(False)])
+
+    def test_menu_stays_open_while_native_input_is_pending_then_recovers(self):
+        controller, _, _, _, _, seen = environment()
+        controller.update(status(False))
+        controller.passthrough_control.return_value = status(False)
+        controller.passthrough_control.side_effect = None
+        self.assertTrue(controller.dispatch_action("overlay_toggle"))
+        self.assertTrue(controller.active)
+        self.assertFalse(controller._native_active)
+        controller.update(status())
+        self.assertTrue(controller.active)
+        self.assertIn({"key": "F8", "label": "Toggle ReShade menu"}, seen[-1]["hotkey_hints"])
+        controller.update(status(False))
+        self.assertTrue(controller.active)
 
     def test_native_scaling_without_a_matched_profile_can_open_default_profile_controls(self):
         controller, manager, state, _, opener, _ = environment()
@@ -465,6 +487,64 @@ class OverlayShortcutTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'win32', 'Win32 overlay controls')
 class NativeOverlayControlsTests(unittest.TestCase):
+    def test_overlay_surfaces_return_above_a_raised_scaling_window_without_focus(self):
+        from companion.services import overlay_window as overlay
+
+        presenter = overlay.Win32OverlayPresenter()
+        u = presenter._user32
+        u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        u.GetWindow.restype = ctypes.c_void_p
+        u.GetForegroundWindow.argtypes = []
+        u.GetForegroundWindow.restype = ctypes.c_void_p
+        # Stay off screen and never activate either the fixture or the overlay.
+        anchor = u.CreateWindowExW(
+            overlay.WS_EX_TOPMOST | overlay.WS_EX_NOACTIVATE,
+            'STATIC', 'Scaled presentation test', 0x90000000,
+            -30000, -30000, 1280, 720, None, None, None, None)
+
+        def above_cover(hwnd):
+            cursor = u.GetWindow(anchor, 3)  # GW_HWNDPREV, toward the top
+            while cursor:
+                if cursor == hwnd:
+                    return True
+                cursor = u.GetWindow(cursor, 3)
+            return False
+
+        payload = {
+            'lines': [{'id': 'status', 'text': 'Overlay active', 'persistent': True}],
+            'border': 'reshade', 'anchor_hwnd': anchor, 'border_anchor_hwnd': anchor,
+            'hotkey_hints': [{'key': 'Home', 'label': 'ReShade menu'}],
+            'performance_graph': {'samples': [16, 17], 'fps': 60},
+        }
+        try:
+            self.assertTrue(anchor)
+            self.assertTrue(presenter._create_windows())
+            foreground = u.GetForegroundWindow()
+            for attempt in range(2):
+                # Enabling native passthrough or returning from Alt+Tab can
+                # raise LS after Companion's windows have already been shown.
+                self.assertTrue(u.SetWindowPos(anchor, ctypes.c_void_p(-1),
+                    0, 0, 0, 0, overlay.SWP_NOACTIVATE | overlay.SWP_NOSIZE | 0x0002))
+                presenter._pending = payload
+                presenter._has_pending = True
+                presenter._apply_pending()
+                self.assertTrue(presenter._usable)
+                for hwnd in (presenter._hint_hwnd, presenter._graph_hwnd,
+                             presenter._border_hwnd, presenter._header_hwnd,
+                             *presenter._toast_shown):
+                    with self.subTest(attempt=attempt, hwnd=hwnd):
+                        self.assertTrue(above_cover(hwnd), 'Overlay is behind the scaled presentation')
+                self.assertEqual(u.GetForegroundWindow(), foreground)
+            presenter._pending = None
+            presenter._has_pending = True
+            presenter._apply_pending()
+            self.assertFalse(presenter._hint_visible)
+            self.assertFalse(presenter._border_visible)
+        finally:
+            presenter._teardown_windows()
+            if anchor:
+                u.DestroyWindow(anchor)
+
     def test_yellow_border_hints_graph_and_status_have_independent_lifetimes(self):
         from companion.services import overlay_window as overlay
         presenter = overlay.Win32OverlayPresenter()

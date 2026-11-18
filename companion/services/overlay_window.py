@@ -988,8 +988,27 @@ class Win32OverlayPresenter:
                 self._draw_graph(graph, border_anchor)
             else:
                 self._hide_graph()
+            self._raise_visible_windows()
         except Exception:
             self._note_failure("apply_pending")
+
+    def _raise_visible_windows(self) -> None:
+        # LS raises its own topmost presentation when passthrough starts or
+        # focus returns. WS_EX_TOPMOST alone does not keep us above another
+        # topmost window, and the position/animation updates use NOZORDER.
+        # Reassert the stacking order only for a visible presentation from the
+        # indicator (which checks game/LS focus), never from animation timers.
+        windows = [self._border_hwnd] if self._border_visible else []
+        windows.extend(hwnd for hwnd in self._toast_hwnds if hwnd in self._toast_shown)
+        windows.extend(hwnd for hwnd, visible in (
+            (self._header_hwnd, self._header_visible),
+            (self._hint_hwnd, self._hint_visible),
+            (self._graph_hwnd, self._graph_visible)) if visible)
+        for hwnd in windows:
+            if not self._user32.SetWindowPos(
+                    ctypes.c_void_p(hwnd), ctypes.c_void_p(-1), 0, 0, 0, 0,
+                    SWP_NOACTIVATE | SWP_NOSIZE | 0x0002):  # HWND_TOPMOST, SWP_NOMOVE
+                raise OSError("Could not raise an overlay surface above the scaling window")
 
     def _hide_all(self) -> None:
         self._hide_pill()

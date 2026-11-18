@@ -1,4 +1,4 @@
-"""Connect verified ReShade interaction telemetry to Companion's overlay."""
+"""Global Companion overlay controls and optional ReShade input passthrough."""
 from __future__ import annotations
 
 import ctypes
@@ -47,6 +47,7 @@ class ReShadeOverlayController:
         self._native_requested = False
         self._last_status = {}
         self._last_binding_scope = None
+        self._last_overlay_state = None
         self._lock = threading.RLock()
         self._special_k_loaded = False
         self._special_k_binding = "ctrl+shift+backspace"
@@ -95,12 +96,12 @@ class ReShadeOverlayController:
         live_reshade = bool(uses_reshade and status.get("available") is True)
         native_active = bool(eligible and live_reshade
                              and reshade.get("interactive") is True)
-        if native_active != self._native_active:
-            self._manual_active = None
         self._native_active = native_active
         self._native_requested = bool(eligible and live_reshade
                                       and reshade.get("controlRequested", native_active) is True)
-        active = bool(eligible and (native_active if uses_reshade else self._manual_active))
+        # A user-requested Companion menu must not depend on a profile's
+        # ReShade handshake. Native input availability is tracked separately.
+        active = bool(eligible and (self._manual_active if self._manual_active is not None else native_active))
         target = self.state.current_scaled_target or {}
         anchor = (reshade.get("presentationHwnd") or self.state.scaling_target_hwnd or target.get("hwnd"))
         if type(anchor) is not int or anchor <= 0:
@@ -108,6 +109,12 @@ class ReShadeOverlayController:
         self.active = active
         self.profile_id = profile.id if eligible else None
         self.host_pid = status.get("pid") if eligible else None
+        overlay_state = (eligible, self.active, self.profile_id, anchor,
+                         uses_reshade, self._native_active, self._native_requested)
+        if overlay_state != self._last_overlay_state:
+            logger.info("Overlay state: eligible=%s; menu requested=%s; profile=%s; anchor HWND=%s; "
+                        "ReShade selected=%s; input active=%s; input requested=%s", *overlay_state)
+            self._last_overlay_state = overlay_state
         self._special_k_loaded = bool(active and profile.graphics.special_k.enabled
                                       and any(item.get("id") == "special-k" and item.get("loaded") is True
                                               for item in status.get("components", []) if isinstance(item, dict)))
@@ -118,7 +125,7 @@ class ReShadeOverlayController:
         hints = []
         if active and uses_reshade:
             hints.append({"key": menu_hotkey_label(reshade, self.manager.config.reshade_overlay_hotkey),
-                          "label": "Toggle ReShade menu"})
+                          "label": "Toggle ReShade menu" if native_active else "ReShade input unavailable"})
         for name in DEFAULT_OVERLAY_HOTKEYS:
             if (name == "overlay_toggle" and eligible) or (name != "overlay_toggle" and active):
                 binding = bindings[name]
@@ -218,19 +225,20 @@ class ReShadeOverlayController:
             return False
         if action == "overlay_toggle":
             uses_reshade = bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled))
+            desired = not (self._manual_active if self._manual_active is not None
+                           else self._native_requested or self.active)
+            self._manual_active = desired
             if uses_reshade:
-                desired = not self._native_requested
                 try:
                     status = self.passthrough_control(desired)
                 except (OSError, ValueError) as error:
                     logger.exception("Overlay input toggle failed: desired=%s; host PID=%s; game PID=%s, HWND=%s",
                                      desired, self.host_pid, self.state.scaling_target_pid, self.state.scaling_target_hwnd)
+                    self.update(self._last_status)
                     self.indicator.log(f"Overlay input unavailable: {error}", kind="error")
-                    return False
-                self._manual_active = None
+                    return True  # Companion's menu still toggled; input failure is reported separately.
                 self.update(status)
-                return self._native_requested is desired
-            self._manual_active = not self.active
+                return True
             self.update(self._last_status)
             return True
         if not self.active:
