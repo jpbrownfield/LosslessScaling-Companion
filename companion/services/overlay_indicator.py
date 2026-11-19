@@ -4,7 +4,7 @@ Each action gets its own fading card; surviving cards slide up as older
 ones expire. A separate
 click-through frame around the target window pulses blue while scaling is
 pending (a scaling request is underway) and maroon while scaling is
-active. No injection, no hooks; every failure degrades to silent no-op.
+active briefly after confirmation. No injection, no hooks; every failure degrades to silent no-op.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ LINE_TTL_SECONDS = TOAST_SECONDS
 MAX_LINES = 5
 ERROR_TTL_SECONDS = LINE_TTL_SECONDS
 STABLE_SECONDS = 3.0
+ACTIVE_BORDER_SECONDS = 3.0
 MIN_GAME_AREA = 640 * 480
 # Re-present at least this often while content is visible so the cards and
 # border re-anchor if the game window moves (e.g. across monitors). The
@@ -63,6 +64,7 @@ class _BorderRequest:
     anchor_hwnd: Optional[int] = None
     first_seen: float = 0.0
     ready_at: float = 0.0
+    expires_at: float = 0.0
 
 
 def is_game_like_window(width: int, height: int, title: str) -> bool:
@@ -130,9 +132,10 @@ class OverlayState:
                    anchor_hwnd: Optional[int] = None,
                    now: Optional[float] = None) -> None:
         moment = _time.monotonic() if now is None else now
-        if self._border.anchor_hwnd != anchor_hwnd:
+        if self._border.anchor_hwnd != anchor_hwnd or self._border.state != state:
             self._border = _BorderRequest(state=state, anchor_hwnd=anchor_hwnd,
-                                          first_seen=moment)
+                                          first_seen=moment,
+                                          expires_at=moment + ACTIVE_BORDER_SECONDS if state == "active" else 0.0)
         else:
             self._border.state = state
 
@@ -140,6 +143,8 @@ class OverlayState:
         moment = _time.monotonic() if now is None else now
         self._lines = [line for line in self._lines
                        if moment < line.expires_at]
+        if self._border.expires_at and moment >= self._border.expires_at:
+            self._border = _BorderRequest()
 
 
 Presenter = Callable[[Optional[Dict]], None]
@@ -290,6 +295,10 @@ class OverlayIndicator:
             previous = self._reshade_context
             if not active and previous is None:
                 return
+            if not active and previous is not None and self._state.border.state == "active":
+                # Closing the menu must not reveal the old scaling-confirmed
+                # frame that was underneath it. Scaling itself stays active.
+                self._state.set_border(None)
             since = previous["since"] if previous and previous["anchor"] == anchor_hwnd else _time.monotonic()
             self._reshade_context = ({"anchor": anchor_hwnd, "hints": hints or [], "since": since}
                                      if active else None)

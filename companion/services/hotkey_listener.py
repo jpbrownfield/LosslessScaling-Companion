@@ -298,7 +298,11 @@ class GlobalHotkeyListener:
 
         def invoke():
             try:
-                if not self._stop_event.wait(0.15) and self._overlay_actions.get(name) == item:
+                # Toggling the Companion menu sends no synthetic key. It can
+                # respond immediately; actions that open other windows retain
+                # their short key-release window.
+                delay = 0 if name == "overlay_toggle" else 0.15
+                if not self._stop_event.wait(delay) and self._overlay_actions.get(name) == item:
                     result = item["callback"]()
                     logger.info("Overlay shortcut received: %s (%s)", name,
                                 "ignored by current session" if result is False else "handled")

@@ -106,6 +106,31 @@ class OverlayStateTests(unittest.TestCase):
         self.assertEqual(state.current, [])
         self.assertIsNone(state.border.state)
 
+    def test_active_border_expires_and_heartbeat_does_not_extend_it(self):
+        state = OverlayState()
+        state.set_border('pending', anchor_hwnd=9, now=100)
+        state.tick(now=200)
+        self.assertEqual(state.border.state, 'pending')
+        state.set_border('active', anchor_hwnd=9, now=200)
+        state.set_border('active', anchor_hwnd=9, now=202)
+        state.tick(now=202.9)
+        self.assertEqual(state.border.state, 'active')
+        state.tick(now=203)
+        self.assertIsNone(state.border.state)
+
+    def test_menu_closure_dismisses_confirmed_border_and_it_cannot_reappear_on_focus_change(self):
+        seen = []
+        indicator = OverlayIndicator(presenter=seen.append, window_info=lambda _: (1920, 1080, 'Game'))
+        indicator.set_border('active', anchor_hwnd=9)
+        indicator.set_reshade_context(True, anchor_hwnd=9, hints=[{'key': 'End', 'label': 'Close'}])
+        self.assertEqual(seen[-1]['border'], 'reshade')
+        indicator.set_reshade_context(False)
+        self.assertIsNone(seen[-1])
+        indicator.set_visibility_check(lambda: False)
+        indicator.set_visibility_check(lambda: True)
+        self.assertIsNone(seen[-1])
+        self.assertIsNone(indicator._state.border.state)
+
 
 class GameLikenessTests(unittest.TestCase):
     def test_rejects_splash_and_tiny_windows(self):

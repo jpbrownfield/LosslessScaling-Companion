@@ -195,6 +195,8 @@
     .btn-danger:hover { background: var(--danger); color: #fff; }
     .btn-danger-outline { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
     .btn-danger-outline:hover { background: rgba(239,68,68,0.14); }
+    .btn-clean-install { background: #f59e0b; color: #171717; border: 1px solid #f59e0b; }
+    .btn-clean-install:hover { background: #fbbf24; border-color: #fbbf24; }
 
     /* Modal Form */
     .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); align-items: center; justify-content: center; z-index: 100; }
@@ -753,6 +755,10 @@
           </div>
         </section>
 
+        <div style="margin-bottom:14px">
+          <button id="cleanInstallBtn" class="btn btn-clean-install" type="button">Remove all profiles and reset settings to default (Clean install)</button>
+          <p id="cleanInstallStatus" class="item-sub" role="status" style="white-space:normal;margin-top:8px"></p>
+        </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap">
           <button id="revertAllChangesBtn" class="btn btn-danger-outline" type="button" title="Restore Lossless Scaling settings and remove helper-managed add-on files">
             <span aria-hidden="true">&#128465;</span> Revert All Lossless Scaling Settings and Remove Addon Files (Uninstall Companion)
@@ -1734,6 +1740,7 @@
         ws.send(JSON.stringify({ type: 'GET_NOTIFICATIONS' }));
         ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_DIAGNOSTICS_STATUS' }));
+        ws.send(JSON.stringify({ type: 'GET_CLEAN_INSTALL_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_EDITOR_CATALOG' }));
         publishEditorActivity();
         if (addonEditorUnsaved && document.getElementById('profileModal').classList.contains('active')) saveAddonEditor();
@@ -1874,6 +1881,7 @@
             }
           } else if (msg.type === 'ERROR') {
             const errorText = msg.message || 'Error';
+            if (msg.action === 'CLEAN_INSTALL') renderCleanInstallStatus({busy: false, success: false, message: errorText});
             if (msg.action === 'REBUILD_CLONED_INSTALLATION') renderCloneRebuildStatus({busy: false, success: false, message: errorText});
             if (msg.code === 'DASHBOARD_CAPABILITY_REQUIRED' || errorText === 'Dashboard capability token required') {
               profileSaveInFlight = reshadeSaveInFlight = generalSettingsSaveInFlight = false;
@@ -2072,6 +2080,8 @@
             scheduleGeneralSettingsSave(0);
           } else if (msg.type === 'RTSS_CALIBRATION_STATUS') {
             renderDynamicLimiterStatus(msg.status);
+          } else if (msg.type === 'CLEAN_INSTALL_STATUS') {
+            renderCleanInstallStatus(msg);
           } else if (msg.type === 'ALL_CHANGES_REVERTED') {
             const button = document.getElementById('revertAllChangesBtn');
             button.disabled = false;
@@ -4800,6 +4810,7 @@
       });
     };
     function saveGeneralSettings() {
+      if (cleanInstallBusy) return;
       if (!generalSettingsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
       const rtssEnabled = document.getElementById('rtssFrameLimitingEnabled').checked;
       const rtssPath = document.getElementById('rtssInstallPath').value.trim();
@@ -5014,6 +5025,44 @@
     document.getElementById('browseRtssInstallBtn').onclick = () => {
       ws.send(JSON.stringify({ type: 'BROWSE_GENERAL_PATH', kind: 'rtss_directory' }));
     };
+    let cleanInstallBusy = false;
+    function renderCleanInstallStatus(status) {
+      cleanInstallBusy = !!status.busy;
+      document.getElementById('cleanInstallBtn').disabled = cleanInstallBusy;
+      document.getElementById('revertAllChangesBtn').disabled = cleanInstallBusy;
+      document.getElementById('cleanInstallStatus').textContent = status.message || '';
+      if (!status.busy && status.settingsReset && status.operationId &&
+          sessionStorage.getItem('clean-install-completed') !== status.operationId) {
+        // Discard every editor draft and UI preference from the old installation.
+        for (const key of ['ignored-addon-update-versions', 'ignored-companion-update-version',
+                           'dashboard-active-panel', 'dashboard-last-settings-panel']) localStorage.removeItem(key);
+        sessionStorage.setItem('clean-install-result', status.message || 'Clean install complete.');
+        sessionStorage.setItem('clean-install-completed', status.operationId);
+        window.location.reload();
+      }
+    }
+    document.getElementById('cleanInstallBtn').onclick = async () => {
+      if (cleanInstallBusy) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        document.getElementById('cleanInstallStatus').textContent = 'Reconnect to Companion before starting a clean install.';
+        return;
+      }
+      const accepted = await confirmDialog('Remove all saved profiles and reset all general, add-on and private Lossless Scaling settings to their defaults?\n\nLossless Scaling will stop. Companion will create a fresh clone, delete the old cloned installation and recreate the default starter profiles. Downloaded packages are kept. Your original Lossless Scaling installation is untouched.\n\nThis cannot be undone.',
+        {title: 'Clean install', okLabel: 'Reset and clean install', danger: true});
+      if (!accepted || cleanInstallBusy) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        document.getElementById('cleanInstallStatus').textContent = 'Reconnect to Companion before starting a clean install.';
+        return;
+      }
+      if (generalSettingsSaveTimer) { clearTimeout(generalSettingsSaveTimer); generalSettingsSaveTimer = null; }
+      renderCleanInstallStatus({busy: true, message: 'Stopping LS and resetting the installation…'});
+      ws.send(JSON.stringify({type: 'CLEAN_INSTALL', confirmCleanInstall: true}));
+    };
+    const cleanInstallResult = sessionStorage.getItem('clean-install-result');
+    if (cleanInstallResult) {
+      document.getElementById('cleanInstallStatus').textContent = cleanInstallResult;
+      sessionStorage.removeItem('clean-install-result');
+    }
     document.getElementById('revertAllChangesBtn').onclick = () => {
       const warning = 'Revert All Lossless Scaling Settings and Remove Addon Files (Uninstall Companion)?\n\nThis restores the original Lossless Scaling Settings.xml, removes or restores all helper-managed RTSS profiles, and removes deployed add-on files from the Lossless Scaling directory. Downloaded assets and ordinary helper profiles are kept, but their add-on and RTSS selections are cleared. This cannot be undone from LS Companion.';
       confirmDialog(warning, { title: 'Revert All Changes', okLabel: 'Revert', danger: true }).then(accepted => {

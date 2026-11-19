@@ -47,7 +47,8 @@ class ManagedRuntime:
         self.settings = self.local / "Lossless Scaling/Settings.xml"
 
     def prepare(self, source_exe: Path, store: AssetStore, *, seed_settings: Path | None = None,
-                bootstrap: Path | None = None, rebuild_executable: Path | None = None) -> Path:
+                bootstrap: Path | None = None, rebuild_executable: Path | None = None,
+                fresh_settings: bool = False) -> Path:
         source_exe = Path(source_exe).resolve(strict=True)
         started = time.monotonic()
         logger.info("Managed LS initialization: source=%s; private settings=%s; rebuild=%s",
@@ -88,7 +89,7 @@ class ManagedRuntime:
         fingerprint = hashlib.sha256("".join(AssetStore.sha256(path) for path in identities).encode()).hexdigest()[:24]
         directory = self.root / "installations" / fingerprint
         replaced = None
-        generation = None
+        generation = uuid.uuid4().hex if fresh_settings else None
         if rebuild_executable is not None:
             current = Path(rebuild_executable).absolute()
             directory = current.parent.parent
@@ -178,9 +179,9 @@ class ManagedRuntime:
         self.local.mkdir(parents=True, exist_ok=True)
         self.roaming.mkdir(parents=True, exist_ok=True)
         if not self.settings.exists():
-            seed = Path(seed_settings) if seed_settings else native_settings_path()
+            seed = None if fresh_settings else Path(seed_settings) if seed_settings else native_settings_path()
             self.settings.parent.mkdir(parents=True, exist_ok=True)
-            if seed.is_file():
+            if seed is not None and seed.is_file():
                 tree = ET.parse(seed)
             else:
                 tree = ET.ElementTree(ET.Element("Settings"))

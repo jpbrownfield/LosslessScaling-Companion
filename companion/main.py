@@ -211,6 +211,15 @@ class CompanionApplication:
             proxy_menu=self.proxy_menu,
         )
         self.server.on_runtime_changed = self.tray.refresh_state
+        self.automation.runtime_reset_callback = self._clean_install_runtime_changed
+
+    def _clean_install_runtime_changed(self) -> None:
+        config = self.profile_manager.config
+        self.ls_inspector.rebind_runtime(config.lossless_scaling_exe_path, config.lossless_settings_xml_path)
+        self._settings_backup_ready = self.ls_settings.initial_backup_path.is_file()
+        self._native_auto_scale_enforced = False
+        self._next_native_auto_scale_check = 0.0
+        self._next_settings_backup_check = 0.0
 
     def _start_shutdown_watchdog(self) -> None:
         if self._shutdown_watchdog_started:

@@ -431,6 +431,18 @@ class LosslessScalingInspector:
                 return self.last_known_target
             return None
 
+    def rebind_runtime(self, executable: str, settings_path: str) -> None:
+        """Forget old clone/log identities after replacing the private runtime."""
+        with self._inspection_lock:
+            self.lossless_exe_path = executable
+            self.settings_xml.path = Path(settings_path)
+            self.active_log_file = None
+            self._log_positions.clear()
+            self._echo_positions.clear()
+            self._log_event_sequence = 0
+            self.reset_runtime_state()
+            self._refresh_log_files(initialize_at_end=True)
+
     def reset_runtime_state(self) -> None:
         """Clear latched evidence after the real LS process has exited."""
         with self._inspection_lock:

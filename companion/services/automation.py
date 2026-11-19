@@ -85,6 +85,7 @@ class AutomationController:
         self._consecutive_failed_starts = 0
         self._clone_rebuild_attempted = False
         self._clone_rebuild_pending = False
+        self.runtime_reset_callback: Optional[Callable[[], None]] = None
         self._ready_launch_generation = 0
         self.scaling_confirmation_begin: Optional[Callable[[bool], None]] = None
         self.scaling_confirmation_end: Optional[Callable[[], None]] = None
@@ -3308,6 +3309,13 @@ class AutomationController:
         with self._lock:
             if self.state.update_in_progress and not suppress_auto_scale:
                 return
+            if source == "process match" and profile is not None:
+                # A foreground callback can wait behind a clean install or
+                # profile deletion. Resolve it again after acquiring the lock
+                # so it cannot reactivate a removed profile's settings.
+                profile = self.profile_manager.get_profile_by_id(profile.id)
+                if profile is None:
+                    return
             suppress_auto_scale = suppress_auto_scale or self._auto_scaling_suppressed(target_pid)
             previous = self.state.current_active_profile
             if not force and profile is None and previous is None:

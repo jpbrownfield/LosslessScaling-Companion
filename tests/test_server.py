@@ -117,6 +117,87 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
             self.assertNotIn("entries", json.loads(websocket.messages[-1]))
 
+    async def test_clean_install_requires_dashboard_and_explicit_boolean_confirmation(self):
+        for authority, confirmation in (("readonly", True), ("extension", True),
+                                        ("dashboard", None), ("dashboard", "true")):
+            websocket = self.FakeWebSocket()
+            self.server.client_authority[websocket] = authority
+            await self.server.process_message(websocket, json.dumps({
+                "type": "CLEAN_INSTALL", "confirmCleanInstall": confirmation}))
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            self.assertIsNone(self.server.clean_install_task)
+
+    async def test_clean_install_rejects_editors_and_other_maintenance(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        for field in ("benchmark_mode_active", "update_in_progress"):
+            setattr(self.state, field, True)
+            await self.server.process_message(websocket, '{"type":"CLEAN_INSTALL","confirmCleanInstall":true}')
+            self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            self.assertIsNone(self.server.clean_install_task)
+            setattr(self.state, field, False)
+        self.server._editing_clients.add(websocket)
+        await self.server.process_message(websocket, '{"type":"CLEAN_INSTALL","confirmCleanInstall":true}')
+        self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+        self.assertIsNone(self.server.clean_install_task)
+
+    async def test_clean_install_runs_in_background_blocks_stale_requests_and_retains_completion(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        started, release = threading.Event(), threading.Event()
+        workers = []
+        def reset(automation, cleanup):
+            workers.append(threading.get_ident())
+            started.set()
+            release.wait(5)
+            return {"ok": True, "settingsReset": True, "message": "Reset complete"}
+        with patch('companion.services.clean_install.clean_install', side_effect=reset) as run:
+            try:
+                await self.server.process_message(websocket, '{"type":"CLEAN_INSTALL","confirmCleanInstall":true}')
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                self.assertTrue(json.loads(websocket.messages[-1])["busy"])
+                operation_id = json.loads(websocket.messages[-1])["operationId"]
+                self.assertNotEqual(workers, [threading.get_ident()])
+                self.assertEqual(self.server._active_mutations, 1)
+                for action in ('CLEAN_INSTALL', 'REBUILD_CLONED_INSTALLATION', 'SAVE_GENERAL_SETTINGS', 'GET_GRAPHICS_STATUS'):
+                    await self.server.process_message(websocket, json.dumps({'type': action}))
+                    self.assertEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+                for action in ('GET_RUNTIME_LOGS', 'GET_CLEAN_INSTALL_STATUS'):
+                    await asyncio.wait_for(self.server.process_message(websocket, json.dumps({'type': action})), 1)
+                    self.assertNotEqual(json.loads(websocket.messages[-1])["type"], "ERROR")
+            finally:
+                release.set()
+                await asyncio.wait_for(self.server.clean_install_task, 2)
+            run.assert_called_once()
+        self.assertTrue(self.server.clean_install_status['success'])
+        self.assertEqual(self.server.clean_install_status['operationId'], operation_id)
+        self.assertEqual(self.server._active_mutations, 0)
+        self.assertEqual(self.server._active_requests, 0)
+        self.assertTrue(any(json.loads(item).get('settingsReset') for item in websocket.messages))
+
+    async def test_clean_install_cleans_integrations_and_retains_failure_status(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.startup_manager = Mock()
+        self.server.startup_manager.set_enabled.return_value = {'enabled': False}
+        self.server.rtss_manager = FakeRtssManager()
+        self.manager.config.profiles[0].rtss.managed_profile_created = True
+        def reset(automation, cleanup):
+            cleanup()
+            raise OSError('copy failed')
+        with patch('companion.services.clean_install.clean_install', side_effect=reset), patch.object(
+            self.automation.nvidia_profile_manager, 'restore_managed_changes') as nvidia, patch.object(
+            self.automation.gloam_integration, 'close') as gloam:
+            await self.server.process_message(websocket, '{"type":"CLEAN_INSTALL","confirmCleanInstall":true}')
+            await self.server.clean_install_task
+        nvidia.assert_called_once()
+        gloam.assert_called_once()
+        self.server.startup_manager.set_enabled.assert_called_once_with(False)
+        self.assertEqual(self.server.rtss_manager.removed, [self.manager.config.profiles[0].id])
+        self.assertFalse(self.server.clean_install_status['success'])
+        self.assertIn('copy failed', self.server.clean_install_status['message'])
+        self.assertEqual(self.server._active_mutations, 0)
+
     async def test_clone_rebuild_requires_dashboard_and_rejects_live_tests(self):
         for authority in ("readonly", "extension", "dashboard"):
             websocket = self.FakeWebSocket()

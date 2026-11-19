@@ -2,6 +2,8 @@ import tempfile
 import ctypes
 import sys
 import unittest
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -16,7 +18,7 @@ from companion.services.hotkey_listener import GlobalHotkeyListener
 from companion.services.ls_inspector import ScaledTargetInfo
 
 
-def environment():
+def environment(*, asynchronous=False):
     config = AppConfig()
     profile = Profile(id="game", name="Game")
     profile.graphics.reshade.enabled = True
@@ -33,6 +35,7 @@ def environment():
     opener = Mock(return_value=True)
     controller = ReShadeOverlayController(manager, state, indicator, listener, opener,
                                          foreground_check=lambda: True, open_addon_panel=Mock(return_value=True),
+                                         control_submit=None if asynchronous else lambda work: work(),
                                          passthrough_control=Mock(side_effect=lambda enabled: {
                                              **controller._last_status, "available": True,
                                              "reshade": {**controller._last_status.get("reshade", {}),
@@ -42,6 +45,184 @@ def environment():
 
 def status(active=True, **extra):
     return {"available": True, "pid": 123, "reshade": {"interactive": active, "hotkeyVk": 119}, **extra}
+
+
+def wait_until(predicate, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        threading.Event().wait(.005)
+    return bool(predicate())
+
+
+class AsyncOverlayTests(unittest.TestCase):
+    def test_menu_and_actions_respond_before_slow_input_and_close_discards_late_receipt(self):
+        controller, _, state, _, opener, seen = environment(asynchronous=True)
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        def control(enabled):
+            calls.append(enabled)
+            if enabled:
+                started.set()
+                release.wait(5)
+            return status(enabled)
+        controller.passthrough_control = control
+        controller.update(status(False))
+        try:
+            before = time.monotonic()
+            self.assertTrue(controller.dispatch_action('overlay_toggle'))
+            self.assertLess(time.monotonic() - before, .25)
+            self.assertTrue(started.wait(1))
+            self.assertFalse(controller.wait_for_input(0))
+            self.assertTrue(controller.active)
+            self.assertEqual(seen[-1]['border'], 'reshade')
+            self.assertIn({'key': 'F8', 'label': 'Preparing ReShade input…'}, seen[-1]['hotkey_hints'])
+            self.assertTrue(controller.dispatch_action('profile_editor'))
+            opener.assert_called_once()
+            before = time.monotonic()
+            self.assertTrue(controller.dispatch_action('overlay_toggle'))
+            self.assertLess(time.monotonic() - before, .25)
+            self.assertFalse(controller.active)
+            self.assertIsNone(seen[-1]['border'])
+            controller.update(status())  # Stale polling data must not reopen the menu.
+            self.assertFalse(controller.active)
+            release.set()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+            self.assertEqual(calls, [True, False])
+            self.assertTrue(controller.wait_for_input(0))
+            self.assertFalse(controller.active)
+            self.assertTrue(state.is_scaling_active)
+        finally:
+            release.set()
+            controller.clear()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+
+    def test_rapid_reopen_coalesces_pending_preferences_and_keeps_latest_state(self):
+        controller, _, _, _, _, _ = environment(asynchronous=True)
+        started, release = threading.Event(), threading.Event()
+        calls = []
+        def control(enabled):
+            calls.append(enabled)
+            if len(calls) == 1:
+                started.set()
+                release.wait(5)
+            return status(enabled)
+        controller.passthrough_control = control
+        controller.update(status(False))
+        try:
+            controller.dispatch_action('overlay_toggle')
+            self.assertTrue(started.wait(1))
+            controller.dispatch_action('overlay_toggle')
+            controller.dispatch_action('overlay_toggle')
+            self.assertTrue(controller.active)
+            release.set()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+            self.assertEqual(calls, [True, True])
+            self.assertTrue(controller.active)
+            self.assertFalse(controller._input_pending)
+        finally:
+            release.set()
+            controller.clear()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+
+    def test_session_change_or_clear_cancels_pending_enable_and_releases_old_input(self):
+        for operation in ('target', 'clear'):
+            with self.subTest(operation=operation):
+                controller, _, state, _, _, _ = environment(asynchronous=True)
+                started, release = threading.Event(), threading.Event()
+                calls = []
+                def control(enabled):
+                    calls.append(enabled)
+                    if enabled:
+                        started.set()
+                        release.wait(5)
+                    return status(enabled)
+                controller.passthrough_control = control
+                controller.update(status(False))
+                try:
+                    controller.dispatch_action('overlay_toggle')
+                    self.assertTrue(started.wait(1))
+                    if operation == 'target':
+                        state.scaling_target_hwnd = 99
+                        controller.update(status(False))
+                    else:
+                        controller.clear()
+                    self.assertFalse(controller.active)
+                    release.set()
+                    self.assertTrue(wait_until(lambda: not controller._control_running))
+                    self.assertEqual(calls, [True, False])
+                    self.assertFalse(controller.active)
+                finally:
+                    release.set()
+                    controller.clear()
+                    self.assertTrue(wait_until(lambda: not controller._control_running))
+
+    def test_queued_enable_is_discarded_if_target_changes_before_controller_poll(self):
+        controller, _, state, _, _, _ = environment(asynchronous=True)
+        queued = []
+        controller._control_submit = queued.append
+        controller.update(status(False))
+        controller.dispatch_action('overlay_toggle')
+        state.scaling_target_hwnd = 99
+        queued.pop()()
+        controller.passthrough_control.assert_not_called()
+        controller.update(status(False))
+        if queued:
+            queued.pop()()
+
+    def test_known_host_restart_discards_queued_enable_for_the_previous_process(self):
+        controller, _, _, _, _, _ = environment(asynchronous=True)
+        queued = []
+        controller._control_submit = queued.append
+        controller.update(status(False))
+        controller.dispatch_action('overlay_toggle')
+        controller.update(status(False, pid=456))
+        queued.pop()()
+        controller.passthrough_control.assert_not_called()
+        self.assertFalse(controller._input_pending)
+        controller.clear()
+
+    def test_native_background_request_keeps_captured_identity_during_telemetry_outage(self):
+        controller, manager, _, _, _, _ = environment(asynchronous=True)
+        queued = []
+        controller._control_submit = queued.append
+        controller.passthrough_control = controller._set_passthrough
+        controller.update(status(False))
+        with patch('companion.services.reshade_overlay.set_passthrough', return_value=status()) as request:
+            controller.dispatch_action('overlay_toggle')
+            controller.update({'available': False})
+            queued.pop()()
+            request.assert_called_once_with(manager.config.lossless_scaling_exe_path, True,
+                                            expected_pid=123, target_pid=42, target_hwnd=82)
+            controller.clear()
+            request.return_value = status(False)
+            if queued:
+                queued.pop()()
+
+    def test_late_input_error_after_closing_is_not_reported_as_a_new_menu_failure(self):
+        controller, _, _, _, _, _ = environment(asynchronous=True)
+        started, release = threading.Event(), threading.Event()
+        def control(enabled):
+            if enabled:
+                started.set()
+                release.wait(5)
+                raise TimeoutError('late enable failure')
+            return status(False)
+        controller.passthrough_control = control
+        controller.update(status(False))
+        try:
+            controller.dispatch_action('overlay_toggle')
+            self.assertTrue(started.wait(1))
+            controller.dispatch_action('overlay_toggle')
+            release.set()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+            self.assertFalse(controller.active)
+            self.assertFalse(any('late enable failure' in line.text for line in controller.indicator._state.current))
+        finally:
+            release.set()
+            controller.clear()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
 
 
 class ReShadeOverlayTests(unittest.TestCase):
@@ -188,7 +369,7 @@ class ReShadeOverlayTests(unittest.TestCase):
         self.assertFalse(controller.active)
         listener.set_overlay_actions.assert_called_with({})
 
-    def test_live_toggle_sets_yellow_border_and_persistent_status_then_restores_scaling(self):
+    def test_live_toggle_sets_yellow_border_and_closing_dismisses_old_scaling_border(self):
         controller, manager, state, listener, _, seen = environment()
         controller.update(status())
         payload = seen[-1]
@@ -198,7 +379,7 @@ class ReShadeOverlayTests(unittest.TestCase):
         self.assertIn({"key": "Delete", "label": "Edit current profile"}, payload["hotkey_hints"])
         self.assertIn({"key": "Insert", "label": "Advanced add-on panel"}, payload["hotkey_hints"])
         controller.update(status(False))
-        self.assertEqual(seen[-1]["border"], "active")
+        self.assertIsNone(seen[-1]["border"])
         self.assertFalse(seen[-1]["hotkey_hints"])
         self.assertEqual(set(listener.set_overlay_actions.call_args.args[0]), {"overlay_toggle"})
 
@@ -402,6 +583,18 @@ class ReShadeOverlayTests(unittest.TestCase):
 
 
 class OverlayShortcutTests(unittest.TestCase):
+    def test_menu_toggle_has_no_fixed_release_delay_and_other_actions_keep_theirs(self):
+        for name, delay in (('overlay_toggle', 0), ('profile_editor', .15)):
+            with self.subTest(name=name):
+                listener = GlobalHotkeyListener(SimpleNamespace(config=AppConfig()), AppState(), lambda: None)
+                done = threading.Event()
+                listener._stop_event = Mock()
+                listener._stop_event.wait.return_value = False
+                listener._overlay_actions = {name: {'binding': 'end', 'callback': done.set}}
+                listener._dispatch_overlay(name)
+                self.assertTrue(done.wait(1))
+                listener._stop_event.wait.assert_called_once_with(delay)
+
     def test_defaults_punctuation_modifiers_blank_and_duplicates(self):
         bindings = validate_overlay_hotkeys({})
         self.assertEqual(parse_shortcut(bindings["profile_editor"])[:2], (0, 46))
@@ -487,6 +680,59 @@ class OverlayShortcutTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'win32', 'Win32 overlay controls')
 class NativeOverlayControlsTests(unittest.TestCase):
+    def test_hints_paint_while_native_input_is_still_blocked_and_border_disappears_on_close(self):
+        from companion.services import overlay_window as overlay
+        controller, _, state, _, _, _ = environment(asynchronous=True)
+        presenter = overlay.Win32OverlayPresenter()
+        u = presenter._user32
+        anchor = u.CreateWindowExW(overlay.WS_EX_NOACTIVATE, 'STATIC', 'Overlay latency target',
+                                  0x80000000, -30000, -30000, 1280, 720, None, None, None, None)
+        self.assertTrue(anchor)
+        state.scaling_target_hwnd = anchor
+        controller.indicator = OverlayIndicator(presenter=presenter, window_info=lambda _: (1280, 720, 'Game'))
+        started, release, painted = threading.Event(), threading.Event(), threading.Event()
+        original_paint = presenter._paint_hints
+        timings = {}
+        for name in ('_create_windows', '_paint_header'):
+            original = getattr(presenter, name)
+            def measure(*args, name=name, original=original):
+                before = time.monotonic()
+                try:
+                    return original(*args)
+                finally:
+                    timings[name] = (time.monotonic() - before) * 1000
+            setattr(presenter, name, measure)
+        def paint(memory):
+            original_paint(memory)
+            painted.set()
+        presenter._paint_hints = paint
+        def control(enabled):
+            if enabled:
+                started.set()
+                release.wait(5)
+            return status(enabled)
+        controller.passthrough_control = control
+        controller.update(status(False))
+        try:
+            before = time.monotonic()
+            controller.dispatch_action('overlay_toggle')
+            dispatch_ms = (time.monotonic() - before) * 1000
+            self.assertTrue(painted.wait(1), 'Menu paint was blocked by native input initialization')
+            elapsed = time.monotonic() - before
+            print(f'Overlay response: dispatch={dispatch_ms:.1f} ms, first hints paint={elapsed * 1000:.1f} ms, native input blocked; stages={timings}')
+            self.assertTrue(started.wait(1))
+            self.assertFalse(release.is_set())
+            self.assertTrue(presenter._hint_visible)
+            controller.dispatch_action('overlay_toggle')
+            self.assertTrue(wait_until(lambda: not presenter._hint_visible and not presenter._border_visible, 1))
+            self.assertTrue(state.is_scaling_active)
+        finally:
+            release.set()
+            controller.clear()
+            self.assertTrue(wait_until(lambda: not controller._control_running))
+            presenter.close()
+            u.DestroyWindow(anchor)
+
     def test_overlay_surfaces_return_above_a_raised_scaling_window_without_focus(self):
         from companion.services import overlay_window as overlay
 

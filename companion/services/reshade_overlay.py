@@ -4,6 +4,8 @@ from __future__ import annotations
 import ctypes
 import threading
 import logging
+import time
+from functools import partial
 from ctypes import wintypes
 from pathlib import Path
 import psutil
@@ -31,7 +33,7 @@ def menu_hotkey_label(status: dict, fallback: str) -> str:
 
 class ReShadeOverlayController:
     def __init__(self, manager, state, indicator, listener=None, open_profile=None, foreground_check=None,
-                 performance_graph=None, open_addon_panel=None, passthrough_control=None):
+                 performance_graph=None, open_addon_panel=None, passthrough_control=None, control_submit=None):
         self.manager, self.state, self.indicator = manager, state, indicator
         self.listener, self.open_profile = listener, open_profile
         self.performance_graph = performance_graph
@@ -49,6 +51,13 @@ class ReShadeOverlayController:
         self._last_binding_scope = None
         self._last_overlay_state = None
         self._lock = threading.RLock()
+        self._control_submit = control_submit
+        self._control_queue = []
+        self._control_running = False
+        self._control_serial = 0
+        self._input_pending = False
+        self._control_idle = threading.Event()
+        self._control_idle.set()
         self._special_k_loaded = False
         self._special_k_binding = "ctrl+shift+backspace"
         self._special_k_custom = False
@@ -74,13 +83,13 @@ class ReShadeOverlayController:
         self._last_status = status
         eligible = self.eligible()
         was_open = self.active or self._native_requested
-        if not eligible and (self._native_active or self._native_requested):
+        if not eligible and (self._native_active or self._native_requested or self._input_pending):
             self._release_passthrough()
         profile = self._current_profile()
         session = ((profile.id, self.state.scaling_target_pid, self.state.scaling_target_hwnd,
                     self.state.last_scale_toggle_time) if eligible else None)
         if session != self._session:
-            if eligible and self._session is not None and self._native_requested:
+            if eligible and self._session is not None and (self._native_requested or self._input_pending):
                 self._release_passthrough()
                 status = {**status, "reshade": {**(status.get("reshade") or {}),
                           "interactive": False, "controlRequested": False}}
@@ -89,6 +98,7 @@ class ReShadeOverlayController:
             self._manual_active = None
             self._native_active = False
             self._native_requested = False
+            self._input_pending = False
         reshade = status.get("reshade") or {}
         if not isinstance(reshade, dict):
             reshade = {}
@@ -125,7 +135,8 @@ class ReShadeOverlayController:
         hints = []
         if active and uses_reshade:
             hints.append({"key": menu_hotkey_label(reshade, self.manager.config.reshade_overlay_hotkey),
-                          "label": "Toggle ReShade menu" if native_active else "ReShade input unavailable"})
+                          "label": ("Toggle ReShade menu" if native_active else
+                                    "Preparing ReShade input…" if self._input_pending else "ReShade input unavailable")})
         for name in DEFAULT_OVERLAY_HOTKEYS:
             if (name == "overlay_toggle" and eligible) or (name != "overlay_toggle" and active):
                 binding = bindings[name]
@@ -211,10 +222,84 @@ class ReShadeOverlayController:
                                target_hwnd=(self.state.scaling_target_hwnd or target.get("hwnd")) if enabled else None)
 
     def _release_passthrough(self) -> None:
-        try:
-            self.passthrough_control(False)
-        except (OSError, ValueError):
-            pass  # The host may already have stopped with the scaling session.
+        self._queue_passthrough(False, report=False)
+        self._input_pending = False
+
+    def _queue_passthrough(self, enabled: bool, *, report: bool = True) -> None:
+        """Serialize native I/O without holding up menu painting or shortcuts."""
+        target = self.state.current_scaled_target or {}
+        executable = self.manager.config.lossless_scaling_exe_path
+        control = self.passthrough_control
+        if control == self._set_passthrough:
+            # Freeze the host and target now. Reading mutable state in the
+            # worker could enable input on a different game after a handoff.
+            control = partial(set_passthrough, executable, expected_pid=self.host_pid,
+                              target_pid=(self.state.scaling_target_pid or target.get("pid")) if enabled else None,
+                              target_hwnd=(self.state.scaling_target_hwnd or target.get("hwnd")) if enabled else None)
+        self._control_serial += 1
+        key = (executable, self.host_pid, self._session)
+        request = (self._control_serial, key, enabled, partial(control, enabled), report)
+        # Rapid open/close/open changes need only the latest queued preference
+        # for that session. Keep old-session disables ahead of the new session.
+        self._control_queue = [item for item in self._control_queue if item[1] != key]
+        self._control_queue.append(request)
+        self._control_idle.clear()
+        self._input_pending = report
+        if not self._control_running:
+            self._control_running = True
+            if self._control_submit is not None:
+                self._control_submit(self._drain_control_requests)
+            else:
+                threading.Thread(target=self._drain_control_requests, daemon=True,
+                                 name="OverlayInputControl").start()
+
+    def _drain_control_requests(self) -> None:
+        while True:
+            with self._lock:
+                if not self._control_queue:
+                    self._control_running = False
+                    self._control_idle.set()
+                    return
+                serial, key, enabled, control, report = self._control_queue.pop(0)
+                if enabled and not self._control_request_current(serial, key):
+                    if serial == self._control_serial:
+                        self._input_pending = False
+                    continue
+            started = time.monotonic()
+            error, status = None, None
+            try:
+                status = control()
+                if not isinstance(status, dict):
+                    raise ValueError("The add-on host returned an invalid overlay input status")
+            except Exception as failure:
+                error = failure
+            with self._lock:
+                # A late receipt must never reopen a closed menu or replace
+                # the telemetry of another host/game session.
+                if not report or not self._control_request_current(serial, key):
+                    continue
+                self._input_pending = False
+                if error is not None:
+                    logger.error("Overlay input toggle failed: desired=%s; host PID=%s; session=%s",
+                                 enabled, key[1], key[2], exc_info=(type(error), error, error.__traceback__))
+                self.update(status if error is None else self._last_status)
+                if error is not None:
+                    self.indicator.log(f"Overlay input unavailable: {error}", kind="error")
+                logger.info("Overlay input background request finished in %.1f ms: enabled=%s; confirmed=%s",
+                            (time.monotonic() - started) * 1000, enabled, error is None)
+
+    def _control_request_current(self, serial, key) -> bool:
+        profile = self._current_profile()
+        current = ((profile.id, self.state.scaling_target_pid, self.state.scaling_target_hwnd,
+                    self.state.last_scale_toggle_time) if profile else None)
+        return bool(serial == self._control_serial and key[2] == self._session == current
+                    and key[0] == self.manager.config.lossless_scaling_exe_path
+                    and (key[1] is None or self.host_pid is None or key[1] == self.host_pid)
+                    and self.eligible())
+
+    def wait_for_input(self, timeout: float = 3.0) -> bool:
+        """Drain the final disable on application shutdown, never on menu close."""
+        return self._control_idle.wait(timeout)
 
     def _dispatch_action(self, action: str) -> bool:
         profile = self._current_profile()
@@ -224,22 +309,18 @@ class ReShadeOverlayController:
                 or not self.foreground_check()):
             return False
         if action == "overlay_toggle":
+            started = time.monotonic()
             uses_reshade = bool(profile.graphics.reshade.enabled or (profile.reshade and profile.reshade.enabled))
             desired = not (self._manual_active if self._manual_active is not None
                            else self._native_requested or self.active)
             self._manual_active = desired
-            if uses_reshade:
-                try:
-                    status = self.passthrough_control(desired)
-                except (OSError, ValueError) as error:
-                    logger.exception("Overlay input toggle failed: desired=%s; host PID=%s; game PID=%s, HWND=%s",
-                                     desired, self.host_pid, self.state.scaling_target_pid, self.state.scaling_target_hwnd)
-                    self.update(self._last_status)
-                    self.indicator.log(f"Overlay input unavailable: {error}", kind="error")
-                    return True  # Companion's menu still toggled; input failure is reported separately.
-                self.update(status)
-                return True
+            self._input_pending = uses_reshade
+            # Submit a visible frame before even starting the input worker.
             self.update(self._last_status)
+            if uses_reshade:
+                self._queue_passthrough(desired)
+            logger.info("Overlay menu %s queued in %.1f ms; input confirmation runs separately",
+                        "open" if desired else "close", (time.monotonic() - started) * 1000)
             return True
         if not self.active:
             return False
@@ -257,7 +338,7 @@ class ReShadeOverlayController:
     def clear(self) -> None:
         with self._lock:
             suspended = self._native_requested and not self.active
-            if self._native_active or self._native_requested:
+            if self._native_active or self._native_requested or self._input_pending:
                 self._release_passthrough()
                 self._native_active = False
                 self._native_requested = False

@@ -73,6 +73,8 @@ class ProfileManager:
             self.config_dir = config_dir
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        from ..services.clean_install import recover_clean_install
+        recover_clean_install(self.config_dir)
         self.config_file = self.config_dir / "settings.json"
         self._prune_settings_repair_copies()
         self.profile_settings = ProfileSettingsStore(self.config_dir)

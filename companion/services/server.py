@@ -153,6 +153,8 @@ class CompanionWebSocketServer:
         self.diagnostic_runner = DiagnosticRunner(self)
         self.diagnostics_task: Optional[asyncio.Task] = None
         self.clone_rebuild_task: Optional[asyncio.Task] = None
+        self.clean_install_task: Optional[asyncio.Task] = None
+        self.clean_install_status = {"busy": False}
         self.clone_rebuild_status = {"busy": False, "message": "Rebuild the managed program files while preserving settings."}
         self._diagnostics_selected_test: Optional[str] = None
         self.last_diagnostics_result: Optional[Dict] = None
@@ -246,6 +248,8 @@ class CompanionWebSocketServer:
         logger.info(f"WebSocket server listening on ws://{self.config.host}:{self.config.port}/ws")
 
     async def stop(self) -> None:
+        if self.clean_install_task:
+            await asyncio.shield(self.clean_install_task)
         await self._run_background_thread(self.automation.capture_reshade_settings)
         if self._reshade_overlay_task:
             self._reshade_overlay_task.cancel()
@@ -253,6 +257,8 @@ class CompanionWebSocketServer:
                 await self._reshade_overlay_task
             self._reshade_overlay_task = None
         self.reshade_overlay.clear()
+        if not await self._run_background_thread(self.reshade_overlay.wait_for_input):
+            logger.warning("Overlay input cleanup did not finish before the shutdown timeout")
         await self._run_background_thread(self.live_performance.stop, wait=True)
         for unsubscribe in self._publication_unsubscribers:
             unsubscribe()
@@ -458,6 +464,11 @@ class CompanionWebSocketServer:
         except (ValueError, TypeError):
             return await self._process_message(websocket, raw_message)
         action = message.get("type") if isinstance(message, dict) else None
+        if (self.clean_install_task and not self.clean_install_task.done()
+                and action not in {"GET_RUNTIME_LOGS", "GET_CLEAN_INSTALL_STATUS", "PING"}):
+            await websocket.send(json.dumps({"type": "ERROR", "action": action,
+                "message": "Clean install is running. Wait for it to finish."}))
+            return
         if (self.clone_rebuild_task and not self.clone_rebuild_task.done()
                 and isinstance(action, str) and not (action.startswith("GET_") or action == "PING")):
             await websocket.send(json.dumps({"type": "ERROR", "action": action,
@@ -552,6 +563,7 @@ class CompanionWebSocketServer:
             dashboard_messages = {
                 "GET_RUNTIME_LOGS",
                 "REBUILD_CLONED_INSTALLATION",
+                "CLEAN_INSTALL", "GET_CLEAN_INSTALL_STATUS",
                 "UPDATE_LOSSLESS_PROFILE", "SET_EDITOR_ACTIVITY",
                 "IMPORT_LOSSLESS_PROFILE",
                 "SET_ACTIVE_PROFILE",
@@ -604,7 +616,11 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({"type": "RUNTIME_LOGS", **self.runtime_logs.snapshot(since, msg.get("session", "")),
                     "path": str(self.profile_manager.config_dir / "logs" / "companion.log"),
                     "scalingControl": dict(self.state.scaling_control_status),
-                    "cloneRebuild": dict(self.clone_rebuild_status)}))
+                    "cloneRebuild": dict(self.clone_rebuild_status),
+                    "cleanInstall": dict(self.clean_install_status)}))
+                return
+            if msg_type == "GET_CLEAN_INSTALL_STATUS":
+                await websocket.send(json.dumps({"type": "CLEAN_INSTALL_STATUS", **self.clean_install_status}))
                 return
             if (isinstance(msg_type, str) and not msg_type.startswith("GET_")
                     and msg_type not in {"PING", "SET_EDITOR_ACTIVITY", "EMBED_ADDON_MENU", "DETACH_ADDON_MENU"}):
@@ -641,6 +657,23 @@ class CompanionWebSocketServer:
                 self._active_mutations += 1
                 self.clone_rebuild_task = asyncio.create_task(self._run_clone_rebuild())
                 await websocket.send(json.dumps({"type": "CLONE_REBUILD_STATUS", **self.clone_rebuild_status}))
+                return
+            if msg_type == "CLEAN_INSTALL":
+                if msg.get("confirmCleanInstall") is not True:
+                    raise ValueError("Confirm removal of all profiles and reset to defaults")
+                if ((self.diagnostics_task and not self.diagnostics_task.done())
+                        or (self.benchmark_task and not self.benchmark_task.done())
+                        or self.component_install_lock.locked() or self._editing_clients
+                        or self.state.benchmark_mode_active or self.state.update_in_progress
+                        or self._active_mutations > 1 or self._active_requests > 1):
+                    raise RuntimeError("Close profile editors and finish other operations before a clean install")
+                self.clean_install_status = {"busy": True, "operationId": secrets.token_hex(16),
+                    "message": "Stopping LS, removing profiles and creating a fresh installation…"}
+                with self._gpu_activity_lock:
+                    self._active_requests += 1
+                self._active_mutations += 1
+                self.clean_install_task = asyncio.create_task(self._run_clean_install(websocket))
+                await websocket.send(json.dumps({"type": "CLEAN_INSTALL_STATUS", **self.clean_install_status}))
                 return
             if msg_type == "RETRY_DEPLOYMENT_RECOVERY":
                 if self.state.is_scaling_active:
@@ -2351,6 +2384,62 @@ class CompanionWebSocketServer:
                 f"ws://localhost:{self.config.port} ws://[::1]:{self.config.port}",
             ),
         ], body
+
+    async def _run_clean_install(self, requester) -> None:
+        from .clean_install import clean_install
+        operation_id = self.clean_install_status["operationId"]
+
+        def reset():
+            # Match the limiter's lock order (limiter -> profile manager), and
+            # prevent old calibration samples from surviving into new profiles.
+            limiter_lock = self.dynamic_limiter._lock if self.dynamic_limiter is not None else contextlib.nullcontext()
+            with limiter_lock:
+                return reset_locked()
+
+        def reset_locked():
+            if self.dynamic_limiter is not None:
+                self.dynamic_limiter.clear_sessions()
+
+            def cleanup_integrations():
+                self.automation.gloam_integration.close()
+                self.automation.nvidia_profile_manager.restore_managed_changes()
+                for profile in self.config.profiles:
+                    if (profile.rtss.managed_target_process or profile.rtss.managed_profile_created
+                            or profile.rtss.original_values):
+                        self.rtss_manager.remove_profile(profile, self.config.rtss_install_path)
+                startup = self.startup_manager.set_enabled(False)
+                if startup.get("enabled"):
+                    raise RuntimeError("Companion's startup task could not be disabled")
+
+            result = clean_install(self.automation, cleanup_integrations)
+            if self.process_watcher:
+                self.process_watcher.invalidate_foreground_cache()
+            self.automation.reshade_profiles = ReshadeProfileService(self.profile_manager)
+            self.rtss_manager.configured_path = self.config.rtss_install_path
+            if self.hotkey_listener:
+                self.hotkey_listener.refresh()
+            return result
+
+        try:
+            result = await self._run_background_thread(reset)
+            self.reshade_profiles = ReshadeProfileService(self.profile_manager)
+            self.reshade_overlay.clear()
+            self.live_performance.stop()
+            for task in self.fullscreen_tasks.values():
+                task.cancel()
+            self.fullscreen_tasks.clear()
+            self.clean_install_status = {"busy": False, "success": result["ok"], **result}
+        except Exception as error:
+            logger.exception("Clean install failed")
+            self.clean_install_status = {"busy": False, "success": False, "message": str(error)}
+        finally:
+            self.clean_install_status["operationId"] = operation_id
+            with self._gpu_activity_lock:
+                self._active_requests -= 1
+            self._active_mutations -= 1
+        payload = json.dumps({"type": "CLEAN_INSTALL_STATUS", **self.clean_install_status})
+        await asyncio.gather(*(client.send(payload) for client in self.clients | {requester}), return_exceptions=True)
+        self.state.publish_change()
 
     async def _run_clone_rebuild(self) -> None:
         try:

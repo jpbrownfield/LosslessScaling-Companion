@@ -70,6 +70,21 @@ class DynamicLimiterTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_clean_install_discards_all_volatile_calibration_and_maintenance_does_not_sample(self):
+        self.controller.poll()
+        self.assertIsNotNone(self.controller._session)
+        self.controller._pending_sessions.append(self.controller._session)
+        self.controller._manual_profile_id = self.profile.id
+        self.controller._manual_until = self.now + 300
+        self.controller.clear_sessions()
+        self.assertIsNone(self.controller._session)
+        self.assertEqual(self.controller._pending_sessions, [])
+        self.assertIsNone(self.controller._manual_profile_id)
+        self.assertEqual(self.controller._manual_until, 0)
+        self.state.update_in_progress = True
+        self.assertEqual(self.controller.poll()['state'], 'inactive')
+        self.assertIsNone(self.controller._session)
+
     def poll_windows(self, count):
         result = None
         for _ in range(count * self.controller.WINDOW_SAMPLES):

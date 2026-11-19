@@ -161,6 +161,8 @@ class DynamicLimiterController:
 
     def poll(self) -> dict:
         with self._lock:
+            if self.state.update_in_progress:
+                return self._set_status("inactive", "Maintenance in progress")
             self._finish_ended_session()
             profile = self._active_dynamic_profile()
             if profile is None:
@@ -218,6 +220,15 @@ class DynamicLimiterController:
             lossless_gpu = statistics.median(value[1] for value in session.samples)
             session.samples.clear()
             return self._evaluate(profile, session, game_gpu, lossless_gpu, manual_remaining)
+
+    def clear_sessions(self) -> None:
+        """Discard volatile calibration data before deleting/resetting profiles."""
+        with self._lock:
+            self._session = None
+            self._pending_sessions.clear()
+            self._manual_profile_id = None
+            self._manual_until = 0.0
+            self._lossless_pid = None
 
     def close(self) -> None:
         # A companion shutdown is not proof that the game session ended. Keep
