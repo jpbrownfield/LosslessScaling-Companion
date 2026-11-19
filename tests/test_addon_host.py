@@ -1,6 +1,7 @@
 import json
 import struct
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from companion.services.addon_host import (
 from companion.services.automatic_updates import newer_addon_version
 from companion.services.release_providers import BundledAddonManagerReleaseProvider, ReleaseManager, ProviderRegistry
 from companion.services.asset_store import AssetStore
+from native.addon_manager.prepare import patch_capture_variants
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +40,77 @@ def manager_hardware_available():
         return False
 
 
+@unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_CAPTURE_PROBE"),
+                     "Set LSC_TEST_CAPTURE_PROBE to the built eam_captureprobe.exe for visible real-engine capture tests")
+class NativeCaptureVariantTests(unittest.TestCase):
+    def test_wgc_sdr_and_hdr_capture_variants(self):
+        probe = Path(os.environ["LSC_TEST_CAPTURE_PROBE"]).resolve()
+        engine = ROOT / "build/overlay-input-ls/Lossless.dll"
+        self.assertTrue(probe.is_file(), probe)
+        self.assertTrue(engine.is_file(), engine)
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "Lossless_original.dll"
+            shutil.copy2(engine, original)
+            for frame_generation in (1, 0):
+                for scaler in (0, 3):
+                    for hdr in (False, True):
+                        with self.subTest(fg=frame_generation, scaler=scaler, hdr=hdr):
+                            command = [str(probe), str(original), str(frame_generation), "1",
+                                       str(scaler), "0", "0", str(int(hdr))]
+                            with subprocess.Popen(command, cwd=directory, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True,
+                                    creationflags=subprocess.CREATE_NO_WINDOW,
+                                    env={**os.environ, "EAM_PROBE_SECONDS": "4"}) as process:
+                                try:
+                                    output, _ = process.communicate(timeout=45)
+                                except subprocess.TimeoutExpired:
+                                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                                   capture_output=True, timeout=10)
+                                    process.kill()
+                                    output, _ = process.communicate(timeout=10)
+                                    self.fail(f"Capture probe timed out:\n{output[-6000:]}")
+                            totals = re.search(r"Total passes (\d+) real frames (\d+) verified (\d+) failures (\d+)", output)
+                            detail = output[-6000:]
+                            self.assertIsNotNone(totals, detail)
+                            self.assertEqual(process.returncode, 0, detail)
+                            passes, frames, verified, failures = map(int, totals.groups())
+                            self.assertGreater(passes, 0, detail)
+                            self.assertGreater(frames, 0, detail)
+                            self.assertGreater(verified, 0, detail)
+                            self.assertEqual(failures, 0, detail)
+                            self.assertIn("/f10/" if hdr else "/f28/", output)
+                            progress = dict(re.findall(r"Capture trace (\w+) (\d+)", output))
+                            for step in ("handoffAttempts", "callbackInvocations", "handoffAccepted"):
+                                self.assertGreater(int(progress.get(step, 0)), 0, detail)
+                            self.assertEqual(progress.get("handoffDeclined"), "0", detail)
+                            samples = re.findall(r"^Capture shader ([0-9a-f]{64} groups=\d+x\d+x\d+)$", output, re.MULTILINE)
+                            self.assertGreater(len(samples), 0, detail)
+                            self.assertLessEqual(len(samples), 8, detail)
+
+
 class AddonHostTests(unittest.TestCase):
+    def test_capture_patch_accepts_all_nis_variants_without_removing_shader_gates(self):
+        source = ('constexpr char kNis[] = "fc8f0300fec6f80250b8ec605265ba91c80f1d897fe799004f2cb95e14ca3d02";\n'
+                  'if(fg==1&&Match(sha,kCapture)) {}\n'
+                  'else if(fg==0&&Match(sha,scaler==0?kCopy:kNis)) {}\n')
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "real_frame_hook.cpp"
+            capture.write_text(source, encoding="utf-8")
+            patch_capture_variants(capture)
+            patched = capture.read_text(encoding="utf-8")
+        self.assertIn('kNisHdr[] = "706e76dcb5b725b0dc3c0368fac0135e2fffab60357277ddfe05c37c0ade657a"', patched)
+        self.assertIn('kNis256[] = "90600dc728c3dae6daf0878c183e374508d77e4d6eb11124d817a5d6e132fa71"', patched)
+        self.assertIn('kNisHdr256[] = "aff36a75a5ad505db6512744d6f4249b843cc0cc06b023b4b216e9a2614de89a"', patched)
+        self.assertIn('fg==1&&Match(sha,kCapture)', patched)
+        self.assertIn('scaler==0?Match(sha,kCopy):(Match(sha,kNis)||Match(sha,kNisHdr)||Match(sha,kNis256)||Match(sha,kNisHdr256))', patched)
+
+    def test_capture_patch_refuses_upstream_shader_gate_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Path(directory) / "real_frame_hook.cpp"
+            capture.write_text("unknown upstream shader matcher", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Upstream drift"):
+                patch_capture_variants(capture)
+
     def sample(self, **changes):
         return {"schema": 1, "pid": 123, "createdAt": 900.0, "sampledAt": 1000.0,
                 "headless": True, "hostVersion": MANAGED_HOST_VERSION, "addons": [], "metrics": {}, **changes}
@@ -285,6 +357,9 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertEqual(observed["cursor"]["guardError"], 0)
                 self.assertGreaterEqual(observed["cursor"]["selfReplacementsPrevented"], 0)
                 self.assertTrue(observed["capture"]["runtimeVerified"])
+                self.assertEqual(observed["capture"]["traceVersion"], 1)
+                self.assertIn("callbackInvocations", observed["capture"]["progress"])
+                self.assertLessEqual(len(observed["capture"]["shaderSamples"]), 8)
                 self.assertEqual(observed["startupError"], "")
             finally:
                 try:

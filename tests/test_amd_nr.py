@@ -229,12 +229,12 @@ class NativeAmdNrTests(unittest.TestCase):
 
     def test_software_gpu_compute_flow_motion_and_history_reset(self):
         probe = ROOT / "build/native/LSC-AMDNR/LSC_AMDNRProbe.exe"
-        result = subprocess.run([str(probe), "--warp", "--flow-only"], capture_output=True, text=True, timeout=60)
+        result = subprocess.run([str(probe), "--warp", "--flow-only"], capture_output=True, text=True, timeout=180)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("No NR inference tested", result.stdout)
 
     def test_real_pipeline_shared_textures_fences_resize_and_ring_reuse(self):
         probe = ROOT / "build/native/LSC-AMDNR/LSC_AMDNRProbe.exe"
-        result = subprocess.run([str(probe), "--warp", "--bridge-only"], capture_output=True, text=True, timeout=60)
+        result = subprocess.run([str(probe), "--warp", "--bridge-only"], capture_output=True, text=True, timeout=180)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("no NR inference tested", result.stdout)

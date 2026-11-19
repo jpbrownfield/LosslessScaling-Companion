@@ -466,15 +466,9 @@ class ProviderRegistry:
                 "jpbrownfield/LosslessScaling-Companion",
                 r"^LosslessCompanion-Setup-x64\.exe(?:\.sha256)?$",
             ),
-            "lossless-proxy": GitHubReleaseProvider(
-                "lossless-proxy", "FrankBarretta/LosslessProxy", r"(?:\.zip$|Lossless\.dll$)"
-            ),
             "ls-addon-manager": BundledAddonManagerReleaseProvider(),
             "sm86-sr": Sm86SrReleaseProvider(),
             amd_nr.PROVIDER: AmdNrReleaseProvider(),
-            "lsp-neural-render": BundledArchiveReleaseProvider(
-                "lsp-neural-render", "LSP-NeuralRender.zip"
-            ),
             "dlss5-feeder": GitHubReleaseProvider(
                 "dlss5-feeder", "jlrouzies-fr/DLSS5-Feeder", r"\.zip$"
             ),

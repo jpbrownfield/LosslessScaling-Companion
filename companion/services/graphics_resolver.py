@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import hashlib
 import re
-import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -22,75 +21,8 @@ class GraphicsResolutionError(RuntimeError):
 
 
 class GraphicsResolver:
-    NEURAL_SAMPLING_PRESETS = {
-        "performance": 0.25,
-        "balanced": 0.35,
-        "quality": 0.50,
-        "full": 1.0,
-    }
-    def __init__(self, store: AssetStore, bundled_reshade_bridge_dir: Optional[str] = None):
+    def __init__(self, store: AssetStore):
         self.store = store
-        self._reshade_bridge_dir = (
-            Path(bundled_reshade_bridge_dir).resolve()
-            if bundled_reshade_bridge_dir else None
-        )
-
-    def _bundled_reshade_bridge_files(self) -> List[Dict]:
-        if self._reshade_bridge_dir is not None:
-            candidates = [self._reshade_bridge_dir]
-        else:
-            candidates = []
-            frozen_root = getattr(sys, "_MEIPASS", None)
-            if frozen_root:
-                candidates.append(Path(frozen_root) / "addons" / "LSP-ReShade")
-            try:
-                from .test_binaries import candidate as _test_binary
-
-                cached = _test_binary("addons/LSP-ReShade")
-                if (cached / "LSC_ReShadeBridge.dll").is_file():
-                    candidates.append(cached)
-            except Exception:
-                pass
-            candidates.append(
-                Path(__file__).resolve().parents[2] / "build" / "native" / "LSP-ReShade"
-            )
-
-        directory = next(
-            (
-                item for item in candidates
-                if (item / "LSC_ReShadeBridge.dll").is_file()
-                and (item / "addon.json").is_file()
-            ),
-            None,
-        )
-        if directory is None:
-            raise GraphicsResolutionError(
-                "ReShade with LosslessProxy requires the bundled Overlay toggle bridge; "
-                "reinstall LS Companion or build its native bridge"
-            )
-
-        binary = self._require_x64(
-            (directory / "LSC_ReShadeBridge.dll").resolve(strict=True),
-            "The bundled Overlay toggle bridge",
-        )
-        manifest = (directory / "addon.json").resolve(strict=True)
-        try:
-            metadata = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise GraphicsResolutionError(f"The bundled Overlay toggle bridge manifest is invalid: {error}") from error
-        if not isinstance(metadata, dict) or metadata.get("dll") != binary.name:
-            raise GraphicsResolutionError("The bundled Overlay toggle bridge manifest does not match its DLL")
-
-        package = "reshade/bundled-ls-companion-bridge/1.0.0"
-        return [
-            {
-                "relative_path": f"addons/LSP-ReShade/{source.name}",
-                "source_path": str(source),
-                "role": "lossless_addon",
-                "source_package": package,
-            }
-            for source in (binary, manifest)
-        ]
 
     def _package(self, provider: str, config: ManagedPackageConfig) -> Optional[Dict]:
         if not config.enabled:
@@ -113,29 +45,6 @@ class GraphicsResolver:
         candidates.sort(key=lambda item: addon_version_key(item.get("version")), reverse=True)
         return candidates[0]
 
-    def _neural_package(self, config: ManagedPackageConfig) -> Optional[Dict]:
-        """Prefer Companion's bundled fork over every legacy staged release.
-
-        Profiles created by older builds may still pin upstream 0.2.x. Once the
-        Companion fork has been staged, that stale pin must not keep deploying
-        the incompatible DLLs over the bundled HDR build.
-        """
-        if not config.enabled:
-            return None
-        candidates = [
-            item for item in self.store.list_packages()
-            if item.get("provider") == "lsp-neural-render"
-        ]
-        bundled = [
-            item for item in candidates
-            if isinstance(item.get("source"), dict)
-            and item["source"].get("kind") == "bundled-native-component"
-        ]
-        if bundled:
-            bundled.sort(key=lambda item: str(item.get("version") or ""), reverse=True)
-            return bundled[0]
-        return self._package("lsp-neural-render", config)
-
     @staticmethod
     def _require_x64(path: Path, label: str) -> Path:
         architecture = AssetStore.pe_architecture(path)
@@ -144,23 +53,6 @@ class GraphicsResolver:
                 f"{label} must be a valid x64 Windows binary (found {architecture or 'non-PE'})"
             )
         return path
-
-    @staticmethod
-    def _find_payload_file(package: Dict, filename: str, *, contains: Optional[str] = None) -> Path:
-        payload = Path(package["payload_path"])
-        matches = []
-        for item in package.get("files", []):
-            relative = str(item.get("relative_path") or "")
-            if Path(relative).name.casefold() != filename.casefold():
-                continue
-            if contains and contains.casefold() not in relative.casefold():
-                continue
-            matches.append(payload / Path(relative))
-        if len(matches) != 1:
-            raise GraphicsResolutionError(
-                f"Expected exactly one {filename} in {package.get('provider')} package; found {len(matches)}"
-            )
-        return matches[0]
 
     def _recipe_files(self, package: Dict) -> List[Dict]:
         payload = Path(package["payload_path"])
@@ -200,64 +92,6 @@ class GraphicsResolver:
                 }
             )
         return result
-
-    def _neural_manifest(self, profile_id: str, package: Dict) -> Path:
-        """Create an unambiguous LosslessProxy manifest for NeuralRender.
-
-        Upstream NeuralRender releases currently omit ``dll``. LosslessProxy's
-        fallback scans DLLs in directory order, but this package contains both
-        the add-on and its NGX forwarding DLL. Pinning the entry point prevents
-        the forwarder from being selected as the add-on.
-        """
-        manifest = self._find_payload_file(
-            package, "addon.json", contains="LSP-NeuralRender"
-        )
-        try:
-            metadata = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise GraphicsResolutionError(
-                f"LSP-NeuralRender addon.json is invalid: {error}"
-            ) from error
-        if not isinstance(metadata, dict):
-            raise GraphicsResolutionError("LSP-NeuralRender addon.json must contain a JSON object")
-        if not str(metadata.get("name") or "").strip():
-            raise GraphicsResolutionError("LSP-NeuralRender addon.json has no add-on name")
-        metadata["dll"] = "LSP_NeuralRender.dll"
-        return self.store.write_generated_json(
-            profile_id, "lsp-neural-render-addon.json", metadata
-        )
-
-    @staticmethod
-    def _version_tuple(value: object) -> tuple[int, ...]:
-        return tuple(int(part) for part in re.findall(r"\d+", str(value or "")))
-
-    def _require_proxy_compatibility(self, proxy_package: Dict, files: List[Dict]) -> None:
-        host_version = self._version_tuple(proxy_package.get("version"))
-        for item in files:
-            relative = item["relative_path"].replace("\\", "/")
-            if not relative.casefold().startswith("addons/") or not relative.casefold().endswith("/addon.json"):
-                continue
-            try:
-                metadata = json.loads(Path(item["source_path"]).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise GraphicsResolutionError(f"Add-on manifest {relative} is invalid: {error}") from error
-            minimum_text = str(metadata.get("min_host_version") or "").strip()
-            if not minimum_text:
-                continue
-            minimum = self._version_tuple(minimum_text)
-            if not host_version:
-                raise GraphicsResolutionError(
-                    f"Cannot verify LosslessProxy {proxy_package.get('version')} against "
-                    f"{relative}'s minimum host version {minimum_text}"
-                )
-            width = max(len(host_version), len(minimum))
-            host = host_version + (0,) * (width - len(host_version))
-            required = minimum + (0,) * (width - len(minimum))
-            if host < required:
-                raise GraphicsResolutionError(
-                    f"{relative} requires LosslessProxy {minimum_text} or newer; "
-                    f"selected version is {proxy_package.get('version')}"
-                )
 
     def _manual_runtime(self, digest: str) -> Path:
         if not re.fullmatch(r"[0-9a-fA-F]{64}", digest.removeprefix("sha256:")):
@@ -314,10 +148,10 @@ class GraphicsResolver:
 
     def _lossless_original(self, lossless_scaling_exe: Optional[str]) -> Path:
         if not lossless_scaling_exe:
-            raise GraphicsResolutionError("LosslessProxy requires a configured LosslessScaling.exe path")
+            raise GraphicsResolutionError("Companion Addon Host requires a configured LosslessScaling.exe path")
         executable = Path(lossless_scaling_exe).resolve()
         if executable.name.casefold() != "losslessscaling.exe":
-            raise GraphicsResolutionError("LosslessProxy may only replace LosslessScaling.exe's engine")
+            raise GraphicsResolutionError("Companion Addon Host may only replace LosslessScaling.exe's engine")
         deployment = DeploymentManager(self.store)
         deployment._read_manifest(lossless_scaling_exe)
         managed_backup = deployment.originals / "Lossless.dll"
@@ -338,128 +172,6 @@ class GraphicsResolver:
         # Lossless.dll before it writes Lossless_original.dll on some path orders.
         imported = self.store.import_file(str(source), allowed_suffixes=(".dll",))
         return Path(imported["path"]).resolve(strict=True)
-
-    def _lossless_proxy_config(
-        self,
-        profile: Profile,
-        lossless_scaling_exe: str,
-        *,
-        neural_enabled: bool,
-        reshade_bridge_enabled: bool,
-        reshade_overlay_hotkey: str,
-    ) -> Path:
-        """Merge Companion-managed addon keys without dropping other proxy settings."""
-        executable = Path(lossless_scaling_exe).resolve()
-        if executable.name.casefold() != "losslessscaling.exe":
-            raise GraphicsResolutionError("LosslessProxy configuration must target LosslessScaling.exe")
-        config_path = executable.parent / "addons" / "config.json"
-        data: Dict = {"global": {}, "addons": {}}
-        if config_path.is_file():
-            try:
-                loaded = json.loads(config_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise GraphicsResolutionError(f"LosslessProxy config.json is invalid: {error}") from error
-            if not isinstance(loaded, dict):
-                raise GraphicsResolutionError("LosslessProxy config.json must contain a JSON object")
-            data = loaded
-        addons = data.setdefault("addons", {})
-        data.setdefault("global", {})
-        if not isinstance(addons, dict):
-            raise GraphicsResolutionError("LosslessProxy config.json has an invalid addons section")
-
-        if neural_enabled:
-            neural = profile.graphics.neural_render
-            styles = {"standard": 0, "natural": 1, "cinematic": 2}
-            existing = addons.get("LSP-NeuralRender", {})
-            if not isinstance(existing, dict):
-                existing = {}
-            # LosslessProxy owns the boolean `enabled` field. LSP-NR's other settings
-            # use strings through IHost::GetConfig/SetConfig.
-            managed_settings = {
-                    "enabled": True,
-                    "style": str(styles[neural.style]),
-                    "autoMask": "1" if neural.auto_skin_mask else "0",
-                    "intensity": f"{neural.intensity:g}",
-                    "localStructure": f"{neural.local_structure:g}",
-                    "localTone": f"{neural.local_tone:g}",
-                    "skinStructure": f"{neural.skin_structure:g}",
-                    "useFlow": "1" if neural.use_lsfg_optical_flow else "0",
-                    "lsFirst": "1" if neural.prioritize_ls_gpu_work else "0",
-                    "composeIntensity": f"{neural.apply_strength:g}",
-                    "maxDelta": f"{neural.max_delta:g}",
-                    "hiProtect": f"{neural.protect_highlights_above:g}",
-                    "watchdogMs": str(neural.watchdog_ms),
-                    "snippetPath": "",
-                }
-
-            preset = neural.sampling_resolution_preset
-            current_scale = None
-            try:
-                current_scale = float(existing.get("workingScale"))
-            except (TypeError, ValueError):
-                pass
-            managed_scale = None
-            try:
-                managed_scale = float(existing.get("lscManagedWorkingScale"))
-            except (TypeError, ValueError):
-                pass
-
-            # If the add-on menu changed workingScale after Companion applied a
-            # preset, relinquish ownership. The profile becomes Custom and the
-            # live value is preserved on every later activation.
-            manually_changed = bool(
-                current_scale is not None
-                and (
-                    managed_scale is not None
-                    and abs(current_scale - managed_scale) > 0.0001
-                    or managed_scale is None
-                    and preset != "custom"
-                    and abs(
-                        current_scale
-                        - self.NEURAL_SAMPLING_PRESETS.get(preset, neural.working_scale)
-                    ) > 0.0001
-                )
-            )
-            if manually_changed:
-                neural.sampling_resolution_preset = "custom"
-                neural.working_scale = current_scale
-                preset = "custom"
-
-            if preset == "custom":
-                if current_scale is not None:
-                    neural.working_scale = current_scale
-                    # Metadata only: workingScale itself remains owned by the
-                    # add-on menu. The marker lets a different profile safely
-                    # apply its own preset later.
-                    managed_settings["lscManagedWorkingScale"] = f"{current_scale:g}"
-                managed_settings["lscSamplingPreset"] = "custom"
-            else:
-                scale = self.NEURAL_SAMPLING_PRESETS[preset]
-                neural.working_scale = scale
-                managed_settings["workingScale"] = f"{scale:g}"
-                managed_settings["lscManagedWorkingScale"] = f"{scale:g}"
-                managed_settings["lscSamplingPreset"] = preset
-
-            existing.update(managed_settings)
-            addons["LSP-NeuralRender"] = existing
-
-        if reshade_bridge_enabled:
-            vk, ctrl, shift, alt = reshade_key_data(reshade_overlay_hotkey)
-            existing_bridge = addons.get("LSP-ReShade", {})
-            if not isinstance(existing_bridge, dict):
-                existing_bridge = {}
-            existing_bridge.update(
-                {
-                    "enabled": True,
-                    "hotkey_vk": str(vk),
-                    "hotkey_ctrl": str(ctrl),
-                    "hotkey_alt": str(alt),
-                    "hotkey_shift": str(shift),
-                    "hotkey_win": "0",
-                }
-            )
-            addons["LSP-ReShade"] = existing_bridge
-        return self.store.write_generated_json(profile.id, "config.json", data)
 
     def _special_k_config(self, profile_id: str, config: SpecialKConfig) -> Path:
         """Generate the local-injection dxgi.ini consumed by Special K in LS."""
@@ -577,7 +289,7 @@ class GraphicsResolver:
         *,
         lossless_scaling_exe: Optional[str] = None,
         reshade_overlay_hotkey: str = "end",
-        addon_manager_enabled: Optional[bool] = None,
+        addon_manager_enabled: Optional[bool] = False,
         addon_manager_config: Optional[ManagedPackageConfig] = None,
     ) -> List[Dict]:
         if profile is None:
@@ -598,7 +310,7 @@ class GraphicsResolver:
             )
 
         graphics = profile.graphics
-        if addon_manager_enabled is False and (
+        if addon_manager_enabled is not True and (
             graphics.reshade.enabled or graphics.special_k.enabled
             or any(override.enabled for override in profile.dll_overrides)
         ):
@@ -684,75 +396,8 @@ class GraphicsResolver:
                 })
             return self._explicit_components(profile, files)
 
-        proxy_package = (
-            self._package("lossless-proxy", graphics.lossless_proxy)
-            if addon_manager_enabled is None else None
-        )
-        if proxy_package:
-            proxy = self._require_x64(
-                self._find_payload_file(proxy_package, "Lossless.dll"), "LosslessProxy"
-            )
-            original = self._lossless_original(lossless_scaling_exe)
-            files.append(
-                {
-                    "relative_path": "Lossless.dll",
-                    "source_path": str(proxy),
-                    "role": "lossless_proxy",
-                    "source_package": f"lossless-proxy/{proxy_package['version']}/{proxy_package['archive_sha256']}",
-                }
-            )
-            files.append(
-                {
-                    "relative_path": "Lossless_original.dll",
-                    "source_path": str(original),
-                    "role": "lossless_original_engine",
-                    "source_package": "lossless-scaling/original-engine",
-                }
-            )
-
         neural = graphics.neural_render
-        if neural.implementation == "lsp_neural_render" and addon_manager_enabled is not False:
-            if not proxy_package:
-                raise GraphicsResolutionError("LSP-NeuralRender requires LosslessProxy")
-            neural_package = self._neural_package(neural.package)
-            if neural_package is None:
-                raise GraphicsResolutionError("LSP-NeuralRender is selected but its package is disabled")
-            for filename in ("LSP_NeuralRender.dll", "nvngx.dll_lspnr.dll"):
-                source = self._find_payload_file(neural_package, filename, contains="LSP-NeuralRender")
-                if filename.casefold().endswith(".dll"):
-                    source = self._require_x64(source, filename)
-                files.append(
-                    {
-                        "relative_path": f"addons/LSP-NeuralRender/{filename}",
-                        "source_path": str(source),
-                        "role": "lossless_addon",
-                        "source_package": (
-                            f"lsp-neural-render/{neural_package['version']}/"
-                            f"{neural_package['archive_sha256']}"
-                        ),
-                    }
-                )
-            manifest = self._neural_manifest(profile.id, neural_package)
-            files.append(
-                {
-                    "relative_path": "addons/LSP-NeuralRender/addon.json",
-                    "source_path": str(manifest),
-                    "role": "lossless_addon_manifest",
-                    "source_package": "generated/lsp-neural-render-manifest",
-                }
-            )
-            if not neural.runtime_asset_sha256:
-                raise GraphicsResolutionError("LSP-NeuralRender requires an installed DLSSNR runtime")
-            runtime = self._manual_runtime(neural.runtime_asset_sha256)
-            files.append(
-                {
-                    "relative_path": "nvngx_dlssnr.dll",
-                    "source_path": str(runtime),
-                    "role": "neural_runtime",
-                    "source_package": f"manual-import/{neural.runtime_asset_sha256}",
-                }
-            )
-        elif neural.implementation == "ls_reshade_feeder":
+        if neural.implementation == "ls_reshade_feeder":
             feeder_package = self._package("dlss5-feeder", neural.package)
             if feeder_package is None:
                 raise GraphicsResolutionError("The LS ReShade/Feeder recipe package is disabled")
@@ -764,12 +409,6 @@ class GraphicsResolver:
             and (profile.reshade.managed_profile_id or profile.reshade.preset_path)
         )
         reshade_package = self._package("reshade", graphics.reshade)
-        reshade_bridge_enabled = bool(
-            proxy_package
-            and reshade_package
-            and profile.reshade
-            and profile.reshade.menu_proxy_enabled
-        )
         if reshade_package:
             files.extend(display_commander.deployment_files(self.store, profile, reshade_package))
             recipe_files = self._recipe_files(reshade_package)
@@ -783,36 +422,7 @@ class GraphicsResolver:
                     != "reshade.ini"
                 ]
             files.extend(recipe_files)
-            # This bridge is not a standalone add-on. ReShade supplies the
-            # overlay and LosslessProxy supplies the host that loads the bridge.
-            if reshade_bridge_enabled:
-                files.extend(self._bundled_reshade_bridge_files())
-
-        neural_enabled = (
-            neural.implementation == "lsp_neural_render"
-            and addon_manager_enabled is not False
-        )
-        if neural_enabled or reshade_bridge_enabled:
-            if not lossless_scaling_exe:
-                raise GraphicsResolutionError(
-                    "LosslessProxy addon configuration requires a configured LosslessScaling.exe path"
-                )
-            generated_config = self._lossless_proxy_config(
-                profile,
-                lossless_scaling_exe,
-                neural_enabled=neural_enabled,
-                reshade_bridge_enabled=reshade_bridge_enabled,
-                reshade_overlay_hotkey=reshade_overlay_hotkey,
-            )
-            files.append(
-                {
-                    "relative_path": "addons/config.json",
-                    "source_path": str(generated_config),
-                    "role": "lossless_proxy_config",
-                    "source_package": "generated/lossless-proxy-config",
-                }
-            )
-        if (neural_enabled or graphics.display_commander.enabled) and not has_selected_reshade_config:
+        if graphics.display_commander.enabled and not has_selected_reshade_config:
             blank_reshade = self._blank_neural_reshade_config(
                 profile.id, reshade_overlay_hotkey if graphics.display_commander.enabled else None)
             files.append(
@@ -842,6 +452,4 @@ class GraphicsResolver:
                     "source_package": "generated/special-k-config",
                 }
             )
-        if proxy_package:
-            self._require_proxy_compatibility(proxy_package, files)
         return files

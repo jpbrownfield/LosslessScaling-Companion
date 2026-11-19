@@ -5,7 +5,6 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from companion.core.models import Profile
 from companion.services.asset_store import AssetStore
 from companion.services.graphics_resolver import GraphicsResolver
 from companion.services.graphics_source_importer import GraphicsSourceImporter
@@ -46,12 +45,7 @@ class GraphicsSourceImporterTests(unittest.TestCase):
             self.assertEqual(package["provider"], "reshade")
             self.assertTrue(Path(package["payload_path"], "ReShade64.dll").is_file())
             self.assertTrue(Path(package["payload_path"], "lossless-scaling-deployment.json").is_file())
-            profile = Profile.model_validate({
-                "id": "reshade-test",
-                "name": "ReShade",
-                "graphics": {"reshade": {"enabled": True, "version": "6.8.0"}},
-            })
-            plan = GraphicsResolver(store).resolve(profile)
+            plan = GraphicsResolver(store)._recipe_files(package)
             self.assertEqual([item["relative_path"] for item in plan], ["dxgi.dll"])
 
     def test_imports_detected_special_k_with_lossless_recipe(self):

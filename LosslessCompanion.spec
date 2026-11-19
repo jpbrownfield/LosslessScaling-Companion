@@ -34,16 +34,10 @@ adapter_probe = Path("build/native/LSC-AdapterReport/LSC_AdapterProbe.exe")
 if not adapter_probe.is_file():
     raise SystemExit("Build the native adapter probe before packaging LS Companion")
 benchmark_binaries.append((str(adapter_probe), "tools"))
-reshade_bridge = Path("build/native/LSP-ReShade/LSC_ReShadeBridge.dll")
-reshade_bridge_manifest = Path("build/native/LSP-ReShade/addon.json")
-if not reshade_bridge.is_file() or not reshade_bridge_manifest.is_file():
-    raise SystemExit("Build the native ReShade bridge before packaging LS Companion")
-native_binaries = benchmark_binaries + [(str(reshade_bridge), "addons/LSP-ReShade")]
+native_binaries = benchmark_binaries
 native_data = [
     ("build/native/runtime-isolation/MinHook-LICENSE.txt", "licenses/MinHook"),
     ("THIRD_PARTY_NOTICES.md", "."),
-    (str(reshade_bridge_manifest), "addons/LSP-ReShade"),
-    ("native/reshade_bridge/LICENSE", "licenses/LSC-ReShadeBridge"),
     ("native/vendor/losslessproxy-sdk/LICENSE", "licenses/LosslessProxy-SDK"),
     ("native/README.md", "licenses/native-components"),
 ]

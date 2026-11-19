@@ -1987,13 +1987,6 @@
             setGraphicsStatus(`Selected ${msg.asset.filename}. It is now available to profiles.`);
             ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
-          } else if (msg.type === 'NEURAL_RENDER_BUNDLE_STAGED') {
-            if (msg.runtime) {
-              dlssnrRuntimes = [...dlssnrRuntimes.filter(item => item.sha256 !== msg.runtime.sha256), msg.runtime];
-            }
-            setGraphicsStatus(`Installed LosslessProxy ${msg.proxyPackage.version}, LSP-NeuralRender ${msg.package.version}, and verified DLSS 5 runtime ${msg.runtime.filename}.${msg.activeProfileRedeployed ? ' The active installation was replaced and Lossless Scaling was restarted.' : ' Existing NeuralRender profiles will deploy this version on their next activation.'}`);
-            ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
-        ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
           } else if (msg.type === 'DLSSNR_RUNTIME_SELECTION_CANCELLED') {
             setGraphicsStatus('DLSS 5 runtime selection cancelled.');
           } else if (msg.type === 'COMPONENT_OPERATION') {
@@ -2606,14 +2599,8 @@
     function addonDownloadIsCurrent(provider) {
       const latest = latestAddonVersions[provider];
       const source = graphicsExternalSources[provider] || {};
-      let current = graphicsPackages.some(item => item.provider === provider && addonVersionIsCurrent(item.version, latest))
+      return graphicsPackages.some(item => item.provider === provider && addonVersionIsCurrent(item.version, latest))
         || !!source.detected && addonVersionIsCurrent(source.version, latest);
-      if (provider === 'lsp-neural-render') {
-        // The bundle also needs its proxy and a validated model runtime.
-        current = current && graphicsPackages.some(item => item.provider === 'lossless-proxy'
-          && addonVersionIsCurrent(item.version, latestAddonVersions['lossless-proxy'])) && dlssnrRuntimes.length > 0;
-      }
-      return current;
     }
 
     function renderAddonVersionStatus(provider) {
@@ -3202,7 +3189,9 @@
       if (msg.running) {
         const selected = diagnosticCatalog.find(test => test.id === msg.selectedTest);
         status.textContent = selected
-          ? `Running prerequisites and ${selected.name}, then resetting Lossless Scaling...`
+          ? (selected.readOnly
+            ? `Running ${selected.name}...`
+            : `Running prerequisites and ${selected.name}, then resetting Lossless Scaling...`)
           : 'Running application tests, writing individual logs, then resetting Lossless Scaling...';
       } else if (msg.error) {
         status.textContent = `Diagnostic runner failed: ${msg.error}`;
@@ -5118,12 +5107,15 @@
       document.getElementById('downloadDiagnosticsBtn').hidden = true;
       ws.send(JSON.stringify({ type: 'RUN_DIAGNOSTICS' }));
     };
-    document.getElementById('diagnosticTestActions').onclick = event => {
+    document.getElementById('diagnosticTestActions').onclick = async event => {
       const button = event.target.closest('[data-run-diagnostic]');
       if (!button || button.disabled) return;
       const testId = button.dataset.runDiagnostic;
+      if (testId === 'nr_capture_trace' && !await confirmDialog(
+        'Run the benchmark with DLSS5 NR enabled, LSFG 3, HDR, and Scaling Off? This stops active scaling and restarts Lossless Scaling. Temporary deployment and settings are restored afterward.',
+        { title: 'DLSS5 NR benchmark reproduction' })) return;
       button.disabled = true;
-      document.getElementById('diagnosticsStatus').textContent = 'Starting selected test and its prerequisites...';
+      document.getElementById('diagnosticsStatus').textContent = 'Starting selected test...';
       document.getElementById('downloadDiagnosticsBtn').hidden = true;
       ws.send(JSON.stringify({ type: 'RUN_DIAGNOSTICS', testId }));
     };

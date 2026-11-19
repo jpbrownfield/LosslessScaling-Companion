@@ -129,13 +129,10 @@ test('a stale notification cannot offer a download when its selected version is 
   assert.equal(nodes.get('addonUpdateNotice').children[0].children[1].children[1].disabled, false);
 });
 
-test('a cached NeuralRender package cannot disable repair of an incomplete bundle', () => {
+test('the current host does not require legacy proxy packages or a separate model download', () => {
   const {context} = dashboard();
-  context.latestAddonVersions = {'lsp-neural-render': '1.0.0', 'lossless-proxy': '2.0.0'};
-  context.graphicsPackages = [{provider: 'lsp-neural-render', version: '1.0.0'}];
-  assert.equal(context.addonDownloadIsCurrent('lsp-neural-render'), false);
-  context.graphicsPackages.push({provider: 'lossless-proxy', version: '2.0.0'});
-  assert.equal(context.addonDownloadIsCurrent('lsp-neural-render'), false);
-  context.dlssnrRuntimes = [{sha256: 'verified'}];
-  assert.equal(context.addonDownloadIsCurrent('lsp-neural-render'), true);
+  context.latestAddonVersions = {'ls-addon-manager': 'build-7-lsc.9'};
+  context.graphicsPackages = [{provider: 'ls-addon-manager', version: 'build-7-lsc.9'}];
+  context.dlssnrRuntimes = [];
+  assert.equal(context.addonDownloadIsCurrent('ls-addon-manager'), true);
 });

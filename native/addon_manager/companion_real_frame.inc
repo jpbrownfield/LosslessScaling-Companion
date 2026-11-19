@@ -79,6 +79,7 @@ bool HostImpl::InvokeRealFrame(const EamRealFrame& frame) {
     auto& hook=useAmd?m_amdRealHook:m_realHook;
     if(!hook.callback)return false;
     bool applied=false;
+    RealFrameHook::CallbackEntering();
     if(!CallReal(hook.callback,frame,hook.owner,&applied)) {
         RealFrameHook::CallbackFailed();
         LOG_ERROR("Host","Real-frame transform faulted");

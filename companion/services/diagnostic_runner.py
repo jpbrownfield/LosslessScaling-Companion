@@ -34,7 +34,7 @@ from .deployment_manager import DeploymentManager
 from .input_simulator import InputSimulator
 from .graphics_source_importer import GraphicsSourceImporter
 from .reshade_manager import ReshadeManager
-from .addon_host import addon_version_key, runtime_status
+from .addon_host import addon_version_key, capture_trace_report, runtime_status
 
 logger = logging.getLogger("LSCompanion.Diagnostics")
 
@@ -68,7 +68,7 @@ class DiagnosticRunner:
         "startup": ("configuration",),
         "runtime": ("configuration",),
     }
-    LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior"}
+    LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior", "nr_capture_trace"}
     READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation", "gloam_hdr"}
     ALWAYS_RUN_AFTER_DEPENDENCIES = {
         "reshade_runtime", "proxy_reshade", "proxy_neural_render", "gpu_route_validation",
@@ -102,6 +102,7 @@ class DiagnosticRunner:
         return (
             ("configuration", "Configuration schema and persistence", self._configuration),
             ("gpu_route_validation", "Live GPU routing: requested vs. actual GPU", self._gpu_route_validation),
+            ("nr_capture_trace", "DLSS5 NR benchmark reproduction (LSFG 3 + HDR)", self._nr_capture_trace),
             ("profile_integrity", "Profile IDs, defaults, and targets", self._profile_integrity),
             ("profile_matching", "Application and browser profile matching", self._profile_matching),
             ("profile_persistence_behavior", "Profile create, save, reload, and match behavior", self._profile_persistence_behavior),
@@ -128,6 +129,40 @@ class DiagnosticRunner:
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
         )
+
+    def _nr_capture_trace(self) -> Dict:
+        try:
+            profile = self._nr_reproduction_profile()
+        except ValueError as error:
+            return self._result("warn", str(error))
+        result = self._run_live_addon_deployment_behavior(profiles=[profile], capture_neural_trace=True)
+        result["summary"] = (
+            "DLSS5 NR processed benchmark frames with LSFG 3, HDR and Scaling Off; capture trace saved."
+            if result["status"] == "pass" else
+            "DLSS5 NR benchmark reproduction failed; inspect the saved capture trace, runtime checks and logs."
+        )
+        result["details"]["requestedNativeSettings"] = dict(profile.native_scaling_settings)
+        return result
+
+    def _collect_nr_capture_trace(self) -> Dict:
+        from .adapter_report import configured_process
+
+        instance = configured_process(self.server.config.lossless_scaling_exe_path)
+        if not instance:
+            return self._result("warn", "Start the configured Lossless Scaling session before collecting an NR capture trace.")
+        try:
+            report = capture_trace_report(instance[0], expected_created_at=instance[1])
+        except (OSError, ValueError) as error:
+            return self._result("fail", f"Could not collect the NR capture trace: {error}")
+        available = sum(sample.get("available") is True for sample in report["samples"])
+        if not available:
+            return self._result("fail", "The running LS host did not return valid capture telemetry.", trace=report)
+        if not report["traceSupported"]:
+            return self._result("warn", "Trace collected, but the running host lacks capture progress diagnostics; update the host and restart LS.", trace=report)
+        if available < len(report["samples"]):
+            return self._result("warn", "NR capture trace collected with some telemetry read errors; scaling was left running.", trace=report)
+        return self._result("pass", "Collected three live NR capture snapshots; scaling was left running.", trace=report,
+                            limitation="Successful collection does not prove NR inference; inspect capture progress, addon status and NR metrics.")
 
     def _gloam_hdr(self) -> Dict:
         """Inspect actual provisioned files/process and fresh in-LS statistics.
@@ -213,6 +248,7 @@ class DiagnosticRunner:
                 "id": test_id,
                 "name": name,
                 "dependencies": list(self.DEPENDENCIES.get(test_id, ())),
+                "readOnly": test_id in self.READ_ONLY_TESTS,
             }
             for test_id, name, _function in self._tests()
         ]
@@ -706,6 +742,25 @@ class DiagnosticRunner:
                 profiles.append(profile)
         return profiles
 
+    def _nr_reproduction_profile(self) -> Profile:
+        profile = next((profile for profile in self._installed_addon_profiles()
+                        if profile.graphics.neural_render.implementation == "lsp_neural_render"), None)
+        if profile is None:
+            raise ValueError("Install the Companion add-on manager and import the x64 nvngx_dlssnr.dll runtime before running the NR benchmark reproduction.")
+        profile.name = "Experimental Live DLSS5 NR capture reproduction"
+        profile.native_scaling_settings.update({
+            "FrameGeneration": "LSFG3", "CaptureApi": "WGC",
+            "HdrSupport": "true", "ScalingType": "Off",
+        })
+        profile.addon_config["addons"]["DLSSNR02"]["_enabled"] = True
+        return profile
+
+    def _apply_nr_reproduction_settings(self, profile: Profile) -> None:
+        native = self.server.ls_settings.get_profile(profile.lossless_profile_title)
+        title = native.get("Title") if native else None
+        if not title or not self.server.ls_settings.update_profile(title, profile.native_scaling_settings, backup=False):
+            raise RuntimeError("The NR reproduction's native LSFG 3/HDR/Scaling Off settings could not be applied")
+
     def _live_test_profile(self, label):
         """Inherit routing intent, never the default profile's expensive addons."""
         default = next((item for item in self.server.config.profiles if item.is_default), None)
@@ -757,12 +812,13 @@ class DiagnosticRunner:
             self._live_addon_result = self._run_live_addon_deployment_behavior()
         return self._live_addon_result
 
-    def _run_live_addon_deployment_behavior(self) -> Dict:
+    def _run_live_addon_deployment_behavior(self, profiles: Optional[list[Profile]] = None,
+                                          *, capture_neural_trace: bool = False) -> Dict:
         exe_value = self.server.config.lossless_scaling_exe_path
         executable = Path(exe_value) if exe_value else None
         if not executable or not executable.is_file():
             return self._result("fail", "LosslessScaling.exe is required for live add-on deployment.")
-        profiles = self._installed_addon_profiles()
+        profiles = self._installed_addon_profiles() if profiles is None else profiles
         if not profiles:
             return self._result("warn", "No installed add-on packages were available for live deployment.")
 
@@ -837,6 +893,9 @@ class DiagnosticRunner:
                             self._ensure_lossless_stopped(purpose="add-on test rotation")
                         except RuntimeError as error:
                             raise RuntimeError(f"Lossless Scaling could not be stopped between add-on tests: {error}")
+                    if capture_neural_trace:
+                        attempt["requestedNativeSettings"] = dict(profile.native_scaling_settings)
+                        self._apply_nr_reproduction_settings(profile)
                     route = self.server.automation._desired_gpu_route(profile, hwnd)
                     attempt["requestedGpuRoute"] = route
                     route_args = (profile.lossless_profile_title, int(route.get("lsGpuId", 0)), int(route.get("lsDisplayId", 0)))
@@ -927,8 +986,14 @@ class DiagnosticRunner:
                         return all(runtime_checks.values())
 
                     addon_ready = self._wait_until(
-                        addon_runtime_ready, 12.0 if active_observed else 2.0, interval=0.4
+                        addon_runtime_ready,
+                        (30.0 if scaled else 5.0) if capture_neural_trace else (12.0 if active_observed else 2.0),
+                        interval=0.4,
                     )
+                    if capture_neural_trace:
+                        attempt["captureTrace"] = self._collect_nr_capture_trace()
+                        addon_ready = addon_runtime_ready()
+                        active_observed = scaled and bool(log_inspector.inspect_current_scaling_target().is_active)
                     activation_control = dict(self.server.state.scaling_control_status)
                     activation_observation = log_inspector.inspect_current_scaling_target().to_dict()
                     stopped = self.server.automation.set_scaling(
@@ -1000,6 +1065,7 @@ class DiagnosticRunner:
                         and bool(runtime_delta) and not runtime_errors
                         and addon_ready and not module_inspection_error
                         and (gpu_matches is not False or gpu_mismatch_excused)
+                        and (not capture_neural_trace or attempt["captureTrace"]["status"] == "pass")
                     )
                     if not runtime_confirmed:
                         hint = ""

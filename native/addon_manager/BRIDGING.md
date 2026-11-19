@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **7**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **9**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -28,6 +28,99 @@ not replace our host with an unreviewed upstream release. New upstream versions
 are incorporated by rebuilding and releasing Companion.
 
 ## Deliberate patch surface
+
+Revision 9 adds capture progress diagnostics to the existing host status pipe.
+`capture.traceVersion=1`, `capture.progress` and `capture.shaderSamples` distinguish
+dispatches without a callback, profile waits, missing shader identities, shader
+matches, unsupported textures, skipped capture dispatches, handoff attempts,
+actual callback entry, and accepted/declined handoffs. Driver and DXGI format
+are included. The trace retains only the first eight SHA-256/group-shape samples
+per settings application; it stores no shader bytecode or frame pixels. Counters
+are best-effort concurrent observations, not an atomic frame transaction. There
+are no new graphics hooks, GPU readbacks or per-frame log writes.
+
+In the Debug menu's Application tests, run **DLSS5 NR benchmark reproduction
+(LSFG 3 + HDR)** (`nr_capture_trace`). Confirm the restart prompt. It launches
+the bundled benchmark, deploys one temporary DLSSNR02-enabled recipe, and applies
+LSFG 3, WGC, HDR and Scaling Off to the private native settings. It waits up to
+30 seconds for NR, then captures three snapshots before stopping scaling, even
+when processed-frame checks fail. No unrelated add-on recipes are run.
+The host package and imported x64 `nvngx_dlssnr.dll` runtime must already be in
+the asset store; it does not download proprietary runtimes or disable NR as a
+fallback. Actual inference requires a supported NVIDIA capture adapter.
+
+The existing live deployment workflow stops the benchmark and restores temporary
+settings/deployment and in-memory flags in cleanup, including failed attempts.
+Normal diagnostic folder reset still runs afterward. The downloadable archive
+contains `nr_capture_trace.log`, with capture snapshots under
+`details.testedProfiles[].captureTrace`, plus module, log and processed-frame
+checks. A successful reproduction requires processed NR frames and complete
+capture telemetry; merely loading the addon or collecting snapshots cannot pass.
+
+For read-only collection from an already failing session, use the same collector
+from the command line instead (this mode never restarts LS):
+
+```powershell
+.venv/Scripts/python.exe run_live_diagnostics.py --capture-trace <LS_PID> > nr-capture-trace.json
+```
+
+This mode reads three fresh, PID/creation-time-validated snapshots one second
+apart, without elevation, taking Companion's single-instance guard, changing
+profiles, or stopping scaling. Transient read errors remain in the report.
+`traceSupported=false` means the added progress fields were not observed; check
+the host version and read errors. Normal addon diagnostic bundles also retain
+the full capture telemetry. Rebuild and deploy the host package for these native
+fields; changing Companion's Python source alone cannot instrument an older DLL.
+
+Compare successive snapshots while the problem is present:
+
+- Growing `dispatchesWithoutCallback`: no real-frame callback is registered;
+   inspect addon enabled/loaded/faulted/error fields.
+- Growing `profileWaits`: inspect capture API, FG, scaler and support text.
+- Dispatches with a callback but no shader matches: inspect shader samples and
+   missing-identity count. Unmatched passes are normal alongside successful matches.
+- Matches but `unsupportedPauses`: inspect capture error, dimensions and format.
+- Handoff attempts and declined results but no callback entry: inspect vendor
+   routing, backend selection and addon status.
+- Handoff attempts without callback entry or a result across repeated snapshots:
+   processing may be blocked before invocation (for example during backend setup).
+- Callback entry without a result across repeated snapshots: the callback may be
+   blocked initializing or processing; compare the NR metrics and status.
+- Accepted handoffs increasing: callbacks are returning accepted results. Check
+   NR-specific processed-frame metrics before concluding that inference ran;
+   an identity/pass-through callback also accepts frames. A persistent waiting
+   label may need investigation in the addon/status presentation.
+
+`lsc_capture_trace_test` checks concurrency, sampling bounds and reset behavior;
+the live capture matrix additionally checks callback entry and accepted results.
+
+Revision 8 recognizes all four verified NIS capture consumers: SDR/HDR with
+128-thread groups (LS resources 245/246) and 256-thread groups (243/244).
+FG Off transforms their mip-zero input before dispatch, just as for Scaling Off's
+copy pass (249). LSFG 3 continues to transform capture output (254) before
+history/pyramid/interpolation consumers. The copy and capture passes are shared
+by SDR and scRGB; unrelated scalers and generated-frame shaders are not added.
+Exact runtime SHA-256, WGC/profile gates and texture-format checks remain in force.
+DXGI capture is still unsupported. This revision requires a rebuilt host package;
+the published revision 7 binary does not acquire these changes automatically.
+
+The opt-in live matrix uses the supplied original LS 3.2.2.0 engine with an
+identity callback, without loading NR or modifying installed LS/settings:
+
+```powershell
+cmake --build <host-build> --config Release --target eam_captureprobe
+$env:LSC_TEST_CAPTURE_PROBE = (Resolve-Path '<host-build>/Release/eam_captureprobe.exe').Path
+.venv/Scripts/python.exe -m pytest tests/test_addon_host.py::NativeCaptureVariantTests -q
+```
+
+Place a copy of the original engine at `build/overlay-input-ls/Lossless.dll` first.
+The test opens a temporary animated source and exercises all eight combinations
+of FG Off/LSFG 3, Scaling Off/NIS and SDR/HDR. On the local Intel driver, both
+FG-Off NIS cases previously stayed Waiting (resources 243/244) and now capture
+frames. LSFG 3 + HDR + Scaling Off already captured scRGB frames before this
+patch; a waiting NR addon in that setup needs further investigation beyond
+shader recognition. Identity capture proves neither NR inference nor NVIDIA
+backend initialization or image quality.
 
 Revision 7 protects the shared system cursor used by LS's cursor watcher.
 The supplied, verified LS 3.2.2.0 engine loads OCR_NORMAL with LR_SHARED and

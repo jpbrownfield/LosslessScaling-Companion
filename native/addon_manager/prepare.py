@@ -27,6 +27,66 @@ def patch_managed_startup(main):
         'eam::GuiManager::StartGuiThread(manager); }' + setup + '))\n        ' + before)
 
 
+def patch_capture_variants(capture: Path):
+    replace_once(capture,
+                 'constexpr char kNis[] = "fc8f0300fec6f80250b8ec605265ba91c80f1d897fe799004f2cb95e14ca3d02";',
+                 'constexpr char kNis[] = "fc8f0300fec6f80250b8ec605265ba91c80f1d897fe799004f2cb95e14ca3d02";\n'
+                 'constexpr char kNisHdr[] = "706e76dcb5b725b0dc3c0368fac0135e2fffab60357277ddfe05c37c0ade657a";\n'
+                 'constexpr char kNis256[] = "90600dc728c3dae6daf0878c183e374508d77e4d6eb11124d817a5d6e132fa71";\n'
+                 'constexpr char kNisHdr256[] = "aff36a75a5ad505db6512744d6f4249b843cc0cc06b023b4b216e9a2614de89a";')
+    replace_once(capture, 'fg==0&&Match(sha,scaler==0?kCopy:kNis)',
+                 'fg==0&&(scaler==0?Match(sha,kCopy):(Match(sha,kNis)||Match(sha,kNisHdr)||Match(sha,kNis256)||Match(sha,kNisHdr256)))')
+
+
+def patch_capture_diagnostics(capture: Path):
+    header = capture.with_suffix(".h")
+    replace_once(header, '#include <string>', '#include <string>\n#include "capture_trace.h"')
+    replace_once(header, '    unsigned width = 0, height = 0, format = 0;',
+                 '    CaptureTraceSnapshot trace;\n    unsigned width = 0, height = 0, format = 0;')
+    replace_once(header, 'void CallbackFailed();', 'void CallbackEntering();\nvoid CallbackFailed();')
+    replace_once(capture, 'Diagnostics diagnostic;', 'Diagnostics diagnostic;\nCaptureTrace captureTrace;')
+    replace_once(capture, '    { std::lock_guard<std::mutex> lock(diagnosticMutex);diagnostic.captureError=detail; }',
+                 '    captureTrace.Count(CaptureStep::Unsupported);\n'
+                 '    { std::lock_guard<std::mutex> lock(diagnosticMutex);diagnostic.captureError=detail; }')
+    replace_once(capture, '    return host->InvokeRealFrame(frame);',
+                 '    captureTrace.Count(CaptureStep::HandoffAttempt);\n'
+                 '    const bool accepted=host->InvokeRealFrame(frame);\n'
+                 '    captureTrace.Count(accepted?CaptureStep::HandoffAccepted:CaptureStep::HandoffDeclined);\n'
+                 '    return accepted;')
+    replace_once(capture, 'dispatches=0;captures=0;lastDispatch=0;lastCapture=0;settingsAt=GetTickCount64();',
+                 'dispatches=0;captures=0;lastDispatch=0;lastCapture=0;settingsAt=GetTickCount64();\n'
+                 '    captureTrace.Reset();')
+    replace_once(capture, 'void CallbackFailed(){support=EamFrameSupport::CallbackFailed;}',
+                 'void CallbackEntering(){captureTrace.Count(CaptureStep::CallbackEntered);}\n'
+                 'void CallbackFailed(){support=EamFrameSupport::CallbackFailed;}')
+    replace_once(capture, 'd.lastDispatch=lastDispatch;d.lastCapture=lastCapture;d.settingsAt=settingsAt;return d;',
+                 'd.lastDispatch=lastDispatch;d.lastCapture=lastCapture;d.settingsAt=settingsAt;\n'
+                 '    d.trace=captureTrace.Snapshot();return d;')
+    replace_once(capture, '    if(!host->HasRealFrameCallback())return;',
+                 '    if(!host->HasRealFrameCallback()){captureTrace.Count(CaptureStep::NoCallback);return;}\n'
+                 '    captureTrace.Count(CaptureStep::WithCallback);')
+    replace_once(capture, '        support=problem;',
+                 '        captureTrace.Count(CaptureStep::ProfileWait);\n        support=problem;')
+    replace_once(capture, '    if(!eam::ReadShaderSha256(cs.Get(),sha)){',
+                 '    if(!eam::ReadShaderSha256(cs.Get(),sha)){\n'
+                 '        captureTrace.Count(CaptureStep::MissingIdentity);')
+    replace_once(capture, '    if(fg==1&&Match(sha,kCapture)) {',
+                 '    captureTrace.Sample(sha,x,y,z);\n'
+                 '    if(fg==1&&Match(sha,kCapture)) {\n'
+                 '        captureTrace.Count(CaptureStep::CaptureMatched);')
+    replace_once(capture, '        ctx->CSGetShaderResources(0,1,&state.savedView);auto t=Texture(state.savedView.Get());',
+                 '        captureTrace.Count(CaptureStep::ScalerMatched);\n'
+                 '        ctx->CSGetShaderResources(0,1,&state.savedView);auto t=Texture(state.savedView.Get());')
+    replace_once(capture,
+                 '            ID3D11ShaderResourceView* v=state.transformedView.Get();ctx->CSSetShaderResources(0,1,&v);state.replace=true;\n'
+                 '        }\n    }\n}',
+                 '            ID3D11ShaderResourceView* v=state.transformedView.Get();ctx->CSSetShaderResources(0,1,&v);state.replace=true;\n'
+                 '        }\n    } else captureTrace.Count(CaptureStep::UnmatchedShader);\n}')
+    replace_once(capture, '    if(!executed||!state.candidate)return;',
+                 '    if(!state.candidate)return;\n'
+                 '    if(!executed){captureTrace.Count(CaptureStep::CaptureSkipped);return;}')
+
+
 def patch_passthrough(manager: Path):
     source = manager / "src/features/reshade_passthrough.cpp"
     header = manager / "src/features/reshade_passthrough.h"
@@ -156,6 +216,7 @@ def prepare(source: Path):
     # Resolve from the dispatching context before the upstream required-NR gate.
     # Cache per thread/context: no adapter enumeration on every compute pass.
     capture = manager / "src/core/real_frame_hook.cpp"
+    patch_capture_variants(capture)
     replace_once(capture, '    if(!host->HasRealFrameCallback())return;',
                  '    if(!host->HasRealFrameCallback())return;\n'
                  '    thread_local Microsoft::WRL::ComPtr<ID3D11DeviceContext> routedContext;\n'
@@ -189,11 +250,18 @@ def prepare(source: Path):
         replace_once(updates, 'void RenderUpdateSettings(updates::Checker& checker) {',
                      'void RenderUpdateSettings(updates::Checker& checker) {\n'
                      f'    if ({managed}) {{ ImGui::TextDisabled("Updates are provided by Lossless Scaling Companion."); return; }}')
+    patch_capture_diagnostics(capture)
+    probe = manager / "tools/capture_probe.cpp"
+    replace_once(probe, '    printf("Frame support %u\\n",(unsigned)host.GetRealFrameSupport());',
+                 '    printf("Frame support %u\\n",(unsigned)host.GetRealFrameSupport());\n'
+                 '    const auto trace=RealFrameHook::GetDiagnostics().trace;\n'
+                 '    for(const auto& entry:trace.counts)printf("Capture trace %s %llu\\n",entry.first.c_str(),static_cast<unsigned long long>(entry.second));\n'
+                 '    for(const auto& shader:trace.shaders)printf("Capture shader %s\\n",shader.c_str());')
     dispatch = manager / "src/core/d3d11_hook.cpp"
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
@@ -211,6 +279,7 @@ def prepare(source: Path):
                      'target_compile_options(Lossless PRIVATE /MP4 /FS)\n'
                      'set_property(TARGET Lossless PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")\n'
                      'add_executable(lsc_headless_smoke src/core/headless_smoke.cpp)\n'
+                     'add_executable(lsc_capture_trace_test src/core/capture_trace_test.cpp)\n'
                      'add_library(lsc_fake_engine SHARED src/core/fake_engine.cpp)\n'
                      'add_executable(lsc_panel_test src/core/panel_test.cpp src/gui/window/window_device.cpp)\n'
                      'target_link_libraries(lsc_panel_test d3d11 dxgi user32)\n'

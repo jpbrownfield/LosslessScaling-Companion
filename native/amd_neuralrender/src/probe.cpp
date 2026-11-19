@@ -35,7 +35,9 @@ std::string ProbeFlow(int adapterIndex,bool warp) {
     device->GetCopyableFootprints(&motionDesc,0,1,0,&motionFootprint,nullptr,nullptr,&bytes);
     heap.Type=D3D12_HEAP_TYPE_READBACK;buffer.Width=bytes;ComPtr<ID3D12Resource> readback;
     Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&buffer,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&readback)),"Motion readback");
+    std::cerr<<"Flow probe: initializing compute shaders\n";
     FlowEstimator flow;if(!flow.Init(device.Get(),[](const char* s){std::cerr<<s<<'\n';})||!flow.Ensure(w,h))throw std::runtime_error("Flow initialization failed");
+    std::cerr<<"Flow probe: compute shaders ready; validating GPU work\n";
     auto barrier=[&](D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after){D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition={input.Get(),0,before,after};list->ResourceBarrier(1,&b);};
     double movingLength=0,resetLength=0;

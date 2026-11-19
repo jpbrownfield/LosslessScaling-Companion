@@ -169,6 +169,8 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"error",d.captureError},{"width",d.width},{"height",d.height},{"captures",d.captures},
         {"lastCaptureTick",d.lastCapture},{"configured",d.configured},{"dispatches",d.dispatches},
         {"lastDispatchTick",d.lastDispatch},{"settingsAppliedTick",d.settingsAt},
+        {"traceVersion",1},{"progress",d.trace.counts},{"shaderSamples",d.trace.shaders},
+        {"driver",d.driver},{"format",d.format},
         {"captureApi",d.capture},{"frameGeneration",d.fg},{"scaler",d.scaler},{"hdr",d.hdr}};
     const auto hdr=HdrProbeSnapshot();
     result["hdrProbe"]={{"enabled",hdr.enabled},{"ready",hdr.ready},{"scans",hdr.scans},

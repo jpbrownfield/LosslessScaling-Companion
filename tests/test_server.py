@@ -1242,9 +1242,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('data-addon-install="ls-addon-manager"', body)
             self.assertIn("? 'Up to date'", body)
             self.assertIn('function updateAddonInstallButtons()', body)
-            self.assertIn("if (provider === 'lsp-neural-render')", body)
-            self.assertIn("addonVersionIsCurrent(item.version, latestAddonVersions['lossless-proxy'])", body)
-            self.assertIn("&& dlssnrRuntimes.length > 0", body)
+            self.assertNotIn("NEURAL_RENDER_BUNDLE_STAGED", body)
+            self.assertNotIn("latestAddonVersions['lossless-proxy']", body)
             self.assertIn('function updateAddonDownloadLinks()', body)
             self.assertNotIn('id="selectDlssnrRuntimeBtn"', body)
             self.assertIn("FriedSnowman Addon Suite", body)
@@ -1444,70 +1443,11 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             next(json.loads(item)["type"] for item in websocket.messages if json.loads(item)["type"] == "GRAPHICS_RELEASE_STAGED"), "GRAPHICS_RELEASE_STAGED"
         )
 
-    async def test_neural_render_install_also_imports_verified_community_runtime(self):
+    async def test_retired_neural_bundle_install_cannot_download_or_activate(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
-        payload = Path(self.temp_dir.name) / "runtime-package"
-        payload.mkdir()
-        runtime = payload / "nvngx_dlssnr.dll"
-        image = bytearray(0x86)
-        image[0:2] = b"MZ"
-        image[0x3C:0x40] = (0x80).to_bytes(4, "little")
-        image[0x80:0x84] = b"PE\0\0"
-        image[0x84:0x86] = (0x8664).to_bytes(2, "little")
-        runtime.write_bytes(image)
-        digest = self.server.asset_store.sha256(runtime)
-        addon_package = {"provider": "lsp-neural-render", "version": "v2.0"}
-        proxy_package = {"provider": "lossless-proxy", "version": "v0.3.0"}
-        runtime_package = {
-            "provider": "dlssnr-community-runtime",
-            "version": "310.8.SF-v2",
-            "archive_sha256": "a" * 64,
-            "payload_path": str(payload),
-            "files": [{
-                "relative_path": runtime.name,
-                "sha256": digest,
-                "architecture": "x64",
-            }],
-        }
         self.server.release_manager = Mock()
-
-        def check(provider, **_kwargs):
-            if provider == "lsp-neural-render":
-                return [{"version": "v2.0", "assets": [{"name": "NeuralRender.zip"}]}]
-            if provider == "lossless-proxy":
-                return [{"version": "v0.3.0", "assets": [{"name": "LosslessProxy.zip"}]}]
-            return [{
-                "version": "310.8.SF-v2",
-                "assets": [{
-                    "name": "nvngx_dlssnr_310.8.SF-v2.zip",
-                    "digest": "sha256:" + "a" * 64,
-                }],
-            }]
-
-        self.server.release_manager.check.side_effect = check
-        staged = {
-            "lsp-neural-render": addon_package,
-            "lossless-proxy": proxy_package,
-            "dlssnr-community-runtime": runtime_package,
-        }
-        self.server.release_manager.stage_release.side_effect = (
-            lambda provider, *_args, **_kwargs: staged[provider]
-        )
-        saved_profile = self.manager.config.profiles[0]
-        saved_profile.graphics.neural_render.implementation = "lsp_neural_render"
-        saved_profile.graphics.neural_render.package.enabled = True
-        saved_profile.graphics.neural_render.package.version = "v0.2.0"
-        saved_profile.graphics.lossless_proxy.enabled = True
-        saved_profile.graphics.lossless_proxy.version = "v0.2.0"
-        lossless_exe = Path(self.temp_dir.name) / "LosslessScaling.exe"
-        lossless_exe.write_bytes(b"exe")
-        self.manager.config.lossless_scaling_exe_path = str(lossless_exe)
-        self.state.current_active_profile = saved_profile
-        deployment_automation = Mock()
-        deployment_automation.graphics_resolver.resolve.return_value = []
-        deployment_automation.deployment_manager.needs_change.return_value = False
-        self.server.automation = deployment_automation
+        self.server.automation = Mock()
 
         await self.server.process_message(websocket, json.dumps({
             "type": "INSTALL_LATEST_GRAPHICS_ADDON",
@@ -1516,39 +1456,23 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "operationId": "operation123",
         }))
 
-        response = next(json.loads(item) for item in websocket.messages if json.loads(item)["type"] == "NEURAL_RENDER_BUNDLE_STAGED")
-        self.assertEqual(response["proxyPackage"], proxy_package)
-        self.assertEqual(response["runtime"]["filename"], "nvngx_dlssnr.dll")
-        self.assertEqual(response["runtime"]["source"]["kind"], "community-release")
-        self.assertTrue(response["profilesUpdated"])
-        self.assertTrue(response["activeProfileRedeployed"])
-        self.assertEqual(
-            saved_profile.graphics.neural_render.package.version, "v2.0"
-        )
-        self.assertEqual(
-            saved_profile.graphics.lossless_proxy.version, "v0.3.0"
-        )
-        self.assertEqual(
-            saved_profile.graphics.neural_render.runtime_asset_sha256,
-            response["runtime"]["sha256"],
-        )
-        deployment_automation.activate_profile.assert_called_once_with(
-            saved_profile, force=True, suppress_auto_scale=True
-        )
-        self.assertEqual(self.server.release_manager.stage_release.call_count, 3)
+        self.assertIn("cannot be installed automatically", websocket.messages[-1])
+        self.server.release_manager.check.assert_not_called()
+        self.server.release_manager.stage_release.assert_not_called()
+        self.server.automation.activate_profile.assert_not_called()
 
-    async def test_neural_render_install_requires_community_runtime_confirmation(self):
+    async def test_retired_proxy_install_is_rejected(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
         self.server.release_manager = Mock()
 
         await self.server.process_message(websocket, json.dumps({
             "type": "INSTALL_LATEST_GRAPHICS_ADDON",
-            "provider": "lsp-neural-render",
+            "provider": "lossless-proxy",
             "operationId": "operation123",
         }))
 
-        self.assertIn("Confirm the warning", websocket.messages[-1])
+        self.assertIn("cannot be installed automatically", websocket.messages[-1])
         self.server.release_manager.check.assert_not_called()
 
     def test_addon_version_equality_preserves_families_and_normalizes_numeric_versions(self):

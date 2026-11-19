@@ -22,8 +22,6 @@ SOURCE_FILE = TEST_BINARIES_ROOT / ".source.json"
 WANTED = {
     "tools/LSBenchmark.exe": "tools/LSBenchmark.exe",
     "tools/LSC_StartupGuard.dll": "tools/LSC_StartupGuard.dll",
-    "addons/LSP-ReShade/LSC_ReShadeBridge.dll": "addons/LSP-ReShade/LSC_ReShadeBridge.dll",
-    "addons/LSP-ReShade/addon.json": "addons/LSP-ReShade/addon.json",
 }
 NEURAL_ARTIFACT_PREFIX = "LSP-NeuralRender-windows-x64-"
 APP_ARTIFACT_PREFIX = "LosslessCompanion-windows-x64-"

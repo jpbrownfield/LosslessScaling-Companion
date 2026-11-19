@@ -11,7 +11,255 @@ from companion.core.state import AppState
 from companion.services.diagnostic_runner import DiagnosticRunner
 
 
+class CaptureTraceCommandTests(unittest.TestCase):
+    def payload(self, **changes):
+        return {"schema": 1, "pid": 123, "createdAt": 900.0, "sampledAt": 1000.0,
+                "headless": True, "hostVersion": "build-7-lsc.9", "addons": [],
+                "capture": {"traceVersion": 1, "progress": {"handoffAttempts": 7}},
+                "metrics": {"DLSSNR02": {"accepted": 7}, "other": {"unused": 1}}, **changes}
+
+    def test_read_only_trace_preserves_progress_and_partial_errors(self):
+        from run_live_diagnostics import capture_trace_report
+        with patch("psutil.Process") as process, patch("time.sleep") as pause, \
+                patch("companion.services.addon_host.time.time", return_value=1000.0), \
+                patch("companion.services.addon_host._read_pipe", side_effect=[self.payload(), OSError("pipe busy"), self.payload()]):
+            process.return_value.create_time.return_value = 900.0
+            report = capture_trace_report(123)
+        self.assertTrue(report["traceSupported"])
+        self.assertEqual(len(report["samples"]), 3)
+        self.assertEqual(report["samples"][0]["capture"]["progress"]["handoffAttempts"], 7)
+        self.assertEqual(report["samples"][0]["metrics"], {"DLSSNR02": {"accepted": 7}})
+        self.assertEqual(report["samples"][1], {"available": False, "error": "pipe busy"})
+        self.assertEqual(pause.call_count, 2)
+
+    def test_trace_rejects_another_process_and_reports_legacy_host(self):
+        from run_live_diagnostics import capture_trace_report
+        for payload, available in ((self.payload(pid=456), False), (self.payload(capture={}), True)):
+            with self.subTest(available=available), patch("psutil.Process") as process, \
+                    patch("time.sleep"), patch("companion.services.addon_host.time.time", return_value=1000.0), \
+                    patch("companion.services.addon_host._read_pipe", return_value=payload):
+                process.return_value.create_time.return_value = 900.0
+                report = capture_trace_report(123)
+                self.assertFalse(report["traceSupported"])
+                self.assertTrue(all(sample["available"] == available for sample in report["samples"]))
+
+    def test_trace_mode_bypasses_elevation_and_application_startup(self):
+        import run_live_diagnostics
+        report = {"samples": [{"available": True}]}
+        with patch.object(run_live_diagnostics, "parse_args", return_value=SimpleNamespace(capture_trace=123)), \
+                patch.object(run_live_diagnostics, "capture_trace_report", return_value=report) as capture, \
+                patch.object(run_live_diagnostics, "_ensure_admin") as elevate, patch("builtins.print"):
+            self.assertEqual(run_live_diagnostics.main(), 0)
+        capture.assert_called_once_with(123)
+        elevate.assert_not_called()
+
+    def test_trace_refuses_reused_pid_before_reading_telemetry(self):
+        from companion.services.addon_host import capture_trace_report
+        with patch("psutil.Process") as process, patch("companion.services.addon_host._read_pipe") as read:
+            process.return_value.create_time.return_value = 901.0
+            with self.assertRaisesRegex(ValueError, "restarted"):
+                capture_trace_report(123, expected_created_at=900.0)
+        read.assert_not_called()
+
+
 class DiagnosticRunnerTests(unittest.TestCase):
+    def test_nr_reproduction_profile_enables_nr_and_matches_local_capture_settings(self):
+        default = Profile(name="Default", is_default=True,
+                          native_scaling_settings={"FrameGeneration": "Off", "CaptureApi": "DXGI",
+                                                   "HdrSupport": "false", "ScalingType": "NIS"})
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(config=SimpleNamespace(profiles=[default]), asset_store=Mock())
+        runner.server.asset_store.list_packages.return_value = [{"provider": "ls-addon-manager", "version": "build-7-lsc.9"}]
+        runner.server.asset_store.list_imports.return_value = [{"filename": "nvngx_dlssnr.dll", "architecture": "x64", "sha256": "a" * 64}]
+        profile = runner._nr_reproduction_profile()
+        self.assertEqual(profile.graphics.neural_render.implementation, "lsp_neural_render")
+        self.assertEqual(profile.graphics.neural_render.runtime_asset_sha256, "a" * 64)
+        self.assertTrue(profile.addon_config["addons"]["DLSSNR02"]["_enabled"])
+        self.assertEqual(profile.native_scaling_settings, {"FrameGeneration": "LSFG3", "CaptureApi": "WGC",
+                                                         "HdrSupport": "true", "ScalingType": "Off"})
+        self.assertEqual(default.native_scaling_settings["CaptureApi"], "DXGI")
+        self.assertEqual(default.native_scaling_settings["HdrSupport"], "false")
+
+    def test_nr_reproduction_requires_imported_runtime_and_host(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(config=SimpleNamespace(profiles=[]), asset_store=Mock())
+        runner.server.asset_store.list_packages.return_value = [{"provider": "ls-addon-manager", "version": "build-7-lsc.9"}]
+        runner.server.asset_store.list_imports.return_value = []
+        with self.assertRaisesRegex(ValueError, "nvngx_dlssnr.dll"):
+            runner._nr_reproduction_profile()
+
+    def test_nr_settings_resolve_implicit_default_title_using_real_xml(self):
+        from companion.services.ls_settings import LosslessSettingsXml
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "Settings.xml"
+            path.write_text("<Settings><GameProfiles><Profile><Title>Native Default</Title>"
+                            "<ScalingType>NIS</ScalingType></Profile><Profile><Title>Other</Title>"
+                            "<ScalingType>NIS</ScalingType></Profile></GameProfiles></Settings>", encoding="utf-8")
+            settings = LosslessSettingsXml(str(path))
+            runner = DiagnosticRunner.__new__(DiagnosticRunner)
+            runner.server = SimpleNamespace(ls_settings=settings)
+            values = {"FrameGeneration": "LSFG3", "CaptureApi": "WGC", "HdrSupport": "true", "ScalingType": "Off"}
+            runner._apply_nr_reproduction_settings(Profile(name="Test", native_scaling_settings=values))
+            native = settings.get_profile(None)
+            self.assertEqual({key: native[key] for key in values}, values)
+            self.assertEqual(settings.get_profile("Other")["ScalingType"], "NIS")
+
+    def test_nr_benchmark_captures_before_stop_and_restores_after_success_or_waiting(self):
+        from companion.services.asset_store import AssetStore
+        for processed, slow_start, trace_error in ((True, False, False), (False, False, False), (True, True, False), (True, False, True)):
+            with self.subTest(processed=processed, slow_start=slow_start, trace_error=trace_error), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executable, workload, settings = root / "LosslessScaling.exe", root / "LSBenchmark.exe", root / "Settings.xml"
+                executable.write_bytes(b"fixture")
+                workload.write_bytes(b"fixture")
+                settings.write_bytes(b"original settings")
+                previous = Profile(name="Previous")
+                profile = Profile(name="NR", native_scaling_settings={"FrameGeneration": "LSFG3", "CaptureApi": "WGC",
+                                                                      "HdrSupport": "true", "ScalingType": "Off"})
+                profile.graphics.neural_render.implementation = "lsp_neural_render"
+                state = AppState()
+                state.current_active_profile = previous
+                state.auto_scale_enabled = True
+                state.benchmark_mode_active = False
+                running = {"value": True}
+                events = []
+                watcher = Mock()
+                watcher.check_is_lossless_scaling_running.side_effect = lambda: running["value"]
+                def stop_host():
+                    running["value"] = False
+                    return True
+                def launch_host(**kwargs):
+                    running["value"] = True
+                    return True
+                watcher.stop_lossless_scaling.side_effect = stop_host
+                watcher.launch_lossless_scaling.side_effect = launch_host
+                automation = Mock()
+                automation._desired_gpu_route.return_value = {}
+                automation.resolve_deployment_files.return_value = [{"relative_path": "fixture"}]
+                automation.deployment_manager.apply.return_value = {"files": [{"relative_path": executable.name,
+                    "deployed_sha256": AssetStore.sha256(executable)}]}
+                def set_scaling(enabled, *args, **kwargs):
+                    events.append("start" if enabled else "stop")
+                    state.is_scaling_active = enabled
+                    return True
+                automation.set_scaling.side_effect = set_scaling
+                native_settings = Mock(path=settings)
+                native_settings.get_profile.return_value = {"Title": "Native Default"}
+                native_settings.gpu_route_changes_required.return_value = False
+                def update_profile(*args, **kwargs):
+                    settings.write_bytes(b"temporary NR settings")
+                    return True
+                native_settings.update_profile.side_effect = update_profile
+                server = SimpleNamespace(automation=automation, state=state, process_watcher=watcher,
+                    ls_settings=native_settings, _embedded_benchmark_executable=lambda: workload,
+                    config=SimpleNamespace(lossless_scaling_exe_path=str(executable),
+                        lossless_settings_xml_path=str(settings), addon_manager_enabled=False,
+                        addon_manager=SimpleNamespace(enabled=False)))
+                runner = DiagnosticRunner.__new__(DiagnosticRunner)
+                runner.server = server
+                runner._nr_reproduction_profile = Mock(return_value=profile)
+                runner._wait_until = Mock(side_effect=lambda predicate, timeout, interval=0.2: bool(predicate()))
+                runner._runtime_log_paths = Mock(return_value=[])
+                runner._log_delta = Mock(return_value={"fixture.log": "fresh runtime evidence"})
+                runner._runtime_log_errors = Mock(return_value=[])
+                runner._runtime_log_evidence = Mock(return_value={})
+                runner._runtime_gpu_names = Mock(return_value=[])
+                runner._lossless_loaded_modules = Mock(return_value=([], None))
+                runner._addon_runtime_checks = Mock(return_value={"neuralFramesProcessed": processed})
+                trace = {"status": "pass", "details": {"trace": {"samples": [{"capture": {"captures": 7 if processed else 0}}]}}}
+                def collect():
+                    self.assertTrue(state.is_scaling_active)
+                    events.append("trace")
+                    if trace_error:
+                        raise RuntimeError("trace fixture failure")
+                    return trace
+                runner._collect_nr_capture_trace = Mock(side_effect=collect)
+                process = Mock(pid=456)
+                process.poll.return_value = None
+                with patch("companion.services.managed_runtime.assert_private_settings"), \
+                        patch("scripts.benchmark_lossless_scaling.find_largest_window", return_value=789), \
+                        patch("scripts.benchmark_lossless_scaling.focus_window", return_value=True), \
+                        patch("companion.services.ls_inspector.LosslessScalingInspector") as inspector, \
+                        patch("companion.services.diagnostic_runner.subprocess.Popen", return_value=process) as launch, \
+                        patch("companion.services.diagnostic_runner.time.sleep"):
+                    inspector.return_value._find_log_file.return_value = None
+                    observation = SimpleNamespace(is_active=True, to_dict=lambda: {"is_active": True})
+                    inspector.return_value.inspect_current_scaling_target.side_effect = (
+                        [SimpleNamespace(is_active=not slow_start), observation, observation])
+                    result = runner._nr_capture_trace()
+                self.assertEqual(result["status"], "pass" if processed and not trace_error else "fail")
+                self.assertEqual(events, ["start", "trace", "stop"])
+                launch.assert_called_once_with([str(workload), "--duration", "300"], cwd=str(root))
+                native_settings.update_profile.assert_called_once_with("Native Default", profile.native_scaling_settings, backup=False)
+                self.assertEqual(runner._wait_until.call_args.args[1], 30.0)
+                attempt = result["details"]["testedProfiles"][0]
+                if trace_error:
+                    self.assertIn("trace fixture failure", attempt["error"])
+                else:
+                    self.assertEqual(attempt["captureTrace"], trace)
+                    self.assertEqual(attempt["runtimeChecks"]["neuralFramesProcessed"], processed)
+                self.assertEqual(settings.read_bytes(), b"original settings")
+                self.assertIs(state.current_active_profile, previous)
+                self.assertTrue(state.auto_scale_enabled)
+                self.assertFalse(state.benchmark_mode_active)
+                self.assertIsNone(state.diagnostic_scaling_target)
+                self.assertFalse(server.config.addon_manager_enabled)
+                self.assertFalse(server.config.addon_manager.enabled)
+                self.assertEqual(automation.deployment_manager.apply.call_args.kwargs["profile_id"], previous.id)
+                process.terminate.assert_called_once_with()
+
+    def test_nr_benchmark_reproduction_is_dedicated_and_mutating(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        entry = next(item for item in runner.catalog() if item["id"] == "nr_capture_trace")
+        self.assertFalse(entry["readOnly"])
+        self.assertIn("benchmark reproduction", entry["name"])
+        self.assertIn("nr_capture_trace", runner.LS_MUTATING_TESTS)
+        self.assertEqual(entry["dependencies"], [])
+        self.assertEqual([item[0] for item in runner._execution_plan("nr_capture_trace")], ["nr_capture_trace"])
+
+    def test_nr_benchmark_reproduction_exports_snapshots_and_runs_cleanup(self):
+        report = {"traceSupported": True, "samples": [{"available": True, "capture": {"traceVersion": 1}}] * 3}
+        with tempfile.TemporaryDirectory() as directory:
+            server = SimpleNamespace(profile_manager=SimpleNamespace(config_dir=Path(directory)),
+                state=SimpleNamespace(simulation_mode=False), process_watcher=None,
+                config=SimpleNamespace(lossless_scaling_exe_path="LosslessScaling.exe"))
+            runner = DiagnosticRunner(server)
+            profile = Profile(name="NR reproduction")
+            runner._nr_reproduction_profile = Mock(return_value=profile)
+            runner._run_live_addon_deployment_behavior = Mock(return_value=runner._result(
+                "pass", "done", testedProfiles=[{"captureTrace": {"details": {"trace": report}}}]))
+            runner._reset_lossless_folder = Mock(return_value=runner._result("pass", "reset"))
+            with patch("companion.services.adapter_report.configured_process", return_value=(123, 900.0)):
+                result = runner.run("nr_capture_trace")
+            runner._run_live_addon_deployment_behavior.assert_called_once_with(profiles=[profile], capture_neural_trace=True)
+            self.assertEqual(runner._reset_lossless_folder.call_count, 2)
+            with zipfile.ZipFile(result["archivePath"]) as bundle:
+                saved = json.loads(bundle.read("ls-companion-diagnostics/nr_capture_trace.log"))
+            self.assertEqual(saved["status"], "pass")
+            self.assertEqual(saved["details"]["testedProfiles"][0]["captureTrace"]["details"]["trace"], report)
+            self.assertEqual([item["id"] for item in result["results"]],
+                             ["nr_capture_trace", "environment_reset"])
+
+    def test_nr_capture_trace_reports_missing_host_and_partial_evidence(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(config=SimpleNamespace(lossless_scaling_exe_path="LosslessScaling.exe"))
+        with patch("companion.services.adapter_report.configured_process", return_value=None), \
+                patch("companion.services.diagnostic_runner.capture_trace_report") as capture:
+            self.assertEqual(runner._collect_nr_capture_trace()["status"], "warn")
+        capture.assert_not_called()
+        reports = (
+            ({"traceSupported": False, "samples": [{"available": True}]}, "warn"),
+            ({"traceSupported": False, "samples": [{"available": False}]}, "fail"),
+            ({"traceSupported": True, "samples": [{"available": True}, {"available": False}]}, "warn"),
+        )
+        for report, expected in reports:
+            with self.subTest(expected=expected), \
+                    patch("companion.services.adapter_report.configured_process", return_value=(123, 900.0)), \
+                    patch("companion.services.diagnostic_runner.capture_trace_report", return_value=report):
+                result = runner._collect_nr_capture_trace()
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["details"]["trace"], report)
+
     def test_overlay_requires_listener_even_without_scaling_override(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
         config = AppConfig(override_lossless_hotkey=False)

@@ -1486,12 +1486,8 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "lsp-neural-render", "reshade", "special-k", "display-commander"}:
+                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "reshade", "special-k", "display-commander"}:
                     raise ValueError("This add-on cannot be installed automatically")
-                if provider == "lsp-neural-render" and msg.get("acceptCommunityRuntime") is not True:
-                    raise ValueError(
-                        "Confirm the warning for the community-modified DLSS 5 runtime"
-                    )
                 releases = await asyncio.to_thread(
                     self.release_manager.check, provider, channel="stable", force=True
                 )
@@ -1513,8 +1509,6 @@ class CompanionWebSocketServer:
                     name = str(asset.get("name") or "").casefold()
                     unwanted = any(word in name for word in ("source", "debug", "symbol", "pdb"))
                     if provider == "ls-addon-manager":
-                        preferred = 0 if name.endswith(".zip") else 1
-                    elif provider == "lsp-neural-render":
                         preferred = 0 if name.endswith(".zip") else 1
                     else:
                         preferred = 0 if "specialk" in name and name.endswith((".7z", ".zip")) else 1
@@ -1568,160 +1562,6 @@ class CompanionWebSocketServer:
                     await websocket.send(json.dumps({
                         "type": "GRAPHICS_RELEASE_STAGED",
                         "package": result,
-                        "activeProfileRedeployed": active_redeployed,
-                    }))
-                    return
-                if provider == "lsp-neural-render":
-                    # NeuralRender cannot run without LosslessProxy. Treat this
-                    # button as a complete dependency bundle instead of leaving
-                    # a successfully downloaded add-on undeployable until the
-                    # user discovers and installs a second package.
-                    proxy_releases = await asyncio.to_thread(
-                        self.release_manager.check,
-                        "lossless-proxy",
-                        channel="stable",
-                        force=True,
-                    )
-                    proxy_release = next(
-                        (item for item in proxy_releases if item.get("assets")), None
-                    )
-                    if proxy_release is None:
-                        raise ValueError("No downloadable stable LosslessProxy release is available")
-                    proxy_assets = list(proxy_release.get("assets") or [])
-                    proxy_asset = min(
-                        proxy_assets,
-                        key=lambda item: (
-                            any(
-                                word in str(item.get("name") or "").casefold()
-                                for word in ("source", "debug", "symbol", "pdb")
-                            ),
-                            0
-                            if str(item.get("name") or "").casefold().endswith(".zip")
-                            else 1,
-                            str(item.get("name") or "").casefold(),
-                        ),
-                    )
-                    proxy_package = await asyncio.to_thread(
-                        self._stage_release,
-                        "lossless-proxy",
-                        str(proxy_release.get("version") or ""),
-                        str(proxy_asset.get("name") or ""),
-                        f"{str(msg.get('operationId') or '')}proxy",
-                        channel="stable",
-                    )
-                    runtime_provider = "dlssnr-community-runtime"
-                    runtime_releases = await asyncio.to_thread(
-                        self.release_manager.check,
-                        runtime_provider,
-                        channel="stable",
-                        force=True,
-                    )
-                    runtime_release = next(
-                        (item for item in runtime_releases if item.get("assets")), None
-                    )
-                    if runtime_release is None:
-                        raise ValueError("No community DLSS 5 runtime is currently available")
-                    runtime_asset = runtime_release["assets"][0]
-                    if not str(runtime_asset.get("digest") or "").startswith("sha256:"):
-                        raise UnsafeAssetError(
-                            "The community runtime release has no publisher SHA-256 digest"
-                        )
-                    runtime_package = await asyncio.to_thread(
-                        self._stage_release,
-                        runtime_provider,
-                        str(runtime_release.get("version") or ""),
-                        str(runtime_asset.get("name") or ""),
-                        f"{str(msg.get('operationId') or '')}nr",
-                        channel="stable",
-                    )
-                    payload = Path(runtime_package["payload_path"]).resolve(strict=True)
-                    runtime_matches = [
-                        (payload / Path(str(item.get("relative_path") or ""))).resolve(strict=True)
-                        for item in runtime_package.get("files", [])
-                        if Path(str(item.get("relative_path") or "")).name.casefold()
-                        == "nvngx_dlssnr.dll"
-                    ]
-                    if len(runtime_matches) != 1 or payload not in runtime_matches[0].parents:
-                        raise UnsafeAssetError(
-                            "The verified runtime archive must contain exactly one nvngx_dlssnr.dll"
-                        )
-                    runtime_source = runtime_matches[0]
-                    if self.asset_store.pe_architecture(runtime_source) != "x64":
-                        raise UnsafeAssetError(
-                            "The downloaded DLSS neural-rendering runtime is not a valid x64 DLL"
-                        )
-                    runtime_file = next(
-                        item for item in runtime_package["files"]
-                        if Path(str(item.get("relative_path") or "")).name.casefold()
-                        == "nvngx_dlssnr.dll"
-                    )
-                    runtime = await asyncio.to_thread(
-                        self.asset_store.import_file,
-                        str(runtime_source),
-                        expected_sha256=str(runtime_file.get("sha256") or ""),
-                        allowed_suffixes=(".dll",),
-                        source_metadata={
-                            "kind": "community-release",
-                            "provider": runtime_provider,
-                            "version": runtime_package.get("version"),
-                            "archive_sha256": runtime_package.get("archive_sha256"),
-                            "publisher_digest_verified": True,
-                            "warning": "Community-modified, unsigned NVIDIA-derived runtime",
-                        },
-                    )
-                    # Upgrade every existing NeuralRender profile away from a
-                    # stale upstream pin. This makes the bundled fork and the
-                    # just-verified dependencies authoritative immediately.
-                    profiles_updated = False
-                    for saved_profile in self.config.profiles:
-                        saved_neural = saved_profile.graphics.neural_render
-                        if saved_neural.implementation != "lsp_neural_render":
-                            continue
-                        saved_neural.package.enabled = True
-                        saved_neural.package.version = str(result.get("version") or "") or None
-                        saved_neural.runtime_asset_sha256 = runtime["sha256"]
-                        saved_profile.graphics.lossless_proxy.enabled = True
-                        saved_profile.graphics.lossless_proxy.version = (
-                            str(proxy_package.get("version") or "") or None
-                        )
-                        profiles_updated = True
-                    if profiles_updated:
-                        await asyncio.to_thread(self.profile_manager.save_config)
-
-                    # If NeuralRender is active, replace its deployed DLLs now
-                    # while Automation can safely stop and restart LS. Verify
-                    # the transaction rather than treating a caught activation
-                    # error as success.
-                    active_profile = self.state.current_active_profile
-                    active_redeployed = False
-                    if (
-                        active_profile
-                        and active_profile.graphics.neural_render.implementation
-                        == "lsp_neural_render"
-                        and self._lossless_scaling_found()
-                    ):
-                        await asyncio.to_thread(
-                            self.automation.activate_profile,
-                            active_profile,
-                            force=True,
-                            suppress_auto_scale=True,
-                        )
-                        desired = self.automation.resolve_deployment_files(active_profile)
-                        if self.automation.deployment_manager.needs_change(
-                            active_profile.id,
-                            desired,
-                            lossless_scaling_exe=self.config.lossless_scaling_exe_path,
-                        ):
-                            raise RuntimeError(
-                                "NeuralRender was downloaded but the active installation could not be replaced"
-                            )
-                        active_redeployed = True
-                    await websocket.send(json.dumps({
-                        "type": "NEURAL_RENDER_BUNDLE_STAGED",
-                        "package": result,
-                        "proxyPackage": proxy_package,
-                        "runtime": runtime,
-                        "profilesUpdated": profiles_updated,
                         "activeProfileRedeployed": active_redeployed,
                     }))
                     return

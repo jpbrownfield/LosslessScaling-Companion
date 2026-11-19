@@ -8,8 +8,10 @@ Usage:
     python run_live_diagnostics.py --list
     python run_live_diagnostics.py
     python run_live_diagnostics.py autoscale_behavior --no-elevate
+    python run_live_diagnostics.py --capture-trace <LS_PID>
 
-Stop the tray Companion first; this takes the single-instance guard.
+Stop the tray Companion first for application tests; they take the single-instance guard.
+The read-only --capture-trace mode leaves Companion and scaling running.
 Copies the resulting ls-companion-diagnostics-*.zip to the repo root.
 """
 from __future__ import annotations
@@ -22,6 +24,8 @@ from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent
 sys.path.insert(0, str(WORKSPACE))
+
+from companion.services.addon_host import capture_trace_report
 
 
 def _ensure_admin(args) -> None:
@@ -53,11 +57,22 @@ def parse_args() -> argparse.Namespace:
                         help="List application test ids and exit (no live changes).")
     parser.add_argument("--no-elevate", action="store_true",
                         help="Skip the UAC elevation prompt.")
+    parser.add_argument("--capture-trace", type=int, metavar="LS_PID",
+                        help="Read three capture/NR snapshots from a running LS process without changing it.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.capture_trace is not None:
+        import json
+        try:
+            report = capture_trace_report(args.capture_trace)
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print(json.dumps(report, indent=2))
+        return 0 if any(sample["available"] for sample in report["samples"]) else 1
     _ensure_admin(args)
     if os.environ.get("LOSSLESS_COMPANION_SIMULATION") == "1":
         print("Live diagnostics refuse simulation mode; unset LOSSLESS_COMPANION_SIMULATION.",
@@ -92,8 +107,6 @@ def main() -> int:
         _mirror = {
             "tools/LSBenchmark.exe": "tools/LSBenchmark.exe",
             "tools/LSC_StartupGuard.dll": "tools/LSC_StartupGuard.dll",
-            "addons/LSP-ReShade/LSC_ReShadeBridge.dll": "addons/LSP-ReShade/LSC_ReShadeBridge.dll",
-            "addons/LSP-ReShade/addon.json": "addons/LSP-ReShade/addon.json",
         }
         for _relative, _src_relative in _mirror.items():
             _dest = TEST_BINARIES_ROOT / _relative.replace("/", os.sep)

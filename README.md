@@ -385,9 +385,10 @@ measurement is unavailable for generic executables.
 The **Lossless Scaling Add-ons** settings panel stages verified packages for
 Companion Addon Host, its bundled add-on suite, ReShade, and Special K.
 Staged packages are loaded only when selected in a profile's LS Graphics Stack.
-The source and MIT notices for Companion's maintained ReShade bridge are under
-`native/`; release builds compile and embed it rather than downloading the
-upstream LSP-ReShade binary at runtime.
+The Companion Addon Host supplies Neural Rendering and ReShade input passthrough.
+The retired standalone LosslessProxy host and LSP-ReShade bridge are no longer
+installed or bundled. Existing legacy deployment receipts remain readable for
+safe restoration and migration to the current host.
 
 ### Example Profile Configuration:
 

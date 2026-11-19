@@ -10,7 +10,7 @@ import logging
 import struct
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.7"
+MANAGED_HOST_VERSION = "build-7-lsc.9"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 logger = logging.getLogger("LSCompanion.AddonHost")
@@ -42,6 +42,36 @@ def validate_status(payload, instance, *, now=None):
     if not isinstance(payload.get("addons"), list) or not isinstance(payload.get("metrics"), dict):
         raise ValueError("Host telemetry is malformed")
     return {**payload, "available": True}
+
+
+def capture_trace_report(pid: int, *, expected_created_at: float | None = None) -> dict:
+    import psutil
+
+    if pid <= 0:
+        raise ValueError("LS_PID must be a positive process ID")
+    try:
+        instance = pid, psutil.Process(pid).create_time()
+    except psutil.Error as error:
+        raise ValueError(f"Cannot inspect LS process {pid}: {error}") from error
+    if expected_created_at is not None and abs(instance[1] - expected_created_at) > 0.01:
+        raise ValueError("Lossless Scaling restarted before capture trace collection")
+    snapshots = []
+    for sample in range(3):
+        if sample:
+            time.sleep(1)
+        try:
+            status = validate_status(_read_pipe(pid), instance)
+            snapshots.append({key: status.get(key) for key in (
+                "available", "pid", "createdAt", "sampledAt", "hostVersion", "startupError",
+                "neuralBackend", "capture", "addons")})
+            snapshots[-1]["metrics"] = {key: value for key, value in status["metrics"].items()
+                                        if key in {"DLSSNR02", "LSC-AMDNR"}}
+        except (OSError, ValueError, TypeError, RecursionError) as error:
+            snapshots.append({"available": False, "error": str(error)})
+    return {"kind": "nr-capture-trace", "pid": pid,
+            "traceSupported": any(isinstance(sample.get("capture"), dict)
+                                  and sample["capture"].get("traceVersion") == 1 for sample in snapshots),
+            "samples": snapshots}
 
 
 def _read_pipe(pid, timeout_ms=500, *, acknowledge=None):
