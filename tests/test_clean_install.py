@@ -87,14 +87,25 @@ class CleanInstallTests(unittest.TestCase):
         self.assertFalse(self.state.update_in_progress)
         self.assertFalse(list(self.manager.config_dir.glob('.clean-install-*')))
 
+    def test_fresh_install_enables_host_without_overriding_saved_disabled_choice(self):
+        directory = self.root / 'fresh-config'
+        manager = ProfileManager(directory)
+        self.assertTrue(manager.config.addon_manager_enabled)
+        manager.config.addon_manager_enabled = False
+        manager.save_config()
+        self.assertFalse(ProfileManager(directory).config.addon_manager_enabled)
+
     def test_complete_reset_deletes_old_clones_settings_and_profiles_but_preserves_source_and_packages(self):
         cfg = self.manager.config
+        cfg.addon_manager_enabled = False
+        self.manager.save_config()
         source = self.snapshot(self.source)
         old_tree = self.runtime.root / 'installations/old-generation'
         old_tree.mkdir()
         (old_tree / 'old.dll').write_bytes(b'old')
         result = self.run_reset()
         self.assertTrue(result['ok'])
+        self.assertTrue(cfg.addon_manager_enabled)
         self.assertIs(self.manager.config, cfg, 'Live services must retain the same config object')
         self.assertFalse(old_tree.exists())
         self.assertFalse((self.executable.parent / 'addons/test/config.json').exists())

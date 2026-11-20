@@ -71,6 +71,39 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    async def test_general_settings_reads_overlap_without_blocking_event_loop(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        main_thread = threading.get_ident()
+        startup_started = threading.Event()
+        settings_started = threading.Event()
+        workers = []
+
+        def startup_status():
+            workers.append(threading.get_ident())
+            startup_started.set()
+            if not settings_started.wait(2):
+                raise RuntimeError("Settings collection did not run concurrently")
+            return True
+
+        def settings_payload():
+            workers.append(threading.get_ident())
+            settings_started.set()
+            if not startup_started.wait(2):
+                raise RuntimeError("Startup query did not run concurrently")
+            return {"addonManagerEnabled": True}
+
+        with patch.object(self.server.startup_manager, "is_enabled", side_effect=startup_status), \
+                patch.object(self.server, "_control_settings_payload", side_effect=settings_payload):
+            await self.server.process_message(websocket, '{"type":"GET_GENERAL_SETTINGS"}')
+
+        response = json.loads(websocket.messages[-1])
+        self.assertEqual(response["type"], "GENERAL_SETTINGS")
+        self.assertTrue(response["runAtStartup"])
+        self.assertEqual(response["controlSettings"], {"addonManagerEnabled": True})
+        self.assertEqual(len(workers), 2)
+        self.assertNotIn(main_thread, workers)
+
     async def test_profile_icons_are_authenticated_and_bound_to_saved_profile_ids(self):
         profile = self.manager.create_profile_from_process("Game.exe", "Existing game")
         with patch.object(self.server.profile_icons, "png", return_value=b"png") as extract:
@@ -731,6 +764,60 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("--dynamic-limiter", command)
         self.assertNotIn("--minimum-fps", command)
         self.assertNotIn("--maximum-fps", command)
+
+    def test_dynamic_benchmark_launch_uses_monitor_resolution_and_requested_target(self):
+        command = self.server._benchmark_launch_command(
+            Path('C:/tools/LSBenchmark.exe'), Path('C:/tools/PresentMon.exe'),
+            dynamic_limiter=True, target_percent=25,
+        )
+        self.assertIn('--dynamic-limiter', command)
+        self.assertIn('--monitor-resolution', command)
+        self.assertNotIn('--use-default-profile', command)
+        self.assertEqual(command[command.index('--duration') + 1], '300')
+        self.assertEqual(command[command.index('--gpu-headroom') + 1], '25')
+
+    def test_only_current_headroom_calibration_is_reused_for_dynamic_limits(self):
+        from companion.core.models import Profile
+        profile = Profile(name='Game', rtss=RtssLimiterConfig(limit_mode='dynamic', learned_framerate_limit=60))
+        self.assertEqual(self.server._rtss_limit_for_profile(profile), 240)
+        profile.rtss.calibration_policy_version = 1
+        self.assertEqual(self.server._rtss_limit_for_profile(profile), 60)
+
+    def test_dynamic_benchmark_summary_retains_trace_and_convergence(self):
+        trace = [{'elapsed_seconds': 30, 'current_limit': 100, 'lossless_gpu_percent': 25}]
+        result = self.server._benchmark_result_summary({
+            'dynamic_limiter_benchmark': {'status': 'pass', 'target_percent': 25},
+            'limiter_status_samples': trace, 'workload_resolution': {'width': 3840, 'height': 2160},
+        })
+        self.assertEqual(result['limiterTrace'], trace)
+        self.assertEqual(result['dynamicLimiter']['target_percent'], 25)
+        self.assertEqual(result['workloadResolution']['width'], 3840)
+
+    async def test_dynamic_benchmark_streams_live_progress_and_restores_previous_profile(self):
+        websocket = self.FakeWebSocket()
+        self.server.clients.add(websocket)
+        received = asyncio.Event()
+        original_send = websocket.send
+
+        async def send(message):
+            await original_send(message)
+            if json.loads(message).get('type') == 'DYNAMIC_LIMITER_PROGRESS':
+                received.set()
+
+        websocket.send = send
+
+        def run(_arguments, *, progress_callback):
+            progress_callback({'type': 'DYNAMIC_LIMITER_PROGRESS', 'sample': {'current_limit': 91}})
+            return 0
+
+        with patch('companion.services.server.run_performance_benchmark', side_effect=run), \
+                patch.object(self.automation, 'activate_profile') as restore, \
+                patch.object(self.server, '_load_latest_benchmark_result'), \
+                patch.object(self.server, '_benchmark_status_payload', return_value={'type': 'BENCHMARK_STATUS'}):
+            await self.server._run_benchmark(['--dynamic-limiter'])
+            await asyncio.wait_for(received.wait(), 2)
+        restore.assert_called_once()
+        self.assertFalse(self.state.benchmark_mode_active)
 
     def test_benchmark_summary_prefers_scaled_output_and_visible_latency(self):
         summary = self.server._benchmark_result_summary({
@@ -1461,18 +1548,19 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.release_manager.stage_release.assert_not_called()
         self.server.automation.activate_profile.assert_not_called()
 
-    async def test_retired_proxy_install_is_rejected(self):
+    async def test_retired_proxy_and_display_commander_installs_are_rejected(self):
         websocket = self.FakeWebSocket()
         self.server.client_authority[websocket] = "dashboard"
         self.server.release_manager = Mock()
 
-        await self.server.process_message(websocket, json.dumps({
-            "type": "INSTALL_LATEST_GRAPHICS_ADDON",
-            "provider": "lossless-proxy",
-            "operationId": "operation123",
-        }))
-
-        self.assertIn("cannot be installed automatically", websocket.messages[-1])
+        for provider in ("lossless-proxy", "display-commander"):
+            with self.subTest(provider=provider):
+                await self.server.process_message(websocket, json.dumps({
+                    "type": "INSTALL_LATEST_GRAPHICS_ADDON",
+                    "provider": provider,
+                    "operationId": "operation123",
+                }))
+                self.assertIn("cannot be installed automatically", websocket.messages[-1])
         self.server.release_manager.check.assert_not_called()
 
     def test_addon_version_equality_preserves_families_and_normalizes_numeric_versions(self):
@@ -1493,7 +1581,6 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             "special-k": "SK_26_6_13_7",
             "sm86-sr": "0.4.1",
             "amd-neural-render-runtime": "1.3.2",
-            "display-commander": "2.0.0",
         }
         self.server.release_manager.check.side_effect = lambda provider, **_: [
             {"version": versions[provider], "html_url": f"https://example.test/{provider}/{versions[provider]}"}
@@ -1517,8 +1604,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             [item["provider"] for item in status["updates"]],
             ["ls-addon-manager", "reshade"],
         )
-        for provider in ("sm86-sr", "amd-neural-render-runtime", "display-commander"):
+        for provider in ("sm86-sr", "amd-neural-render-runtime"):
             self.assertEqual(status["latestVersions"][provider], versions[provider])
+        self.assertNotIn("display-commander", status["latestVersions"])
         self.assertEqual(status["releaseUrls"]["ls-addon-manager"], "https://example.test/ls-addon-manager/v2.0.0")
 
     async def test_readonly_local_client_cannot_mutate_profiles(self):

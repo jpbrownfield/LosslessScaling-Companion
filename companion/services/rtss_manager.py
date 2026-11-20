@@ -21,7 +21,6 @@ LIMIT_METHOD_VALUES = {
     "async": 0,
     "front_edge_sync": 1,
     "back_edge_sync": 2,
-    "nvidia_reflex": 3,
 }
 MANAGED_KEYS = ("Limit", "LimitDenominator", "SyncLimiter")
 

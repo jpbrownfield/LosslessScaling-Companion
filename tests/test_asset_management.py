@@ -340,6 +340,32 @@ class DeploymentManagerTests(unittest.TestCase):
             self.assertIn('"event": "runtime_addons_parked"', audit)
             self.assertIn('"event": "runtime_addons_activated"', audit)
 
+    def test_retired_display_commander_receipt_removes_only_managed_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "LosslessScaling.exe"
+            executable.write_bytes(b"exe")
+            binary = root / "source.addon64"
+            binary.write_bytes(b"managed-addon")
+            config = root / "source.ini"
+            config.write_text("[DisplayCommander]\nReflex.InjectionEnabled=1\n", encoding="utf-8")
+            unrelated = root / "user.addon64"
+            unrelated.write_bytes(b"user-addon")
+            manager = DeploymentManager(AssetStore(str(root / "store")))
+            files = [{
+                "relative_path": "zzz_display_commander.addon64", "source_path": str(binary),
+                "role": "reshade_addon", "source_package": "display-commander/old/hash",
+            }, {
+                "relative_path": "DisplayCommander.ini", "source_path": str(config),
+                "role": "display_commander_config", "source_package": "generated/display-commander-config",
+            }]
+            manager.apply(profile_id="legacy", lossless_scaling_exe=str(executable), files=files)
+            (root / "DisplayCommander.ini").write_text("runtime-modified=true", encoding="utf-8")
+            manager.apply(profile_id=None, lossless_scaling_exe=str(executable), files=[])
+            self.assertFalse((root / "zzz_display_commander.addon64").exists())
+            self.assertFalse((root / "DisplayCommander.ini").exists())
+            self.assertEqual(unrelated.read_bytes(), b"user-addon")
+
     def test_deploy_and_empty_plan_restore_original(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -640,7 +666,6 @@ class GraphicsResolverTests(unittest.TestCase):
                     "hdr_peak_brightness_nits": 1000,
                     "hdr_paper_white_nits": 200,
                     "temporary_windows_hdr": True,
-                    "experimental_reflex": True,
                     "experimental_smooth_motion": True,
                 }},
             })
@@ -660,7 +685,7 @@ class GraphicsResolverTests(unittest.TestCase):
             self.assertIn("scRGBLuminance_[0]=12.5", generated)
             self.assertIn("scRGBPaperWhite_[0]=2.5", generated)
             self.assertIn("TemporaryDesktopHDRMode=true", generated)
-            self.assertIn("[NVIDIA.Reflex]\nEnable=true", generated)
+            self.assertNotIn("[NVIDIA.Reflex]", generated)
             self.assertIn("AllowFlipMetering=true", generated)
             self.assertIn("EnableImGuiToggle=false", generated)
 

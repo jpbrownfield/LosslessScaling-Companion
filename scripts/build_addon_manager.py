@@ -148,7 +148,7 @@ def build(cache: Path):
     subprocess.run([cmake, "-S", str(source / "manager"), "-B", str(work / "host"), "-A", "x64",
         f'-DLSC_HOST_VERSION={lock["version"]}', f'-DEAM_BUILD_NUMBER={tag.removeprefix("build-")}',
         *dependency_options], check=True)
-    targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_panel_test", "lsc_routing_test", "lsc_cursor_test", "lsc_capture_trace_test", "eam_featurestest"]
+    targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_panel_test", "lsc_routing_test", "lsc_cursor_test", "lsc_capture_trace_test", "lsc_pacing_probe_test", "eam_featurestest"]
     fps_test = (source / "manager/tools/fps_counter_test.cpp").is_file()
     if fps_test:
         targets.extend(("eam_fpstest", "eam_updatetest"))
@@ -161,6 +161,8 @@ def build(cache: Path):
     subprocess.run([str(work / "host/Release/lsc_cursor_test.exe")],
                    check=True, cwd=work, timeout=60)
     subprocess.run([str(work / "host/Release/lsc_capture_trace_test.exe")],
+                   check=True, cwd=work, timeout=60)
+    subprocess.run([str(work / "host/Release/lsc_pacing_probe_test.exe")],
                    check=True, cwd=work, timeout=60)
     if fps_test:
         for name, args in (("eam_fpstest", ()), ("eam_fpstest", ("foreign",)), ("eam_updatetest", ())):

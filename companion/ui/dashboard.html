@@ -458,13 +458,21 @@
     }
     #companionConnectionBanner { position: fixed; z-index: 100000; top: 20px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 40px)); padding: 18px 22px; border: 1px solid var(--danger); border-radius: 10px; background: var(--card-bg, #171b24); color: var(--text, #eee); box-shadow: 0 8px 40px #0008; }
     #dashboardContent[inert] { opacity: .55; }
+    .limiter-trace-table { border-collapse: collapse; }
+    .limiter-trace-table th, .limiter-trace-table td { padding: 6px 10px; border-bottom: 1px solid var(--card-border); }
+    #dashboardContent[aria-busy="true"] { visibility: hidden; }
+    #dashboardLoading { position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: var(--bg); }
+    #dashboardLoading[hidden] { display: none; }
+    .dashboard-loading-wheel { width: 48px; height: 48px; border: 4px solid var(--card-border); border-top-color: var(--accent); border-radius: 50%; animation: dashboard-loading-spin .8s linear infinite; }
+    @keyframes dashboard-loading-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .dashboard-loading-wheel { animation: none; } }
     /* Add-on installation and per-profile configuration */
     #losslessAddonsPanel .settings-content { display:grid; gap:24px; }
     #losslessAddonsPanel .settings-content > * { margin-bottom:0; min-width:0; }
     .addon-page-intro { display:flex; justify-content:space-between; align-items:center; gap:20px; }
     .addon-page-intro p { max-width:680px; color:var(--text-muted); font-size:13px; line-height:1.65; }
     .addon-host-card { border-color:#3c526a; padding:0; overflow:hidden; }
-    .addon-host-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,.65fr); }
+    .addon-host-layout { display:grid; grid-template-columns:minmax(0,1fr); }
     .addon-host-main { display:grid; gap:18px; padding:24px; }
     .addon-host-main .addon-card-header { gap:20px; }
     .addon-host-main h3 { font-size:19px; letter-spacing:-.3px; }
@@ -580,8 +588,12 @@
   </style>
 </head>
 <body>
-  <div id="companionConnectionBanner" role="alert">Connecting to Companion… Controls will be available when the connection is ready.</div>
-  <div id="dashboardContent" inert>
+  <div id="dashboardLoading" role="status" aria-live="polite">
+    <span class="dashboard-loading-wheel" aria-hidden="true"></span>
+    <span>Loading settings...</span>
+  </div>
+  <div id="companionConnectionBanner" role="alert" hidden>Connecting to Companion… Controls will be available when the connection is ready.</div>
+  <div id="dashboardContent" inert aria-busy="true">
 
   <a class="skip-link" href="#mainContent">Skip to content</a>
   <aside class="app-sidebar" aria-label="Application sidebar">
@@ -711,8 +723,6 @@
             <section class="general-settings-section" aria-label="GPU selection">
               <h3>GPU selection</h3>
               <div class="form-group section-primary-field"><label for="preferredScalingGpu">Default Scaling GPU</label><div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap"><select id="preferredScalingGpu" style="flex:1; min-width:200px"><option value="__auto__">Match Application Monitor GPU</option></select><button id="calibrateGpusBtn" class="btn btn-secondary" type="button" title="Scale the benchmark workload on each GPU to identify the correct GPU indices">Calibrate GPUs</button></div><div id="gpuCalibrationStatus" class="item-sub" style="white-space:normal"></div></div>
-              <div id="gpuRoutingStatus" class="item-sub" style="white-space:normal"></div>
-              <div id="gpuIndexRefreshStatus" class="item-sub" style="white-space:normal" aria-live="polite"></div>
               <p class="item-sub" style="white-space:normal;margin-top:8px">Auto uses the GPU connected to the app’s monitor. Choose a GPU to use it by default.</p>
             </section>
             <section class="general-settings-section" aria-label="Window behavior">
@@ -756,7 +766,7 @@
         </section>
 
         <div style="margin-bottom:14px">
-          <button id="cleanInstallBtn" class="btn btn-clean-install" type="button">Remove all profiles and reset settings to default (Clean install)</button>
+          <button id="cleanInstallBtn" class="btn btn-clean-install" type="button"><span aria-hidden="true">&#9851;</span> Remove all profiles and reset settings to default (Clean install)</button>
           <p id="cleanInstallStatus" class="item-sub" role="status" style="white-space:normal;margin-top:8px"></p>
         </div>
         <div style="display:flex; gap:10px; flex-wrap:wrap">
@@ -791,15 +801,10 @@
               <label class="ls-switch"><input id="addonManagerEnabled" type="checkbox" checked aria-label="Enable Companion Addon Host"><span class="ls-switch-track"></span></label>
             </div>
             <div class="addon-status" data-addon-status="ls-addon-manager">Checking installed version...</div>
-            <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install bundled host</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button></div>
+            <div class="addon-actions"><button class="btn btn-primary" type="button" data-addon-install="ls-addon-manager">Install bundled host</button><button class="btn btn-secondary" type="button" data-addon-check="ls-addon-manager">Check version</button><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" aria-label="Open advanced add-on panel">Open advanced panel</button></div>
+            <p id="proxyMenuStatus" class="addon-description" role="status" hidden></p>
             <details class="addon-notes"><summary>About the host &amp; updates</summary><p>Runs inside Lossless Scaling. Its advanced panel starts hidden; open it while scaling from here or with the overlay shortcut. The suite updates together with Companion. By <a href="https://github.com/FriedSnowman/ls-addon-manager" target="_blank" rel="noopener noreferrer">FriedSnowman</a>, based on FrankBarretta's LosslessProxy. MIT host; GPL-3.0-only Neural Rendering. <a id="addonHostReleaseLink" href="https://github.com/FriedSnowman/ls-addon-manager/releases" target="_blank" rel="noopener noreferrer">Bundled upstream release &amp; notices</a>.</p></details>
           </div>
-          <aside class="addon-host-runtime" aria-label="Addon host runtime status">
-            <div class="addon-runtime-title">Runtime status</div>
-            <p id="addonRuntimeStatus" class="addon-description" role="status">Runtime status is available when Lossless Scaling is running.</p>
-            <p id="proxyMenuStatus" class="addon-description">Saved profile changes apply on the next scaling start.</p>
-            <div class="addon-actions"><button id="openProxyMenuBtn" class="btn btn-secondary" type="button" aria-label="Open advanced add-on panel">Open advanced panel</button></div>
-          </aside>
         </div>
       </section>
       <section class="addon-package-section" aria-label="Optional backends">
@@ -845,8 +850,7 @@
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
-        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Display Commander</h3><p class="addon-description">ReShade display diagnostics and optional NVIDIA Reflex for Lossless Scaling. Enable per profile in ReShade settings.</p></div><span class="addon-badge" data-addon-badge="display-commander">Not installed</span></div><div class="addon-status" data-addon-status="display-commander">Checking installed version...</div><div class="addon-actions"><button class="btn btn-primary" data-addon-install="display-commander">Download Display Commander</button><a class="btn btn-secondary" href="https://github.com/pmnoxx/display-commander" target="_blank" rel="noopener noreferrer">Documentation</a></div></section>
-        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">Optional HDR conversion, Reflex and presentation features. Enable and configure it per profile.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">Optional HDR conversion and presentation features. Enable and configure it per profile.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
       </div>
       <section class="settings-group">
         <h2 class="settings-group-title">Gloam HDR integration</h2>
@@ -870,7 +874,7 @@
             <div class="form-group checkbox-group section-primary-toggle"><input id="processLassoPerformanceModeScaling" type="checkbox"><label for="processLassoPerformanceModeScaling">Scale on Process Lasso Performance Mode Detection</label></div>
             <div class="form-group"><label>CSV log override (optional)</label><div class="input-with-button"><input id="processLassoLogPath" type="text" placeholder="Blank uses automatic detection"><button id="browseProcessLassoLogBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="processLassoDetectedPath"></div></div>
           </div>
-          <p class="item-sub" style="white-space:normal">Automatically detects current <code>processlasso.log</code> and legacy <code>prolasso.log</code> files. New Performance Mode events require an existing Companion profile and a visible target window.</p>
+          <p class="item-sub" style="white-space:normal">Automatically detects current <code>processlasso.log</code> and legacy <code>prolasso.log</code> files. Uses the default profile when no application profile matches, restores hidden or minimized target windows, and brings them to the foreground before scaling.</p>
         </div>
       </section>
       <section class="settings-group">
@@ -881,7 +885,7 @@
               <div class="form-group checkbox-group section-primary-toggle"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
               <div class="form-group"><label>Default Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
               <div id="rtssDefaultStaticLimitGroup" class="form-group"><label>Default static frame limit for new profiles</label><input id="rtssDefaultStaticFramerateLimit" type="number" value="60" min="1" max="1000" step="1"></div>
-              <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default minimum LS GPU target %</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
+              <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default GPU headroom reserve (%)</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
             </div>
             <div class="settings-column">
               <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
@@ -899,8 +903,8 @@
 
       </div>
       <div class="settings-content">
-        <p class="profile-warning">This test uses the Default profile's existing Lossless Scaling, add-on, and frame-limiter settings. It does not calibrate the limiter or change the profile's saved limits.</p>
-        <p class="item-sub" style="white-space:normal;margin-bottom:12px">The small GPU workload is included with LS Companion. Download and verify PresentMon once to unlock the test.</p>
+        <p class="profile-warning">Saved profile limits remain unchanged. The limiter benchmark temporarily adjusts the workload's RTSS settings and restores them afterward.</p>
+        <p class="item-sub" style="white-space:normal;margin-bottom:12px">The GPU workload is included with LS Companion. Download and verify PresentMon once to unlock the test.</p>
         <div class="addon-grid">
           <section class="addon-card">
             <div class="addon-card-header"><div><h3>GPU workload</h3><p class="addon-description">The project's embedded shader-heavy D3D11 workload, designed to saturate the GPU for limiter testing.</p></div><span id="benchmarkWorkloadBadge" class="addon-badge">Included</span></div>
@@ -916,11 +920,25 @@
           <button id="startPerformanceBenchmarkBtn" class="btn btn-primary" type="button" disabled>Run performance test</button>
           <span id="performanceBenchmarkStatus" class="item-sub">Waiting for PresentMon.</span>
         </div>
+        <div class="form-row" style="margin-top:16px;align-items:end">
+          <div class="form-group" style="margin-bottom:0"><label for="benchmarkGpuTarget">GPU headroom reserve (%)</label><input id="benchmarkGpuTarget" type="number" min="1" max="100" step="1" value="15"></div>
+          <button id="startDynamicLimiterBenchmarkBtn" class="btn btn-secondary" type="button" style="justify-self:start" disabled>Run limiter benchmark</button>
+        </div>
+        <section id="dynamicLimiterBenchmarkResults" hidden>
+          <h3>Dynamic limiter</h3>
+          <p id="dynamicLimiterBenchmarkSummary" class="item-sub" role="status" style="white-space:normal"></p>
+          <div style="max-height:320px;overflow:auto;margin-top:12px">
+            <table class="limiter-trace-table" style="width:100%;font-size:12px;text-align:left;white-space:nowrap">
+              <thead><tr><th>Time (s)</th><th>FPS limit</th><th>RTSS limit</th><th>Game GPU (%)</th><th>LS GPU (%)</th><th>Headroom (%)</th><th>State</th></tr></thead>
+              <tbody id="dynamicLimiterBenchmarkTrace"></tbody>
+            </table>
+          </div>
+        </section>
         <div id="performanceBenchmarkResults" class="addon-grid" style="margin-top:12px" hidden>
           <section class="addon-card"><div class="addon-card-header"><div><h3>Average FPS</h3><p id="benchmarkAverageFps" class="addon-status">Unavailable</p></div></div></section>
           <section class="addon-card"><div class="addon-card-header"><div><h3 id="benchmarkLatencyLabel">Average latency</h3><p id="benchmarkAverageLatency" class="addon-status">Unavailable</p></div></div></section>
         </div>
-        <p class="item-sub" style="white-space:normal;margin-top:10px">The capture runs for 30 seconds, displays its average FPS and available software latency here, and retains the full JSON report in the local benchmark diagnostics folder.</p>
+        <p class="item-sub" style="white-space:normal;margin-top:10px">The performance capture runs for 30 seconds, displays its average FPS and available software latency here, and retains the full JSON report in the local benchmark diagnostics folder.</p>
       </div>
     </section>
     <section id="testingPanel" class="dashboard-section" data-collapsible-id="testing" aria-labelledby="testingPanelTitle" hidden>
@@ -1157,7 +1175,7 @@
         <details id="profileAddonsPanel" class="settings-group profile-settings-group profile-major-panel">
           <summary class="settings-group-title">Add-ons for this profile</summary>
           <div class="settings-group-content">
-            <div class="addon-profile-intro"><p>Choose upscalers in Scaling above. Enable extra features here; detailed tuning is available in the advanced panel while scaling. Panel edits are saved to the active profile. Profile changes apply on the next scaling start.</p><button id="openProfileAddonPanelBtn" class="btn btn-secondary" type="button">Advanced panel (active profile)</button><button id="disableOptionalAddonsBtn" class="btn btn-secondary" type="button">Disable extra features</button></div>
+            <div class="addon-profile-intro"><p>Choose upscalers in Scaling above. Enable extra features here; detailed tuning is available in the advanced panel while scaling. Panel edits are saved to the active profile. Profile changes apply on the next scaling start.</p><button id="openProfileAddonPanelBtn" class="btn btn-secondary" type="button">Advanced panel (active profile)</button></div>
             <div class="addon-runtime-profile"><strong>Live runtime (active profile)</strong><p id="profileAddonRuntimeStatus" class="addon-description" role="status">Checking the running Lossless Scaling instance. This reports the active profile, including when you are editing another profile.</p></div>
             <p id="addonHostNotice" class="profile-warning" hidden>The addon host is disabled. Enable it in Add-ons to run these settings.</p>
             <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an extra feature..." aria-label="Find an extra feature" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
@@ -1173,10 +1191,6 @@
           <p class="profile-reshade-help">Apply a shared shader preset to this profile. ReShade edits are saved back to that preset, including the three built-ins. Create and manage presets in Add-ons.</p>
           <div class="profile-reshade-picker"><select id="reshadeManagedProfile" aria-label="ReShade profile"><option value="">Disabled</option></select><button id="newProfileReshadeBtn" class="btn btn-primary" type="button" title="Create and select a new managed ReShade profile">New</button><button id="browseReshadePresetBtn" class="btn btn-secondary" type="button" title="Import an existing ReShade preset INI">Browse</button></div>
           <p class="item-sub" style="white-space:normal;margin-top:5px">Menu input is enabled automatically when a preset is selected.</p>
-          <div class="form-group checkbox-group"><input id="displayCommanderEnabled" type="checkbox"><label for="displayCommanderEnabled">Enable Display Commander</label></div>
-          <p class="item-sub" style="white-space:normal">Requires ReShade Full Add-On 6.6.2 or later and Display Commander installed in Add-ons. Works without a shader preset. Its FPS limiter is disabled so Lossless Scaling controls output pacing.</p>
-          <div class="form-group checkbox-group"><input id="displayCommanderReflex" type="checkbox" data-addon-vendor="NVIDIA"><label for="displayCommanderReflex">Inject NVIDIA Reflex (enables Display Commander)</label></div>
-          <p class="item-sub" style="white-space:normal">Affects Lossless Scaling's rendering queue. Does not enable Reflex in the captured game. Enabling this turns off Special K Reflex for this profile.</p>
           <p class="item-sub" style="white-space:normal">SDR-to-HDR presets require an SDR source, Windows HDR and LS HDR support. Use one SDR-to-HDR converter at a time. Captured SDR white is configured globally in Add-ons / ReShade / HDR display &amp; menu settings, with a 400-nit default and optional monitor overrides.</p>
         </div>
         </details>
@@ -1200,7 +1214,7 @@
             </div>
             <div id="rtssDynamicSettings">
               <div class="form-row">
-                <div class="form-group"><label>Minimum LS GPU target (%)</label><input id="rtssGpuTargetPercent" type="number" min="1" max="100" step="0.5" placeholder="Use global target"></div>
+                <div class="form-group"><label>GPU headroom reserve (%)</label><input id="rtssGpuTargetPercent" type="number" min="1" max="100" step="0.5" placeholder="Use global reserve"></div>
                 <div class="form-group"><label>Minimum game FPS</label><input id="rtssMinimumFramerate" type="number" value="30" min="1" max="1000"></div>
                 <div class="form-group"><label>Maximum game FPS</label><input id="rtssMaximumFramerate" type="number" value="240" min="1" max="1000"></div>
               </div>
@@ -1219,7 +1233,6 @@
                   <option value="async">Async</option>
                   <option value="front_edge_sync">Front Edge Sync</option>
                   <option value="back_edge_sync">Back Edge Sync</option>
-                  <option value="nvidia_reflex" data-addon-vendor="NVIDIA">NVIDIA Reflex</option>
                 </select>
               </div>
             </div>
@@ -1242,8 +1255,6 @@
                 <div class="form-group checkbox-group"><input id="specialKTemporaryWindowsHdr" type="checkbox"><label for="specialKTemporaryWindowsHdr">Temporarily enable Windows HDR while scaling</label></div>
               </div>
               <fieldset class="vendor-settings" data-addon-vendor="NVIDIA" disabled>
-              <div class="form-group checkbox-group"><input id="specialKReflex" type="checkbox"><label for="specialKReflex" class="experimental-label">NVIDIA Reflex low latency</label></div>
-              <p class="item-sub" style="white-space:normal;margin:-6px 0 12px 24px">Enables Special K's Reflex integration without enabling its frame limiter.</p>
               <div class="form-group checkbox-group"><input id="specialKSmoothMotion" type="checkbox"><label for="specialKSmoothMotion" class="experimental-label">NVIDIA Smooth Motion</label></div>
               <p class="item-sub" style="white-space:normal;margin:-6px 0 0 24px">Creates or updates an NVIDIA application profile for LosslessScaling.exe only, and enables Special K's required flip-metering path. Global NVIDIA settings are not changed.</p>
               <p id="specialKSmoothMotionAvailability" class="item-sub" style="white-space:normal;margin:5px 0 0 24px"></p>
@@ -1551,9 +1562,19 @@
     let wsLastReceived = 0;
     let wsLastHeartbeatTick = 0;
     let lastStateRevision = -1;
+    let companionConnected = false;
+
+    function updateDashboardReadiness() {
+      const ready = companionConnected && generalSettingsReady;
+      const content = document.getElementById('dashboardContent');
+      content.inert = !ready;
+      content.setAttribute('aria-busy', String(!generalSettingsReady));
+      document.getElementById('dashboardLoading').hidden = generalSettingsReady;
+    }
 
     function setCompanionConnected(connected, message) {
-      document.getElementById('dashboardContent').inert = !connected;
+      companionConnected = connected;
+      updateDashboardReadiness();
       const banner = document.getElementById('companionConnectionBanner');
       banner.hidden = connected;
       if (!connected) {
@@ -1730,11 +1751,11 @@
         // Only an authoritative state message enables the controls.
         lastStateRevision = -1;
         startHeartbeat(socket);
+        ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_PROFILE_SUMMARIES' }));
         ws.send(JSON.stringify({ type: 'GET_GRAPHICS_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
         ws.send(JSON.stringify({ type: 'GET_RESHADE_PROFILES' }));
-        ws.send(JSON.stringify({ type: 'GET_GENERAL_SETTINGS' }));
         ws.send(JSON.stringify({ type: 'GET_ADDON_UPDATES' }));
         ws.send(JSON.stringify({ type: 'GET_COMPANION_UPDATE' }));
         ws.send(JSON.stringify({ type: 'GET_NOTIFICATIONS' }));
@@ -1762,9 +1783,6 @@
             document.getElementById('simulationBadge').hidden = !msg.simulationMode;
           }
           if (msg.notifications) receiveNotifications(msg.notifications);
-          if (msg.gpuIndexMapping) {
-            document.getElementById('gpuIndexRefreshStatus').textContent = msg.gpuIndexMapping.message || '';
-          }
           if (msg.type === 'CONFIG_UPDATE') {
             profiles = msg.profiles || [];
             activeProfileId = msg.activeProfileId;
@@ -1926,11 +1944,14 @@
             ws.send(JSON.stringify({ type: 'GET_BENCHMARK_STATUS' }));
           } else if (msg.type === 'BENCHMARK_STATUS') {
             renderBenchmarkStatus(msg);
+          } else if (msg.type === 'DYNAMIC_LIMITER_PROGRESS') {
+            receiveDynamicLimiterProgress(msg);
           } else if (msg.type === 'BENCHMARK_TOOL_STAGED') {
             document.getElementById('performanceBenchmarkStatus').textContent = 'Download verified. Checking readiness...';
           } else if (msg.type === 'BENCHMARK_STARTED') {
             document.getElementById('performanceBenchmarkStatus').textContent = 'Performance test running.';
             document.getElementById('startPerformanceBenchmarkBtn').disabled = true;
+            document.getElementById('startDynamicLimiterBenchmarkBtn').disabled = true;
           } else if (msg.type === 'GPU_CALIBRATION_STATUS') {
             renderGpuCalibrationStatus(msg);
           } else if (msg.type === 'DIAGNOSTICS_STATUS' || msg.type === 'DIAGNOSTICS_RESULT') {
@@ -2036,6 +2057,7 @@
             document.getElementById('runAtStartup').checked = !!msg.runAtStartup;
             renderControlSettings();
             generalSettingsReady = true;
+            updateDashboardReadiness();
             if (msg.type === 'GENERAL_SETTINGS_SAVED') {
               document.getElementById('controlSettingsStatus').textContent =
                 `Saved automatically. Startup task: ${msg.runAtStartup ? 'enabled' : 'disabled'}. ` +
@@ -2300,12 +2322,6 @@
         select.appendChild(option);
       }
       select.value = selected;
-      const status = document.getElementById('gpuRoutingStatus');
-      if (!(inventory.gpus || []).length) {
-        status.innerHTML = '<span class="integration-status missing">No physical GPU detected</span><div class="integration-path">Display routing is unavailable in this session.</div>';
-      } else {
-        status.innerHTML = `<span class="integration-status detected">${inventory.gpus.length} GPU${inventory.gpus.length === 1 ? '' : 's'} detected</span>`;
-      }
       renderSpecialKSettings();
       applyAddonVendorAvailability();
     }
@@ -2363,7 +2379,8 @@
       const profileId = document.getElementById('profileId').value;
       if (status.profileId && profileId && status.profileId !== profileId) return;
       const parts = [status.message || 'Dynamic limiter inactive'];
-      if (status.lossless_gpu_percent != null) parts.push(`LS GPU ${status.lossless_gpu_percent}% / ≥${status.target_percent}%`);
+      if (status.lossless_gpu_percent != null) parts.push(`LS GPU ${status.lossless_gpu_percent}%`);
+      if (status.gpu_headroom_percent != null) parts.push(`GPU headroom ${status.gpu_headroom_percent}% / reserve ${status.target_percent}%`);
       if (status.game_gpu_percent != null) parts.push(`Game GPU ${status.game_gpu_percent}%`);
       if (status.current_limit != null) parts.push(`Limit ${status.current_limit} FPS`);
       if (status.manual_remaining_seconds) {
@@ -2393,6 +2410,50 @@
       document.getElementById('graphicsStatus').textContent = text;
     }
 
+    let dynamicBenchmarkTrace = [];
+
+    function receiveDynamicLimiterProgress(msg) {
+      dynamicBenchmarkTrace.push(msg.sample);
+      dynamicBenchmarkTrace = dynamicBenchmarkTrace.slice(-600);
+      renderDynamicLimiterBenchmark({
+        dynamicLimiter: {status: 'running', policy_version: 1, target_percent: msg.targetPercent,
+          final_limit: msg.sample.current_limit,
+          adjustment_count: Math.max(0, (dynamicBenchmarkTrace[0].current_limit || 0) - (msg.sample.current_limit || 0)),
+          settling_headroom_percent: {median: msg.sample.gpu_headroom_percent}},
+        workloadResolution: msg.workloadResolution, limiterTrace: dynamicBenchmarkTrace,
+      });
+    }
+
+    function renderDynamicLimiterBenchmark(result) {
+      const summary = result?.dynamicLimiter;
+      document.getElementById('dynamicLimiterBenchmarkResults').hidden = !summary;
+      const body = document.getElementById('dynamicLimiterBenchmarkTrace');
+      body.replaceChildren();
+      if (!summary) return;
+      if (summary.policy_version !== 1) {
+        document.getElementById('dynamicLimiterBenchmarkSummary').textContent = 'Previous report used the retired LS utilization target. Run the headroom benchmark for a current result.';
+        return;
+      }
+      const resolution = result.workloadResolution;
+      document.getElementById('dynamicLimiterBenchmarkSummary').textContent =
+        `${summary.status === 'running' ? 'Running' : summary.status === 'pass' ? 'Reserve sustained' : 'Reserve not verified'}: ${summary.target_percent}% GPU headroom` +
+        `${resolution ? ` | ${resolution.width} x ${resolution.height}` : ''}` +
+        ` | ${summary.status === 'running' ? 'Current limit' : 'Final limit'}: ${summary.final_limit ?? 'unavailable'} FPS | Adjustments: ${summary.adjustment_count ?? 0}` +
+        ` | ${summary.status === 'running' ? 'Current headroom' : 'Settling headroom median'}: ${summary.settling_headroom_percent?.median ?? 'unavailable'}%` +
+        `${summary.status === 'running' ? '' : ` | Reserve met: ${Math.round((summary.settling_target_fraction || 0) * 100)}% of samples`}` +
+        `${summary.failure_reason ? ` | ${summary.failure_reason}` : ''}`;
+      for (const sample of (result.limiterTrace || []).slice(-600)) {
+        const row = document.createElement('tr');
+        for (const value of [sample.elapsed_seconds?.toFixed(1), sample.current_limit,
+          sample.rtss_readback_limit, sample.game_gpu_percent, sample.lossless_gpu_percent, sample.gpu_headroom_percent, sample.state]) {
+          const cell = document.createElement('td');
+          cell.textContent = value ?? '-';
+          row.appendChild(cell);
+        }
+        body.appendChild(row);
+      }
+    }
+
     function renderBenchmarkStatus(msg) {
       const tools = msg.tools || {};
       const workloadReady = !!(tools.workload && tools.workload.ready);
@@ -2412,7 +2473,14 @@
         : 'Not detected or downloaded.';
       document.getElementById('downloadPresentMonBtn').disabled = presentMonReady;
       document.getElementById('startPerformanceBenchmarkBtn').disabled = !msg.ready || !!msg.running;
+      document.getElementById('startDynamicLimiterBenchmarkBtn').disabled = !msg.ready || !!msg.running;
+      const targetField = document.getElementById('benchmarkGpuTarget');
+      if (!targetField.dataset.initialized && controlSettings?.rtssDefaultGpuTargetPercent != null) {
+        targetField.value = controlSettings.rtssDefaultGpuTargetPercent;
+        targetField.dataset.initialized = 'true';
+      }
       const result = msg.result || null;
+      renderDynamicLimiterBenchmark(result);
       const resultPanel = document.getElementById('performanceBenchmarkResults');
       resultPanel.hidden = !result;
       if (result) {
@@ -2427,7 +2495,7 @@
           : 'Unavailable for this capture';
       }
       document.getElementById('performanceBenchmarkStatus').textContent = msg.running
-        ? 'A 30-second performance capture is running.'
+        ? 'A benchmark capture is running.'
         : msg.lastExitCode === 0
           ? 'Test completed. Results are shown below and the full JSON report was retained.'
           : msg.lastExitCode != null
@@ -2470,7 +2538,7 @@
       graphicsPackages = msg.packages || [];
       graphicsExternalSources = msg.externalSources || {};
       dlssnrRuntimes = msg.dlssnrRuntimes || [];
-      ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime', 'display-commander'].forEach(provider => {
+      ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime'].forEach(provider => {
         const latest = newestAddonPackage(provider);
         const badge = document.querySelector(`[data-addon-badge="${provider}"]`);
         const status = document.querySelector(`[data-addon-status="${provider}"]`);
@@ -3532,7 +3600,7 @@
       const basic = {DLSSNR02: ['scalePercent', 'preset', 'intensity'], WindowedMode: []};
       const passthrough = addonEditorDraft.addons.ReShadePassthrough ||= {};
       passthrough._enabled = !!(document.getElementById('reshadeManagedProfile').value
-        || document.getElementById('displayCommanderEnabled').checked || document.getElementById('displayCommanderReflex').checked);
+        );
       let enabledCount = 0;
       let visibleCount = 0;
       addonEditorCatalog.filter(addon => Object.hasOwn(basic, addon.id)).forEach(addon => {
@@ -4012,16 +4080,12 @@
           : 'No dynamic calibration data.';
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
         const graphics = profile.graphics || {};
-        const commander = graphics.display_commander || {};
-        document.getElementById('displayCommanderEnabled').checked = !!commander.enabled;
-        document.getElementById('displayCommanderReflex').checked = !!commander.inject_reflex;
         const specialK = graphics.special_k || {};
         document.getElementById('specialKEnabled').checked = !!specialK.enabled;
         document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
         document.getElementById('specialKPeakBrightness').value = specialK.hdr_peak_brightness_nits == null ? 1000 : specialK.hdr_peak_brightness_nits;
         document.getElementById('specialKPaperWhite').value = specialK.hdr_paper_white_nits == null ? 203 : specialK.hdr_paper_white_nits;
         document.getElementById('specialKTemporaryWindowsHdr').checked = !!specialK.temporary_windows_hdr;
-        document.getElementById('specialKReflex').checked = !!specialK.experimental_reflex;
         document.getElementById('specialKSmoothMotion').checked = !!specialK.experimental_smooth_motion;
       } else {
         document.getElementById('modalTitle').textContent = 'Create Profile';
@@ -4747,31 +4811,7 @@
         if (!event.target.closest('#addonEditorCards, #addonManagerFields')) scheduleProfileAutosave();
       });
     });
-    document.getElementById('disableOptionalAddonsBtn').onclick = () => {
-      Object.entries(addonEditorDraft.addons).forEach(([id, values]) => {
-        if (['DLSSNR02', 'LSC-AMDNR', 'WindowedMode'].includes(id) && values && typeof values === 'object') values._enabled = false;
-      });
-      renderAddonEditor();
-      addonEditorChanged();
-    };
     document.getElementById('reshadeManagedProfile').addEventListener('change', renderAddonEditor);
-    document.getElementById('displayCommanderReflex').addEventListener('change', event => {
-      if (event.target.checked) {
-        document.getElementById('displayCommanderEnabled').checked = true;
-        document.getElementById('specialKReflex').checked = false;
-      }
-      renderAddonEditor();
-      scheduleProfileAutosave();
-    });
-    document.getElementById('displayCommanderEnabled').addEventListener('change', event => {
-      if (!event.target.checked) document.getElementById('displayCommanderReflex').checked = false;
-      renderAddonEditor();
-      scheduleProfileAutosave();
-    });
-    document.getElementById('specialKReflex').addEventListener('change', event => {
-      if (event.target.checked) document.getElementById('displayCommanderReflex').checked = false;
-      scheduleProfileAutosave();
-    });
     document.getElementById('browseTargetProgramBtn').onclick = () => {
       ws.send(JSON.stringify({
         type: 'BROWSE_GENERAL_PATH',
@@ -5085,6 +5125,18 @@
     document.getElementById('downloadPresentMonBtn').onclick = function () {
       downloadBenchmarkTool('presentmon', this);
     };
+    document.getElementById('startDynamicLimiterBenchmarkBtn').onclick = function () {
+      const field = document.getElementById('benchmarkGpuTarget');
+      if (!field.reportValidity()) return;
+      const target = Number(field.value);
+      confirmDialog(`Run a five-minute benchmark at monitor resolution reserving ${target}% GPU headroom for Lossless Scaling? This temporarily adjusts the workload's RTSS limit. Saved limits are preserved and the RTSS profile is restored afterward.`, {title: 'Dynamic Limiter Benchmark'}).then(accepted => {
+        if (!accepted || !ws || ws.readyState !== WebSocket.OPEN) return;
+        dynamicBenchmarkTrace = [];
+        document.getElementById('startDynamicLimiterBenchmarkBtn').disabled = true;
+        ws.send(JSON.stringify({type: 'START_PERFORMANCE_BENCHMARK', dynamicLimiterBenchmark: true, targetPercent: target}));
+      });
+    };
+
     document.getElementById('startPerformanceBenchmarkBtn').onclick = function () {
       confirmDialog("Run a 30-second GPU-intensive scaling capture using the Default profile's current settings?", { title: 'Run Benchmark' }).then(accepted => {
         if (!accepted) return;
@@ -5189,9 +5241,7 @@
         addonConfig.addons.ReShadePassthrough._enabled = true;
       }
       const dlss5Enabled = !!(addonConfig.addons.DLSSNR02 && addonConfig.addons.DLSSNR02._enabled);
-      const commanderReflex = document.getElementById('displayCommanderReflex').checked;
-      const commanderEnabled = commanderReflex || document.getElementById('displayCommanderEnabled').checked;
-      const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath || commanderEnabled);
+      const reshadeEnabled = !!(managedReshadeProfile || legacyReshadePresetPath);
       const payload = {
         type: 'SAVE_PROFILE',
         requestId,
@@ -5257,11 +5307,6 @@
               version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
                 || (installedReshadePackage && installedReshadePackage.version) || null
             },
-            display_commander: {
-              ...(editingOriginalProfile?.graphics?.display_commander || {}),
-              enabled: commanderEnabled,
-              inject_reflex: commanderReflex
-            },
             special_k: {
               enabled: document.getElementById('specialKEnabled').checked,
               version: existingSpecialK.version || null,
@@ -5271,7 +5316,6 @@
               hdr_peak_brightness_nits: Number(document.getElementById('specialKPeakBrightness').value),
               hdr_paper_white_nits: Number(document.getElementById('specialKPaperWhite').value),
               temporary_windows_hdr: document.getElementById('specialKTemporaryWindowsHdr').checked,
-              experimental_reflex: document.getElementById('specialKReflex').checked,
               experimental_smooth_motion: document.getElementById('specialKSmoothMotion').checked
             }
           },

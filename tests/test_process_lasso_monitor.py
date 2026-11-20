@@ -13,7 +13,99 @@ from companion.services.process_lasso_monitor import (
     ProcessLassoScalingMonitor,
     parse_performance_mode_line,
 )
-from companion.services.process_watcher import ProcessInfo
+from companion.services.process_watcher import ProcessInfo, ProcessWatcher
+
+
+class ProcessLassoWindowTests(unittest.TestCase):
+    def test_visible_window_is_preferred_over_an_earlier_hidden_window(self):
+        native = Mock()
+        native.IsWindowVisible.side_effect = lambda hwnd: hwnd == 100
+        native.IsIconic.return_value = False
+        native.GetWindowTextLengthW.return_value = 4
+        native.GetWindowThreadProcessId.side_effect = lambda _hwnd, pointer: setattr(pointer._obj, 'value', 4312)
+
+        def window_rect(_hwnd, pointer):
+            pointer._obj.right = 800
+            pointer._obj.bottom = 600
+
+        def enumerate_windows(callback, _extra):
+            for hwnd in (99, 100):
+                if not callback(hwnd, 0):
+                    break
+
+        native.GetWindowRect.side_effect = window_rect
+        native.EnumWindows.side_effect = enumerate_windows
+        with patch('companion.services.process_watcher.user32', native):
+            self.assertEqual(ProcessWatcher._visible_hwnd_for_pid(4312, include_hidden=True), 100)
+
+    def test_hidden_and_minimized_windows_are_eligible_only_for_explicit_lookup(self):
+        for minimized in (False, True):
+            with self.subTest(minimized=minimized):
+                native = Mock()
+                native.IsWindowVisible.return_value = False
+                native.IsIconic.return_value = minimized
+                native.GetWindowTextLengthW.return_value = 4
+
+                def owner_pid(_hwnd, pointer):
+                    pointer._obj.value = 4312
+
+                def window_rect(_hwnd, pointer):
+                    pointer._obj.right = 160 if minimized else 800
+                    pointer._obj.bottom = 28 if minimized else 600
+
+                native.GetWindowThreadProcessId.side_effect = owner_pid
+                native.GetWindowRect.side_effect = window_rect
+                native.EnumWindows.side_effect = lambda callback, _extra: callback(99, 0)
+                with patch('companion.services.process_watcher.user32', native):
+                    self.assertIsNone(ProcessWatcher._visible_hwnd_for_pid(4312))
+                    self.assertEqual(ProcessWatcher._visible_hwnd_for_pid(4312, include_hidden=True), 99)
+                    self.assertIsNone(ProcessWatcher._visible_hwnd_for_pid(9999, include_hidden=True))
+
+    def test_process_lookup_includes_hidden_windows_and_pins_the_requested_pid(self):
+        entries = [
+            {"pid": 9999, "name": "Game.exe", "exePath": "C:/Other/Game.exe"},
+            {"pid": 4312, "name": "Game.exe", "exePath": "C:/Games/Game.exe"},
+        ]
+        native = Mock()
+        native.GetWindowTextLengthW.return_value = 4
+        native.GetWindowTextW.side_effect = lambda _hwnd, buffer, _length: setattr(buffer, 'value', 'Game')
+        with patch('companion.services.process_watcher.user32', native), \
+                patch.object(ProcessWatcher, 'list_running_executables', return_value=entries) as processes, \
+                patch.object(ProcessWatcher, '_visible_hwnd_for_pid', return_value=99) as windows:
+            target = ProcessWatcher.find_window_for_process(process_name='GAME.EXE', pid=4312)
+        processes.assert_called_once_with(visible_windows_only=False, filter_system=False)
+        windows.assert_called_once_with(4312, include_hidden=True)
+        self.assertEqual((target.pid, target.hwnd, target.title), (4312, 99, 'Game'))
+
+    def test_restoration_precedes_foreground_verification(self):
+        for minimized, visible in ((True, True), (False, False)):
+            with self.subTest(minimized=minimized, visible=visible):
+                watcher = ProcessWatcher(Mock(), AppState())
+                native = Mock()
+                native.IsWindow.return_value = True
+                native.IsIconic.return_value = minimized
+                native.IsWindowVisible.return_value = visible
+                native.GetWindowThreadProcessId.side_effect = lambda _hwnd, pointer: setattr(pointer._obj, 'value', 4312)
+
+                def focused(pid, hwnd):
+                    native.ShowWindow.assert_called_once_with(99, 9)
+                    return (pid, hwnd) == (4312, 99)
+
+                with patch('companion.services.process_watcher.user32', native), \
+                        patch.object(watcher, 'focus_window_identity', side_effect=focused):
+                    self.assertTrue(watcher.focus_window(ProcessInfo(4312, 'Game.exe', 'C:/Games/Game.exe', 'Game', 99), restore_hidden=True))
+                self.assertEqual(watcher.state.current_foreground_hwnd, 99)
+
+    def test_reused_window_handle_is_never_restored(self):
+        watcher = ProcessWatcher(Mock(), AppState())
+        native = Mock()
+        native.IsWindow.return_value = True
+        native.GetWindowThreadProcessId.side_effect = lambda _hwnd, pointer: setattr(pointer._obj, 'value', 9999)
+        with patch('companion.services.process_watcher.user32', native), \
+                patch.object(watcher, 'focus_window_identity') as focus:
+            self.assertFalse(watcher.focus_window(ProcessInfo(4312, 'Game.exe', 'C:/Games/Game.exe', 'Game', 99), restore_hidden=True))
+        native.ShowWindow.assert_not_called()
+        focus.assert_not_called()
 
 
 class ProcessLassoParserTests(unittest.TestCase):
@@ -117,7 +209,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         state = AppState()
         watcher = Mock()
         window = ProcessInfo(4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99)
-        watcher.find_visible_window_for_process.return_value = window
+        watcher.find_window_for_process.return_value = window
         watcher.focus_window.return_value = True
         automation = Mock()
 
@@ -155,7 +247,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         state = AppState()
         watcher = Mock()
         window = ProcessInfo(4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99)
-        watcher.find_visible_window_for_process.return_value = window
+        watcher.find_window_for_process.return_value = window
         watcher.focus_window.return_value = True
         automation = Mock()
         automation.activate_profile.side_effect = (
@@ -180,6 +272,8 @@ class ProcessLassoScalingTests(unittest.TestCase):
             target_pid=4312,
             target_hwnd=99,
         )
+        watcher.find_window_for_process.assert_called_once_with(process_name="Game.exe", pid=4312)
+        watcher.focus_window.assert_called_once_with(window, restore_hidden=True)
         self.assertFalse(default.auto_scale)
         self.assertTrue(specific.auto_scale)
 
@@ -222,7 +316,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         state.scaling_trigger = "focus"
         state.scaling_target_pid = 4312
         watcher = Mock()
-        watcher.find_visible_window_for_process.return_value = ProcessInfo(
+        watcher.find_window_for_process.return_value = ProcessInfo(
             4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
         )
         automation = Mock()
@@ -251,7 +345,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         state.is_scaling_active = True
         state.scaling_target_pid = 9999
         watcher = Mock()
-        watcher.find_visible_window_for_process.return_value = ProcessInfo(
+        watcher.find_window_for_process.return_value = ProcessInfo(
             4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
         )
         automation = Mock()
@@ -274,7 +368,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         )
         state = AppState()
         watcher = Mock()
-        watcher.find_visible_window_for_process.return_value = None
+        watcher.find_window_for_process.return_value = None
         watcher.focus_window.return_value = True
         automation = Mock()
 
@@ -295,7 +389,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         self.assertIn(event.key, monitor._pending_events)
         automation.set_scaling.assert_not_called()
 
-        watcher.find_visible_window_for_process.return_value = ProcessInfo(
+        watcher.find_window_for_process.return_value = ProcessInfo(
             4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
         )
         monitor._pending_events[event.key].retry_at = 0
@@ -316,7 +410,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         )
         state = AppState()
         watcher = Mock()
-        watcher.find_visible_window_for_process.return_value = None
+        watcher.find_window_for_process.return_value = None
         monitor = ProcessLassoScalingMonitor(manager, state, watcher, Mock())
         start = self.make_event()
 
@@ -337,7 +431,7 @@ class ProcessLassoScalingTests(unittest.TestCase):
         )
         state = AppState()
         watcher = Mock()
-        watcher.find_visible_window_for_process.return_value = ProcessInfo(
+        watcher.find_window_for_process.return_value = ProcessInfo(
             4312, "Game.exe", r"C:\Games\Game.exe", "Game", 99
         )
         watcher.focus_window.return_value = True

@@ -40,6 +40,21 @@ def patch_capture_variants(capture: Path):
 
 def patch_capture_diagnostics(capture: Path):
     header = capture.with_suffix(".h")
+    replace_once(header, 'void ObserveDevice(ID3D11Device*);',
+                 'void ObserveDevice(ID3D11Device*, bool fromCapture=false);')
+    replace_once(header, '    int fg = 0, capture = 0, scaler = 0;',
+                 '    std::string adapterLuid;\n    bool captureAdapterObserved=false;\n'
+                 '    int fg = 0, capture = 0, scaler = 0;')
+    replace_once(capture, 'void ObserveDevice(ID3D11Device* device) {',
+                 'void ObserveDevice(ID3D11Device* device, bool fromCapture) {')
+    replace_once(capture, '        ObserveDevice(device.Get());',
+                 '        ObserveDevice(device.Get(),true);')
+    replace_once(capture, '    std::lock_guard<std::mutex> lock(diagnosticMutex);diagnostic.adapter=name;diagnostic.driver=driver;',
+                 '    char luid[32]{};snprintf(luid,sizeof luid,"%08X:%08X",unsigned(desc.AdapterLuid.HighPart),unsigned(desc.AdapterLuid.LowPart));\n'
+                 '    std::lock_guard<std::mutex> lock(diagnosticMutex);diagnostic.adapter=name;diagnostic.driver=driver;\n'
+                 '    diagnostic.adapterLuid=luid;diagnostic.captureAdapterObserved=fromCapture;')
+    replace_once(capture, 'diagnostic.captureError.clear();diagnostic.width=0;',
+                 'diagnostic.captureAdapterObserved=false;diagnostic.captureError.clear();diagnostic.width=0;')
     replace_once(header, '#include <string>', '#include <string>\n#include "capture_trace.h"')
     replace_once(header, '    unsigned width = 0, height = 0, format = 0;',
                  '    CaptureTraceSnapshot trace;\n    unsigned width = 0, height = 0, format = 0;')
@@ -251,17 +266,57 @@ def prepare(source: Path):
                      'void RenderUpdateSettings(updates::Checker& checker) {\n'
                      f'    if ({managed}) {{ ImGui::TextDisabled("Updates are provided by Lossless Scaling Companion."); return; }}')
     patch_capture_diagnostics(capture)
+    status_text = manager / "src/gui/window/status_text.cpp"
+    replace_once(status_text,
+                 '    std::string text="LS GPU: "+(d.adapter.empty()?std::string("not observed yet"):d.adapter);',
+                 '    std::string text=std::string(d.captureAdapterObserved?"Capture GPU: ":"Observed LS device (capture unverified): ") +\n'
+                 '        (d.adapter.empty()?std::string("not observed yet"):d.adapter);\n'
+                 '    if(!d.adapterLuid.empty())text+=" [LUID "+d.adapterLuid+"]";')
+    gui_test = manager / "tools/gui_test.cpp"
+    replace_once(gui_test, '    capture.adapter="GPU A";',
+                 '    capture.adapter="GPU A";\n'
+                 '    Check("status: first device is not a verified capture adapter",\n'
+                 '        MachineSummary(capture,machine,gpu).find("capture unverified")!=std::string::npos);\n'
+                 '    capture.captureAdapterObserved=true;capture.adapterLuid="00000000:00001234";')
+    replace_once(gui_test, 'hardware.find("LS GPU: GPU A")', 'hardware.find("Capture GPU: GPU A [LUID 00000000:00001234]")')
     probe = manager / "tools/capture_probe.cpp"
+    replace_once(probe, '#include "src/core/real_frame_hook.h"',
+                 '#include "src/core/real_frame_hook.h"\n#include "src/core/hdr_probe.h"')
+    replace_once(probe, 'D3D11Hook::Initialize(&host);D3D11Hook::InstallDispatchHooks();',
+                 'D3D11Hook::Initialize(&host);D3D11Hook::InstallDispatchHooks();\n'
+                 '    const bool lsPacing=getenv("EAM_PROBE_LS_PACING")!=nullptr;\n'
+                 '    if(lsPacing)lsc::StartHdrProbe();')
+    replace_once(probe, '    stop();',
+                 '    if(lsPacing) {\n'
+                 '        const auto pacing=lsc::PresentationPacingSnapshot();\n'
+                 '        printf("LS pacing intervals=%zu median_ms=%.4f p95_ms=%.4f maximum_ms=%.4f relative_stalls=%zu present_p95_ms=%.4f measurement_only=1\\n",\n'
+                 '            pacing.intervals,pacing.medianMs,pacing.p95Ms,pacing.maximumMs,pacing.relativeStalls,pacing.presentP95Ms);\n'
+                 '        if(pacing.intervals<30)++failures;\n'
+                 '        printf("LS pacing coverage observed=%llu successful=%llu eligible=%llu\\n",\n'
+                 '            pacing.observedPresents,pacing.successfulPresents,pacing.eligiblePresents);\n'
+                 '    }\n'
+                 '    stop();')
+    replace_once(probe, '        }Sleep(16);}',
+                 '        }\n'
+                 '        if(lsPacing && GetForegroundWindow()!=window)SetForegroundWindow(window);\n'
+                 '        Sleep(16);}')
+    replace_once(probe, 'CloseHandle(child.hProcess);CloseHandle(child.hThread);',
+                 'if(WaitForSingleObject(child.hProcess,3000)==WAIT_TIMEOUT) {\n'
+                 '        TerminateProcess(child.hProcess,1);WaitForSingleObject(child.hProcess,3000);\n'
+                 '    }\n'
+                 '    CloseHandle(child.hProcess);CloseHandle(child.hThread);')
     replace_once(probe, '    printf("Frame support %u\\n",(unsigned)host.GetRealFrameSupport());',
                  '    printf("Frame support %u\\n",(unsigned)host.GetRealFrameSupport());\n'
                  '    const auto trace=RealFrameHook::GetDiagnostics().trace;\n'
+                 '    const auto adapter=RealFrameHook::GetDiagnostics();\n'
+                 '    printf("Capture adapter %s luid=%s verified=%u\\n",adapter.adapter.c_str(),adapter.adapterLuid.c_str(),adapter.captureAdapterObserved?1u:0u);\n'
                  '    for(const auto& entry:trace.counts)printf("Capture trace %s %llu\\n",entry.first.c_str(),static_cast<unsigned long long>(entry.second));\n'
                  '    for(const auto& shader:trace.shaders)printf("Capture shader %s\\n",shader.c_str());')
     dispatch = manager / "src/core/d3d11_hook.cpp"
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
@@ -280,6 +335,7 @@ def prepare(source: Path):
                      'set_property(TARGET Lossless PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")\n'
                      'add_executable(lsc_headless_smoke src/core/headless_smoke.cpp)\n'
                      'add_executable(lsc_capture_trace_test src/core/capture_trace_test.cpp)\n'
+                     'add_executable(lsc_pacing_probe_test src/core/pacing_probe_test.cpp)\n'
                      'add_library(lsc_fake_engine SHARED src/core/fake_engine.cpp)\n'
                      'add_executable(lsc_panel_test src/core/panel_test.cpp src/gui/window/window_device.cpp)\n'
                      'target_link_libraries(lsc_panel_test d3d11 dxgi user32)\n'

@@ -3,9 +3,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync('companion/ui/dashboard.html', 'utf8');
-const providers = ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime', 'display-commander', 'reshade', 'special-k'];
+const providers = ['ls-addon-manager', 'sm86-sr', 'amd-neural-render-runtime', 'reshade', 'special-k'];
 const versions = {'ls-addon-manager': 'build-7-lsc.4', 'sm86-sr': '0.4.1', 'amd-neural-render-runtime': '1.3.2',
-  'display-commander': '2.0.0', reshade: '6.8.0', 'special-k': 'SK_26_6_13_7'};
+  reshade: '6.8.0', 'special-k': 'SK_26_6_13_7'};
+
+test('retired Display Commander and Reflex controls and save handlers are absent', () => {
+  for (const identifier of ['displayCommanderEnabled', 'displayCommanderReflex', 'specialKReflex',
+      'display_commander', 'experimental_reflex', 'nvidia_reflex', 'data-addon-install="display-commander"']) {
+    assert.equal(html.includes(identifier), false, identifier);
+  }
+});
 class Element {
   constructor() { this.dataset = {}; this.textContent = 'Download'; this.children = []; this.attributes = {};
     this.classes = new Set(); this.classList = {toggle: (name, enabled) => enabled ? this.classes.add(name) : this.classes.delete(name)}; }

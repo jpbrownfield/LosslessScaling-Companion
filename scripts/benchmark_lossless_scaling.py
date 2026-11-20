@@ -8,6 +8,8 @@ dynamic-limiter controller through a temporary, reversible RTSS profile.
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
 import json
 import os
 import subprocess
@@ -16,7 +18,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Sequence
+from typing import Callable, Dict, Optional, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -29,6 +31,7 @@ from companion.services.asset_store import AssetStore
 from companion.services.automation import AutomationController
 from companion.services.benchmark_metrics import (
     summarize_presentmon_files,
+    summarize_dynamic_limiter,
     summarize_values,
 )
 from companion.services.dynamic_limiter import DynamicLimiterController
@@ -78,11 +81,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--rtss-path")
     parser.add_argument("--minimum-fps", type=int, default=30)
     parser.add_argument("--maximum-fps", type=int, default=120)
-    parser.add_argument("--ls-gpu-target", type=float, default=15.0)
+    parser.add_argument("--gpu-headroom", "--ls-gpu-target", dest="ls_gpu_target", type=float, default=15.0,
+                        help="Minimum spare GPU capacity reserved on LS adapters (percent); old option name remains an alias")
     parser.add_argument("--saturation-threshold", type=float, default=90.0)
     parser.add_argument("--width", type=int, default=1280, help="Bundled workload width")
     parser.add_argument("--height", type=int, default=720, help="Bundled workload height")
     parser.add_argument("--shader-load", type=int, default=64, help="Bundled workload GPU pressure")
+    parser.add_argument("--monitor-resolution", action="store_true", help="Use the foreground monitor's full pixel resolution for the bundled workload")
+    parser.add_argument("--settling-seconds", type=float, default=30.0)
+    parser.add_argument("--target-tolerance", type=float, default=2.0, help="GPU target tolerance in percentage points")
     parser.add_argument(
         "--input-probes", type=int, default=10,
         help="Synthetic F15 input samples emitted after warm-up for PresentMon input latency",
@@ -92,6 +99,49 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Acknowledge process launch, scaling hotkey, and temporary RTSS changes",
     )
     return parser.parse_args(argv)
+
+
+def monitor_workload_bounds() -> Dict:
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                    ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+    native = ctypes.windll.user32
+    native.GetForegroundWindow.argtypes = []
+    native.GetForegroundWindow.restype = wintypes.HWND
+    native.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    native.MonitorFromWindow.restype = wintypes.HANDLE
+    native.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+    native.GetMonitorInfoW.restype = wintypes.BOOL
+    dpi_context = native.SetThreadDpiAwarenessContext
+    dpi_context.argtypes = [ctypes.c_void_p]
+    dpi_context.restype = ctypes.c_void_p
+    previous = dpi_context(ctypes.c_void_p(-4))
+    try:
+        handle = native.MonitorFromWindow(native.GetForegroundWindow(), 2)
+        info = MonitorInfo()
+        info.size = ctypes.sizeof(info)
+        if not handle or not native.GetMonitorInfoW(handle, ctypes.byref(info)):
+            raise RuntimeError("Could not determine the active monitor resolution")
+        rect = info.monitor
+        width, height = rect.right - rect.left, rect.bottom - rect.top
+        if not 320 <= width <= 7680 or not 240 <= height <= 4320:
+            raise ValueError("Monitor resolution is outside the bundled workload's supported range")
+        return {"left": rect.left, "top": rect.top, "width": width, "height": height}
+    finally:
+        if previous:
+            dpi_context(previous)
+
+
+def limiter_profile_readback(rtss: RtssProfileManager, profile: Profile) -> Optional[int]:
+    if not profile.rtss.managed_install_path or not profile.rtss.managed_target_process:
+        return None
+    path = rtss._profiles_dir(Path(profile.rtss.managed_install_path)) / f"{profile.rtss.managed_target_process}.cfg"
+    try:
+        value = rtss._get_value(rtss._read_text(path), "Framerate", "Limit")
+        return int(value) if value is not None else None
+    except (OSError, ValueError):
+        return None
 
 
 def _presentmon_from_package(package: Dict) -> Optional[Path]:
@@ -227,7 +277,7 @@ def default_profile_limiter_settings(
     }
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Callable[[Dict], None]] = None) -> int:
     args = parse_args(argv)
     if os.name != "nt":
         print("This benchmark requires Windows.", file=sys.stderr)
@@ -239,13 +289,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("The limiter range must satisfy 1 <= minimum <= maximum <= 1000.", file=sys.stderr)
         return 2
     if not 1 <= args.ls_gpu_target <= 100:
-        print("--ls-gpu-target must be between 1 and 100.", file=sys.stderr)
+        print("--gpu-headroom must be between 1 and 100.", file=sys.stderr)
         return 2
     if not 0 <= args.saturation_threshold <= 100:
         print("--saturation-threshold must be between 0 and 100.", file=sys.stderr)
         return 2
     if args.input_probes < 0:
         print("--input-probes cannot be negative.", file=sys.stderr)
+        return 2
+    if not 0 <= args.target_tolerance <= 10 or args.settling_seconds < 10:
+        print("Target tolerance must be 0-10 percentage points and settling time at least 10 seconds.", file=sys.stderr)
+        return 2
+    if args.dynamic_limiter and args.duration - args.warmup < args.settling_seconds:
+        print("Dynamic limiter capture must include the full settling window after warmup.", file=sys.stderr)
         return 2
     if args.use_default_profile and args.dynamic_limiter:
         print(
@@ -257,6 +313,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         benchmark_exe, bundled_workload = resolve_benchmark_executable(args.benchmark_exe)
+        monitor_bounds = monitor_workload_bounds() if args.monitor_resolution else None
+        if monitor_bounds:
+            if not bundled_workload:
+                raise ValueError("--monitor-resolution requires the bundled workload")
+            args.width, args.height = monitor_bounds["width"], monitor_bounds["height"]
     except Exception as error:
         print(f"Benchmark workload preflight failed: {error}", file=sys.stderr)
         return 2
@@ -264,6 +325,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("--benchmark-exe must name a Windows executable.", file=sys.stderr)
         return 2
     manager = ProfileManager()
+    if args.dynamic_limiter:
+        status = RtssProfileManager().status(args.rtss_path or manager.config.rtss_install_path)
+        if not status.get("installed") or not status.get("running"):
+            print("Dynamic limiter benchmarking requires RTSS installed and running.", file=sys.stderr)
+            return 2
     if not args.no_scale:
         from companion.services.managed_runtime import ManagedRuntime
         try:
@@ -334,6 +400,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "benchmark": str(benchmark_exe),
         "benchmark_arguments": list(args.benchmark_arg),
         "bundled_workload": bundled_workload,
+        "workload_resolution": {"width": args.width, "height": args.height},
+        "monitor_bounds": monitor_bounds,
         "presentmon": str(presentmon_exe),
         "duration_seconds": args.duration,
         "warmup_seconds": args.warmup,
@@ -372,6 +440,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report["workload_command"] = workload_command
         workload = subprocess.Popen(workload_command, cwd=benchmark_exe.parent)
         hwnd = find_largest_window(workload.pid, timeout=args.window_timeout)
+        if monitor_bounds:
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, monitor_bounds["left"], monitor_bounds["top"], 0, 0, 0x0005)
         if not focus_window(hwnd):
             raise RuntimeError("Windows did not grant the benchmark foreground ownership")
         report.update({"benchmark_pid": workload.pid, "benchmark_hwnd": hwnd})
@@ -407,6 +477,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ):
                 raise RuntimeError("Lossless Scaling did not confirm activation")
         lossless_pid = find_process_id("LosslessScaling.exe")
+        if args.dynamic_limiter:
+            from companion.services.adapter_report import configured_process
+            instance = configured_process(manager.config.lossless_scaling_exe_path)
+            if not instance:
+                raise RuntimeError("The configured LS instance is unavailable for limiter telemetry")
+            lossless_pid = instance[0]
         report["lossless_scaling_pid"] = lossless_pid
         output_hwnd = hwnd
         if not args.no_scale:
@@ -439,6 +515,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             }
         elif args.dynamic_limiter:
             rtss = RtssProfileManager(args.rtss_path or manager.config.rtss_install_path)
+            rtss_status = rtss.status(args.rtss_path or manager.config.rtss_install_path)
+            if not rtss_status.get("installed") or not rtss_status.get("running"):
+                raise RuntimeError("Dynamic limiter benchmarking requires RTSS installed and running")
             limiter_manager = ProfileManager(run_dir / "limiter-state")
             limiter_profile = Profile(
                 id=f"benchmark-{uuid.uuid4().hex}",
@@ -467,6 +546,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "processName": benchmark_exe.name,
             }
             limiter = DynamicLimiterController(limiter_manager, limiter_state, rtss)
+            limiter._lossless_pid = lossless_pid
         else:
             report["default_profile_rtss"] = {
                 "enabled": False,
@@ -493,9 +573,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise RuntimeError("Benchmark workload exited during capture")
             if limiter:
                 status = limiter.poll()
+                readback = limiter_profile_readback(rtss, limiter_profile)
                 report["limiter_status_samples"].append(
-                    {"elapsed_seconds": args.duration - max(0.0, deadline - time.monotonic()), **status}
+                    {"elapsed_seconds": args.duration - max(0.0, deadline - time.monotonic()), **status,
+                     "rtss_readback_limit": readback,
+                     "rtss_profile_verified": readback is not None and readback == status.get("current_limit")}
                 )
+                if progress_callback:
+                    progress_callback({"type": "DYNAMIC_LIMITER_PROGRESS", "sample": report["limiter_status_samples"][-1],
+                                       "targetPercent": args.ls_gpu_target, "workloadResolution": report["workload_resolution"]})
             now = time.monotonic()
             if (
                 not bundled_workload
@@ -587,6 +673,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }
         if limiter and limiter_profile:
             report["dynamic_limiter_result"] = limiter_profile.rtss.model_dump()
+            convergence = summarize_dynamic_limiter(
+                report["limiter_status_samples"], target_percent=args.ls_gpu_target,
+                duration_seconds=args.duration, warmup_seconds=args.warmup,
+                settling_seconds=args.settling_seconds, tolerance_percent=args.target_tolerance,
+            )
+            readbacks = report["limiter_status_samples"]
+            convergence["rtss_profile_verified"] = bool(readbacks and all(row["rtss_profile_verified"] for row in readbacks))
+            if not convergence["rtss_profile_verified"]:
+                convergence.update(status="fail", failure_reason="RTSS profile readback did not match the requested limits")
+            report["dynamic_limiter_benchmark"] = convergence
+            if convergence["status"] != "pass":
+                exit_code = 4
     except KeyboardInterrupt:
         report["interrupted"] = True
         exit_code = 1

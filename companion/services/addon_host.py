@@ -63,7 +63,7 @@ def capture_trace_report(pid: int, *, expected_created_at: float | None = None) 
             status = validate_status(_read_pipe(pid), instance)
             snapshots.append({key: status.get(key) for key in (
                 "available", "pid", "createdAt", "sampledAt", "hostVersion", "startupError",
-                "neuralBackend", "capture", "addons")})
+                "neuralBackend", "capture", "presentationPacing", "addons")})
             snapshots[-1]["metrics"] = {key: value for key, value in status["metrics"].items()
                                         if key in {"DLSSNR02", "LSC-AMDNR"}}
         except (OSError, ValueError, TypeError, RecursionError) as error:

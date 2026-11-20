@@ -45,7 +45,7 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Copies configured DLLs only into the Lossless Scaling directory.
    - Uses temporary transactional rollback data while applying changes, plus one persistent original backup and one preinsert backup for recognized legacy add-ons.
    - Game executable paths are used only for foreground profile detection.
-   - ReShade profile settings offer separate **Display Commander** and **Inject NVIDIA Reflex** switches. Reflex enables Display Commander and ReShade even without a shader preset, and disables Special K Reflex for that profile. Download Display Commander from Add-ons first; ReShade Full Add-On 6.6.2 or later is required. Its foreground/background FPS limiters stay disabled. These controls affect LS, not the captured game's simulation or render queue. Display Commander updates are installed manually from its Add-ons card.
+   - Display Commander and Reflex integration have been retired. Saved RTSS Reflex limiter selections migrate to the asynchronous limiter; other RTSS, ReShade and Special K HDR/presentation settings remain supported.
    - The profile editor lists supported image processors and display/input features with a master on/off switch. Internal reporters, automatic AMD backend routing and retired integrations do not appear as separate processors. Host startup flags and unrecognized saved values are retained in the read-only advanced view. Numeric tuning values are parameters of the parent feature, so they do not each have an enable switch. Overlay input is automatic while ReShade is enabled; upscaler selections stay synchronized with Scaling Type.
    - Managed Lilium SDR-to-HDR presets prepare captured SDR before inverse tone mapping: linear scRGB is normalized using its 80-nit reference, HDR10 is decoded to linear BT.709, and Lilium uses linear input without another gamma decode. Captured SDR white defaults to **400 nits**, configured once in **Add-ons ? ReShade ? HDR display & menu settings**. Each identified monitor can override it; blank monitor entries inherit the shared default. Overrides use the monitor device identity and apply to LS's selected output display at the next scaling start. Disconnected monitor settings are retained. This is separate from HDR peak brightness and is shared across application and shader profiles. Peak brightness remains separately controlled by the HDR display setting. Use an SDR source with Windows HDR and LS HDR support; native HDR, Windows Auto HDR, RTX HDR or Special K conversion must not feed a second SDR-to-HDR conversion. Imported or explicitly input-tuned presets retain their input path. Peak refresh preserves other shader edits.
    - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion panel/status bridge. Deployment is transactional; addon-host updates ship with Companion.
@@ -69,7 +69,8 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
 
 7. **Process Lasso Performance Mode Trigger:**
    - Optionally tails new records in Process Lasso's CSV action log.
-   - Activates scaling only when the triggering executable has an explicit helper profile and a focusable visible window.
+   - Uses the triggering executable's helper profile, or the default profile when none matches. Restores minimized or hidden application windows and brings the target to the foreground before scaling.
+   - Retries briefly if the application has not created a window yet; background processes without an application window cannot be captured.
    - With the override blank, discovers `/LogFolder=` on running Process Lasso components, the `LogFolder` registry setting, and then current `processlasso.log` or legacy `prolasso.log` locations.
    - Attaches at the end of the log so old launches are never replayed, and handles later log truncation or replacement.
    - Performance Mode ending does not de-scale the application.
@@ -77,8 +78,10 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
 
 8. **RTSS Static and Dynamic Frame Limiting:**
    - Creates reversible per-executable limiter profiles inside RTSS, never inside the game directory.
-   - Static mode applies a configured source FPS cap. Dynamic mode starts at a configured maximum and lowers the game cap one FPS per qualified five-second gameplay window until `LosslessScaling.exe` reaches the configured minimum GPU-utilization target.
-   - Samples Windows GPU Engine counters once per second and uses five-sample medians for both the scaled-window PID and Lossless Scaling PID.
+   - Static mode applies a configured source FPS cap. Dynamic mode starts at a configured maximum and lowers the game cap one FPS per qualified five-second gameplay window when the GPU adapters used by LS lack the configured spare-capacity reserve. Low LS utilization alone never requests a reduction.
+   - Samples Windows GPU Engine counters once per second, sums activity by physical adapter and engine, and uses five-sample medians. Separate GPUs and different engine types are not added together.
+   - Resets obsolete utilization-floor calibration on the next dynamic session while preserving user FPS bounds and RTSS rollback data. The existing percentage settings now specify GPU headroom reserve.
+   - Headroom is a conservative engine-utilization heuristic, not direct frame-deadline validation. Inspect PresentMon frame pacing and the dedicated monitor-resolution benchmark before choosing a reserve for a particular game/GPU.
    - Freezes indefinitely across dramatic game-GPU drops instead of learning a long-running menu as gameplay.
    - Treats game processes lasting more than ten minutes with representative GPU utilization above 50% as alternate-baseline candidates. A higher candidate is promoted only after the game exits and affects the next session.
    - Supports a five-minute manual representative-gameplay calibration. Completing it disables further automatic learning for that profile until reset; reset erases learned GPU baselines and identified limits and resumes learning.

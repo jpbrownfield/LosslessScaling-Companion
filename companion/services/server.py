@@ -1081,12 +1081,16 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "GET_GENERAL_SETTINGS":
+                run_at_startup, control_settings = await asyncio.gather(
+                    asyncio.to_thread(self.startup_manager.is_enabled),
+                    asyncio.to_thread(self._control_settings_payload),
+                )
                 await websocket.send(json.dumps({
                     "type": "GENERAL_SETTINGS",
-                    "runAtStartup": await asyncio.to_thread(self.startup_manager.is_enabled),
+                    "runAtStartup": run_at_startup,
                     "startupTaskName": self.startup_manager.TASK_NAME,
                     "trayOnly": True,
-                    "controlSettings": self._control_settings_payload(),
+                    "controlSettings": control_settings,
                 }))
                 return
 
@@ -1486,7 +1490,7 @@ class CompanionWebSocketServer:
 
             if msg_type == "INSTALL_LATEST_GRAPHICS_ADDON":
                 provider = str(msg.get("provider") or "")
-                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "reshade", "special-k", "display-commander"}:
+                if provider not in {"ls-addon-manager", "sm86-sr", "amd-neural-render-runtime", "reshade", "special-k"}:
                     raise ValueError("This add-on cannot be installed automatically")
                 releases = await asyncio.to_thread(
                     self.release_manager.check, provider, channel="stable", force=True
@@ -1523,7 +1527,7 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
-                if provider in {"sm86-sr", "amd-neural-render-runtime", "display-commander"}:
+                if provider in {"sm86-sr", "amd-neural-render-runtime"}:
                     # Staging is installation-wide; opt-in and stopped deployment
                     # remain per profile. Never change an active profile here.
                     await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
@@ -1662,7 +1666,17 @@ class CompanionWebSocketServer:
                     raise RuntimeError("The Lossless Scaling default profile is unavailable")
                 workload = self._embedded_benchmark_executable()
                 presentmon = self._presentmon_executable()
-                command = self._benchmark_launch_command(workload, presentmon)
+                dynamic_benchmark = msg.get("dynamicLimiterBenchmark") is True
+                target_percent = msg.get("targetPercent", self.config.rtss_default_gpu_target_percent)
+                if dynamic_benchmark:
+                    if type(target_percent) not in (int, float) or not 1 <= target_percent <= 100:
+                        raise ValueError("GPU utilization target must be between 1 and 100 percent")
+                    rtss_status = self.rtss_manager.status(self.config.rtss_install_path)
+                    if not rtss_status.get("installed") or not rtss_status.get("running"):
+                        raise RuntimeError("Start RTSS before running the dynamic limiter benchmark")
+                command = self._benchmark_launch_command(
+                    workload, presentmon, dynamic_limiter=dynamic_benchmark, target_percent=target_percent,
+                )
                 self._benchmark_previous_profile = self.state.current_active_profile
                 self.state.benchmark_mode_active = True
                 try:
@@ -1885,6 +1899,7 @@ class CompanionWebSocketServer:
                             or previous.rtss.maximum_framerate_limit != prof.rtss.maximum_framerate_limit
                         )
                         if not calibration_changed:
+                            prof.rtss.calibration_policy_version = previous.rtss.calibration_policy_version
                             prof.rtss.learned_framerate_limit = previous.rtss.learned_framerate_limit
                             prof.rtss.game_gpu_baseline_percent = previous.rtss.game_gpu_baseline_percent
                             prof.rtss.game_gpu_high_water_percent = previous.rtss.game_gpu_high_water_percent
@@ -2438,7 +2453,7 @@ class CompanionWebSocketServer:
             providers = ("ls-addon-manager", "reshade", "special-k")
             # Cards need release metadata on first load, including backends
             # which are optional and are not part of automatic installation.
-            check_providers = (*providers, "sm86-sr", "amd-neural-render-runtime", "display-commander")
+            check_providers = (*providers, "sm86-sr", "amd-neural-render-runtime")
 
             async def check(provider: str):
                 try:
@@ -2829,8 +2844,21 @@ class CompanionWebSocketServer:
     async def _run_benchmark(self, arguments: list[str]) -> None:
         return_code = 2
         error_message = None
+        loop = asyncio.get_running_loop()
+
+        async def send_progress(payload: Dict) -> None:
+            if self.clients:
+                encoded = json.dumps(payload)
+                await asyncio.gather(*(client.send(encoded) for client in tuple(self.clients)), return_exceptions=True)
+
+        def progress(payload: Dict) -> None:
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(send_progress(payload)))
+
         try:
-            return_code = await asyncio.to_thread(run_performance_benchmark, arguments)
+            if "--dynamic-limiter" in arguments:
+                return_code = await asyncio.to_thread(run_performance_benchmark, arguments, progress_callback=progress)
+            else:
+                return_code = await asyncio.to_thread(run_performance_benchmark, arguments)
         except Exception as error:
             error_message = str(error)
             logger.exception("Performance benchmark runner failed")
@@ -2859,16 +2887,27 @@ class CompanionWebSocketServer:
                 return_exceptions=True,
             )
 
-    def _benchmark_launch_command(self, workload: Path, presentmon: Path) -> list[str]:
-        return [
+    def _benchmark_launch_command(self, workload: Path, presentmon: Path, *,
+                                  dynamic_limiter: bool = False, target_percent: Optional[float] = None) -> list[str]:
+        command = [
             "--benchmark-exe", str(workload),
             "--presentmon-exe", str(presentmon),
-            "--duration", "30",
+            "--duration", "300" if dynamic_limiter else "30",
             "--warmup", "5",
             "--report-dir", str(self._benchmark_report_root()),
-            "--use-default-profile",
             "--yes",
         ]
+        if dynamic_limiter:
+            default = next((profile for profile in self.config.profiles if profile.is_default), None)
+            command.extend([
+                "--dynamic-limiter", "--monitor-resolution", "--input-probes", "0",
+                "--gpu-headroom", str(target_percent if target_percent is not None else self.config.rtss_default_gpu_target_percent),
+                "--minimum-fps", str(default.rtss.minimum_framerate_limit if default else 30),
+                "--maximum-fps", str(default.rtss.maximum_framerate_limit if default else 120),
+            ])
+        else:
+            command.append("--use-default-profile")
+        return command
 
     async def _run_gpu_calibration(self, workload: Path) -> None:
         """Run benchmark-workload GPU calibration in the background.
@@ -2971,6 +3010,9 @@ class CompanionWebSocketServer:
             "latencyScope": latency_scope if latency is not None else None,
             "captureProcess": (selected or {}).get("application"),
             "durationSeconds": report.get("duration_seconds"),
+            "dynamicLimiter": report.get("dynamic_limiter_benchmark"),
+            "limiterTrace": (report.get("limiter_status_samples") or [])[-600:],
+            "workloadResolution": report.get("workload_resolution"),
             "reportPath": str(self._last_benchmark_report_path or ""),
         }
 
@@ -3183,7 +3225,7 @@ class CompanionWebSocketServer:
         )
         if mode == "static":
             return profile.rtss.framerate_limit
-        return profile.rtss.learned_framerate_limit or profile.rtss.maximum_framerate_limit
+        return (profile.rtss.learned_framerate_limit if profile.rtss.calibration_policy_version == DynamicLimiterController.CALIBRATION_POLICY_VERSION else None) or profile.rtss.maximum_framerate_limit
 
     async def broadcast_state(self) -> None:
         if not self.clients:

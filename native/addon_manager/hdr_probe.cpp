@@ -30,6 +30,33 @@ bool pending=false;
 std::string pendingDeviceName;
 float pendingWhite=0;
 thread_local bool scanning=false;
+std::mutex pacingGate;
+PacingProbe pacing;
+IDXGISwapChain* pacingChain=nullptr;
+double pacingLast=0;
+std::atomic<uint64_t> observedPresents{0},successfulPresents{0},eligiblePresents{0};
+thread_local bool insidePresent=false;
+double ClockMs() {
+    LARGE_INTEGER tick{},frequency{};QueryPerformanceCounter(&tick);QueryPerformanceFrequency(&frequency);
+    return 1000.0*static_cast<double>(tick.QuadPart)/frequency.QuadPart;
+}
+void RecordPresentation(IDXGISwapChain* chain,double entered,double returned,HRESULT result) {
+    ++observedPresents;
+    if(result!=S_OK)return;
+    ++successfulPresents;
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if(FAILED(chain->GetDesc(&desc))||!desc.OutputWindow||!IsWindowVisible(desc.OutputWindow)
+       ||IsIconic(desc.OutputWindow)||desc.BufferDesc.Width<160||desc.BufferDesc.Height<90)return;
+    wchar_t klass[128]{};GetClassNameW(desc.OutputWindow,klass,128);
+    if(wcsstr(klass,L"HwndWrapper")||wcsstr(klass,L"ImGui"))return;
+    ++eligiblePresents;
+    std::unique_lock lock(pacingGate,std::try_to_lock);if(!lock.owns_lock())return;
+    if(pacingChain!=chain) {
+        if(entered-pacingLast<2000)return;
+        pacing=PacingProbe{};pacingChain=chain;
+    } else if(entered-pacingLast>2000)pacing=PacingProbe{};
+    pacing.Observe(entered,returned);pacingLast=entered;
+}
 const char* source=R"(
 Texture2D<float4> frame : register(t0);
 RWStructuredBuffer<uint> result : register(u0);
@@ -69,12 +96,18 @@ using Present1=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*,UINT,UINT,const DXGI
 using SetColor=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*,DXGI_COLOR_SPACE_TYPE);
 Present originalPresent=nullptr;Present1 originalPresent1=nullptr;SetColor originalColor=nullptr;
 HRESULT STDMETHODCALLTYPE OnPresent(IDXGISwapChain* chain,UINT interval,UINT flags) {
+    if(insidePresent||(flags&DXGI_PRESENT_TEST))return originalPresent(chain,interval,flags);
+    insidePresent=true;const double entered=ClockMs();
     if(!(flags&DXGI_PRESENT_TEST))ObserveHdrPresentation(chain);
-    return originalPresent(chain,interval,flags);
+    const auto result=originalPresent(chain,interval,flags);
+    RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
 }
 HRESULT STDMETHODCALLTYPE OnPresent1(IDXGISwapChain1* chain,UINT interval,UINT flags,const DXGI_PRESENT_PARAMETERS* p) {
+    if(insidePresent||(flags&DXGI_PRESENT_TEST))return originalPresent1(chain,interval,flags,p);
+    insidePresent=true;const double entered=ClockMs();
     if(!(flags&DXGI_PRESENT_TEST))ObserveHdrPresentation(chain);
-    return originalPresent1(chain,interval,flags,p);
+    const auto result=originalPresent1(chain,interval,flags,p);
+    RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
 }
 HRESULT STDMETHODCALLTYPE OnColor(IDXGISwapChain3* chain,DXGI_COLOR_SPACE_TYPE color) {
     const auto hr=originalColor(chain,color);
@@ -156,6 +189,12 @@ void ObserveHdrPresentation(IDXGISwapChain* chain) {
     } catch(const std::exception& e) {status.ready=false;status.error=e.what();Reset();}
 }
 HdrProbeStatus HdrProbeSnapshot() {std::lock_guard lock(gate);return status;}
+PacingSnapshot PresentationPacingSnapshot() {
+    std::lock_guard lock(pacingGate);
+    auto result=ClockMs()-pacingLast>2000?PacingSnapshot{}:pacing.Snapshot();
+    result.observedPresents=observedPresents.load();result.successfulPresents=successfulPresents.load();
+    result.eligiblePresents=eligiblePresents.load();return result;
+}
 bool IsHdrProbeDispatch() {return scanning;}
 void StartHdrProbe() {
     mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(HdrProbeControl),

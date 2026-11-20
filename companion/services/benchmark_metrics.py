@@ -68,6 +68,66 @@ def read_presentmon_csv(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(stream))
 
 
+def summarize_dynamic_limiter(samples: Iterable[Dict], *, target_percent: float,
+                              duration_seconds: float, warmup_seconds: float = 5,
+                              settling_seconds: float = 30, tolerance_percent: float = 2) -> Dict:
+    rows = list(samples)
+    valid = []
+    changes = []
+    previous_limit = None
+    for row in rows:
+        elapsed = _number(row.get("elapsed_seconds"))
+        limit = _number(row.get("current_limit"))
+        if limit is not None and limit != previous_limit:
+            changes.append({"elapsed_seconds": elapsed, "limit": limit})
+            previous_limit = limit
+        gpu = _number(row.get("gpu_headroom_percent"))
+        if elapsed is not None and gpu is not None and gpu <= 100 and elapsed >= warmup_seconds:
+            valid.append((elapsed, gpu, row))
+    cutoff = max(warmup_seconds, duration_seconds - settling_seconds)
+    tail = [item for item in valid if item[0] >= cutoff]
+    expected_seconds = duration_seconds - cutoff
+    complete = bool(tail and expected_seconds >= settling_seconds
+                    and tail[0][0] <= cutoff + 2 and tail[-1][0] >= duration_seconds - 2
+                    and len(tail) >= expected_seconds * 0.8)
+    fraction = sum(gpu >= target_percent - tolerance_percent for _, gpu, _ in tail) / len(tail) if tail else 0
+    in_band = sum(abs(gpu - target_percent) <= tolerance_percent for _, gpu, _ in tail) / len(tail) if tail else 0
+    first_hit = next((elapsed for elapsed, gpu, _ in valid if gpu >= target_percent), None)
+    final_state = rows[-1].get("state") if rows else None
+    blocked = final_state in {"no_response", "minimum_reached", "telemetry_unavailable", "error"}
+    sustained = complete and fraction >= 0.9 and not blocked
+    return {
+        "status": "pass" if sustained else "fail",
+        "policy_version": 1,
+        "target_scope": "Spare busiest-engine capacity on GPU adapters used by LS",
+        "frame_deadlines_verified": False,
+        "target_percent": target_percent,
+        "tolerance_percent": tolerance_percent,
+        "settling_seconds": settling_seconds,
+        "complete_settling_window": complete,
+        "valid_sample_count": len(valid),
+        "settling_sample_count": len(tail),
+        "first_target_hit_seconds": first_hit,
+        "sustained_target_reached": sustained,
+        "settling_target_fraction": fraction,
+        "settling_within_target_band_fraction": in_band,
+        "settling_headroom_percent": summarize_values(gpu for _, gpu, _ in tail),
+        "maximum_headroom_shortfall_percent": max((max(0, target_percent - gpu) for _, gpu, _ in valid), default=None),
+        "maximum_gpu_busy_percent": max((100.0 - gpu for _, gpu, _ in valid), default=None),
+        "limit_changes": changes,
+        "adjustment_count": max(0, len(changes) - 1),
+        "initial_limit": changes[0]["limit"] if changes else None,
+        "final_limit": previous_limit,
+        "final_state": final_state,
+        "failure_reason": None if sustained else (
+            "No valid GPU adapter headroom telemetry" if not valid else
+            "Incomplete settling window" if not complete else
+            f"Limiter stopped in {final_state}" if blocked else
+            "GPU headroom reserve was not sustained for 90% of the settling window"
+        ),
+    }
+
+
 def summarize_presentmon_rows(
     rows: Iterable[Dict[str, str]], *, warmup_seconds: float = 0.0
 ) -> Dict:

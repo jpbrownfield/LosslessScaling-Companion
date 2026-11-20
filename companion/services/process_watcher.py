@@ -196,34 +196,49 @@ class ProcessWatcher:
         cls, *, process_name: Optional[str] = None, pid: Optional[int] = None
     ) -> Optional[ProcessInfo]:
         """Find a real visible top-level window, preferring an exact Process Lasso PID."""
+        return cls.find_window_for_process(process_name=process_name, pid=pid, visible_windows_only=True)
+
+    @classmethod
+    def find_window_for_process(
+        cls, *, process_name: Optional[str] = None, pid: Optional[int] = None,
+        visible_windows_only: bool = False,
+    ) -> Optional[ProcessInfo]:
         requested_name = process_name.casefold() if process_name else None
-        for item in cls.list_running_executables(visible_windows_only=True, filter_system=False):
+        for item in cls.list_running_executables(visible_windows_only=visible_windows_only, filter_system=False):
             if pid is not None and item["pid"] != pid:
                 continue
             if requested_name and item["name"].casefold() != requested_name:
                 continue
-            hwnd = cls._visible_hwnd_for_pid(item["pid"])
+            hwnd = cls._visible_hwnd_for_pid(item["pid"], include_hidden=not visible_windows_only)
             if hwnd:
+                length = user32.GetWindowTextLengthW(hwnd)
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
                 return ProcessInfo(
-                    item["pid"], item["name"], item["exePath"], item["windowTitle"], hwnd
+                    item["pid"], item["name"], item["exePath"], title.value, hwnd
                 )
         return None
 
     @staticmethod
-    def _visible_hwnd_for_pid(pid: int) -> Optional[int]:
+    def _visible_hwnd_for_pid(pid: int, *, include_hidden: bool = False) -> Optional[int]:
         result = []
 
         def callback(hwnd, _extra):
             owner_pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
-            if owner_pid.value != pid or not user32.IsWindowVisible(hwnd):
+            if owner_pid.value != pid or (not include_hidden and not user32.IsWindowVisible(hwnd)):
                 return True
             if user32.GetWindowTextLengthW(hwnd) <= 0:
                 return True
             rect = wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            if rect.right - rect.left > 100 and rect.bottom - rect.top > 100:
-                result.append(int(hwnd))
+            if (include_hidden and user32.IsIconic(hwnd)) or (
+                rect.right - rect.left > 100 and rect.bottom - rect.top > 100
+            ):
+                if include_hidden and not user32.IsWindowVisible(hwnd):
+                    result.append(int(hwnd))
+                    return True
+                result.insert(0, int(hwnd))
                 return False
             return True
 
@@ -235,8 +250,17 @@ class ProcessWatcher:
         user32.EnumWindows(hwnd_callback_ref, 0)
         return result[0] if result else None
 
-    def focus_window(self, info: ProcessInfo) -> bool:
+    def focus_window(self, info: ProcessInfo, *, restore_hidden: bool = False) -> bool:
         """Focus the confirmed target so Lossless Scaling's global hotkey targets it."""
+        if restore_hidden:
+            if not info.hwnd or not user32.IsWindow(info.hwnd):
+                return False
+            owner_pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(info.hwnd, ctypes.byref(owner_pid))
+            if owner_pid.value != info.pid:
+                return False
+            if user32.IsIconic(info.hwnd) or not user32.IsWindowVisible(info.hwnd):
+                user32.ShowWindow(info.hwnd, 9)
         if not self.focus_window_identity(info.pid, info.hwnd):
             return False
         self._last_foreground_pid = info.pid

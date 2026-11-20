@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import re
 import threading
@@ -38,6 +39,7 @@ class WindowsGpuTelemetry:
 
     COUNTER_PATH = r"\GPU Engine(*)\Utilization Percentage"
     _PID_PATTERN = re.compile(r"(?:^|_)pid_(\d+)(?:_|$)", re.IGNORECASE)
+    _ENGINE_PATTERN = re.compile(r"luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)_phys_(\d+)_eng_(\d+)(?:_|$)", re.IGNORECASE)
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -46,6 +48,8 @@ class WindowsGpuTelemetry:
         self._counter = ctypes.c_void_p()
         self._ready = False
         self._primed = False
+        self._adapter_utilization = {}
+        self._process_adapters = {}
         if os.name == "nt":
             self._open()
 
@@ -94,6 +98,8 @@ class WindowsGpuTelemetry:
 
     def sample_by_pid(self) -> Dict[int, float]:
         with self._lock:
+            self._adapter_utilization = {}
+            self._process_adapters = {}
             if not self._ready or self._pdh is None:
                 return {}
             if self._status(self._pdh.PdhCollectQueryData(self._query)) != ERROR_SUCCESS:
@@ -127,16 +133,52 @@ class WindowsGpuTelemetry:
             if status != ERROR_SUCCESS:
                 return {}
             items = ctypes.cast(buffer, ctypes.POINTER(_PdhValueItem))
-            result: Dict[int, float] = {}
+            entries = []
             for index in range(count.value):
                 item = items[index]
-                match = self._PID_PATTERN.search(item.szName or "")
-                if not match or item.FmtValue.CStatus not in (ERROR_SUCCESS, 1):
+                if item.FmtValue.CStatus not in (ERROR_SUCCESS, 1):
                     continue
-                value = max(0.0, min(100.0, float(item.FmtValue.doubleValue)))
-                pid = int(match.group(1))
-                result[pid] = max(result.get(pid, 0.0), value)
-            return result
+                entries.append((item.szName or "", float(item.FmtValue.doubleValue)))
+            snapshot = self.aggregate_engines(entries)
+            self._adapter_utilization = snapshot["adapters"]
+            self._process_adapters = snapshot["process_adapters"]
+            return snapshot["processes"]
+
+    @classmethod
+    def aggregate_engines(cls, entries) -> dict:
+        processes = {}
+        process_adapters = {}
+        engines = {}
+        for name, value in entries:
+            match = cls._PID_PATTERN.search(name)
+            if not match or not math.isfinite(value):
+                continue
+            pid = int(match.group(1))
+            value = max(0.0, min(100.0, value))
+            processes[pid] = max(processes.get(pid, 0.0), value)
+            engine = cls._ENGINE_PATTERN.search(name)
+            if not engine:
+                continue
+            adapter = "_".join(engine.groups()[:3]).casefold()
+            key = (adapter, engine.group(4))
+            engines[key] = engines.get(key, 0.0) + value
+            if value > 0:
+                process_adapters.setdefault(pid, {})[adapter] = True
+        adapters = {}
+        for (adapter, _engine), value in engines.items():
+            adapters[adapter] = max(adapters.get(adapter, 0.0), min(100.0, value))
+        return {"processes": processes, "adapters": adapters, "process_adapters": process_adapters}
+
+    def sample_for_scaling(self, target_pid: int, lossless_pid: int) -> dict:
+        with self._lock:
+            processes = self.sample_by_pid()
+            adapters = list(self._process_adapters.get(lossless_pid, {}))
+            if target_pid not in processes or lossless_pid not in processes or not adapters:
+                return {}
+            busy = max(self._adapter_utilization[adapter] for adapter in adapters)
+            return {"game_gpu_percent": processes[target_pid], "lossless_gpu_percent": processes[lossless_pid],
+                    "gpu_busy_percent": busy, "gpu_headroom_percent": 100.0 - busy,
+                    "gpu_adapters": adapters}
 
     def close(self) -> None:
         with self._lock:

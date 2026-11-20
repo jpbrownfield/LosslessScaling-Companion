@@ -265,7 +265,7 @@ class ProcessLassoLogTailer:
 
 
 class ProcessLassoScalingMonitor:
-    """Resolve log events to existing profiles and confirmed visible windows."""
+    """Resolve log events to application windows, falling back to the default profile."""
 
     TRIGGER_PREFIX = "process_lasso_performance_mode:"
     PENDING_TTL_SECONDS = 15.0
@@ -346,13 +346,13 @@ class ProcessLassoScalingMonitor:
             logger.info("Ignored Process Lasso event because global auto-scaling is disabled")
             return True
 
-        window = self.process_watcher.find_visible_window_for_process(
+        window = self.process_watcher.find_window_for_process(
             process_name=event.process_name,
             pid=event.pid,
         )
         if not window:
             logger.info(
-                "Ignored Process Lasso Performance Mode event for %s: no visible window",
+                "Waiting for Process Lasso target %s to create an application window",
                 event.process_name,
             )
             return False
@@ -420,7 +420,7 @@ class ProcessLassoScalingMonitor:
 
         # Profile activation may restart Lossless Scaling and steal focus, so focus
         # the intended source window only after the profile and DLL host are ready.
-        if not self.process_watcher.focus_window(window):
+        if not self.process_watcher.focus_window(window, restore_hidden=True):
             logger.warning(
                 "Ignored Process Lasso Performance Mode event for %s: target window could not be focused",
                 event.process_name,

@@ -13,7 +13,7 @@ from .asset_store import AssetStore
 from .overlay_shortcuts import reshade_key_data
 from .deployment_manager import DeploymentManager
 from .addon_host import addon_version_key
-from . import sm86_sr, amd_nr, display_commander
+from . import sm86_sr, amd_nr
 
 
 class GraphicsResolutionError(RuntimeError):
@@ -177,7 +177,6 @@ class GraphicsResolver:
         """Generate the local-injection dxgi.ini consumed by Special K in LS."""
         enabled = "true" if config.sdr_to_hdr else "false"
         temporary_hdr = "true" if config.temporary_windows_hdr else "false"
-        reflex = "true" if config.experimental_reflex else "false"
         flip_metering = "true" if config.experimental_smooth_motion else "false"
         # Special K persists scRGB luminance as a multiplier of the 80-nit SDR
         # reference white, despite presenting these values as nits in its UI.
@@ -196,11 +195,6 @@ class GraphicsResolver:
             f"scRGBPaperWhite_[0]={paper_white:g}\n\n"
             "[Render.DXGI]\n"
             f"TemporaryDesktopHDRMode={temporary_hdr}\n\n"
-            "[NVIDIA.Reflex]\n"
-            f"Enable={reflex}\n"
-            f"LowLatency={reflex}\n"
-            "LowLatencyBoost=false\n"
-            "UseFramerateLimiter=false\n\n"
             "[NVIDIA.DLSS]\n"
             f"AllowFlipMetering={flip_metering}\n"
         )
@@ -349,7 +343,6 @@ class GraphicsResolver:
                 graphics.reshade.model_copy(update={"enabled": reshade_selected}),
             )
             if reshade_package:
-                files.extend(display_commander.deployment_files(self.store, profile, reshade_package))
                 has_selected_reshade_config = bool(
                     profile.reshade
                     and profile.reshade.enabled
@@ -369,7 +362,7 @@ class GraphicsResolver:
                     files = [item for item in files if item["relative_path"].casefold() != "reshade.ini"]
                     files.append(dict(relative_path="ReShade.ini",
                         source_path=str(self._blank_neural_reshade_config(profile.id, reshade_overlay_hotkey)),
-                        role="neural_reshade_config", source_package="generated/display-commander-reshade-config"))
+                        role="neural_reshade_config", source_package="generated/reshade-config"))
 
             special_k_package = self._package("special-k", graphics.special_k)
             if special_k_package:
@@ -410,7 +403,6 @@ class GraphicsResolver:
         )
         reshade_package = self._package("reshade", graphics.reshade)
         if reshade_package:
-            files.extend(display_commander.deployment_files(self.store, profile, reshade_package))
             recipe_files = self._recipe_files(reshade_package)
             if has_selected_reshade_config:
                 # Installer defaults are only a seed. The selected managed or
@@ -422,18 +414,6 @@ class GraphicsResolver:
                     != "reshade.ini"
                 ]
             files.extend(recipe_files)
-        if graphics.display_commander.enabled and not has_selected_reshade_config:
-            blank_reshade = self._blank_neural_reshade_config(
-                profile.id, reshade_overlay_hotkey if graphics.display_commander.enabled else None)
-            files.append(
-                {
-                    "relative_path": "ReShade.ini",
-                    "source_path": str(blank_reshade),
-                    "role": "neural_reshade_config",
-                    "source_package": "generated/neural-reshade-config",
-                }
-            )
-
         special_k_package = self._package("special-k", graphics.special_k)
         if special_k_package:
             # Companion owns the per-profile local-injection config. Ignore any

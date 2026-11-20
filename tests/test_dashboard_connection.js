@@ -6,7 +6,25 @@ const vm = require('node:vm');
 const html = fs.readFileSync('companion/ui/dashboard.html', 'utf8');
 const healthCode = html.slice(html.indexOf('    let wsHeartbeatTimer ='), html.indexOf('    let dashboardSessionToken ='));
 
-function dashboard() {
+test('host settings omit runtime details while keeping the enabled toggle and advanced panel action', () => {
+  const host = html.slice(html.indexOf('<section class="addon-card addon-card-wide addon-host-card">'),
+    html.indexOf('<section class="addon-package-section"'));
+  assert.doesNotMatch(host, /addonRuntimeStatus|addon-host-runtime|Runtime status/);
+  assert.match(host, /id="addonManagerEnabled"[^>]*checked/);
+  assert.match(host, /id="openProxyMenuBtn"/);
+  assert.match(html, /id="profileAddonRuntimeStatus"/);
+});
+
+test('display settings omit routing diagnostics and clean install has a decorative recycle icon', () => {
+  const display = html.slice(html.indexOf('<h2 class="settings-group-title">Display &amp; scaling'),
+    html.indexOf('<h2 class="settings-group-title">App &amp; updates'));
+  assert.doesNotMatch(html, /gpuRoutingStatus|gpuIndexRefreshStatus/);
+  assert.match(display, /id="preferredScalingGpu"/);
+  assert.match(display, /id="gpuCalibrationStatus"/);
+  assert.match(html, /id="cleanInstallBtn"[^>]*><span aria-hidden="true">&#9851;<\/span>/);
+});
+
+function dashboard(settingsReady = true) {
   let now = 0;
   let tick;
   let cleared = 0;
@@ -15,8 +33,8 @@ function dashboard() {
   const sent = [];
   const socket = {readyState: 1, send: value => sent.push(JSON.parse(value)), close() { this.closed = true; }};
   const context = vm.createContext({
-    ws: socket, WebSocket: {OPEN: 1}, Date: {now: () => now},
-    document: {getElementById(id) { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); }},
+    ws: socket, WebSocket: {OPEN: 1}, Date: {now: () => now}, generalSettingsReady: settingsReady,
+    document: {getElementById(id) { if (!nodes.has(id)) nodes.set(id, {attributes: {}, setAttribute(key, value) { this.attributes[key] = value; }}); return nodes.get(id); }},
     setInterval(fn) { tick = fn; return 1; }, clearInterval() { cleared++; },
     setRuntimeStatus: (...args) => status.push(args),
   });
@@ -34,6 +52,50 @@ test('disconnect makes controls inert and explicitly marks displayed state as st
   app.context.setCompanionConnected(true);
   assert.equal(app.nodes.get('dashboardContent').inert, false);
   assert.equal(app.nodes.get('companionConnectionBanner').hidden, true);
+});
+
+test('an initial connection cannot expose defaults before saved settings are rendered', () => {
+  const app = dashboard(false);
+  app.context.setCompanionConnected(true);
+  assert.equal(app.nodes.get('dashboardContent').inert, true);
+  assert.equal(app.nodes.get('dashboardContent').attributes['aria-busy'], 'true');
+  assert.equal(app.nodes.get('dashboardLoading').hidden, false);
+  app.context.generalSettingsReady = true;
+  app.context.updateDashboardReadiness();
+  assert.equal(app.nodes.get('dashboardContent').inert, false);
+  assert.equal(app.nodes.get('dashboardContent').attributes['aria-busy'], 'false');
+  assert.equal(app.nodes.get('dashboardLoading').hidden, true);
+});
+
+test('settings arriving before runtime state do not enable disconnected controls', () => {
+  const app = dashboard(false);
+  app.context.generalSettingsReady = true;
+  app.context.updateDashboardReadiness();
+  assert.equal(app.nodes.get('dashboardContent').inert, true);
+  app.context.setCompanionConnected(true);
+  assert.equal(app.nodes.get('dashboardContent').inert, false);
+});
+
+test('the loading screen is present before scripts and released only after settings render', () => {
+  assert.match(html, /id="dashboardContent" inert aria-busy="true"/);
+  assert.match(html, /#dashboardContent\[aria-busy="true"\] \{ visibility: hidden; \}/);
+  const settingsHandler = html.slice(html.indexOf("} else if (msg.type === 'GENERAL_SETTINGS'"), html.indexOf("} else if (msg.type === 'SCALE_NOW_SCHEDULED'"));
+  assert.ok(settingsHandler.indexOf('renderControlSettings();') < settingsHandler.indexOf('generalSettingsReady = true;'));
+  assert.ok(settingsHandler.indexOf('generalSettingsReady = true;') < settingsHandler.indexOf('updateDashboardReadiness();'));
+});
+
+test('saved settings are requested before slower graphics and addon probes', () => {
+  const sent = [];
+  const socket = {send: value => sent.push(JSON.parse(value).type)};
+  const context = vm.createContext({socket, ws: socket, lastStateRevision: 0,
+    startHeartbeat() {}, publishEditorActivity() {}, addonEditorUnsaved: false});
+  const onOpen = html.slice(html.indexOf('      ws.onopen = () => {'), html.indexOf('      ws.onmessage = (event) => {'));
+  vm.runInContext(onOpen, context);
+  socket.onopen();
+  assert.equal(sent[0], 'GET_GENERAL_SETTINGS');
+  assert.equal(sent.filter(type => type === 'GET_GENERAL_SETTINGS').length, 1);
+  assert.ok(sent.includes('GET_GRAPHICS_STATUS'));
+  assert.ok(sent.includes('GET_ADDON_RUNTIME_STATUS'));
 });
 
 test('a stalled backend disconnects after missed heartbeats', () => {
@@ -73,4 +135,43 @@ test('pending scaling commands are visible without claiming scaling is active', 
   context.renderRuntime({isScalingActive: false, scalingControl: {state: 'pending', message: 'Waiting for scaling confirmation'}});
   assert.deepEqual(status.at(-1), ['Waiting for scaling confirmation', 'inactive']);
   assert.equal(context.runtimeScalingActive, false);
+});
+
+test('dynamic benchmark results render the target verdict and timestamped RTSS trace safely', () => {
+  const nodes = new Map();
+  const element = () => ({children: [], replaceChildren() {this.children = [];}, appendChild(child) {this.children.push(child);}});
+  const context = vm.createContext({document: {
+    getElementById(id) {if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id);},
+    createElement: element,
+  }});
+  const code = html.slice(html.indexOf('    function renderDynamicLimiterBenchmark(result)'), html.indexOf('    function renderBenchmarkStatus(msg)'));
+  vm.runInContext(code, context);
+  context.renderDynamicLimiterBenchmark({dynamicLimiter: {status: 'pass', policy_version: 1, target_percent: 25, final_limit: 91, adjustment_count: 29,
+    settling_headroom_percent: {median: 26}, settling_target_fraction: 0.95},
+    workloadResolution: {width: 3840, height: 2160},
+    limiterTrace: [{elapsed_seconds: 31, current_limit: 91, rtss_readback_limit: 91, game_gpu_percent: 60, lossless_gpu_percent: 5, gpu_headroom_percent: 26, state: 'calibrated'}]});
+  assert.match(nodes.get('dynamicLimiterBenchmarkSummary').textContent, /Reserve sustained: 25%.*3840 x 2160/);
+  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children.length, 1);
+  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children[0].children[2].textContent, 91);
+  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children[0].children[5].textContent, 26);
+  context.renderDynamicLimiterBenchmark({dynamicLimiter: {status: 'pass', target_percent: 25}});
+  assert.match(nodes.get('dynamicLimiterBenchmarkSummary').textContent, /retired LS utilization target/);
+  context.renderDynamicLimiterBenchmark(null);
+  assert.equal(nodes.get('dynamicLimiterBenchmarkResults').hidden, true);
+  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children.length, 0);
+});
+
+test('live limiter progress is routed to the renderer and accumulates adjustment samples', () => {
+  const rendered = [];
+  const context = vm.createContext({renderDynamicLimiterBenchmark: result => rendered.push(result)});
+  const code = html.slice(html.indexOf('    let dynamicBenchmarkTrace = [];'), html.indexOf('    function renderDynamicLimiterBenchmark(result)'));
+  vm.runInContext(code, context);
+  context.receiveDynamicLimiterProgress({sample: {current_limit: 120, lossless_gpu_percent: 10}, targetPercent: 25});
+  context.receiveDynamicLimiterProgress({sample: {current_limit: 119, lossless_gpu_percent: 12}, targetPercent: 25});
+  assert.equal(rendered.at(-1).dynamicLimiter.status, 'running');
+  assert.equal(rendered.at(-1).dynamicLimiter.adjustment_count, 1);
+  assert.equal(rendered.at(-1).limiterTrace.length, 2);
+  assert.match(html, /msg.type === 'DYNAMIC_LIMITER_PROGRESS'\) \{\s*receiveDynamicLimiterProgress\(msg\);/);
+  const started = html.slice(html.indexOf("} else if (msg.type === 'BENCHMARK_STARTED')"), html.indexOf("} else if (msg.type === 'GPU_CALIBRATION_STATUS')"));
+  assert.match(started, /getElementById\('startDynamicLimiterBenchmarkBtn'\)\.disabled = true/);
 });

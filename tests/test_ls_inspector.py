@@ -206,16 +206,15 @@ class LosslessScalingInspectorTests(unittest.TestCase):
             self.assertTrue(any("state=active" in message for message in logs.output))
             self.assertTrue(any("LosslessScaling.log" in message for message in logs.output))
 
-    def test_confirmation_requires_a_new_event_when_event_log_exists(self):
+    def test_existing_presentation_requires_a_new_event_when_event_log_exists(self):
         with tempfile.TemporaryDirectory() as directory:
             log_path = Path(directory) / "LosslessScaling.log"
             log_path.write_text("", encoding="utf-8")
             inspector = LosslessScalingInspector(custom_log_path=str(log_path))
-            inspector.begin_scaling_confirmation(True)
-
             with patch.object(
                 inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)
             ):
+                inspector.begin_scaling_confirmation(True)
                 self.assertIsNone(inspector.probe_scaling_state())
                 self.assertIsNone(inspector.probe_scaling_state())
 
@@ -224,6 +223,46 @@ class LosslessScalingInspectorTests(unittest.TestCase):
                 self.assertTrue(inspector.probe_scaling_state())
 
             inspector.end_scaling_confirmation()
+
+    def test_new_presentation_confirms_when_existing_log_stays_silent(self):
+        inspector, log = self.echo_inspector()
+        log.write_text(self.echo_line(0), encoding="utf-8")
+        with patch.object(inspector, "_candidate_log_files", return_value=[]), patch.object(
+            inspector, "detect_lossless_scaling_overlay_window", return_value=(False, None)
+        ) as detect:
+            self.assertTrue(inspector._parse_echo_updates())
+            inspector.begin_scaling_confirmation(True)
+            detect.return_value = (True, 123)
+            self.assertIsNone(inspector.probe_scaling_state())
+            self.assertTrue(inspector.probe_scaling_state())
+            inspector.end_scaling_confirmation()
+            self.assertTrue(inspector.probe_scaling_state())
+
+    def test_presentation_disappearance_confirms_stop_when_log_stays_silent(self):
+        inspector, log = self.echo_inspector()
+        log.write_text(self.echo_line(), encoding="utf-8")
+        with patch.object(inspector, "_candidate_log_files", return_value=[]), patch.object(
+            inspector, "_echo_target_identity", return_value=dict(pid=42, process_name="game.exe")
+        ), patch.object(inspector, "detect_lossless_scaling_overlay_window", return_value=(True, 123)) as detect:
+            self.assertTrue(inspector._parse_echo_updates())
+            inspector.begin_scaling_confirmation(False)
+            detect.return_value = (False, None)
+            self.assertIsNone(inspector.probe_scaling_state())
+            self.assertIsNone(inspector.probe_scaling_state())
+            self.assertFalse(inspector.probe_scaling_state())
+            inspector.end_scaling_confirmation()
+            self.assertFalse(inspector.probe_scaling_state())
+
+    def test_fresh_stop_event_is_not_overridden_by_new_presentation(self):
+        inspector, log = self.echo_inspector()
+        with patch.object(inspector, "_candidate_log_files", return_value=[]), patch.object(
+            inspector, "detect_lossless_scaling_overlay_window", return_value=(False, None)
+        ) as detect:
+            inspector.begin_scaling_confirmation(True)
+            log.write_text(self.echo_line(0), encoding="utf-8")
+            detect.return_value = (True, 123)
+            self.assertFalse(inspector.probe_scaling_state())
+            self.assertFalse(inspector.probe_scaling_state())
 
     def test_overlay_is_debounced_fallback_when_no_event_log_exists(self):
         inspector = LosslessScalingInspector(custom_log_path="missing.log")

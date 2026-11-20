@@ -329,6 +329,24 @@ Telemetry is advisory: missing captures, NR disabled, or a waiting/error status
 must never be interpreted as proof that scaling is active or stopped. Scaling
 confirmation retains the inspector's native LS log/window evidence.
 
+Confirmation snapshots the presentation HWND before a command. An unchanged
+pre-existing window cannot bypass a log freshness requirement. If no new log
+event arrives, a new presentation HWND observed on two consecutive polls can
+confirm activation; disappearance of a pre-existing presentation on three polls
+can confirm deactivation. These transitions invalidate older latched log state,
+so a silent host log cannot permanently pause autoscaling after a successful
+hotkey. A fresh explicit log event remains authoritative.
+
+On multi-GPU systems, `capture.adapterSource` distinguishes `device_creation`
+from `capture_frame`, and `capture.adapterLuid` identifies the observed adapter.
+The status line labels a creation-only observation as capture-unverified rather
+than an active capture GPU. LS can create devices on more than one GPU. GPU 0
+load/VRAM telemetry is sampled independently and must not be used to select NR's
+adapter. NVIDIA NR initializes its D3D12 device from the real frame's D3D11 device
+LUID. A first-device name mismatch while callbacks are absent does not by itself
+prove NR selected the wrong adapter; collect the failing capture trace before
+restarting LS or replacing the failing session with a benchmark.
+
 The capture requirements remain upstream's: verified LS 3.2.2.0, WGC, LSFG 3 or
 FG off, and Scaling Off/NIS when FG is off. NVIDIA rendering is unchanged.
 
@@ -426,6 +444,35 @@ permissions, recovery and hardware validation limits.
    switching back to stock. Keep FG and architecture spoofing disabled.
 5. Verify `NeuralRendering-source.zip`, all NR licence files, host source archive,
    this note and the lock survive deployment. Record any new patches here.
+
+## LS-only relative pacing probe
+
+The host reuses its DXGI Present/Present1 hooks to retain at most 512 successful
+LS presentation intervals, plus CPU time spent inside Present. It excludes
+DXGI_PRESENT_TEST, non-S_OK returns, hidden/minimized/tiny and known helper
+windows, and nested Present calls. Only one active swapchain is measured;
+switches after inactivity and gaps longer than two seconds reset the baseline.
+No source/game process counters are inputs. Snapshots older than two seconds
+return no samples, rather than a stale healthy result.
+
+`presentationPacing` in the existing status pipe and read-only capture report
+contains median/p95/maximum interval, p95 Present call duration, and relative
+stall count (interval greater than 1.5 times the recent median, with at least
+30 intervals). This is measurement-only: a sustained lower rate establishes a
+new baseline, and no FPS cap or headroom reserve is changed. These are submitted
+Present timings, not displayed-frame deadlines, GPU execution durations, or a
+diagnosis of resource starvation. Present blocking includes intentional pacing.
+There are no GPU readbacks or per-frame disk writes for this probe.
+
+The release builder runs `lsc_pacing_probe_test` (steady cadence, injected stall,
+bounded recovery, rate change, invalid samples). For a real-engine local check,
+build `eam_captureprobe`, set `LSC_TEST_CAPTURE_PROBE` to its absolute path, and run
+`pytest tests/test_addon_host.py -k ls_relative_pacing`. It uses a read-only copy
+of the locally supplied engine at `build/overlay-input-ls/Lossless.dll` and a
+temporary source window with LSFG3 + WGC + HDR + scaling Off. It requires at least
+30 LS intervals but deliberately has no hardware-dependent smoothness threshold.
+Set `EAM_PROBE_LS_PACING=1` when invoking that native probe directly to print the
+measurement line. Installed LS settings and saved limiter calibration are untouched.
 
 ## Distribution and validation limits
 

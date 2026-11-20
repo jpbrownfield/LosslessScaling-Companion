@@ -51,23 +51,12 @@ class SpecialKConfig(ManagedPackageConfig):
     hdr_peak_brightness_nits: int = Field(default=1000, ge=80, le=10000)
     hdr_paper_white_nits: int = Field(default=203, ge=80, le=1000)
     temporary_windows_hdr: bool = False
-    experimental_reflex: bool = False
     experimental_smooth_motion: bool = False
 
     @model_validator(mode="after")
     def validate_hdr_luminance(self):
         if self.hdr_paper_white_nits > self.hdr_peak_brightness_nits:
             raise ValueError("Special K HDR paper white cannot exceed peak brightness")
-        return self
-
-
-class DisplayCommanderConfig(ManagedPackageConfig):
-    inject_reflex: bool = False
-
-    @model_validator(mode="after")
-    def reflex_requires_addon(self):
-        if self.inject_reflex:
-            self.enabled = True
         return self
 
 
@@ -117,7 +106,6 @@ class GraphicsStackConfig(BaseModel):
     neural_render: NeuralRenderConfig = Field(default_factory=NeuralRenderConfig)
     reshade: ManagedPackageConfig = Field(default_factory=ManagedPackageConfig)
     special_k: SpecialKConfig = Field(default_factory=SpecialKConfig)
-    display_commander: DisplayCommanderConfig = Field(default_factory=DisplayCommanderConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -216,9 +204,10 @@ class RtssLimiterConfig(BaseModel):
     minimum_framerate_limit: int = Field(default=30, ge=1, le=1000)
     maximum_framerate_limit: int = Field(default=240, ge=1, le=1000)
     limit_method: Literal[
-        "async", "front_edge_sync", "back_edge_sync", "nvidia_reflex"
+        "async", "front_edge_sync", "back_edge_sync"
     ] = "async"
     learned_framerate_limit: Optional[int] = Field(default=None, ge=1, le=1000)
+    calibration_policy_version: int = Field(default=0, ge=0)
     game_gpu_baseline_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     game_gpu_high_water_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     # A completed manual calibration is authoritative until the user resets it.
@@ -229,6 +218,11 @@ class RtssLimiterConfig(BaseModel):
     managed_target_process: Optional[str] = None
     managed_install_path: Optional[str] = None
     original_values: Dict[str, Optional[int]] = Field(default_factory=dict)
+
+    @field_validator("limit_method", mode="before")
+    @classmethod
+    def migrate_retired_reflex_method(cls, value):
+        return "async" if value == "nvidia_reflex" else value
 
     @model_validator(mode="after")
     def validate_dynamic_range(self):
@@ -325,12 +319,6 @@ class Profile(BaseModel):
 
     @model_validator(mode="after")
     def fill_blank_name_from_target(self):
-        if self.graphics.display_commander.enabled:
-            self.reshade = self.reshade or ReshadeConfig()
-            self.reshade.enabled = True
-            self.reshade.menu_proxy_enabled = True
-            if self.graphics.display_commander.inject_reflex:
-                self.graphics.special_k.experimental_reflex = False
         if self.reshade:
             if self.reshade.menu_proxy_enabled is None:
                 # Profiles written before this setting existed used the

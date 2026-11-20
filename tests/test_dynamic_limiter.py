@@ -1,19 +1,60 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from companion.core.models import Profile, RtssLimiterConfig
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
 from companion.services.dynamic_limiter import DynamicLimiterController
+from companion.services.gpu_telemetry import WindowsGpuTelemetry
+
+
+class GpuHeadroomTelemetryTests(unittest.TestCase):
+    def test_ls_on_a_separate_gpu_uses_only_its_own_adapter_capacity(self):
+        snapshot = WindowsGpuTelemetry.aggregate_engines([
+            ('pid_100_luid_0x0_0x1_phys_0_eng_0_engtype_3D', 100.0),
+            ('pid_200_luid_0x0_0x2_phys_0_eng_0_engtype_3D', 5.0),
+        ])
+        telemetry = WindowsGpuTelemetry.__new__(WindowsGpuTelemetry)
+        telemetry._lock = threading.RLock()
+        telemetry._adapter_utilization = snapshot['adapters']
+        telemetry._process_adapters = snapshot['process_adapters']
+        with patch.object(telemetry, 'sample_by_pid', return_value=snapshot['processes']):
+            result = telemetry.sample_for_scaling(100, 200)
+        self.assertEqual(result['gpu_headroom_percent'], 95)
+        self.assertEqual(result['gpu_adapters'], ['0x0_0x2_0'])
+
+    def test_total_is_summed_per_engine_but_not_across_engines_or_gpus(self):
+        entries = [
+            ('pid_100_luid_0x00000000_0x00000001_phys_0_eng_0_engtype_3D', 80.0),
+            ('pid_200_luid_0x00000000_0x00000001_phys_0_eng_0_engtype_3D', 5.0),
+            ('pid_100_luid_0x00000000_0x00000001_phys_0_eng_1_engtype_Copy', 30.0),
+            ('pid_300_luid_0x00000000_0x00000002_phys_0_eng_0_engtype_3D', 100.0),
+            ('pid_999_luid_0x00000000_0x00000001_phys_0_eng_0_engtype_3D', float('nan')),
+        ]
+        result = WindowsGpuTelemetry.aggregate_engines(entries)
+        self.assertEqual(result['processes'][200], 5.0)
+        self.assertEqual(result['adapters']['0x00000000_0x00000001_0'], 85.0)
+        self.assertEqual(result['adapters']['0x00000000_0x00000002_0'], 100.0)
+        self.assertEqual(list(result['process_adapters'][200]), ['0x00000000_0x00000001_0'])
+        self.assertNotIn(999, result['processes'])
 
 
 class FakeTelemetry:
     def __init__(self):
         self.value = {100: 80.0, 200: 10.0}
+        self.headroom = 5.0
 
     def sample_by_pid(self):
         return dict(self.value)
+
+    def sample_for_scaling(self, target_pid, lossless_pid):
+        if target_pid not in self.value or lossless_pid not in self.value or self.headroom is None:
+            return {}
+        return {'game_gpu_percent': self.value[target_pid], 'lossless_gpu_percent': self.value[lossless_pid],
+                'gpu_headroom_percent': self.headroom, 'gpu_adapters': ['gpu-a']}
 
     def close(self):
         pass
@@ -91,6 +132,13 @@ class DynamicLimiterTests(unittest.TestCase):
             result = self.controller.poll()
         return result
 
+    def test_dedicated_benchmark_does_not_calibrate_the_saved_profile(self):
+        self.state.benchmark_mode_active = True
+        self.assertEqual(self.controller.poll()['state'], 'inactive')
+        self.assertEqual(self.rtss.limits, [])
+        self.assertIsNone(self.controller._session)
+        self.assertIsNone(self.profile.rtss.learned_framerate_limit)
+
     def test_automatic_calibration_reduces_only_after_qualified_gameplay(self):
         first = self.poll_windows(2)
         self.assertEqual(first["state"], "waiting_for_gameplay")
@@ -108,12 +156,39 @@ class DynamicLimiterTests(unittest.TestCase):
         self.assertEqual(self.rtss.limits, [100, 99])
         self.assertIsNone(self.profile.rtss.game_gpu_high_water_percent)
 
-    def test_target_is_a_floor_and_higher_utilization_latches(self):
-        self.telemetry.value = {100: 80.0, 200: 22.0}
+    def test_low_ls_utilization_is_healthy_when_headroom_is_available(self):
+        self.telemetry.value = {100: 3.0, 200: 5.0}
+        self.telemetry.headroom = 30.0
         result = self.poll_windows(3)
         self.assertEqual(result["state"], "calibrated")
         self.assertEqual(self.profile.rtss.learned_framerate_limit, 100)
         self.assertEqual(self.rtss.limits, [100])
+
+    def test_high_ls_utilization_does_not_mask_a_saturated_adapter(self):
+        self.telemetry.value = {100: 80.0, 200: 30.0}
+        self.telemetry.headroom = 2.0
+        self.assertEqual(self.poll_windows(3)['state'], 'calibrating')
+        self.telemetry.headroom = 20.0
+        result = self.poll_windows(1)
+        self.assertEqual(result['state'], 'calibrated')
+        self.assertEqual(result['current_limit'], 99)
+
+    def test_missing_adapter_telemetry_never_infers_free_capacity(self):
+        self.telemetry.headroom = None
+        result = self.poll_windows(4)
+        self.assertEqual(result['state'], 'telemetry_unavailable')
+        self.assertEqual(self.rtss.limits, [100])
+
+    def test_old_floor_based_calibration_is_discarded_without_changing_user_bounds(self):
+        self.profile.rtss.learned_framerate_limit = 60
+        self.profile.rtss.automatic_calibration_disabled = True
+        self.profile.rtss.original_values = {'Limit': 144}
+        self.telemetry.headroom = 30
+        result = self.poll_windows(3)
+        self.assertEqual(result['current_limit'], 100)
+        self.assertEqual(self.profile.rtss.minimum_framerate_limit, 30)
+        self.assertEqual(self.profile.rtss.calibration_policy_version, 1)
+        self.assertEqual(self.profile.rtss.original_values, {'Limit': 144})
 
     def test_manual_calibration_arms_for_five_minutes_and_reset_erases_metrics(self):
         result = self.controller.start_manual(self.profile.id)

@@ -30,10 +30,19 @@ class RtssProfileManagerTests(unittest.TestCase):
         self.assertIn("Managed by Lossless Scaling Helper profile=game-profile", text)
         self.assertIn("Limit=70", text)
         self.assertIn("LimitDenominator=1", text)
-        self.assertIn("SyncLimiter=3", text)
+        self.assertIn("SyncLimiter=0", text)
         self.assertTrue(profile.rtss.managed_profile_created)
         self.assertEqual(profile.rtss.managed_target_process, "Game.exe")
         self.assertEqual(Path(profile.rtss.managed_install_path), self.root.resolve())
+
+    def test_retired_reflex_migrates_and_preserves_rollback_values(self):
+        config = RtssLimiterConfig.model_validate({
+            "enabled": True, "limit_method": "nvidia_reflex",
+            "original_values": {"SyncLimiter": 3},
+        })
+        self.assertEqual(config.limit_method, "async")
+        self.assertEqual(config.original_values["SyncLimiter"], 3)
+        self.assertEqual(RtssLimiterConfig.model_validate(config.model_dump()).limit_method, "async")
 
     def test_owned_profile_is_deleted(self):
         profile = self.profile()

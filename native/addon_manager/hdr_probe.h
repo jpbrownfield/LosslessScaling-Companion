@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <string>
+#include "pacing_probe.h"
 struct IDXGISwapChain;
 namespace lsc {
 struct HdrProbeControl { uint32_t version, enabled, sample; float whiteNits; uint64_t heartbeat; };
@@ -17,6 +18,7 @@ struct HdrProbeStatus {
 void StartHdrProbe();
 bool IsHdrProbeDispatch();
 HdrProbeStatus HdrProbeSnapshot();
+PacingSnapshot PresentationPacingSnapshot();
 // Also used by the off-screen GPU fixture. Production calls only from Present.
 void ObserveHdrPresentation(IDXGISwapChain* chain);
 }

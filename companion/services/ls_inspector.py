@@ -140,6 +140,9 @@ class LosslessScalingInspector:
         self._log_event_sequence = 0
         self._confirmation_baseline: Optional[int] = None
         self._confirmation_requires_log = False
+        self._confirmation_expected: Optional[bool] = None
+        self._confirmation_overlay_hwnd: Optional[int] = None
+        self._confirmation_overlay_samples = 0
         self._inspection_lock = threading.RLock()
         self._echo_positions = {}
         self._echo_started_at = time.time()
@@ -449,6 +452,9 @@ class LosslessScalingInspector:
             self._log_state = None
             self._confirmation_baseline = None
             self._confirmation_requires_log = False
+            self._confirmation_expected = None
+            self._confirmation_overlay_hwnd = None
+            self._confirmation_overlay_samples = 0
             self.last_known_target = ScaledTargetInfo()
             self._overlay_true_streak = 0
             self._overlay_false_streak = 0
@@ -460,10 +466,13 @@ class LosslessScalingInspector:
 
     def begin_scaling_confirmation(self, expected: bool) -> None:
         """Snapshot log offsets before the hotkey so only a new event can confirm it."""
-        del expected  # Reserved for richer per-direction log rules.
         with self._inspection_lock:
             self.parse_log_updates()
             self._confirmation_baseline = self._log_event_sequence
+            present, hwnd = self.detect_lossless_scaling_overlay_window(self.lossless_exe_path)
+            self._confirmation_expected = expected
+            self._confirmation_overlay_hwnd = hwnd if present else None
+            self._confirmation_overlay_samples = 0
             self._echo_confirmation_started_at = time.time()
             self._confirmation_requires_log = bool(self._candidate_log_files()) or (self._echo_event_seen and bool(self._echo_log_files()))
 
@@ -471,6 +480,9 @@ class LosslessScalingInspector:
         with self._inspection_lock:
             self._confirmation_baseline = None
             self._confirmation_requires_log = False
+            self._confirmation_expected = None
+            self._confirmation_overlay_hwnd = None
+            self._confirmation_overlay_samples = 0
             self._echo_confirmation_started_at = None
 
     def confirmation_debug_snapshot(self) -> Dict:
@@ -486,6 +498,8 @@ class LosslessScalingInspector:
                 "logState": self._log_state,
                 "addonEventSeen": self._echo_event_seen,
                 "stableOverlay": self._overlay_stable_present,
+                "baselineOverlayHwnd": self._confirmation_overlay_hwnd,
+                "transitionSamples": self._confirmation_overlay_samples,
                 "lastTarget": self.last_known_target.to_dict(),
             }
 
@@ -648,11 +662,24 @@ class LosslessScalingInspector:
         """
         # 1. Check Win32 DirectX overlay (debounced: a single-frame match
         # must not flip the reported state)
-        raw_overlay_present, _ = self.detect_lossless_scaling_overlay_window(self.lossless_exe_path)
+        raw_overlay_present, overlay_hwnd = self.detect_lossless_scaling_overlay_window(self.lossless_exe_path)
         is_overlay_present = self._stable_overlay_present(raw_overlay_present)
 
         # 2. Check logs for new events
         self.parse_log_updates()
+
+        if self._confirmation_baseline is not None and self._log_event_sequence == self._confirmation_baseline:
+            changed = (
+                bool(raw_overlay_present and overlay_hwnd and overlay_hwnd != self._confirmation_overlay_hwnd)
+                if self._confirmation_expected else
+                bool(self._confirmation_overlay_hwnd and not raw_overlay_present)
+            )
+            self._confirmation_overlay_samples = self._confirmation_overlay_samples + 1 if changed else 0
+            required = self._OVERLAY_ACTIVATE_STREAK if self._confirmation_expected else self._OVERLAY_DEACTIVATE_STREAK
+            if self._confirmation_overlay_samples >= required:
+                self._log_state = None
+                self.last_known_target = ScaledTargetInfo()
+                self._confirmation_requires_log = False
 
         # 3. Explicit log transitions are authoritative for this LS process.
         # The overlay is only a fallback if no eligible log has produced a

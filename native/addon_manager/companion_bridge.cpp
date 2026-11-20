@@ -171,7 +171,15 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"lastDispatchTick",d.lastDispatch},{"settingsAppliedTick",d.settingsAt},
         {"traceVersion",1},{"progress",d.trace.counts},{"shaderSamples",d.trace.shaders},
         {"driver",d.driver},{"format",d.format},
+        {"adapterLuid",d.adapterLuid},{"adapterSource",d.captureAdapterObserved?"capture_frame":"device_creation"},
         {"captureApi",d.capture},{"frameGeneration",d.fg},{"scaler",d.scaler},{"hdr",d.hdr}};
+    const auto pacing=PresentationPacingSnapshot();
+    result["presentationPacing"]={{"version",1},{"scope","LS successful Present calls; not displayed frames"},
+        {"intervals",pacing.intervals},{"medianMs",pacing.medianMs},{"p95Ms",pacing.p95Ms},
+        {"maximumMs",pacing.maximumMs},{"relativeStalls",pacing.relativeStalls},
+        {"observedPresents",pacing.observedPresents},{"successfulPresents",pacing.successfulPresents},
+        {"eligiblePresents",pacing.eligiblePresents},
+        {"presentP95Ms",pacing.presentP95Ms},{"measurementOnly",true}};
     const auto hdr=HdrProbeSnapshot();
     result["hdrProbe"]={{"enabled",hdr.enabled},{"ready",hdr.ready},{"scans",hdr.scans},
         {"sampledTick",hdr.sampledTick},{"presentTick",hdr.presentTick},{"pixels",hdr.pixels},

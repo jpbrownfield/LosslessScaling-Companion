@@ -27,7 +27,9 @@ class _Session:
     current_limit: int
     target_pid: int = 0
     started_at: float = 0.0
-    samples: list[tuple[float, float]] = field(default_factory=list)
+    samples: list[tuple[float, float, float]] = field(default_factory=list)
+    gpu_headroom_percent: Optional[float] = None
+    gpu_adapters: list[str] = field(default_factory=list)
     windows_seen: int = 0
     recovery_windows: int = 0
     loading: bool = False
@@ -41,6 +43,7 @@ class _Session:
 
 class DynamicLimiterController:
     WINDOW_SAMPLES = 5
+    CALIBRATION_POLICY_VERSION = 1
     MANUAL_SECONDS = 5 * 60
     TARGET_DEADBAND = 0.0
     GAMEPLAY_MINIMUM_PERCENT = 20.0
@@ -81,7 +84,7 @@ class DynamicLimiterController:
     def configured_limit(self, profile: Profile) -> int:
         if self.effective_mode(profile, self.profile_manager.config.rtss_default_limit_mode) == "static":
             return profile.rtss.framerate_limit
-        return profile.rtss.learned_framerate_limit or profile.rtss.maximum_framerate_limit
+        return (profile.rtss.learned_framerate_limit if profile.rtss.calibration_policy_version == self.CALIBRATION_POLICY_VERSION else None) or profile.rtss.maximum_framerate_limit
 
     def reset(self, profile_id: str) -> dict:
         with self._lock:
@@ -90,6 +93,7 @@ class DynamicLimiterController:
             profile.rtss.game_gpu_baseline_percent = None
             profile.rtss.game_gpu_high_water_percent = None
             profile.rtss.automatic_calibration_disabled = False
+            profile.rtss.calibration_policy_version = self.CALIBRATION_POLICY_VERSION
             self.profile_manager.save_config()
             if self._session and self._session.profile_id == profile_id:
                 self._session = _Session(
@@ -137,6 +141,7 @@ class DynamicLimiterController:
             self._manual_profile_id = profile_id
             self._manual_until = self.time_fn() + self.MANUAL_SECONDS
             profile.rtss.automatic_calibration_disabled = False
+            profile.rtss.calibration_policy_version = self.CALIBRATION_POLICY_VERSION
             target_pid = int(self.state.current_scaled_target.get("pid") or 0)
             self._session = _Session(
                 profile_id,
@@ -161,8 +166,8 @@ class DynamicLimiterController:
 
     def poll(self) -> dict:
         with self._lock:
-            if self.state.update_in_progress:
-                return self._set_status("inactive", "Maintenance in progress")
+            if self.state.update_in_progress or self.state.benchmark_mode_active:
+                return self._set_status("inactive", "Maintenance or dedicated benchmark in progress")
             self._finish_ended_session()
             profile = self._active_dynamic_profile()
             if profile is None:
@@ -203,21 +208,26 @@ class DynamicLimiterController:
                     "Waiting for LosslessScaling.exe GPU telemetry",
                     profile=profile,
                 )
-            utilization = self.telemetry.sample_by_pid()
-            if target_pid not in utilization or lossless_pid not in utilization:
+            utilization = self.telemetry.sample_for_scaling(target_pid, lossless_pid)
+            if not utilization:
                 return self._set_status(
                     "telemetry_unavailable",
-                    "Waiting for valid game and Lossless Scaling GPU samples",
+                    "Waiting for valid GPU adapter headroom and process samples",
                     profile=profile,
                 )
-            session.samples.append((utilization[target_pid], utilization[lossless_pid]))
+            game_sample = utilization["game_gpu_percent"]
+            ls_sample = utilization["lossless_gpu_percent"]
+            session.gpu_headroom_percent = utilization["gpu_headroom_percent"]
+            session.gpu_adapters = utilization["gpu_adapters"]
+            session.samples.append((game_sample, ls_sample, session.gpu_headroom_percent))
             if len(session.samples) < self.WINDOW_SAMPLES:
                 return self._status_with_samples(
                     "sampling", "Collecting GPU samples", profile, session,
-                    utilization[target_pid], utilization[lossless_pid], manual_remaining,
+                    game_sample, ls_sample, manual_remaining,
                 )
             game_gpu = statistics.median(value[0] for value in session.samples)
             lossless_gpu = statistics.median(value[1] for value in session.samples)
+            session.gpu_headroom_percent = statistics.median(value[2] for value in session.samples)
             session.samples.clear()
             return self._evaluate(profile, session, game_gpu, lossless_gpu, manual_remaining)
 
@@ -245,6 +255,8 @@ class DynamicLimiterController:
     ) -> dict:
         session.windows_seen += 1
         session.valid_windows += 1
+        target = profile.rtss.gpu_target_percent or self.profile_manager.config.rtss_default_gpu_target_percent
+        headroom = session.gpu_headroom_percent
         is_manual = manual_remaining > 0
         stored_high = 0.0 if is_manual else (profile.rtss.game_gpu_high_water_percent or 0.0)
         stored_baseline = 0.0 if is_manual else (profile.rtss.game_gpu_baseline_percent or 0.0)
@@ -276,8 +288,10 @@ class DynamicLimiterController:
 
         qualified = is_manual or (
             session.windows_seen >= 3
-            and high_water >= self.GAMEPLAY_MINIMUM_PERCENT
-            and game_gpu >= high_water * self.GAMEPLAY_RATIO
+            and (headroom >= target or (
+                high_water >= self.GAMEPLAY_MINIMUM_PERCENT
+                and game_gpu >= high_water * self.GAMEPLAY_RATIO
+            ))
         )
         if not qualified:
             return self._status_with_samples(
@@ -289,19 +303,18 @@ class DynamicLimiterController:
         session.observed_baseline = max(session.observed_baseline, game_gpu)
         if is_manual:
             self._copy_metrics_to_profile(profile, session, replace=True)
-        target = profile.rtss.gpu_target_percent or self.profile_manager.config.rtss_default_gpu_target_percent
-        if lossless_gpu >= target - self.TARGET_DEADBAND:
+        if headroom >= target - self.TARGET_DEADBAND:
             self._persist_calibration(profile, session)
             return self._status_with_samples(
                 "calibrated" if not is_manual else "manual_calibration",
-                "Lossless Scaling GPU target reached; frame limit latched",
+                "GPU headroom reserve met; frame limit latched",
                 profile, session, game_gpu, lossless_gpu, manual_remaining,
                 target=target,
             )
         if session.paused_no_response:
             return self._status_with_samples(
                 "no_response",
-                "Calibration paused because limit reductions did not improve Lossless Scaling GPU use",
+                "Calibration paused because limit reductions did not improve GPU headroom",
                 profile, session, game_gpu, lossless_gpu, manual_remaining,
                 target=target,
             )
@@ -310,23 +323,23 @@ class DynamicLimiterController:
             self._persist_calibration(profile, session)
             return self._status_with_samples(
                 "minimum_reached",
-                "Minimum FPS reached before the Lossless Scaling GPU target",
+                "Minimum FPS reached before the GPU headroom reserve",
                 profile, session, game_gpu, lossless_gpu, manual_remaining,
                 target=target,
             )
 
         if session.response_anchor is None:
-            session.response_anchor = lossless_gpu
+            session.response_anchor = headroom
         elif session.adjustments_since_anchor >= 3:
-            if lossless_gpu < session.response_anchor + 0.5:
+            if headroom < session.response_anchor + 0.5:
                 session.paused_no_response = True
                 return self._status_with_samples(
                     "no_response",
-                    "Calibration paused because limit reductions did not improve Lossless Scaling GPU use",
+                    "Calibration paused because limit reductions did not improve GPU headroom",
                     profile, session, game_gpu, lossless_gpu, manual_remaining,
                     target=target,
                 )
-            session.response_anchor = lossless_gpu
+            session.response_anchor = headroom
             session.adjustments_since_anchor = 0
 
         session.current_limit -= 1
@@ -361,6 +374,13 @@ class DynamicLimiterController:
         return remaining
 
     def _ensure_session(self, profile: Profile, target_pid: int) -> _Session:
+        if profile.rtss.calibration_policy_version != self.CALIBRATION_POLICY_VERSION:
+            profile.rtss.learned_framerate_limit = None
+            profile.rtss.game_gpu_baseline_percent = None
+            profile.rtss.game_gpu_high_water_percent = None
+            profile.rtss.automatic_calibration_disabled = False
+            profile.rtss.calibration_policy_version = self.CALIBRATION_POLICY_VERSION
+            self.profile_manager.save_config()
         if (
             self._session is None
             or self._session.profile_id != profile.id
@@ -528,6 +548,10 @@ class DynamicLimiterController:
             current_limit=session.current_limit,
             game_gpu_percent=round(game_gpu, 1),
             lossless_gpu_percent=round(lossless_gpu, 1),
+            gpu_headroom_percent=round(session.gpu_headroom_percent, 1) if session.gpu_headroom_percent is not None else None,
+            gpu_busy_percent=round(100.0 - session.gpu_headroom_percent, 1) if session.gpu_headroom_percent is not None else None,
+            gpu_adapters=list(session.gpu_adapters),
+            target_scope="GPU headroom reserve on adapters used by LS; frame deadlines are not measured",
             target_percent=target or profile.rtss.gpu_target_percent or self.profile_manager.config.rtss_default_gpu_target_percent,
             manual_remaining_seconds=manual_remaining,
         )

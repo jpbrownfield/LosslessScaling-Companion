@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from companion.core.models import Profile
 from companion.core.profile_manager import ProfileManager
@@ -10,6 +10,7 @@ from companion.core.state import AppState
 from companion.services.automation import AutomationController
 from companion.services.overlay_indicator import OverlayIndicator, null_presenter
 from companion.services.process_watcher import ProcessInfo
+from companion.services.ls_inspector import LosslessScalingInspector
 
 
 class ScalingRecoveryTests(unittest.TestCase):
@@ -58,6 +59,43 @@ class ScalingRecoveryTests(unittest.TestCase):
             target_pid=42, target_hwnd=82))
         self.assertTrue(self.automation._scaling_confirmation_failed)
         self.assertEqual(self.events, ["key"])
+
+    def assert_silent_log_activation_confirms(self, reason):
+        log = self.manager.config_dir / "LosslessScaling.log"
+        log.write_text("", encoding="utf-8")
+        inspector = LosslessScalingInspector(custom_log_path=str(log))
+        self.automation.scaling_state_probe = inspector.probe_scaling_observation
+        self.automation.scaling_confirmation_begin = inspector.begin_scaling_confirmation
+        self.automation.scaling_confirmation_end = inspector.end_scaling_confirmation
+        self.automation._confirm_scaling_state = AutomationController._confirm_scaling_state.__get__(self.automation)
+        with patch.object(inspector, "detect_lossless_scaling_overlay_window", return_value=(False, None)) as detect, \
+                patch("companion.services.ls_inspector.user32") as windows, \
+                patch("companion.services.ls_inspector.psutil.Process") as process:
+            windows.GetForegroundWindow.return_value = 82
+            windows.GetWindowThreadProcessId.side_effect = lambda hwnd, pid: setattr(pid._obj, "value", 42)
+            windows.GetWindowTextLengthW.return_value = 4
+            windows.GetWindowTextW.side_effect = lambda hwnd, text, size: setattr(text, "value", "Game")
+            process.return_value.name.return_value = "game.exe"
+            process.return_value.exe.return_value = "C:/game.exe"
+
+            def activate(**_):
+                self.events.append("key")
+                detect.return_value = (True, 123)
+                return True
+
+            self.automation.hotkey_trigger = Mock(side_effect=activate)
+            self.assertTrue(self.automation.set_scaling(True, self.effects, reason=reason,
+                            target_pid=42, target_hwnd=82))
+        self.assertTrue(self.state.is_scaling_active)
+        self.assertFalse(self.automation._scaling_confirmation_failed)
+        self.assertEqual(self.state.scaling_control_status["state"], "confirmed")
+        self.assertEqual(self.events, ["key"])
+
+    def test_auto_scale_confirms_new_presentation_even_when_event_log_is_silent(self):
+        self.assert_silent_log_activation_confirms("focus")
+
+    def test_override_hotkey_confirms_new_presentation_even_when_event_log_is_silent(self):
+        self.assert_silent_log_activation_confirms("override_hotkey")
 
     def test_failure_pauses_later_automatic_requests_across_profiles_and_targets(self):
         self.fail_start("focus")

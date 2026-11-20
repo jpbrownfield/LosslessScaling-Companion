@@ -16,6 +16,7 @@ class CaptureTraceCommandTests(unittest.TestCase):
         return {"schema": 1, "pid": 123, "createdAt": 900.0, "sampledAt": 1000.0,
                 "headless": True, "hostVersion": "build-7-lsc.9", "addons": [],
                 "capture": {"traceVersion": 1, "progress": {"handoffAttempts": 7}},
+                "presentationPacing": {"version": 1, "intervals": 120, "relativeStalls": 2, "measurementOnly": True},
                 "metrics": {"DLSSNR02": {"accepted": 7}, "other": {"unused": 1}}, **changes}
 
     def test_read_only_trace_preserves_progress_and_partial_errors(self):
@@ -29,6 +30,7 @@ class CaptureTraceCommandTests(unittest.TestCase):
         self.assertEqual(len(report["samples"]), 3)
         self.assertEqual(report["samples"][0]["capture"]["progress"]["handoffAttempts"], 7)
         self.assertEqual(report["samples"][0]["metrics"], {"DLSSNR02": {"accepted": 7}})
+        self.assertEqual(report["samples"][0]["presentationPacing"], self.payload()["presentationPacing"])
         self.assertEqual(report["samples"][1], {"available": False, "error": "pipe busy"})
         self.assertEqual(pause.call_count, 2)
 

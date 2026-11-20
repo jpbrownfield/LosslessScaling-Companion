@@ -19,7 +19,7 @@ class Element {
 }
 
 function editor() {
-  const nodes = Object.fromEntries(['addonScalingFields', 'nativeScalingSharpnessRow', 'addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'displayCommanderEnabled', 'displayCommanderReflex', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'nativeFrameGenerationType', 'nativeCaptureApi', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
+  const nodes = Object.fromEntries(['addonScalingFields', 'nativeScalingSharpnessRow', 'addonEditorCards', 'addonManagerFields', 'addonEditorSearch', 'addonEditorSummary', 'addonHostNotice', 'reshadeManagedProfile', 'profileId', 'addonEditorStatus', 'nativeScalingType', 'nativeFrameGenerationType', 'nativeCaptureApi', 'profileScalingTypeHint', 'nativePreferredGpu', 'nativeOutputDisplay'].map(id => [id, new Element('div')]));
   nodes.profileId.value = 'inactive-game-profile';
   nodes.nativeScalingType.value = 'NIS';
   nodes.nativeScalingType.dataset = {nativeKey: 'ScalingType', nativeAvailable: 'true'};
@@ -180,6 +180,11 @@ test('live scaling status immediately follows Scale Now inside the sidebar', () 
   assert.ok(footer.indexOf('id="statusPill"') > footer.indexOf('id="scaleNowBtn"'));
   assert.equal((html.match(/id="statusPill"/g) || []).length, 1);
   assert.doesNotMatch(footer, /Switch to your app/);
+});
+
+test('profile addons retain the advanced panel without a bulk disable button or handler', () => {
+  assert.doesNotMatch(html, /disableOptionalAddonsBtn|Disable extra features/);
+  assert.match(html, /id="openProfileAddonPanelBtn"/);
 });
 
 test('addon toolbar binds and tolerates clicks before the connection opens', () => {

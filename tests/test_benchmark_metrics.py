@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from companion.services.benchmark_metrics import (
     read_presentmon_csv,
+    summarize_dynamic_limiter,
     summarize_presentmon_files,
     summarize_presentmon_rows,
 )
@@ -12,11 +13,94 @@ from companion.services.performance_benchmark import PresentMonCapture, focus_wi
 from companion.core.models import Profile, RtssLimiterConfig
 from scripts.benchmark_lossless_scaling import (
     default_profile_limiter_settings,
+    main as run_benchmark,
+    monitor_workload_bounds,
+    parse_args,
+    limiter_profile_readback,
     resolve_benchmark_executable,
 )
 
 
 class BenchmarkMetricTests(unittest.TestCase):
+    def test_missing_rtss_fails_before_launching_or_scaling(self):
+        manager = Mock()
+        manager.config.rtss_install_path = None
+        with patch('scripts.benchmark_lossless_scaling.resolve_benchmark_executable', return_value=(Path('C:/tools/LSBenchmark.exe'), True)), \
+                patch('scripts.benchmark_lossless_scaling.ProfileManager', return_value=manager), \
+                patch('scripts.benchmark_lossless_scaling.RtssProfileManager') as rtss, \
+                patch('scripts.benchmark_lossless_scaling.subprocess.Popen') as launch:
+            rtss.return_value.status.return_value = {'installed': False, 'running': False}
+            self.assertEqual(run_benchmark(['--dynamic-limiter', '--duration', '300', '--yes']), 2)
+        launch.assert_not_called()
+
+    def test_monitor_resolution_preserves_physical_bounds_and_restores_dpi_context(self):
+        native = Mock()
+        native.SetThreadDpiAwarenessContext.return_value = 123
+        native.MonitorFromWindow.return_value = 99
+
+        def monitor_info(_handle, pointer):
+            info = pointer._obj
+            info.monitor.left = -3840
+            info.monitor.top = 0
+            info.monitor.right = 0
+            info.monitor.bottom = 2160
+            return True
+
+        native.GetMonitorInfoW.side_effect = monitor_info
+        with patch('scripts.benchmark_lossless_scaling.ctypes.windll.user32', native):
+            bounds = monitor_workload_bounds()
+        self.assertEqual(bounds, {'left': -3840, 'top': 0, 'width': 3840, 'height': 2160})
+        self.assertEqual(native.SetThreadDpiAwarenessContext.call_args.args, (123,))
+
+    def test_dynamic_benchmark_options_and_rtss_readback(self):
+        args = parse_args(['--dynamic-limiter', '--monitor-resolution', '--duration', '300', '--ls-gpu-target', '25'])
+        self.assertTrue(args.monitor_resolution)
+        self.assertEqual(args.ls_gpu_target, 25)
+        rtss = Mock()
+        rtss._profiles_dir.return_value = Path('C:/RTSS/Profiles')
+        rtss._get_value.return_value = '91'
+        profile = Profile(name='Benchmark', rtss=RtssLimiterConfig(managed_install_path='C:/RTSS', managed_target_process='LSBenchmark.exe'))
+        self.assertEqual(limiter_profile_readback(rtss, profile), 91)
+        rtss._get_value.return_value = 'invalid'
+        self.assertIsNone(limiter_profile_readback(rtss, profile))
+
+    def test_dynamic_target_requires_sustained_tail_not_a_single_peak(self):
+        samples = [{"elapsed_seconds": second, "gpu_headroom_percent": 30 if second >= 35 else 5,
+                    "current_limit": 120 - min(second, 10), "state": "calibrated"}
+                   for second in range(60)]
+        summary = summarize_dynamic_limiter(samples, target_percent=30, duration_seconds=60)
+        self.assertEqual(summary["status"], "fail")
+        for sample in samples:
+            sample["gpu_headroom_percent"] = 30 if sample["elapsed_seconds"] >= 30 else 5
+        summary = summarize_dynamic_limiter(samples, target_percent=30, duration_seconds=60)
+        self.assertEqual(summary["status"], "pass")
+        self.assertEqual(summary["first_target_hit_seconds"], 30)
+        self.assertEqual(summary["adjustment_count"], 10)
+        self.assertEqual(summary["final_limit"], 110)
+
+    def test_dynamic_missing_telemetry_short_runs_and_no_response_do_not_pass(self):
+        samples = [{"elapsed_seconds": second, "gpu_headroom_percent": 30,
+                    "current_limit": 100, "state": "calibrated"} for second in range(60)]
+        for rows, duration in (([], 60), (samples[:20], 20), (samples[:40], 60),
+                               (samples[:-1] + [{**samples[-1], "state": "no_response"}], 60)):
+            with self.subTest(duration=duration, count=len(rows)):
+                self.assertEqual(summarize_dynamic_limiter(rows, target_percent=30, duration_seconds=duration)["status"], "fail")
+
+    def test_extra_headroom_and_low_ls_demand_are_healthy(self):
+        samples = [{"elapsed_seconds": second, "gpu_headroom_percent": 70, "lossless_gpu_percent": 5,
+                    "current_limit": 100, "state": "calibrated"} for second in range(60)]
+        result = summarize_dynamic_limiter(samples, target_percent=30, duration_seconds=60)
+        self.assertTrue(result["sustained_target_reached"])
+        self.assertEqual(result["settling_within_target_band_fraction"], 0)
+        self.assertEqual(result["maximum_headroom_shortfall_percent"], 0)
+        self.assertEqual(result["policy_version"], 1)
+        self.assertFalse(result["frame_deadlines_verified"])
+
+    def test_old_process_only_telemetry_cannot_pass_the_headroom_benchmark(self):
+        samples = [{"elapsed_seconds": second, "lossless_gpu_percent": 70,
+                    "current_limit": 100, "state": "calibrated"} for second in range(60)]
+        self.assertEqual(summarize_dynamic_limiter(samples, target_percent=15, duration_seconds=60)['status'], 'fail')
+
     def test_process_filter_excludes_other_ls_instances_before_aggregation(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_file = Path(directory) / "presentmon.csv"

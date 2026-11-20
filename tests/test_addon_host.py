@@ -43,6 +43,36 @@ def manager_hardware_available():
 @unittest.skipUnless(os.name == "nt" and os.environ.get("LSC_TEST_CAPTURE_PROBE"),
                      "Set LSC_TEST_CAPTURE_PROBE to the built eam_captureprobe.exe for visible real-engine capture tests")
 class NativeCaptureVariantTests(unittest.TestCase):
+    def test_ls_relative_pacing_lsfg3_hdr_without_scaling(self):
+        probe = Path(os.environ["LSC_TEST_CAPTURE_PROBE"]).resolve()
+        engine = ROOT / "build/overlay-input-ls/Lossless.dll"
+        self.assertTrue(probe.is_file(), probe)
+        self.assertTrue(engine.is_file(), engine)
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "Lossless_original.dll"
+            shutil.copy2(engine, original)
+            with subprocess.Popen(
+                [str(probe), str(original), "1", "1", "0", "0", "0", "1"],
+                cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                env={**os.environ, "EAM_PROBE_LS_PACING": "1", "EAM_PROBE_SECONDS": "8"},
+            ) as process:
+                try:
+                    output, _ = process.communicate(timeout=45)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                   capture_output=True, timeout=10)
+                    process.kill()
+                    output, _ = process.communicate(timeout=10)
+                    self.fail(f"LS pacing probe timed out:\n{output[-6000:]}")
+        self.assertEqual(process.returncode, 0, output[-6000:])
+        timing = re.search(r"LS pacing intervals=(\d+) median_ms=([\d.]+) p95_ms=([\d.]+) maximum_ms=([\d.]+) relative_stalls=(\d+) present_p95_ms=([\d.]+) measurement_only=1", output)
+        self.assertIsNotNone(timing, output[-6000:])
+        self.assertGreaterEqual(int(timing[1]), 30)
+        self.assertGreater(float(timing[2]), 0)
+        self.assertGreaterEqual(float(timing[3]), float(timing[2]))
+        self.assertGreaterEqual(float(timing[4]), float(timing[3]))
+
     def test_wgc_sdr_and_hdr_capture_variants(self):
         probe = Path(os.environ["LSC_TEST_CAPTURE_PROBE"]).resolve()
         engine = ROOT / "build/overlay-input-ls/Lossless.dll"
