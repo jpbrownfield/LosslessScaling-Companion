@@ -48,6 +48,9 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
    - Display Commander and Reflex integration have been retired. Saved RTSS Reflex limiter selections migrate to the asynchronous limiter; other RTSS, ReShade and Special K HDR/presentation settings remain supported.
    - The profile editor lists supported image processors and display/input features with a master on/off switch. Internal reporters, automatic AMD backend routing and retired integrations do not appear as separate processors. Host startup flags and unrecognized saved values are retained in the read-only advanced view. Numeric tuning values are parameters of the parent feature, so they do not each have an enable switch. Overlay input is automatic while ReShade is enabled; upscaler selections stay synchronized with Scaling Type.
    - Managed Lilium SDR-to-HDR presets prepare captured SDR before inverse tone mapping: linear scRGB is normalized using its 80-nit reference, HDR10 is decoded to linear BT.709, and Lilium uses linear input without another gamma decode. Captured SDR white defaults to **400 nits**, configured once in **Add-ons ? ReShade ? HDR display & menu settings**. Each identified monitor can override it; blank monitor entries inherit the shared default. Overrides use the monitor device identity and apply to LS's selected output display at the next scaling start. Disconnected monitor settings are retained. This is separate from HDR peak brightness and is shared across application and shader profiles. Peak brightness remains separately controlled by the HDR display setting. Use an SDR source with Windows HDR and LS HDR support; native HDR, Windows Auto HDR, RTX HDR or Special K conversion must not feed a second SDR-to-HDR conversion. Imported or explicitly input-tuned presets retain their input path. Peak refresh preserves other shader edits.
+   - **Add-ons > ReShade > Refresh default presets** restores the three included presets' effects and execution order, including SDR preparation before Lilium inverse tone mapping. It resets the managed SDR input settings while retaining other shader tuning and backs up each existing preset and its profile metadata under `reshade-profiles/<id>/default-refresh-backups/`. Custom presets are retained. The refreshed defaults apply at the next scaling start. Shader provider groups start collapsed in the wide preset editor; search and Selected only expand matching groups.
+   - The sharpening defaults use bundled **AMD FidelityFX CAS**, ported from AMD's five-sample sharpen-only path with SDR/scRGB/HDR10 support. The combined order is **Companion SDR preparation > Lilium inverse tone mapping > AMD CAS**. Standard older Lilium CAS selections migrate automatically while retaining disabled effects and approximately translating `SHARPEN_AMOUNT`; custom/imported presets retain their selected shaders. Display peak controls CAS's HDR normalization as well as inverse tone mapping. This does not add automatic HDR-source detection or bypass.
+   - Installing/importing ReShade or enabling it for a profile prepares all three default presets up front. AMD CAS is bundled; the HDR defaults download Lilium and its support files. An incomplete download reports a preparation error and can be retried after reconnecting.
    - Installs a bundled host built from pinned FriedSnowman sources, with unchanged upstream addons and a Companion panel/status bridge. Deployment is transactional; addon-host updates ship with Companion.
    - Saves one complete addon configuration per profile. Built-in controls edit inactive and active profiles; active changes apply through the safe stopped-process reload workflow.
    - Explicitly disables optional add-ons unless enabled for that profile. The editor includes a **Disable all processing** action; the **Overlay toggle** is enabled automatically for ReShade profiles when needed.
@@ -78,13 +81,13 @@ A Windows companion for **Lossless Scaling (LS)** that activates executable prof
 
 8. **RTSS Static and Dynamic Frame Limiting:**
    - Creates reversible per-executable limiter profiles inside RTSS, never inside the game directory.
-   - Static mode applies a configured source FPS cap. Dynamic mode starts at a configured maximum and lowers the game cap one FPS per qualified five-second gameplay window when the GPU adapters used by LS lack the configured spare-capacity reserve. Low LS utilization alone never requests a reduction.
-   - Samples Windows GPU Engine counters once per second, sums activity by physical adapter and engine, and uses five-sample medians. Separate GPUs and different engine types are not added together.
-   - Resets obsolete utilization-floor calibration on the next dynamic session while preserving user FPS bounds and RTSS rollback data. The existing percentage settings now specify GPU headroom reserve.
-   - Headroom is a conservative engine-utilization heuristic, not direct frame-deadline validation. Inspect PresentMon frame pacing and the dedicated monitor-resolution benchmark before choosing a reserve for a particular game/GPU.
-   - Freezes indefinitely across dramatic game-GPU drops instead of learning a long-running menu as gameplay.
-   - Treats game processes lasting more than ten minutes with representative GPU utilization above 50% as alternate-baseline candidates. A higher candidate is promoted only after the game exits and affects the next session.
-   - Supports a five-minute manual representative-gameplay calibration. Completing it disables further automatic learning for that profile until reset; reset erases learned GPU baselines and identified limits and resumes learning.
+   - Static mode applies a configured source cap. Dynamic mode uses verified LS process/swapchain identity and disjoint two-second LS timing windows to test bounded source-cap changes. Low LS utilization and game GPU activity never trigger reductions by themselves.
+   - Requires a measured intake-rate response and better LS relative timing before keeping a reduction. Ineffective trials roll back; sustained stability permits slow upward recovery. FPS bounds, session reserve bounds, manual locks and benchmark ownership remain authoritative.
+   - The profile's **Measure only** option shows shadow proposals at a fixed cap. Automatic reserve and learned results stay session-local; explicit five-minute manual calibration can save and lock a confirmed cap until reset.
+   - GPU Engine counters provide supporting headroom by physical adapter/engine without adding different GPUs or engine types together. Capture and presentation LUIDs remain separate in cross-adapter setups.
+   - Monitoring uses bounded CPU buffers and a render try-lock, with statistics sorted off the render thread. It adds no GPU readback/wait or per-frame logging. Missing, stale, dropped, paused or mixed-context evidence freezes adaptation.
+   - The last **Debug ? Application tests** benchmark checks fixed-cap monitoring overhead, actual RTSS source-rate response, and independent LS timing benefit. A no-pressure run remains inconclusive for benefit. See [implementation notes](rtss%20dynamic%20limiting%20notes.md).
+
 
 ---
 
@@ -199,6 +202,11 @@ hotkey and can disable native Auto Scale when automatic profile scaling is enabl
 The optional hotkey override preserves an editable user-facing trigger, assigns
 Lossless Scaling an unmodified F24 internally, and routes the trigger through the
 matching foreground-window profile (or the Default profile when none matches).
+
+Settings → Display & scaling → Window behavior includes **Restore custom game
+cursors after Alt+Tab**, enabled by default. It refreshes the game's cursor and
+the supported LS engine's cached cursor image after focus returns, while keeping
+Multi-display mode enabled. The setting applies to a running updated host.
 
 Companion checks GPU index mappings at startup, then compares fresh DXGI adapter
 order, identities, and duplicate counts about every three hours when idle. The

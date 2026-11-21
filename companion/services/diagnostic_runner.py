@@ -67,9 +67,10 @@ class DiagnosticRunner:
         "rtss": ("process_windows",),
         "startup": ("configuration",),
         "runtime": ("configuration",),
+        "rtss_adaptive_benchmark": ("benchmark", "rtss"),
     }
-    LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior", "nr_capture_trace"}
-    READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation", "gloam_hdr"}
+    LS_MUTATING_TESTS = {"autoscale_behavior", "deployment_behavior", "nr_capture_trace", "rtss_adaptive_benchmark"}
+    READ_ONLY_TESTS = {"reshade_lilium", "gpu_route_validation", "gloam_hdr", "nr_capture_current"}
     ALWAYS_RUN_AFTER_DEPENDENCIES = {
         "reshade_runtime", "proxy_reshade", "proxy_neural_render", "gpu_route_validation",
     }
@@ -102,6 +103,7 @@ class DiagnosticRunner:
         return (
             ("configuration", "Configuration schema and persistence", self._configuration),
             ("gpu_route_validation", "Live GPU routing: requested vs. actual GPU", self._gpu_route_validation),
+            ("nr_capture_current", "DLSS5 NR: inspect current application without restarting", self._nr_capture_current),
             ("nr_capture_trace", "DLSS5 NR benchmark reproduction (LSFG 3 + HDR)", self._nr_capture_trace),
             ("profile_integrity", "Profile IDs, defaults, and targets", self._profile_integrity),
             ("profile_matching", "Application and browser profile matching", self._profile_matching),
@@ -128,6 +130,7 @@ class DiagnosticRunner:
             ("rtss", "RTSS integration readiness", self._rtss),
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
+            ("rtss_adaptive_benchmark", "Adaptive RTSS: LS benefit and monitoring overhead (about 7 minutes)", self._rtss_adaptive_benchmark),
         )
 
     def _nr_capture_trace(self) -> Dict:
@@ -143,6 +146,60 @@ class DiagnosticRunner:
         )
         result["details"]["requestedNativeSettings"] = dict(profile.native_scaling_settings)
         return result
+
+    def _nr_capture_current(self) -> Dict:
+        """Inspect the user's failing session, preserving its preset and process."""
+        result = self._collect_nr_capture_trace()
+        profile = self.server.state.current_active_profile
+        result["details"]["activeProfile"] = ({
+            "id": profile.id, "name": profile.name,
+            "nativeSettings": dict(profile.native_scaling_settings),
+            "preferredGpuDeviceId": profile.preferred_gpu_device_id,
+            "preferredGpuName": profile.preferred_gpu_name,
+            "addonConfig": profile.addon_config,
+        } if profile else None)
+        result["details"]["generalScalingGpuDeviceId"] = self.server.config.preferred_scaling_gpu_device_id
+        if result["status"] != "pass":
+            return result
+        samples = result["details"]["trace"]["samples"]
+        first, last = samples[0], samples[-1]
+        capture = last.get("capture", {})
+        addon = next((item for item in last.get("addons", []) if item.get("id") == "DLSSNR02"), {})
+        metrics = last.get("metrics", {}).get("DLSSNR02", {})
+        accepted_before = first.get("metrics", {}).get("DLSSNR02", {}).get("accepted", 0)
+        progress = capture.get("progress", {})
+        advancing = (metrics.get("accepted", 0) > accepted_before
+                     and capture.get("captures", 0) > first.get("capture", {}).get("captures", 0)
+                     and metrics.get("model_ms", 0) > 0)
+        details = result["details"]
+        details.pop("limitation", None)
+        details["captureAdapter"] = capture.get("adapter")
+        details["captureAdapterLuid"] = capture.get("adapterLuid")
+        details["observedSettings"] = {key: capture.get(key) for key in ("configured", "captureApi", "frameGeneration", "scaler", "hdr")}
+        details["addonStatus"] = addon.get("status", "")
+        if not addon.get("enabled") or not addon.get("loaded"):
+            return self._result("warn", "NR is not enabled and loaded in the current LS process.", **details)
+        if advancing and not addon.get("faulted") and not addon.get("error"):
+            wanted_gpu = (profile.preferred_gpu_name if profile else None) or self.server.config.preferred_scaling_gpu_name
+            if wanted_gpu and str(capture.get("adapter") or "").casefold() != wanted_gpu.casefold():
+                return self._result("warn", f"NR is processing frames on {capture.get('adapter') or 'an unidentified GPU'}, but {wanted_gpu} was requested. Inspect the live GPU routing diagnostic.", **details)
+            return self._result("pass", "NR is processing new frames in the current application; its preset and scaling session were preserved.", **details)
+        support = capture.get("support", "")
+        if capture.get("hookError") or capture.get("error") or addon.get("faulted") or addon.get("error"):
+            reason = capture.get("hookError") or capture.get("error") or addon.get("error") or addon.get("status")
+        elif support not in ("", "Ready", "Waiting for a real capture; start scaling a game"):
+            reason = support
+        elif not capture.get("dispatches", 0):
+            reason = "No LS compute dispatches reached the capture hook. Loading the addon has not established a frame source."
+        elif progress.get("dispatchesWithoutCallback", 0) and not progress.get("dispatchesWithCallback", 0):
+            reason = "LS dispatches were seen, but no real-frame callback was registered."
+        elif not progress.get("captureShaderMatches", 0) and not progress.get("scalerShaderMatches", 0):
+            reason = "Dispatches were seen, but none matched a supported capture/scaler shader. Compare WGC/FG/scaler settings and shader identities with the benchmark."
+        elif not metrics.get("accepted", 0):
+            reason = "The capture path was reached, but NR has not processed its first frame. Inspect handoff counts and the addon status."
+        else:
+            reason = "No new NR frames were processed during the sample window; the source may be paused or scaling may have stopped."
+        return self._result("warn", reason + " Current application and preset were left running.", **details)
 
     def _collect_nr_capture_trace(self) -> Dict:
         from .adapter_report import configured_process
@@ -853,7 +910,7 @@ class DiagnosticRunner:
             # Keep the foreground watcher from racing this explicitly controlled
             # start/stop cycle and immediately reactivating scaling after stop.
             self.server.state.auto_scale_enabled = False
-            self.server.state.benchmark_mode_active = True
+            self._claim_benchmark()
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(
                     False, reason="experimental_addon_test_setup", force=True,
@@ -1014,10 +1071,18 @@ class DiagnosticRunner:
                     runtime_errors = self._runtime_log_errors(runtime_delta)
                     runtime_evidence = self._runtime_log_evidence(runtime_delta)
                     actual_gpus = self._runtime_gpu_names(runtime_delta)
+                    capture_gpu = host_telemetry.get("capture", {}) if capture_neural_trace else {}
+                    if capture_gpu.get("captures", 0) > 0 and capture_gpu.get("adapter"):
+                        # Device-creation log lines can describe a different GPU.
+                        # Real capture telemetry identifies the frame source device.
+                        actual_gpus = [str(capture_gpu["adapter"])]
                     requested_gpu = str(route.get("gpuName") or "")
                     gpu_matches = (requested_gpu.casefold() in {name.casefold() for name in actual_gpus}) if requested_gpu and actual_gpus else None
+                    if capture_neural_trace and requested_gpu and not actual_gpus:
+                        gpu_matches = False  # A requested GPU needs positive evidence.
                     gpu_mismatch_excused = bool(
-                        gpu_matches is False and actual_gpus and addon_ready and scaled and active_observed and stopped
+                        not capture_neural_trace and gpu_matches is False and actual_gpus
+                        and addon_ready and scaled and active_observed and stopped
                     )
                     gpu_route_note = (
                         "Requested GPU did not match the dispatch device, but scaling, taps, and stop all confirmed; "
@@ -1391,7 +1456,7 @@ class DiagnosticRunner:
         try:
             # The workflow explicitly invokes foreground discovery below. The
             # normal monitor must not switch profiles during its setup/cleanup.
-            self.server.state.benchmark_mode_active = True
+            self._claim_benchmark()
             if self.server.state.is_scaling_active:
                 self.server.automation.set_scaling(False, reason="experimental_test_setup", force=True)
             config.disable_native_auto_scale = True
@@ -1754,7 +1819,7 @@ class DiagnosticRunner:
             if not active_reshade_id and lilium_mentions else
             "Historical compiler errors were captured for another managed Lilium profile."
             if compile_errors and not current_errors else
-            "No Lilium compilation evidence was found; activate lsc-basic-sharpening and reproduce scaling before rerunning this test."
+            "No Lilium compilation evidence was found; activate lsc-sdr-to-hdr and reproduce scaling before rerunning this test."
         )
         return self._result(
             status, summary,
@@ -2070,6 +2135,58 @@ class DiagnosticRunner:
         presentmon = self.server._presentmon_executable()
         command = self.server._benchmark_launch_command(workload, presentmon) if workload and presentmon else []
         return self._result("pass" if status["ready"] else "fail", "Benchmark workload, verified PresentMon, and launch arguments are ready." if status["ready"] else "Benchmark prerequisites are incomplete.", benchmarkStatus=status, workload=self._path(workload), presentMon=self._path(presentmon), command=[self._path(item) for item in command])
+
+    def _claim_benchmark(self):
+        claim = getattr(self.server, "_claim_benchmark", None)
+        if callable(claim):
+            claim()
+        self.server.state.benchmark_mode_active = True
+
+    def _rtss_adaptive_benchmark(self) -> Dict:
+        from scripts.benchmark_lossless_scaling import main as run_benchmark
+        from .rtss_manager import RtssProfileManager
+        rtss = RtssProfileManager().status(self.server.config.rtss_install_path)
+        if not rtss.get("installed") or not rtss.get("running"):
+            return self._result("warn", "Install and start RTSS to run the adaptive acceptance benchmark.", skipped=True)
+        workload = self.server._embedded_benchmark_executable()
+        presentmon = self.server._verified_benchmark_executable("presentmon") or self.server._presentmon_executable()
+        if not workload or not presentmon or not self.server.config.addon_manager_enabled:
+            return self._result("warn", "The benchmark requires the bundled workload, PresentMon, and Companion add-on host.", skipped=True)
+        previous_profile = self.server.state.current_active_profile
+        previous_owner = self.server.state.benchmark_mode_active
+        report_root = self._behavior_root.parent / "adaptive-benchmark"
+        command = self.server._benchmark_launch_command(workload, presentmon, dynamic_limiter=True)
+        command[command.index("--report-dir")+1] = str(report_root)
+        try:
+            self._claim_benchmark()
+            if self.server.state.is_scaling_active:
+                if not self.server.automation.set_scaling(False, reason="adaptive_benchmark", force=True, park_runtime_on_stop=False):
+                    raise RuntimeError("Could not stop the existing scaling session")
+            # Uses the existing runner, temporary RTSS ownership and its finally
+            # restoration. No learned limits or original presets are modified.
+            code = run_benchmark(command)
+            paths = list(report_root.glob("*/result.json"))
+            report = json.loads(max(paths, key=lambda p: p.stat().st_mtime_ns).read_text(encoding="utf-8")) if paths else {}
+            verdict = report.get("dynamic_limiter_benchmark") or {}
+            status = "pass" if code == 0 and verdict.get("status") == "pass" else "warn" if code == 4 and verdict.get("status") == "inconclusive" else "fail"
+            # Copy evidence to the diagnostic session root; the zip exporter only
+            # includes root files. Bundle CSVs too, before sandbox cleanup.
+            if paths:
+                archive = shutil.make_archive(str(self._behavior_root.parent / "adaptive-rtss-evidence"), "zip", report_root)
+            else:
+                archive = None
+            return self._result(status, "Adaptive RTSS acceptance: "+verdict.get("status", "failed before verdict")+
+                                ". Telemetry, source-cap response, LS benefit, and observer overhead are reported separately.",
+                                exitCode=code, verdict=verdict, evidenceArchive=Path(archive).name if archive else None,
+                                rtssRestored=report.get("rtss_profile_restored"), error=report.get("error"))
+        finally:
+            try:
+                if previous_profile is not None:
+                    self.server.automation.activate_profile(previous_profile, force=True, suppress_auto_scale=True)
+            finally:
+                self.server.state.benchmark_mode_active = previous_owner
+                if self.server.process_watcher:
+                    self.server.process_watcher.invalidate_foreground_cache()
 
     def _benchmark_cli_behavior(self) -> Dict:
         from scripts.benchmark_lossless_scaling import parse_args

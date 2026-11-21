@@ -559,6 +559,30 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("checkbox", websocket.messages[-1])
         self.assertTrue(self.manager.config.sunshine_match_encoder_gpu)
 
+    async def test_window_behavior_cursor_setting_defaults_on_persists_and_applies_live(self):
+        self.server.startup_manager = FakeStartupManager()
+        self.server.process_watcher = Mock()
+        self.server.process_watcher.enforce_helper_scaling_control.return_value = True
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.assertTrue(self.server._control_settings_payload()["restoreGameCursorOnFocus"])
+        for request, enabled in (("SAVE_GENERAL_SETTINGS", False), ("SAVE_CONTROL_SETTINGS", True)):
+            await self.server.process_message(websocket, json.dumps({
+                "type": request, "restoreGameCursorOnFocus": enabled,
+            }))
+            response = json.loads(websocket.messages[-1])
+            self.assertIs(response["controlSettings"]["restoreGameCursorOnFocus"], enabled, response)
+            self.assertIs(ProfileManager(self.manager.config_dir).config.restore_game_cursor_on_focus, enabled)
+        self.assertEqual(self.server.process_watcher.sync_cursor_recovery_setting.call_count, 2)
+        await self.server.process_message(websocket, json.dumps({"type": "SAVE_GENERAL_SETTINGS"}))
+        self.assertEqual(self.server.process_watcher.sync_cursor_recovery_setting.call_count, 2)
+        for request in ("SAVE_GENERAL_SETTINGS", "SAVE_CONTROL_SETTINGS"):
+            await self.server.process_message(websocket, json.dumps({
+                "type": request, "restoreGameCursorOnFocus": "false",
+            }))
+            self.assertIn("checkbox", websocket.messages[-1])
+            self.assertTrue(self.manager.config.restore_game_cursor_on_focus)
+
     async def test_general_settings_save_configures_editable_hotkey_override(self):
         self.server.startup_manager = FakeStartupManager()
         self.server.hotkey_listener = Mock()
@@ -771,16 +795,19 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             dynamic_limiter=True, target_percent=25,
         )
         self.assertIn('--dynamic-limiter', command)
+        self.assertIn('--adaptive-acceptance', command)
         self.assertIn('--monitor-resolution', command)
         self.assertNotIn('--use-default-profile', command)
         self.assertEqual(command[command.index('--duration') + 1], '300')
         self.assertEqual(command[command.index('--gpu-headroom') + 1], '25')
 
-    def test_only_current_headroom_calibration_is_reused_for_dynamic_limits(self):
+    def test_only_explicit_manual_caps_are_reused_across_dynamic_sessions(self):
         from companion.core.models import Profile
         profile = Profile(name='Game', rtss=RtssLimiterConfig(limit_mode='dynamic', learned_framerate_limit=60))
         self.assertEqual(self.server._rtss_limit_for_profile(profile), 240)
         profile.rtss.calibration_policy_version = 1
+        self.assertEqual(self.server._rtss_limit_for_profile(profile), 240)
+        profile.rtss.automatic_calibration_disabled = True
         self.assertEqual(self.server._rtss_limit_for_profile(profile), 60)
 
     def test_dynamic_benchmark_summary_retains_trace_and_convergence(self):
@@ -988,6 +1015,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         package = {"provider": "reshade", "version": "6.8.0"}
         self.server.graphics_source_importer = Mock()
         self.server.graphics_source_importer.stage.return_value = package
+        self.server.reshade_profiles.prepare_builtin_profiles = Mock(return_value={})
 
         await self.server.process_message(websocket, json.dumps({
             "type": "IMPORT_GRAPHICS_SOURCE",
@@ -998,9 +1026,39 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.server.graphics_source_importer.stage.assert_called_once_with(
             "reshade", "test-operation"
         )
+        self.server.reshade_profiles.prepare_builtin_profiles.assert_called_once_with()
         self.assertEqual(next(json.loads(item) for item in websocket.messages if json.loads(item)["type"] == "GRAPHICS_RELEASE_STAGED"), {
             "type": "GRAPHICS_RELEASE_STAGED", "package": package,
         })
+
+    async def test_reshade_import_reports_a_default_download_failure(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        self.server.graphics_source_importer = Mock()
+        self.server.graphics_source_importer.stage.return_value = {"provider": "reshade", "version": "6.8.0"}
+        with patch.object(self.server.reshade_profiles, "prepare_builtin_profiles",
+                          side_effect=ValueError("Default shader download failed")) as prepare:
+            await self.server.process_message(websocket, json.dumps({"type": "IMPORT_GRAPHICS_SOURCE", "provider": "reshade"}))
+        prepare.assert_called_once_with()
+        messages = [json.loads(item) for item in websocket.messages]
+        self.assertFalse(any(item["type"] == "GRAPHICS_RELEASE_STAGED" for item in messages))
+        self.assertTrue(any("Default shader download failed" in item.get("message", "") for item in messages))
+
+    async def test_enabling_reshade_prepares_defaults_before_profile_save(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        profile = self.manager.get_profile_by_id("default-browser")
+        data = profile.model_dump(mode="json")
+        data["graphics"]["reshade"]["enabled"] = True
+        with patch.object(self.automation, "refresh_gpu_selections", return_value={}), patch.object(
+            self.automation.gpu_selections, "capture_profile"
+        ), patch.object(self.automation.graphics_resolver, "select_neural_runtime"), patch.object(
+            self.server.reshade_profiles, "prepare_builtin_profiles", side_effect=ValueError("Default shaders unavailable")
+        ) as prepare:
+            await self.server.process_message(websocket, json.dumps({"type": "SAVE_PROFILE", "profile": data}))
+        prepare.assert_called_once_with()
+        self.assertFalse(self.manager.get_profile_by_id(profile.id).graphics.reshade.enabled)
+        self.assertTrue(any("Default shaders unavailable" in json.loads(item).get("message", "") for item in websocket.messages))
 
     def test_startup_detection_accepts_only_release_digest_matched_presentmon(self):
         home = Path(self.temp_dir.name) / "user"
@@ -1619,6 +1677,37 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(self.manager.config.profiles), initial_count)
+        self.assertIn("Dashboard capability token required", websocket.messages[-1])
+
+    async def test_default_reshade_refresh_captures_runtime_before_restoring_off_thread(self):
+        websocket = self.FakeWebSocket()
+        self.server.client_authority[websocket] = "dashboard"
+        main_thread = threading.get_ident()
+        calls = []
+
+        def capture():
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            calls.append("capture")
+
+        def refresh():
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            calls.append("refresh")
+            return {"profiles": [], "refreshed": ["default"], "errors": []}
+
+        with patch.object(self.automation, "capture_reshade_settings", side_effect=capture), patch.object(
+            self.server.reshade_profiles, "refresh_builtin_profiles", side_effect=refresh
+        ):
+            await self.server.process_message(websocket, json.dumps({"type": "REFRESH_RESHADE_DEFAULT_PRESETS"}))
+        self.assertEqual(calls, ["capture", "refresh"])
+        response = json.loads(websocket.messages[-1])
+        self.assertEqual(response["type"], "RESHADE_DEFAULT_PRESETS_REFRESHED")
+        self.assertEqual(response["refreshed"], ["default"])
+
+    async def test_default_reshade_refresh_requires_dashboard_authority(self):
+        websocket = self.FakeWebSocket()
+        with patch.object(self.server.reshade_profiles, "refresh_builtin_profiles") as refresh:
+            await self.server.process_message(websocket, json.dumps({"type": "REFRESH_RESHADE_DEFAULT_PRESETS"}))
+        refresh.assert_not_called()
         self.assertIn("Dashboard capability token required", websocket.messages[-1])
 
     async def test_rtss_profile_delete_requires_confirmation(self):

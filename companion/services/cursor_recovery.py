@@ -98,7 +98,10 @@ class CursorRecovery:
         self._focused = False
         self._attempts = []
 
-    def update(self, state, foreground_pid: int, foreground_hwnd: int) -> None:
+    def update(self, state, foreground_pid: int, foreground_hwnd: int, *, enabled: bool = True) -> None:
+        if not enabled:
+            self._session, self._focused, self._attempts = None, False, []
+            return
         target = state.current_scaled_target or {}
         pid = state.scaling_target_pid or target.get("pid")
         hwnd = state.scaling_target_hwnd or target.get("hwnd")

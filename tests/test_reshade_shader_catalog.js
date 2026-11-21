@@ -17,8 +17,9 @@ function editor() {
           .map(box => ({value: box[1], checked: !!box[2]}));
         const toggle = {};
         const count = {};
-        groups.push({dataset: {packIndex: match[1]}, boxes, toggle, count,
-          querySelector: selector => selector === '.reshade-pack-toggle' ? toggle : count,
+        const expand = {setAttribute(name, value) { this[name] = value; }};
+        groups.push({dataset: {packIndex: match[1]}, boxes, toggle, count, expand,
+          querySelector: selector => selector === '.reshade-pack-toggle' ? toggle : selector === '.shader-pack-expand' ? expand : count,
           querySelectorAll: () => boxes});
       }
     },
@@ -49,6 +50,25 @@ test('search combines shader and pack terms, includes saved missing files, and s
   context.reshadeShaderSelection.a.add('Removed.fx');
   assert.deepEqual(result('removed')[0].visibleShaders, ['Removed.fx']);
   assert.equal(result('no such shader').length, 0);
+});
+
+test('providers start collapsed, can be expanded, and open for search or selected-only', () => {
+  const {context, nodes, groups, saves} = editor();
+  context.renderReshadeShaderCatalog();
+  assert.ok(groups.every(group => group.dataset.collapsed === 'true'));
+  groups[0].expand.onclick();
+  assert.equal(groups[0].dataset.collapsed, 'false');
+  assert.equal(groups[0].expand['aria-expanded'], 'true');
+  groups[0].expand.onclick();
+  assert.equal(groups[0].dataset.collapsed, 'true');
+  nodes.reshadeShaderSearch.value = 'sharp';
+  context.renderReshadeShaderCatalog();
+  assert.ok(groups.every(group => group.dataset.collapsed === 'false'));
+  nodes.reshadeShaderSearch.value = '';
+  nodes.reshadeSelectedOnly.checked = true;
+  context.renderReshadeShaderCatalog();
+  assert.ok(groups.every(group => group.dataset.collapsed === 'false'));
+  assert.equal(saves(), 0);
 });
 
 test('group selection affects only search results and duplicate filenames remain independent by pack', () => {

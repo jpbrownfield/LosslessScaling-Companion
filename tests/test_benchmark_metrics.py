@@ -148,6 +148,7 @@ class BenchmarkMetricTests(unittest.TestCase):
                 enabled=True,
                 limit_mode="dynamic",
                 learned_framerate_limit=73,
+                automatic_calibration_disabled=True,
                 maximum_framerate_limit=120,
                 limit_method="async",
             ),

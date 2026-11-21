@@ -128,13 +128,22 @@ def summarize_dynamic_limiter(samples: Iterable[Dict], *, target_percent: float,
     }
 
 
+def presentmon_time_seconds(row: Dict[str, str]) -> Optional[float]:
+    # PresentMon 2.x CPUStartTime is milliseconds; legacy TimeInSeconds is seconds.
+    # https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md#csv-columns
+    for name, scale in (("TimeInSeconds", 1.), ("CPUStartTimeInSeconds", 1.), ("CPUStartTime", .001), ("CPUStartQPCTime", .001)):
+        value = _number(row.get(name))
+        if value is not None:
+            return value*scale
+    return None
+
+
 def summarize_presentmon_rows(
     rows: Iterable[Dict[str, str]], *, warmup_seconds: float = 0.0
 ) -> Dict:
     selected = list(rows)
     if warmup_seconds > 0 and selected:
-        time_names = ("TimeInSeconds", "CPUStartTime", "CPUStartTimeInSeconds")
-        times = [_first(row, time_names) for row in selected]
+        times = [presentmon_time_seconds(row) for row in selected]
         available = [value for value in times if value is not None]
         if available:
             cutoff = min(available) + warmup_seconds

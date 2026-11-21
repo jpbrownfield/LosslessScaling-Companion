@@ -6,6 +6,7 @@
 #include "hdr_probe.h"
 #include "component_loader.h"
 #include "cursor_guard.h"
+#include "cursor_cache.h"
 #include "d3d11_hook.h"
 #include "real_frame_hook.h"
 #include "../addon/addon_manager.h"
@@ -139,7 +140,14 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
     auto& config=eam::ConfigManager::Instance();
     result["cursor"]={{"sharedHandleGuard",cursor::Ready()},
                       {"selfReplacementsPrevented",cursor::Prevented()},
-                      {"guardError",cursor::Error()}};
+                      {"guardError",cursor::Error()},
+                      {"cacheRecovery",cursor::CacheRecoveryReady()},
+                      {"recoveryEnabled",cursor::CacheRecoveryEnabled()},
+                      {"controlProtocol",1},
+                      {"cacheRecoveryError",cursor::CacheRecoveryError()},
+                      {"cacheInvalidations",cursor::CacheInvalidations()},
+                      {"cacheMissingImageRetries",cursor::CacheMissingImageRetries()},
+                      {"cacheFocusEvents",cursor::CacheFocusEvents()}};
     result["reshade"]={{"interactive",!eam::features::reshade::Status().empty()},
         {"controlAvailable",eam::features::reshade::CompanionControlAvailable()},
         {"controlProtocol",2},
@@ -174,12 +182,19 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"adapterLuid",d.adapterLuid},{"adapterSource",d.captureAdapterObserved?"capture_frame":"device_creation"},
         {"captureApi",d.capture},{"frameGeneration",d.fg},{"scaler",d.scaler},{"hdr",d.hdr}};
     const auto pacing=PresentationPacingSnapshot();
-    result["presentationPacing"]={{"version",1},{"scope","LS successful Present calls; not displayed frames"},
+    result["presentationPacing"]={{"version",2},{"controlProtocol",1},{"scope","LS successful Present calls; not displayed frames"},
         {"intervals",pacing.intervals},{"medianMs",pacing.medianMs},{"p95Ms",pacing.p95Ms},
         {"maximumMs",pacing.maximumMs},{"relativeStalls",pacing.relativeStalls},
         {"observedPresents",pacing.observedPresents},{"successfulPresents",pacing.successfulPresents},
         {"eligiblePresents",pacing.eligiblePresents},
-        {"presentP95Ms",pacing.presentP95Ms},{"measurementOnly",true}};
+        {"presentP95Ms",pacing.presentP95Ms},{"measurementOnly",false},
+        {"enabled",pacing.enabled},{"identityVerified",pacing.identityVerified},{"focused",pacing.focused},
+        {"sequence",pacing.sequence},{"generation",pacing.generation},{"context",pacing.context},{"monitor",pacing.monitor},{"refreshHz",pacing.refreshHz},
+        {"monitorWidth",pacing.monitorWidth},{"monitorHeight",pacing.monitorHeight},
+        {"startedMs",pacing.startedMs},{"endedMs",pacing.endedMs},{"ageMs",pacing.ageMs},
+        {"dropped",pacing.dropped},{"totalDropped",pacing.totalDropped},{"overflow",pacing.overflow},{"sourcePid",pacing.sourcePid},
+        {"sourceWindow",pacing.sourceWindow},{"outputWindow",pacing.outputWindow},
+        {"swapchain",pacing.chain},{"device",pacing.device},{"presentationLuid",pacing.presentationLuid}};
     const auto hdr=HdrProbeSnapshot();
     result["hdrProbe"]={{"enabled",hdr.enabled},{"ready",hdr.ready},{"scans",hdr.scans},
         {"sampledTick",hdr.sampledTick},{"presentTick",hdr.presentTick},{"pixels",hdr.pixels},
@@ -194,9 +209,13 @@ DWORD WINAPI Run(void* parameter) {
     auto* manager=static_cast<eam::AddonManager*>(parameter);
     std::string startupError;
     try {
+        cursor::SetCacheRecoveryEnabled(eam::ConfigManager::Instance().GlobalGetOr<bool>("companion","cursor_cache_recovery",true));
         if (cursor::Install(GetModuleHandleW(L"Lossless_original.dll")))
             LOG_INFO("Cursor", "LS shared system cursor guard installed");
         else LOG_WARN("Cursor", "LS shared system cursor guard unavailable (Windows error %lu)",cursor::Error());
+        if (cursor::CacheRecoveryReady())
+            LOG_INFO("Cursor", "LS custom cursor cache recovery installed; Multi-display mode preserved");
+        else LOG_WARN("Cursor", "LS custom cursor cache recovery unavailable (Windows error %lu)",cursor::CacheRecoveryError());
         if (LSCInitializeComponents()!=ERROR_SUCCESS) throw std::runtime_error("Explicit component initialization failed");
         {
             std::lock_guard<std::mutex> lock(sm86Mutex);
@@ -261,11 +280,12 @@ DWORD WINAPI Run(void* parameter) {
                         GetOverlappedResult(pipe,&write,&transferred,TRUE);
                     }
                     // DisconnectNamedPipe discards unread buffered data. Let the
-                    // client acknowledge delivery. E/D request passthrough on/off;
+                    // client acknowledge delivery. C/c set cursor recovery;
+                    // E/D request passthrough on/off;
                     // the native watcher owns the transition, without replaying a key.
                     // Protocol 2 uses a 16-byte E request with target PID/HWND.
                     ResetEvent(connection.hEvent);
-                    OVERLAPPED receipt{};receipt.hEvent=connection.hEvent;unsigned char ack[16]{};
+                    OVERLAPPED receipt{};receipt.hEvent=connection.hEvent;unsigned char ack[32]{};
                     bool received=ReadFile(pipe,ack,sizeof(ack),&transferred,&receipt)!=FALSE;
                     if (!received && GetLastError()==ERROR_IO_PENDING) {
                         if (WaitForSingleObject(receipt.hEvent,500)!=WAIT_OBJECT_0) CancelIoEx(pipe,&receipt);
@@ -277,6 +297,20 @@ DWORD WINAPI Run(void* parameter) {
                         DWORD targetPid=0;unsigned long long targetHwnd=0;
                         memcpy(&targetPid,ack+4,4);memcpy(&targetHwnd,ack+8,8);
                         eam::features::reshade::RequestCompanionPassthrough(true,targetPid,targetHwnd);
+                    }
+                    else if(received && transferred==32 && ack[0]=='B' && !ack[1] && !ack[2] && !ack[3]) {
+                        DWORD pid=0;uint64_t source=0,output=0,context=0;
+                        memcpy(&pid,ack+4,4);memcpy(&source,ack+8,8);memcpy(&output,ack+16,8);memcpy(&context,ack+24,8);
+                        BindPresentation(pid,source,output,context);
+                    }
+                    else if(received && transferred==1 && (ack[0]=='P'||ack[0]=='p'))EnablePresentationMonitoring(ack[0]=='P');
+                    else if (received && transferred==1 && (ack[0]=='C' || ack[0]=='c')) {
+                        const bool enabled=ack[0]=='C';
+                        cursor::SetCacheRecoveryEnabled(enabled);
+                        auto& config=eam::ConfigManager::Instance();
+                        config.GlobalSet("companion","cursor_cache_recovery",enabled);
+                        config.Save();
+                        LOG_INFO("Cursor","Custom game cursor recovery %s",enabled?"enabled":"disabled");
                     }
                 }
             } catch (const std::exception& error) { LOG_WARN("Companion","Status snapshot: %s",error.what()); }

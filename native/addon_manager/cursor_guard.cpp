@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "cursor_guard.h"
+#include "cursor_cache.h"
 #include "hook_util.h"
 #include <atomic>
 namespace lsc::cursor {
@@ -37,7 +38,9 @@ bool Install(HMODULE engine) {
     }
     // Only this engine's import changes. The managed host stays pinned, so an
     // engine cursor watcher can safely retain this address through shutdown.
-    installed=engine;error=0;ready=true;return true;
+    installed=engine;error=0;ready=true;
+    InstallCacheRecovery(engine);
+    return true;
 }
 bool Ready(){return ready;}
 uint64_t Prevented(){return prevented;}

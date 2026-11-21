@@ -206,6 +206,7 @@ class RtssLimiterConfig(BaseModel):
     limit_method: Literal[
         "async", "front_edge_sync", "back_edge_sync"
     ] = "async"
+    adaptive_shadow_only: bool = False
     learned_framerate_limit: Optional[int] = Field(default=None, ge=1, le=1000)
     calibration_policy_version: int = Field(default=0, ge=0)
     game_gpu_baseline_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
@@ -417,6 +418,7 @@ class AppConfig(BaseModel):
     default_addon_config: Dict[str, Any] = Field(default_factory=dict)
     snap_near_fullscreen_windows_to_monitor: bool = True
     minimize_other_windows_on_scale: bool = False
+    restore_game_cursor_on_focus: bool = True
     overlay_indicator_enabled: bool = True
     overlay_hotkeys: Dict[str, str] = Field(default_factory=lambda: {
         "overlay_toggle": "ctrl+home",

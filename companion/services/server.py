@@ -592,6 +592,7 @@ class CompanionWebSocketServer:
                 "BROWSE_GENERAL_PATH",
                 "GET_RESHADE_PROFILES",
                 "SAVE_RESHADE_PROFILE",
+                "REFRESH_RESHADE_DEFAULT_PRESETS",
                 "IMPORT_RESHADE_PRESET",
                 "DELETE_RESHADE_PROFILE",
                 "RUN_DIAGNOSTICS",
@@ -759,7 +760,7 @@ class CompanionWebSocketServer:
                 # Calibration owns Lossless Scaling exclusively from here on:
                 # flag first so racing automatic starts refuse, then stop any
                 # live session before the workload takes foreground.
-                self.state.benchmark_mode_active = True
+                await asyncio.to_thread(self._claim_benchmark)
                 try:
                     if self.state.is_scaling_active:
                         stopped = await asyncio.to_thread(
@@ -990,6 +991,8 @@ class CompanionWebSocketServer:
                     str(msg.get("provider") or ""),
                     str(msg.get("operationId") or ""),
                 )
+                if msg.get("provider") == "reshade":
+                    await asyncio.to_thread(self.reshade_profiles.prepare_builtin_profiles)
                 await websocket.send(json.dumps({
                     "type": "GRAPHICS_RELEASE_STAGED", "package": result,
                 }))
@@ -1049,6 +1052,12 @@ class CompanionWebSocketServer:
                         and active.reshade.enabled and active.reshade.managed_profile_id == profile.id):
                     await asyncio.to_thread(self.automation.apply_saved_profile, active)
                 await websocket.send(json.dumps({"type": "RESHADE_PROFILE_SAVED", "profile": result}))
+                return
+
+            if msg_type == "REFRESH_RESHADE_DEFAULT_PRESETS":
+                await asyncio.to_thread(self.automation.capture_reshade_settings)
+                payload = await asyncio.to_thread(self.reshade_profiles.refresh_builtin_profiles)
+                await websocket.send(json.dumps({"type": "RESHADE_DEFAULT_PRESETS_REFRESHED", **payload}))
                 return
 
             if msg_type == "IMPORT_RESHADE_PRESET":
@@ -1130,6 +1139,7 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_CONTROL_SETTINGS":
+                cursor_recovery_changed = self._apply_cursor_recovery_preference(msg)
                 smart_auto_scale_enabled = bool(
                     msg.get("smartAutoScaleEnabled", msg.get("disableNativeAutoScale", True))
                 )
@@ -1175,6 +1185,8 @@ class CompanionWebSocketServer:
                 ).strip() or None
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                if cursor_recovery_changed and self.process_watcher:
+                    await asyncio.to_thread(self.process_watcher.sync_cursor_recovery_setting)
                 await asyncio.to_thread(
                     self.automation.reconcile_window_management_setting
                 )
@@ -1191,6 +1203,9 @@ class CompanionWebSocketServer:
                 return
 
             if msg_type == "SAVE_GENERAL_SETTINGS":
+                requested_cursor_recovery = msg.get("restoreGameCursorOnFocus", self.config.restore_game_cursor_on_focus)
+                if type(requested_cursor_recovery) is not bool:
+                    raise ValueError("Cursor recovery must be a checkbox value")
                 overlay_hotkeys = validate_overlay_hotkeys(msg.get("overlayHotkeys", self.config.overlay_hotkeys))
                 reshade_binding = parse_shortcut(msg.get("reshadeOverlayHotkey", self.config.reshade_overlay_hotkey))
                 if reshade_binding and any(parse_shortcut(binding) and parse_shortcut(binding)[:2] == reshade_binding[:2]
@@ -1408,6 +1423,7 @@ class CompanionWebSocketServer:
                     msg.get("minimizeOtherWindowsOnScale", False)
                 )
                 self.config.overlay_hotkeys = overlay_hotkeys
+                cursor_recovery_changed = self._apply_cursor_recovery_preference(msg)
                 self.config.overlay_indicator_enabled = bool(
                     msg.get("overlayIndicatorEnabled", self.config.overlay_indicator_enabled)
                 )
@@ -1424,6 +1440,8 @@ class CompanionWebSocketServer:
                 self.config.rtss_default_gpu_target_percent = requested_gpu_target
                 self.rtss_manager.configured_path = self.config.rtss_install_path
                 self.profile_manager.save_config()
+                if cursor_recovery_changed and self.process_watcher:
+                    await asyncio.to_thread(self.process_watcher.sync_cursor_recovery_setting)
                 self.automation.overlay_indicator.tick()
                 await asyncio.to_thread(self.automation.gloam_integration.poll)
                 if gpu_settings_changed:
@@ -1485,6 +1503,8 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel=str(msg.get("channel") or "stable"),
                 )
+                if msg.get("provider") == "reshade":
+                    await asyncio.to_thread(self.reshade_profiles.prepare_builtin_profiles)
                 await websocket.send(json.dumps({"type": "GRAPHICS_RELEASE_STAGED", "package": result}))
                 return
 
@@ -1527,6 +1547,8 @@ class CompanionWebSocketServer:
                     str(msg.get("operationId") or ""),
                     channel="stable",
                 )
+                if provider == "reshade":
+                    await asyncio.to_thread(self.reshade_profiles.prepare_builtin_profiles)
                 if provider in {"sm86-sr", "amd-neural-render-runtime"}:
                     # Staging is installation-wide; opt-in and stopped deployment
                     # remain per profile. Never change an active profile here.
@@ -1678,7 +1700,7 @@ class CompanionWebSocketServer:
                     workload, presentmon, dynamic_limiter=dynamic_benchmark, target_percent=target_percent,
                 )
                 self._benchmark_previous_profile = self.state.current_active_profile
-                self.state.benchmark_mode_active = True
+                await asyncio.to_thread(self._claim_benchmark)
                 try:
                     await asyncio.to_thread(
                         self.automation.activate_profile,
@@ -1881,6 +1903,10 @@ class CompanionWebSocketServer:
                         and not self.automation.gpu_router.detect().get("hasNvidia")
                     ):
                         raise ValueError("NVIDIA Smooth Motion requires a detected NVIDIA GPU")
+                    reshade_enabled = prof.graphics.reshade.enabled or bool(prof.reshade and prof.reshade.enabled)
+                    reshade_was_enabled = previous and (previous.graphics.reshade.enabled or bool(previous.reshade and previous.reshade.enabled))
+                    if reshade_enabled and not reshade_was_enabled:
+                        await asyncio.to_thread(self.reshade_profiles.prepare_builtin_profiles)
                     if prof.reshade and prof.reshade.enabled and prof.reshade.managed_profile_id:
                         if not any(
                             item.id == prof.reshade.managed_profile_id
@@ -2887,6 +2913,15 @@ class CompanionWebSocketServer:
                 return_exceptions=True,
             )
 
+    def _claim_benchmark(self):
+        # Restore unfinished production trials before the temporary benchmark
+        # profile can exist, atomically with respect to the polling worker.
+        gate = self.dynamic_limiter._lock if self.dynamic_limiter is not None else contextlib.nullcontext()
+        with gate:
+            if self.dynamic_limiter is not None:
+                self.dynamic_limiter.clear_sessions()
+            self.state.benchmark_mode_active = True
+
     def _benchmark_launch_command(self, workload: Path, presentmon: Path, *,
                                   dynamic_limiter: bool = False, target_percent: Optional[float] = None) -> list[str]:
         command = [
@@ -2900,7 +2935,7 @@ class CompanionWebSocketServer:
         if dynamic_limiter:
             default = next((profile for profile in self.config.profiles if profile.is_default), None)
             command.extend([
-                "--dynamic-limiter", "--monitor-resolution", "--input-probes", "0",
+                "--dynamic-limiter", "--adaptive-acceptance", "--monitor-resolution", "--input-probes", "0",
                 "--gpu-headroom", str(target_percent if target_percent is not None else self.config.rtss_default_gpu_target_percent),
                 "--minimum-fps", str(default.rtss.minimum_framerate_limit if default else 30),
                 "--maximum-fps", str(default.rtss.maximum_framerate_limit if default else 120),
@@ -3129,6 +3164,14 @@ class CompanionWebSocketServer:
             "deploymentRecovery": recovery,
         }}
 
+    def _apply_cursor_recovery_preference(self, message: Dict) -> bool:
+        previous = self.config.restore_game_cursor_on_focus
+        enabled = message.get("restoreGameCursorOnFocus", previous)
+        if type(enabled) is not bool:
+            raise ValueError("Cursor recovery must be a checkbox value")
+        self.config.restore_game_cursor_on_focus = enabled
+        return enabled != previous
+
     def _control_settings_payload(self) -> Dict:
         selected_process_lasso_log = ProcessLassoLogTailer.resolve_path(
             self.config.process_lasso_log_path
@@ -3150,6 +3193,7 @@ class CompanionWebSocketServer:
                 self.config.snap_near_fullscreen_windows_to_monitor
             ),
             "minimizeOtherWindowsOnScale": self.config.minimize_other_windows_on_scale,
+            "restoreGameCursorOnFocus": self.config.restore_game_cursor_on_focus,
         "overlayIndicatorEnabled": self.config.overlay_indicator_enabled,
         "overlayHotkeys": dict(self.config.overlay_hotkeys),
             "processLassoPerformanceModeScaling": self.config.process_lasso_performance_mode_scaling,
@@ -3225,7 +3269,7 @@ class CompanionWebSocketServer:
         )
         if mode == "static":
             return profile.rtss.framerate_limit
-        return (profile.rtss.learned_framerate_limit if profile.rtss.calibration_policy_version == DynamicLimiterController.CALIBRATION_POLICY_VERSION else None) or profile.rtss.maximum_framerate_limit
+        return (profile.rtss.learned_framerate_limit if profile.rtss.automatic_calibration_disabled else None) or profile.rtss.maximum_framerate_limit
 
     async def broadcast_state(self) -> None:
         if not self.clients:

@@ -57,8 +57,19 @@ contains `nr_capture_trace.log`, with capture snapshots under
 checks. A successful reproduction requires processed NR frames and complete
 capture telemetry; merely loading the addon or collecting snapshots cannot pass.
 
-For read-only collection from an already failing session, use the same collector
-from the command line instead (this mode never restarts LS):
+For an already failing session, run **DLSS5 NR: inspect current application
+without restarting** (`nr_capture_current`) in Application tests. This read-only
+test preserves the application, settings, deployment and LS process. It exports
+the active preset, observed native settings, actual capture adapter and three
+capture-progress/NR-metric snapshots. Loading the addon or retaining historical
+processed-frame counts cannot produce a processing pass: the frame counts must
+advance during collection. A known requested GPU mismatch remains a warning.
+
+The benchmark reproduction now uses the actual capture adapter from telemetry
+when available and requires a requested GPU to be positively identified. A 3090
+run cannot pass a benchmark requested on the 5050 just because frames processed.
+
+The same read-only collector is also available from the command line:
 
 ```powershell
 .venv/Scripts/python.exe run_live_diagnostics.py --capture-trace <LS_PID> > nr-capture-trace.json
@@ -153,6 +164,38 @@ The real-engine headless test additionally verifies guard installation and
 native status with the supplied LS engine. Neither claims live Alt-Tab coverage.
 See Microsoft's [SetSystemCursor ownership contract](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setsystemcursor)
 and [WM_SETCURSOR handling](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-setcursor).
+
+Revision 10 additionally recovers the engine's custom cursor image cache while
+keeping Multi-display mode enabled. The supplied LS 3.2.2.0 engine publishes the
+HCURSOR before converting it into a renderable image, and an unchanged HCURSOR
+skips conversion. Its foreground callback now advances a cache generation; at
+the next eligible cursor-image update, the render thread clears only the cached
+identity so LS releases and rebuilds its image. This also refreshes custom cursor
+pixels changed by a game without a new handle. A missing image can retry at
+bounded intervals, with at most four build attempts per shape/focus generation.
+Stable valid images are retained. Hidden cursors, nonforeground games and other
+GetCursorInfo callers are unchanged; no synthetic activation, pointer movement,
+visibility override or replacement arrow is used.
+
+Private cache access requires exact PE identity and instruction signatures for
+the cursor update, foreground callback, target window and Multi-display setting.
+An unknown engine disables this recovery and reports ERROR_REVISION_MISMATCH,
+while retaining the existing shared-handle guard. Native `cursor` telemetry
+includes `cacheRecovery`, `cacheRecoveryError`, `cacheInvalidations`,
+`cacheMissingImageRetries` and `cacheFocusEvents`. Native policy tests exercise
+same-handle recovery, intentional hiding, unrelated focus, successful cache
+retention and bounded missing-image retries; the supplied-engine test verifies
+installation. Interactive game Alt-Tab validation remains necessary.
+
+Settings → Display & scaling → Window behavior exposes **Restore custom game
+cursors after Alt+Tab**, enabled by default for existing and new configurations.
+The global preference overrides stale per-profile host snapshots and controls
+both the native cache refresh and the bounded WM_SETCURSOR requests. Host pipe
+receipts `C`/`c` enable/disable recovery immediately and persist it under
+`global.companion.cursor_cache_recovery`; `cursor.controlProtocol=1` advertises
+support and `cursor.recoveryEnabled` confirms the requested state. Disabling
+recovery retains the shared-handle ownership guard and never changes native
+Multi-display mode, cursor visibility settings or window focus.
 
 Revision 6 keeps LS capture running when Companion activates the presentation
 for overlay keyboard input. The managed app and native engine both subscribe
@@ -445,34 +488,48 @@ permissions, recovery and hardware validation limits.
 5. Verify `NeuralRendering-source.zip`, all NR licence files, host source archive,
    this note and the lock survive deployment. Record any new patches here.
 
-## LS-only relative pacing probe
+## LS-only pacing observer, protocol 2
 
-The host reuses its DXGI Present/Present1 hooks to retain at most 512 successful
-LS presentation intervals, plus CPU time spent inside Present. It excludes
-DXGI_PRESENT_TEST, non-S_OK returns, hidden/minimized/tiny and known helper
-windows, and nested Present calls. Only one active swapchain is measured;
-switches after inactivity and gaps longer than two seconds reset the baseline.
-No source/game process counters are inputs. Snapshots older than two seconds
-return no samples, rather than a stale healthy result.
+Host build-7-lsc.11 publishes `presentationPacing.version=2` and
+`controlProtocol=1`. The existing validated status pipe accepts these ephemeral
+receipts in addition to the cursor and ReShade controls:
 
-`presentationPacing` in the existing status pipe and read-only capture report
-contains median/p95/maximum interval, p95 Present call duration, and relative
-stall count (interval greater than 1.5 times the recent median, with at least
-30 intervals). This is measurement-only: a sustained lower rate establishes a
-new baseline, and no FPS cap or headroom reserve is changed. These are submitted
-Present timings, not displayed-frame deadlines, GPU execution durations, or a
-diagnosis of resource starvation. Present blocking includes intentional pacing.
-There are no GPU readbacks or per-frame disk writes for this probe.
+- `B` plus three zero bytes, uint32 source PID, uint64 source HWND, uint64 LS
+  output HWND, uint64 session-context key (32 bytes, little-endian).
+- `P` enables timing collection; `p` bypasses it for benchmark off arms.
 
-The release builder runs `lsc_pacing_probe_test` (steady cadence, injected stall,
-bounded recovery, rate change, invalid samples). For a real-engine local check,
-build `eam_captureprobe`, set `LSC_TEST_CAPTURE_PROBE` to its absolute path, and run
-`pytest tests/test_addon_host.py -k ls_relative_pacing`. It uses a read-only copy
-of the locally supplied engine at `build/overlay-input-ls/Lossless.dll` and a
-temporary source window with LSFG3 + WGC + HDR + scaling Off. It requires at least
-30 LS intervals but deliberately has no hardware-dependent smoothness threshold.
-Set `EAM_PROBE_LS_PACING=1` when invoking that native probe directly to print the
-measurement line. Installed LS settings and saved limiter calibration are untouched.
+Binding validates HWND ownership and the actual `LosslessScaling` output title.
+Unbound snapshots cannot authorize adaptive writes. Output device token and LUID
+come from that swapchain, with metadata refreshed at most once per two seconds.
+Resize/color-space changes, focus, window state/size and monitor/refresh changes
+invalidate the generation. Capture and presentation adapter LUIDs remain separate.
+
+The payload retains median/p95/max interval, p95 time inside Present, relative
+stalls and coverage counters, and adds `sequence`, `generation`, `context`,
+`startedMs`, `endedMs`, `ageMs`, `sourcePid`, `sourceWindow`, `outputWindow`,
+`swapchain`, `device`, `presentationLuid`, `monitor`, `refreshHz`, `monitorWidth`,
+`monitorHeight`, `enabled`, `identityVerified`, `focused`, `dropped`, `totalDropped`
+and `overflow`. Start/end use QPC milliseconds. `dropped` belongs to that completed
+window; `totalDropped` is cumulative. Completed windows are disjoint two-second
+intervals with at most 2,048 retained observations, not a rolling evidence window.
+
+Present/Present1 test calls, failed returns and nested calls are excluded. Fixed
+buffers and a try-lock keep collection bounded; contention drops data instead of
+blocking rendering. Sorting occurs on the telemetry reader after copying/unlocking.
+No GPU waits/readbacks, per-frame allocations or disk logging are added. A disabled
+observer bypasses QPC/timing collection. Unbound legacy profiling remains available
+for the existing capture fixture and never establishes adaptive identity.
+
+Python policy 2 consumes fresh bound windows once, and handles source-cap trials.
+Present submissions and capture-intake response do not prove display deadlines or
+GPU processing time. The acceptance benchmark joins QPC-aligned PresentMon frames
+and separately measures fixed-cap off/on overhead. See
+[`rtss dynamic limiting notes.md`](../../rtss%20dynamic%20limiting%20notes.md).
+
+The release builder runs `lsc_pacing_probe_test`, including duration windows,
+repeated readers, overflow and a CPU collection microbenchmark. The latter is not
+a live GPU frametime verdict. Existing opt-in real-engine capture fixtures remain
+available via `LSC_TEST_CAPTURE_PROBE` and `EAM_PROBE_LS_PACING=1`.
 
 ## Distribution and validation limits
 

@@ -107,7 +107,7 @@
     .reshade-library-head, .reshade-profile-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .reshade-profile-list { display:grid; gap:8px; margin-top:12px; }
     .reshade-profile-row { padding:12px 14px; border:1px solid var(--card-border); border-radius:9px; background:var(--surface-bg); }
-    .reshade-profile-content { width: min(900px, calc(100vw - 32px)); max-width: none; overflow-x: hidden; }
+    #reshadeProfileModal .reshade-profile-content { width: calc(100vw - 48px); max-width: none; overflow-x: hidden; }
     .reshade-profile-content form { min-width: 0; }
     .shader-catalog { max-height:52vh; margin-top:8px; overflow:auto; border:1px solid var(--card-border); border-radius:8px; }
     .reshade-table { width:100%; border-collapse:collapse; text-align:left; font-size:12px; }
@@ -116,6 +116,11 @@
     .reshade-table input[type="number"] { width:120px; max-width:100%; }
     .reshade-table .shader-pack-heading th { background:var(--input-bg); font-weight:normal; }
     .shader-pack-heading label, .shader-choice { display:flex; align-items:center; gap:9px; cursor:pointer; }
+    .shader-pack-expand { display:flex; align-items:center; gap:9px; width:100%; padding:0; border:0; background:none; color:var(--text); text-align:left; cursor:pointer; }
+    .shader-pack-expand::before { content:'\203a'; font-size:18px; }
+    .shader-pack-expand[aria-expanded="true"]::before { transform:rotate(90deg); }
+    .reshade-table tbody[data-collapsed="true"] tr:not(.shader-pack-heading) { display:none; }
+    .reshade-table tbody[data-collapsed="true"] .shader-pack-heading th > :not(.shader-pack-expand) { display:none; }
     .shader-choice { padding-left:18px; color:var(--text); }
     .shader-table-provider { width:28%; color:var(--text-muted); }
     .shader-toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px; }
@@ -731,6 +736,8 @@
 
               <div class="form-group checkbox-group"><input id="minimizeOtherWindowsOnScale" type="checkbox"><label for="minimizeOtherWindowsOnScale">Minimize other windows on the scaled monitor</label></div>
               <p class="item-sub" style="white-space:normal;margin-top:8px">Minimizing other windows can save bandwidth on dual GPU setups. Those windows stay minimized until you restore them.</p>
+              <div class="form-group checkbox-group"><input id="restoreGameCursorOnFocus" type="checkbox" checked><label for="restoreGameCursorOnFocus">Restore custom game cursors after Alt+Tab</label></div>
+              <p class="item-sub" style="white-space:normal;margin-top:8px">Refreshes the game's cursor when you return to it, including with Multi-display mode enabled.</p>
             </section>
           </div>
         </section>
@@ -846,7 +853,7 @@
             <p>Shader catalogs use the maintained <a href="https://github.com/crosire/reshade-shaders/blob/list/EffectPackages.ini" target="_blank" rel="noopener noreferrer">ReShade Setup feed</a>. <a href="https://github.com/RankFTW/RHI/blob/main/docs/DETAILED_GUIDE.md#shader-packs" target="_blank" rel="noopener noreferrer">Shader pack reference</a>.</p>
           </details>
           <div class="reshade-library">
-            <div class="reshade-library-head"><div><h3>Shader presets</h3><p class="item-sub" style="white-space:normal">Create a look once, then select it in any Companion profile.</p></div><div class="addon-actions"><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import preset</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New preset</button></div></div>
+            <div class="reshade-library-head"><div><h3>Shader presets</h3><p class="item-sub" style="white-space:normal">Create a look once, then select it in any Companion profile.</p></div><div class="addon-actions"><button id="refreshReshadeDefaultsBtn" class="btn btn-secondary" type="button" title="Restore the three included presets' effects, order and SDR input settings. Other shader tuning is retained and existing presets are backed up. Applies next time scaling starts.">Refresh default presets</button><button id="importReshadePresetBtn" class="btn btn-secondary" type="button">Import preset</button><button id="addReshadeProfileBtn" class="btn btn-primary" type="button">New preset</button></div></div>
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
@@ -929,7 +936,7 @@
           <p id="dynamicLimiterBenchmarkSummary" class="item-sub" role="status" style="white-space:normal"></p>
           <div style="max-height:320px;overflow:auto;margin-top:12px">
             <table class="limiter-trace-table" style="width:100%;font-size:12px;text-align:left;white-space:nowrap">
-              <thead><tr><th>Time (s)</th><th>FPS limit</th><th>RTSS limit</th><th>Game GPU (%)</th><th>LS GPU (%)</th><th>Headroom (%)</th><th>State</th></tr></thead>
+              <thead><tr><th>Time (s)</th><th>FPS limit</th><th>RTSS limit</th><th>LS p95 (ms)</th><th>LS GPU (%)</th><th>Headroom (%)</th><th>State / reason</th></tr></thead>
               <tbody id="dynamicLimiterBenchmarkTrace"></tbody>
             </table>
           </div>
@@ -1218,13 +1225,14 @@
                 <div class="form-group"><label>Minimum game FPS</label><input id="rtssMinimumFramerate" type="number" value="30" min="1" max="1000"></div>
                 <div class="form-group"><label>Maximum game FPS</label><input id="rtssMaximumFramerate" type="number" value="240" min="1" max="1000"></div>
               </div>
+              <label class="checkbox-label" style="margin-bottom:10px"><input id="rtssShadowOnly" type="checkbox">Measure only (show proposed changes without adjusting the cap)</label>
               <div id="rtssCalibrationStatus" class="item-sub" style="white-space:normal; margin-bottom:10px">No dynamic calibration data.</div>
               <div style="display:flex; gap:8px; margin-bottom:8px">
                 <button type="button" id="resetRtssCalibrationBtn" class="btn btn-danger">Reset automatic calibration</button>
                 <button type="button" id="manualRtssCalibrationBtn" class="btn btn-secondary">Calibrate manually</button>
               </div>
-              <p class="item-sub" style="white-space:normal; margin-bottom:6px"><strong>Reset automatic calibration:</strong> Erases all recorded game GPU-utilization metrics, gameplay baselines, and identified frame limits for this profile. Calibration restarts from the configured maximum FPS.</p>
-              <p class="item-sub" style="white-space:normal"><strong>Calibrate manually:</strong> Starts a five-minute window. Play a representative section so gameplay GPU activity can be captured and an accurate frame limit identified.</p>
+              <p class="item-sub" style="white-space:normal; margin-bottom:6px"><strong>Reset automatic calibration:</strong> Clears the saved cap, manual lock, and session observations. Measurement restarts from the configured maximum FPS.</p>
+              <p class="item-sub" style="white-space:normal"><strong>Calibrate manually:</strong> Starts five minutes of LS timing observation and bounded trials. Fresh valid evidence is required to save the confirmed cap and lock it until reset.</p>
             </div>
             <div class="form-row">
               <div class="form-group">
@@ -1927,6 +1935,10 @@
             addonAutoImportInFlight.clear();
             profileSaveInFlight = false;
             reshadeSaveInFlight = false;
+            if (msg.action === 'REFRESH_RESHADE_DEFAULT_PRESETS') {
+              document.getElementById('refreshReshadeDefaultsBtn').disabled = false;
+              setGraphicsStatus(`Default preset refresh failed: ${errorText}`);
+            }
             generalSettingsSaveInFlight = false;
             if (document.getElementById('profileModal').classList.contains('active')) {
               const status = document.getElementById('profileAutosaveStatus');
@@ -1959,11 +1971,16 @@
           } else if (msg.type === 'GRAPHICS_STATUS') {
             renderComponentOperation(msg.componentOperation || null);
             renderGraphicsStatus(msg);
-          } else if (msg.type === 'RESHADE_PROFILES') {
+          } else if (msg.type === 'RESHADE_PROFILES' || msg.type === 'RESHADE_DEFAULT_PRESETS_REFRESHED') {
+            document.getElementById('refreshReshadeDefaultsBtn').disabled = false;
             reshadeProfiles = msg.profiles || [];
             reshadeCatalog = msg.catalog || [];
             renderReshadeProfileList();
             renderReshadeProfileChoices();
+            if (msg.type === 'RESHADE_DEFAULT_PRESETS_REFRESHED') {
+              const errors = msg.errors || [];
+              setGraphicsStatus(`Refreshed ${(msg.refreshed || []).length} default presets. Existing presets were backed up; other shader tuning is retained. Applies next time scaling starts.${errors.length ? ` Could not refresh: ${errors.map(item => `${item.id}: ${item.message}`).join('; ')}` : ''}`);
+            }
           } else if (msg.type === 'RESHADE_PROFILE_SAVED') {
             reshadeSaveInFlight = false;
             document.getElementById('reshadeProfileId').value = msg.profile.id;
@@ -2231,6 +2248,7 @@
       renderOverrideHotkeySettings();
       document.getElementById('snapNearFullscreenWindowsToMonitor').checked = controlSettings.snapNearFullscreenWindowsToMonitor !== false;
       document.getElementById('minimizeOtherWindowsOnScale').checked = !!controlSettings.minimizeOtherWindowsOnScale;
+      document.getElementById('restoreGameCursorOnFocus').checked = controlSettings.restoreGameCursorOnFocus !== false;
       document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
       const overlayHotkeys = {overlay_toggle: 'ctrl+home', profile_editor: 'delete', addon_manager: 'insert', performance_graph: '=', special_k_panel: '-', ...controlSettings.overlayHotkeys};
       for (const [id, key] of [['overlayToggleHotkey', 'overlay_toggle'], ['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph'], ['overlaySpecialKPanelHotkey', 'special_k_panel']]) {
@@ -2381,7 +2399,11 @@
       const parts = [status.message || 'Dynamic limiter inactive'];
       if (status.lossless_gpu_percent != null) parts.push(`LS GPU ${status.lossless_gpu_percent}%`);
       if (status.gpu_headroom_percent != null) parts.push(`GPU headroom ${status.gpu_headroom_percent}% / reserve ${status.target_percent}%`);
-      if (status.game_gpu_percent != null) parts.push(`Game GPU ${status.game_gpu_percent}%`);
+      if (status.effective_reserve_percent != null) parts.push(`Effective reserve ${status.effective_reserve_percent}%`);
+      if (status.pacing?.intervals) parts.push(`LS interval p95 ${status.pacing.p95Ms.toFixed(2)} ms | window ${status.pacing.sequence}`);
+      if (status.benefit_confirmed === true) parts.push('LS relative timing benefit confirmed');
+      if (status.shadow_only) parts.push('Shadow mode');
+      if (status.pressure_suspected) parts.push('Resource pressure suspected');
       if (status.current_limit != null) parts.push(`Limit ${status.current_limit} FPS`);
       if (status.manual_remaining_seconds) {
         const minutes = Math.floor(status.manual_remaining_seconds / 60);
@@ -2416,7 +2438,7 @@
       dynamicBenchmarkTrace.push(msg.sample);
       dynamicBenchmarkTrace = dynamicBenchmarkTrace.slice(-600);
       renderDynamicLimiterBenchmark({
-        dynamicLimiter: {status: 'running', policy_version: 1, target_percent: msg.targetPercent,
+        dynamicLimiter: {status: 'running', policy_version: 2, message: msg.sample.message, target_percent: msg.targetPercent,
           final_limit: msg.sample.current_limit,
           adjustment_count: Math.max(0, (dynamicBenchmarkTrace[0].current_limit || 0) - (msg.sample.current_limit || 0)),
           settling_headroom_percent: {median: msg.sample.gpu_headroom_percent}},
@@ -2430,22 +2452,20 @@
       const body = document.getElementById('dynamicLimiterBenchmarkTrace');
       body.replaceChildren();
       if (!summary) return;
-      if (summary.policy_version !== 1) {
-        document.getElementById('dynamicLimiterBenchmarkSummary').textContent = 'Previous report used the retired LS utilization target. Run the headroom benchmark for a current result.';
+      if (summary.policy_version !== 2) {
+        document.getElementById('dynamicLimiterBenchmarkSummary').textContent = 'Previous policy report. Run the adaptive acceptance benchmark for LS timing and monitoring overhead.';
         return;
       }
-      const resolution = result.workloadResolution;
-      document.getElementById('dynamicLimiterBenchmarkSummary').textContent =
-        `${summary.status === 'running' ? 'Running' : summary.status === 'pass' ? 'Reserve sustained' : 'Reserve not verified'}: ${summary.target_percent}% GPU headroom` +
-        `${resolution ? ` | ${resolution.width} x ${resolution.height}` : ''}` +
-        ` | ${summary.status === 'running' ? 'Current limit' : 'Final limit'}: ${summary.final_limit ?? 'unavailable'} FPS | Adjustments: ${summary.adjustment_count ?? 0}` +
-        ` | ${summary.status === 'running' ? 'Current headroom' : 'Settling headroom median'}: ${summary.settling_headroom_percent?.median ?? 'unavailable'}%` +
-        `${summary.status === 'running' ? '' : ` | Reserve met: ${Math.round((summary.settling_target_fraction || 0) * 100)}% of samples`}` +
-        `${summary.failure_reason ? ` | ${summary.failure_reason}` : ''}`;
+      const verdict = (name, value) => `${name}: ${value?.status || 'unverified'}`;
+      document.getElementById('dynamicLimiterBenchmarkSummary').textContent = summary.status === 'running'
+        ? (summary.message || 'Collecting independent LS timing windows')
+        : [verdict('Telemetry', summary.telemetry_validity), verdict('Source cap', summary.cap_enforcement),
+           verdict('LS benefit', summary.ls_benefit), verdict('Monitoring cost', summary.monitoring_overhead),
+           'Absolute display delivery unverified'].join(' | ');
       for (const sample of (result.limiterTrace || []).slice(-600)) {
         const row = document.createElement('tr');
         for (const value of [sample.elapsed_seconds?.toFixed(1), sample.current_limit,
-          sample.rtss_readback_limit, sample.game_gpu_percent, sample.lossless_gpu_percent, sample.gpu_headroom_percent, sample.state]) {
+          sample.rtss_readback_limit, sample.pacing?.p95Ms?.toFixed(2), sample.lossless_gpu_percent, sample.gpu_headroom_percent, `${sample.state}: ${sample.message || ""}`]) {
           const cell = document.createElement('td');
           cell.textContent = value ?? '-';
           row.appendChild(cell);
@@ -3166,10 +3186,17 @@
       const catalog = document.getElementById('reshadeShaderCatalog');
       catalog.innerHTML = matching.length ? `<table class="reshade-table"><thead><tr><th scope="col">Shader / effect file</th><th scope="col">Pack</th></tr></thead>${matching.map((pack, index) => {
         const selected = reshadeShaderSelection[pack.id] || new Set();
-        return `<tbody data-pack-index="${index}"><tr class="shader-pack-heading"><th colspan="2" scope="rowgroup"><label><input type="checkbox" class="reshade-pack-toggle" aria-label="Select visible shaders in ${escapeHtml(pack.name)}"><strong>${escapeHtml(pack.name)}</strong><span class="item-sub shader-pack-count"></span></label>${pack.description ? `<div class="item-sub" style="white-space:normal;margin-top:4px">${escapeHtml(pack.description)}</div>` : ''}${/^https:\/\//i.test(pack.repositoryUrl || '') ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer">Pack source</a>` : ''}</th></tr>${pack.visibleShaders.map(shader => `<tr><td><label class="shader-choice"><input type="checkbox" data-shader value="${escapeHtml(shader)}" aria-label="${escapeHtml(shader)} (${escapeHtml(pack.name)})" ${selected.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label></td><td class="shader-table-provider">${escapeHtml(pack.name)}</td></tr>`).join('')}</tbody>`;
+        return `<tbody data-pack-index="${index}"><tr class="shader-pack-heading"><th colspan="2" scope="rowgroup"><button class="shader-pack-expand" type="button" aria-expanded="false"><strong>${escapeHtml(pack.name)}</strong><span class="item-sub shader-pack-count"></span></button><label style="margin-top:6px"><input type="checkbox" class="reshade-pack-toggle" aria-label="Select visible shaders in ${escapeHtml(pack.name)}">Select listed shaders</label>${pack.description ? `<div class="item-sub" style="white-space:normal;margin-top:4px">${escapeHtml(pack.description)}</div>` : ''}${/^https:\/\//i.test(pack.repositoryUrl || '') ? `<a class="pack-link" href="${escapeHtml(pack.repositoryUrl)}" target="_blank" rel="noopener noreferrer">Pack source</a>` : ''}</th></tr>${pack.visibleShaders.map(shader => `<tr><td><label class="shader-choice"><input type="checkbox" data-shader value="${escapeHtml(shader)}" aria-label="${escapeHtml(shader)} (${escapeHtml(pack.name)})" ${selected.has(shader) ? 'checked' : ''}><span>${escapeHtml(shader)}</span></label></td><td class="shader-table-provider">${escapeHtml(pack.name)}</td></tr>`).join('')}</tbody>`;
       }).join('')}</table>` : '<div class="item-sub" style="padding:16px">No matching shaders. Try another search or turn off Selected only.</div>';
       catalog.querySelectorAll('[data-pack-index]').forEach(group => {
         const pack = matching[Number(group.dataset.packIndex)];
+        const expand = group.querySelector('.shader-pack-expand');
+        const setExpanded = expanded => {
+          group.dataset.collapsed = String(!expanded);
+          expand.setAttribute('aria-expanded', String(expanded));
+        };
+        setExpanded(!!query.trim() || selectedOnly);
+        expand.onclick = () => setExpanded(group.dataset.collapsed === 'true');
         const changeSelection = (shaders, checked) => {
           const choice = reshadeShaderSelection[pack.id] || new Set();
           shaders.forEach(shader => { if (checked) choice.add(shader); else choice.delete(shader); });
@@ -3276,6 +3303,10 @@
         const dependencies = (test.dependencies || []).map(id => names.get(id) || id);
         const description = test.id === 'reshade_lilium'
           ? 'After reproducing the Lilium error, capture ReShade compiler logs and deployed shader files without restarting scaling.'
+          : test.id === 'nr_capture_current'
+          ? 'Run while NR is stuck in the affected application. Captures the current preset, actual GPU, capture progress and NR metrics without restarting scaling.'
+          : test.id === 'nr_capture_trace'
+          ? 'Runs a separate benchmark with WGC, LSFG 3, HDR and Scaling Off. This replaces the current preset for the test; use the current-application inspection to diagnose a failing session.'
           : dependencies.length ? `Runs prerequisites: ${dependencies.join(', ')}` : 'No prerequisites.';
         return `<div class="diagnostic-test-action">
           <div><strong>${escapeHtml(test.name)}</strong><div class="item-sub" style="white-space:normal">${escapeHtml(description)}</div></div>
@@ -3482,7 +3513,7 @@
         ['min', 'max', 'step'].forEach(name => { if (spec[name] !== undefined) input[name] = spec[name]; });
         if (kind === 'number' && !spec.step) input.step = 'any';
       }
-      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed'].includes(path);
+      input.disabled = ['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed', 'global.companion.cursor_cache_recovery'].includes(path);
       if (path === 'addons.DLSS4DLAA.dlaaPreset' && ['L-INT8', 'M-INT8'].includes(object.companionSm86Mode)) {
         input.disabled = true;
         input.title = 'The selected SM86 mode pins this preset.';
@@ -3521,7 +3552,7 @@
       Object.entries(object || {}).forEach(([key, value]) => {
         if (excluded.has(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) return;
         const path = `${prefix}.${key}`;
-        if (['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed'].includes(path)) return;
+        if (['global.auto_load', 'global.ui.open_on_start', 'global.companion.headless', 'global.companion.managed', 'global.companion.cursor_cache_recovery'].includes(path)) return;
         if (value && typeof value === 'object') {
           const nested = document.createElement('fieldset');
           const legend = document.createElement('legend');
@@ -4029,6 +4060,7 @@
           profile.rtss.game_gpu_baseline_percent = null;
           profile.rtss.game_gpu_high_water_percent = null;
           profile.rtss.automatic_calibration_disabled = false;
+          profile.rtss.adaptive_shadow_only = false;
           profile.rtss.managed_profile_created = false;
           profile.rtss.managed_target_process = null;
           profile.rtss.managed_install_path = null;
@@ -4071,6 +4103,7 @@
         document.getElementById('rtssEnabled').checked = !!rtss.enabled;
         document.getElementById('rtssLimitMode').value = rtss.limit_mode || 'inherit';
         document.getElementById('rtssFramerateLimit').value = rtss.framerate_limit || 60;
+        document.getElementById('rtssShadowOnly').checked = !!rtss.adaptive_shadow_only;
         document.getElementById('rtssGpuTargetPercent').value = rtss.gpu_target_percent == null ? '' : rtss.gpu_target_percent;
         document.getElementById('rtssMinimumFramerate').value = rtss.minimum_framerate_limit || 30;
         document.getElementById('rtssMaximumFramerate').value = rtss.maximum_framerate_limit || 240;
@@ -4751,6 +4784,12 @@
       setGraphicsStatus('Choose a ReShade preset INI to import...');
       ws.send(JSON.stringify({ type: 'IMPORT_RESHADE_PRESET' }));
     };
+    document.getElementById('refreshReshadeDefaultsBtn').onclick = event => {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      event.currentTarget.disabled = true;
+      setGraphicsStatus('Refreshing default ReShade presets...');
+      ws.send(JSON.stringify({ type: 'REFRESH_RESHADE_DEFAULT_PRESETS' }));
+    };
     document.getElementById('closeReshadeProfileModalBtn').onclick = closeReshadeProfileEditor;
     document.getElementById('reshadeProfileModal').onclick = event => {
       if (event.target.id === 'reshadeProfileModal') closeReshadeProfileEditor();
@@ -4878,6 +4917,7 @@
           gloamHdrEnabled: document.getElementById('gloamHdrEnabled').checked,
           snapNearFullscreenWindowsToMonitor: document.getElementById('snapNearFullscreenWindowsToMonitor').checked,
           minimizeOtherWindowsOnScale: document.getElementById('minimizeOtherWindowsOnScale').checked,
+          restoreGameCursorOnFocus: document.getElementById('restoreGameCursorOnFocus').checked,
           overlayIndicatorEnabled: document.getElementById('overlayIndicatorEnabled').checked,
           overlayHotkeys: {
             overlay_toggle: document.getElementById('overlayToggleHotkey').value.trim(),
@@ -5019,7 +5059,7 @@
       'overrideLosslessHotkey',
       'preferredScalingGpu',
       'snapNearFullscreenWindowsToMonitor',
-      'minimizeOtherWindowsOnScale', 'processLassoPerformanceModeScaling',
+      'minimizeOtherWindowsOnScale', 'restoreGameCursorOnFocus', 'processLassoPerformanceModeScaling',
       'rtssFrameLimitingEnabled', 'rtssDefaultLimitMode'
     ].forEach(id => document.getElementById(id).addEventListener('change', () => scheduleGeneralSettingsSave()));
     ['notifyOnUpdates', 'automaticallyInstallUpdates'].forEach(id => {
@@ -5273,6 +5313,7 @@
             gpu_target_percent: document.getElementById('rtssGpuTargetPercent').value === '' ? null : Number(document.getElementById('rtssGpuTargetPercent').value),
             minimum_framerate_limit: Number(document.getElementById('rtssMinimumFramerate').value),
             maximum_framerate_limit: Number(document.getElementById('rtssMaximumFramerate').value),
+            adaptive_shadow_only: document.getElementById('rtssShadowOnly').checked,
             limit_method: document.getElementById('rtssLimitMethod').value
           },
           reshade: reshadeEnabled ? {

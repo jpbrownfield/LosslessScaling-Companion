@@ -72,193 +72,224 @@ class DynamicLimiterTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.manager = ProfileManager(Path(self.temp_dir.name))
-        self.profile = Profile(
-            id="dynamic-game",
-            name="Dynamic Game",
-            target_process="Game.exe",
-            rtss=RtssLimiterConfig(
-                enabled=True,
-                limit_mode="dynamic",
-                gpu_target_percent=15,
-                minimum_framerate_limit=30,
-                maximum_framerate_limit=100,
-                managed_target_process="Game.exe",
-            ),
-        )
+        self.profile = Profile(id="dynamic-game", name="Dynamic Game", target_process="Game.exe",
+            rtss=RtssLimiterConfig(enabled=True, limit_mode="dynamic", gpu_target_percent=15,
+                                  minimum_framerate_limit=30, maximum_framerate_limit=100))
         self.manager.config.profiles = [self.profile]
-        self.manager.config.active_profile_id = self.profile.id
         self.manager.config.rtss_frame_limiting_enabled = True
-        self.manager.save_config()
         self.state = AppState()
         self.state.is_scaling_active = True
         self.state.current_active_profile = self.profile
-        self.state.current_scaled_target = {"pid": 100, "processName": "Game.exe"}
+        self.state.current_scaled_target = {"pid": 100, "hwnd": 123, "processName": "Game.exe"}
         self.telemetry = FakeTelemetry()
+        self.telemetry.sample_for_scaling = lambda *_: {
+            "game_gpu_percent": self.telemetry.value[100], "lossless_gpu_percent": self.telemetry.value[200],
+            "gpu_headroom_percent": self.telemetry.headroom, "gpu_adapters": self.adapters}
+        self.adapters = ["0x0_0x1_0"]
         self.rtss = FakeRtss()
-        self.now = 1000.0
-        self.game_running = True
-        self.controller = DynamicLimiterController(
-            self.manager,
-            self.state,
-            self.rtss,
-            telemetry=self.telemetry,
-            time_fn=lambda: self.now,
-            process_running_fn=lambda _pid: self.game_running,
-            process_age_fn=lambda _pid: 0.0,
-        )
-        self.controller._find_lossless_pid = lambda: 200
+        self.rtss.read_limit = lambda _: self.rtss.limits[-1] if self.rtss.limits else None
+        self.now = 1000.
+        self.sequence = 0
+        self.count = 0
+        self.ratio = 1.
+        self.focus = True
+        self.generation = 1
+        self.source_identity = (100, 50., "Game.exe")
+        self.instance = (200, 60.)
+        self.age = 0
+        self.dropped = 0
+        self.controller = DynamicLimiterController(self.manager, self.state, self.rtss,
+            telemetry=self.telemetry, time_fn=lambda: self.now, process_running_fn=lambda _: True,
+            identity_fn=lambda *_: self.source_identity, ls_instance_fn=lambda _: self.instance,
+            presentation_fn=self.host, output_window_fn=lambda _: 456)
 
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_clean_install_discards_all_volatile_calibration_and_maintenance_does_not_sample(self):
-        self.controller.poll()
-        self.assertIsNotNone(self.controller._session)
-        self.controller._pending_sessions.append(self.controller._session)
-        self.controller._manual_profile_id = self.profile.id
-        self.controller._manual_until = self.now + 300
-        self.controller.clear_sessions()
-        self.assertIsNone(self.controller._session)
-        self.assertEqual(self.controller._pending_sessions, [])
-        self.assertIsNone(self.controller._manual_profile_id)
-        self.assertEqual(self.controller._manual_until, 0)
-        self.state.update_in_progress = True
-        self.assertEqual(self.controller.poll()['state'], 'inactive')
-        self.assertIsNone(self.controller._session)
+    def host(self, exe, instance, *, binding):
+        return {"sampledAt": self.now, "capture": {"captures": self.count, "adapterSource": "capture_frame", "adapterLuid": "00000000:00000001"},
+                "presentationPacing": {"version": 2, "enabled": True, "identityVerified": True, "focused": self.focus,
+                    "sourcePid": binding[0], "sourceWindow": binding[1], "outputWindow": binding[2], "context": binding[3],
+                    "generation": self.generation, "sequence": self.sequence, "startedMs": (self.now-2)*1000,
+                    "endedMs": self.now*1000, "medianMs": 10., "p95Ms": 10*self.ratio,
+                    "relativeStalls": 10 if self.ratio > 1.3 else 0, "intervals": 199,
+                    "ageMs": self.age, "swapchain": 99, "device": 88, "presentationLuid": "00000000:00000001",
+                    "dropped": self.dropped, "overflow": 0}}
 
-    def poll_windows(self, count):
-        result = None
-        for _ in range(count * self.controller.WINDOW_SAMPLES):
+    def step(self, count=1, *, responds=True):
+        for _ in range(count):
+            self.sequence += 1; self.now += 2
+            self.count += 2*(self.rtss.limits[-1] if self.rtss.limits and responds else 100)
             result = self.controller.poll()
         return result
 
-    def test_dedicated_benchmark_does_not_calibrate_the_saved_profile(self):
-        self.state.benchmark_mode_active = True
-        self.assertEqual(self.controller.poll()['state'], 'inactive')
-        self.assertEqual(self.rtss.limits, [])
-        self.assertIsNone(self.controller._session)
+    def test_stable_low_ls_utilization_never_reduces_even_when_headroom_is_low(self):
+        self.telemetry.value = {100: 2., 200: 1.}
+        self.telemetry.headroom = 1.
+        self.assertEqual(self.step(20)["state"], "stable")
+        self.assertEqual(self.rtss.limits, [100])
         self.assertIsNone(self.profile.rtss.learned_framerate_limit)
 
-    def test_automatic_calibration_reduces_only_after_qualified_gameplay(self):
-        first = self.poll_windows(2)
-        self.assertEqual(first["state"], "waiting_for_gameplay")
-        self.assertEqual(self.rtss.limits, [100])
-        third = self.poll_windows(1)
-        self.assertEqual(third["state"], "calibrating")
-        self.assertEqual(third["current_limit"], 99)
-        self.assertEqual(self.rtss.limits, [100, 99])
-
-    def test_game_gpu_drop_freezes_limit_without_rebaselining(self):
-        self.poll_windows(3)
-        self.telemetry.value = {100: 20.0, 200: 5.0}
-        result = self.poll_windows(3)
-        self.assertEqual(result["state"], "loading")
-        self.assertEqual(self.rtss.limits, [100, 99])
-        self.assertIsNone(self.profile.rtss.game_gpu_high_water_percent)
-
-    def test_low_ls_utilization_is_healthy_when_headroom_is_available(self):
-        self.telemetry.value = {100: 3.0, 200: 5.0}
-        self.telemetry.headroom = 30.0
-        result = self.poll_windows(3)
-        self.assertEqual(result["state"], "calibrated")
-        self.assertEqual(self.profile.rtss.learned_framerate_limit, 100)
+    def test_game_utilization_drop_is_not_an_ls_health_signal(self):
+        self.step(4)
+        self.telemetry.value[100] = 0.
+        self.assertEqual(self.step(5)["state"], "stable")
         self.assertEqual(self.rtss.limits, [100])
 
-    def test_high_ls_utilization_does_not_mask_a_saturated_adapter(self):
-        self.telemetry.value = {100: 80.0, 200: 30.0}
-        self.telemetry.headroom = 2.0
-        self.assertEqual(self.poll_windows(3)['state'], 'calibrating')
-        self.telemetry.headroom = 20.0
-        result = self.poll_windows(1)
-        self.assertEqual(result['state'], 'calibrated')
-        self.assertEqual(result['current_limit'], 99)
-
-    def test_missing_adapter_telemetry_never_infers_free_capacity(self):
-        self.telemetry.headroom = None
-        result = self.poll_windows(4)
-        self.assertEqual(result['state'], 'telemetry_unavailable')
+    def test_isolated_stall_never_changes_cap(self):
+        self.step(4);self.ratio = 2.;self.step();self.ratio = 1.;self.step(4)
         self.assertEqual(self.rtss.limits, [100])
 
-    def test_old_floor_based_calibration_is_discarded_without_changing_user_bounds(self):
-        self.profile.rtss.learned_framerate_limit = 60
-        self.profile.rtss.automatic_calibration_disabled = True
-        self.profile.rtss.original_values = {'Limit': 144}
-        self.telemetry.headroom = 30
-        result = self.poll_windows(3)
-        self.assertEqual(result['current_limit'], 100)
-        self.assertEqual(self.profile.rtss.minimum_framerate_limit, 30)
-        self.assertEqual(self.profile.rtss.calibration_policy_version, 1)
-        self.assertEqual(self.profile.rtss.original_values, {'Limit': 144})
+    def test_trial_requires_intake_response_and_ls_benefit(self):
+        self.ratio = 1.7
+        self.assertEqual(self.step(4)["state"], "trial_reduction")
+        self.assertEqual(self.rtss.limits, [100, 98])
+        self.ratio = 1.
+        result = self.step(5)
+        self.assertEqual(result["state"], "benefit_confirmed")
+        self.assertTrue(result["benefit_confirmed"])
+        self.assertEqual(result["extra_reserve_percent"], 2.)
+        self.assertFalse(result["absolute_delivery_verified"])
+        self.assertIsNone(self.profile.rtss.learned_framerate_limit)
 
-    def test_manual_calibration_arms_for_five_minutes_and_reset_erases_metrics(self):
-        result = self.controller.start_manual(self.profile.id)
-        self.assertEqual(result["manual_remaining_seconds"], 300)
+    def test_no_intake_response_restores_previous_cap(self):
+        self.ratio = 1.7;self.step(4);self.ratio = 1.
+        result = self.step(5, responds=False)
+        self.assertEqual(result["state"], "no_response")
+        self.assertEqual(self.rtss.limits, [100, 98, 100])
+        self.assertFalse(result["benefit_confirmed"])
+
+    def test_headroom_improvement_without_ls_benefit_rolls_back(self):
+        self.ratio = 1.7;self.step(4);self.telemetry.headroom = 90.
+        result = self.step(5)
+        self.assertEqual(result["state"], "no_response")
+        self.assertEqual(self.rtss.limits[-1], 100)
+
+    def test_stale_focus_loss_and_drops_cancel_trial(self):
+        for invalid in ("stale", "focus", "dropped"):
+            with self.subTest(invalid=invalid):
+                self.controller.clear_sessions();self.age=0;self.focus=True;self.dropped=0
+                self.ratio=1.7;self.step(4)
+                self.assertEqual(self.rtss.limits[-1], 98)
+                if invalid == "stale":self.age = 4000
+                elif invalid == "focus":self.focus = False
+                else:self.dropped += 1
+                self.assertEqual(self.step()["state"], "unavailable")
+                self.assertEqual(self.rtss.limits[-1], 100)
+
+    def test_duplicate_snapshots_do_not_advance_policy(self):
+        self.ratio=1.7;self.step(2)
+        for _ in range(20):self.controller.poll()
+        self.assertEqual(self.controller._session.policy.valid_windows, 2)
         self.assertEqual(self.rtss.limits, [100])
-        self.poll_windows(1)
-        self.now += 301
-        expired = self.controller.poll()
-        self.assertEqual(expired.get("manual_remaining_seconds", 0), 0)
-        self.assertIsNotNone(self.profile.rtss.learned_framerate_limit)
+
+    def test_process_incarnation_change_resets_identity_and_trial(self):
+        self.ratio=1.7;self.step(4)
+        self.source_identity=(100, 500., "Game.exe")
+        self.step()
+        self.assertEqual(self.rtss.limits, [100,98,100])
+        self.assertEqual(self.controller._session.policy.valid_windows, 1)
+        self.instance=(200,600.)
+        self.step()
+        self.assertEqual(self.controller._session.ls_instance, self.instance)
+        self.assertEqual(self.controller._session.policy.valid_windows, 1)
+
+    def test_generation_and_settings_changes_discard_mixed_history(self):
+        self.ratio=1.7;self.step(4)
+        self.generation += 1
+        self.assertEqual(self.step()["state"], "observing")
+        self.assertEqual(self.rtss.limits[-1], 100)
+        self.state.last_scale_toggle_time += 1
+        self.step()
+        self.assertEqual(self.controller._session.policy.valid_windows, 1)
+
+    def test_cross_adapter_requires_both_luids_without_using_gpu_enumeration_order(self):
+        original=self.controller.presentation_fn
+        def cross(*args, **kwargs):
+            host=original(*args, **kwargs)
+            host["capture"]["adapterLuid"]="00000000:00000002"
+            return host
+        self.controller.presentation_fn=cross
+        self.assertEqual(self.step()["state"], "unavailable")
+        self.adapters.append("0x0_0x2_0")
+        self.assertEqual(self.step(4)["state"], "stable")
+
+    def test_explicit_manual_lock_survives_policy_upgrade(self):
+        self.profile.rtss.automatic_calibration_disabled=True
+        self.profile.rtss.learned_framerate_limit=60
+        self.profile.rtss.calibration_policy_version=1
+        self.profile.rtss.original_values={"Limit":144}
+        self.assertEqual(self.step()["state"], "manual_calibration_locked")
+        self.assertEqual(self.rtss.limits,[60])
+        self.assertEqual(self.profile.rtss.original_values,{"Limit":144})
+        self.assertEqual(self.profile.rtss.calibration_policy_version,2)
+
+    def test_incompatible_automatic_learning_is_discarded(self):
+        self.profile.rtss.learned_framerate_limit=60
+        self.profile.rtss.calibration_policy_version=1
+        self.step()
+        self.assertEqual(self.rtss.limits,[100])
+        self.assertIsNone(self.profile.rtss.learned_framerate_limit)
+
+    def test_manual_completion_requires_fresh_evidence_then_locks(self):
+        self.controller.start_manual(self.profile.id)
+        self.step(4)
+        self.now += 293
+        # Expiry sees stale evidence, so cannot persist a supposedly good cap.
+        self.step()
+        self.assertFalse(self.profile.rtss.automatic_calibration_disabled)
+        self.controller.start_manual(self.profile.id)
+        self.step(149)
+        self.step()
         self.assertTrue(self.profile.rtss.automatic_calibration_disabled)
-        self.profile.rtss.learned_framerate_limit = 90
-        self.profile.rtss.game_gpu_baseline_percent = 75
-        self.profile.rtss.game_gpu_high_water_percent = 85
-        reset = self.controller.reset(self.profile.id)
-        self.assertEqual(reset["state"], "waiting_for_gameplay")
-        self.assertIsNone(self.profile.rtss.learned_framerate_limit)
-        self.assertIsNone(self.profile.rtss.game_gpu_baseline_percent)
-        self.assertIsNone(self.profile.rtss.game_gpu_high_water_percent)
+        self.assertEqual(self.profile.rtss.learned_framerate_limit,100)
+        self.controller.reset(self.profile.id)
         self.assertFalse(self.profile.rtss.automatic_calibration_disabled)
 
-    def test_long_high_utilization_session_promotes_baseline_only_after_exit(self):
-        self.telemetry.value = {100: 65.0, 200: 22.0}
-        self.poll_windows(3)
-        self.assertIsNone(self.profile.rtss.game_gpu_baseline_percent)
+    def test_write_failure_after_profile_change_restores_unconfirmed_trial(self):
+        original=self.rtss.apply_profile
+        def write(profile, previous=None, configured_path=None, framerate_limit=None):
+            original(profile, previous, configured_path, framerate_limit)
+            if framerate_limit == 98:raise OSError("notify failed after file write")
+        self.rtss.apply_profile=write
+        self.ratio=1.7
+        result=self.step(4)
+        self.assertEqual(result["state"],"unavailable")
+        self.assertEqual(self.rtss.limits,[100,98,100])
 
-        self.now += 601
-        self.game_running = False
-        self.state.is_scaling_active = False
-        self.controller.poll()
+    def test_external_rtss_edits_are_not_overwritten_by_rollback(self):
+        self.ratio=1.7;self.step(4)
+        self.rtss.read_limit=lambda _: 77
+        result=self.step()
+        self.assertEqual(result["state"],"unavailable")
+        self.assertIn("edited externally", result["message"])
+        self.assertEqual(self.rtss.limits,[100,98])
 
-        self.assertEqual(self.profile.rtss.game_gpu_baseline_percent, 65.0)
-        self.assertEqual(self.profile.rtss.game_gpu_high_water_percent, 65.0)
+    def test_capture_pause_never_counts_as_healthy_or_spends_reserve(self):
+        self.step(4)
+        self.now+=2;self.sequence+=1
+        result=self.controller.poll()
+        self.assertEqual(result["state"],"unavailable")
+        self.assertIn("capture is paused",result["message"])
+        self.assertEqual(self.rtss.limits,[100])
 
-    def test_alternate_baseline_requires_more_than_ten_minutes_and_above_fifty_percent(self):
-        self.telemetry.value = {100: 50.0, 200: 22.0}
-        self.poll_windows(3)
-        self.now += 601
-        self.game_running = False
-        self.state.is_scaling_active = False
-        self.controller.poll()
-        self.assertIsNone(self.profile.rtss.game_gpu_baseline_percent)
+    def test_profile_shadow_setting_blocks_trials(self):
+        self.profile.rtss.adaptive_shadow_only=True
+        self.ratio=1.7
+        result=self.step(10)
+        self.assertEqual(result["state"],"shadow_trial")
+        self.assertEqual(self.rtss.limits,[100])
 
-        self.game_running = True
-        self.state.is_scaling_active = True
-        self.telemetry.value = {100: 70.0, 200: 22.0}
-        self.poll_windows(3)
-        self.now += 600
-        self.game_running = False
-        self.state.is_scaling_active = False
-        self.controller.poll()
-        self.assertIsNone(self.profile.rtss.game_gpu_baseline_percent)
+    def test_benchmark_ownership_blocks_all_profile_writes(self):
+        self.state.benchmark_mode_active=True
+        self.assertEqual(self.controller.poll()["state"],"inactive")
+        self.assertEqual(self.rtss.limits,[])
 
-    def test_completed_manual_calibration_blocks_future_automatic_learning(self):
-        self.controller.start_manual(self.profile.id)
-        self.poll_windows(1)
-        self.now += 301
-        result = self.controller.poll()
-        limits_after_manual = list(self.rtss.limits)
-        self.assertEqual(result["state"], "manual_calibration_locked")
-
-        self.telemetry.value = {100: 90.0, 200: 1.0}
-        self.poll_windows(5)
-        self.assertEqual(self.rtss.limits, limits_after_manual)
-
-        self.now += 700
-        self.game_running = False
-        self.state.is_scaling_active = False
-        self.controller.poll()
-        self.assertNotEqual(self.profile.rtss.game_gpu_baseline_percent, 90.0)
+    def test_missing_host_never_falls_back_to_gpu_headroom(self):
+        self.controller.presentation_fn=lambda *_, **__: (_ for _ in ()).throw(ValueError("old host"))
+        self.ratio=2
+        self.assertEqual(self.step(10)["state"],"unavailable")
+        self.assertEqual(self.rtss.limits,[100])
 
 
 if __name__ == "__main__":

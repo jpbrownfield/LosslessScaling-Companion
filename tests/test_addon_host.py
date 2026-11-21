@@ -13,7 +13,7 @@ import zipfile
 
 from companion.services.addon_host import (
     MANAGED_HOST_VERSION, MANAGED_HOST_ARCHIVE, _read_pipe,
-    addon_version_key, runtime_status, validate_status, set_passthrough,
+    addon_version_key, runtime_status, validate_status, set_passthrough, set_cursor_recovery, presentation_status,
 )
 from companion.services.automatic_updates import newer_addon_version
 from companion.services.release_providers import BundledAddonManagerReleaseProvider, ReleaseManager, ProviderRegistry
@@ -119,6 +119,52 @@ class NativeCaptureVariantTests(unittest.TestCase):
 
 
 class AddonHostTests(unittest.TestCase):
+    def test_cursor_recovery_requests_are_confirmed_by_fresh_host_state(self):
+        for enabled in (False, True):
+            before = self.sample(cursor={"controlProtocol": 1, "recoveryEnabled": not enabled})
+            after = self.sample(cursor={"controlProtocol": 1, "recoveryEnabled": enabled})
+            receipts = []
+            def read(_pid, **kwargs):
+                if "acknowledge" in kwargs:
+                    receipts.append(kwargs["acknowledge"](before))
+                    return before
+                return after
+            with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                    patch("companion.services.addon_host.time.time", return_value=1001), \
+                    patch("companion.services.addon_host._read_pipe", side_effect=read):
+                result = set_cursor_recovery("LS.exe", enabled)
+            self.assertIs(result["cursor"]["recoveryEnabled"], enabled)
+            self.assertEqual(receipts, [b"C" if enabled else b"c"])
+
+    def test_cursor_recovery_does_not_send_controls_to_stale_or_older_hosts(self):
+        for payload in (self.sample(cursor={}), self.sample(createdAt=899, cursor={"controlProtocol": 1})):
+            def read(_pid, **kwargs):
+                kwargs["acknowledge"](payload)
+                self.fail("Invalid host must be rejected before writing a control")
+            with patch("companion.services.adapter_report.configured_process", return_value=(123, 900)), \
+                    patch("companion.services.addon_host.time.time", return_value=1001), \
+                    patch("companion.services.addon_host._read_pipe", side_effect=read), self.assertRaises(ValueError):
+                set_cursor_recovery("LS.exe", False)
+
+    def test_presentation_binding_is_full_width_and_validates_instance_before_control(self):
+        payload=self.sample(presentationPacing={"version":2,"controlProtocol":1,"enabled":True})
+        receipts=[]
+        def read(pid, **kwargs):
+            receipts.append(kwargs["acknowledge"](payload));return payload
+        with patch("companion.services.adapter_report.configured_process", return_value=(123,900)), patch("companion.services.addon_host.time.time",return_value=1001), patch("companion.services.addon_host._read_pipe",side_effect=read):
+            presentation_status("LS.exe",(123,900),binding=(444,0x123456789,0x234567890,99))
+            presentation_status("LS.exe",(123,900),enabled=False)
+            presentation_status("LS.exe",(123,900),enabled=True)
+        self.assertEqual(receipts,[struct.pack("<c3xIQQQ",b"B",444,0x123456789,0x234567890,99),b"p",b"P"])
+
+    def test_presentation_controls_reject_old_host_and_process_replacement(self):
+        payload=self.sample(presentationPacing={"version":1})
+        with patch("companion.services.adapter_report.configured_process",return_value=(123,900)), patch("companion.services.addon_host.time.time",return_value=1001), patch("companion.services.addon_host._read_pipe",side_effect=lambda _pid,**kw:kw["acknowledge"](payload)), self.assertRaises(ValueError):
+            presentation_status("LS.exe",(123,900),enabled=False)
+        payload=self.sample(presentationPacing={"version":2,"controlProtocol":1})
+        with patch("companion.services.adapter_report.configured_process",side_effect=[(123,900),(123,901)]), patch("companion.services.addon_host.time.time",return_value=1001), patch("companion.services.addon_host._read_pipe",side_effect=lambda _pid,**kw: (kw["acknowledge"](payload),payload)[1]), self.assertRaisesRegex(ValueError,"restarted"):
+            presentation_status("LS.exe",(123,900))
+
     def test_capture_patch_accepts_all_nis_variants_without_removing_shader_gates(self):
         source = ('constexpr char kNis[] = "fc8f0300fec6f80250b8ec605265ba91c80f1d897fe799004f2cb95e14ca3d02";\n'
                   'if(fg==1&&Match(sha,kCapture)) {}\n'
@@ -366,7 +412,7 @@ class NativeAddonHostTests(unittest.TestCase):
                 (root / "Lossless.dll").write_bytes(bundle.read("Lossless.dll"))
             (root / "addons").mkdir()
             (root / "addons/config.json").write_text(json.dumps({"global": {
-                "auto_load": False, "companion": {"headless": True, "managed": True}}}))
+                "auto_load": False, "companion": {"headless": True, "managed": True, "cursor_cache_recovery": False}}}))
             process = subprocess.Popen([str(root / "LosslessScaling.exe")], cwd=root,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW,
@@ -386,6 +432,37 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertTrue(observed["cursor"]["sharedHandleGuard"])
                 self.assertEqual(observed["cursor"]["guardError"], 0)
                 self.assertGreaterEqual(observed["cursor"]["selfReplacementsPrevented"], 0)
+                self.assertTrue(observed["cursor"]["cacheRecovery"])
+                self.assertEqual(observed["cursor"]["cacheRecoveryError"], 0)
+                self.assertFalse(observed["cursor"]["recoveryEnabled"])
+                for enabled in (True, False, True):
+                    _read_pipe(process.pid, acknowledge=lambda _status: b"C" if enabled else b"c")
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline:
+                        try:
+                            observed = validate_status(_read_pipe(process.pid), instance)
+                            if observed["cursor"]["recoveryEnabled"] is enabled:
+                                break
+                        except OSError:
+                            time.sleep(.025)
+                    self.assertIs(observed["cursor"]["recoveryEnabled"], enabled)
+                    saved = json.loads((root / "addons/config.json").read_text())
+                    self.assertIs(saved["global"]["companion"]["cursor_cache_recovery"], enabled)
+                self.assertEqual(observed["presentationPacing"]["version"], 2)
+                self.assertFalse(observed["presentationPacing"]["identityVerified"])
+                for enabled in (False, True):
+                    _read_pipe(process.pid, acknowledge=lambda _status: b"P" if enabled else b"p")
+                    deadline = time.monotonic()+3
+                    while time.monotonic()<deadline:
+                        try:
+                            observed=validate_status(_read_pipe(process.pid),instance)
+                            if observed["presentationPacing"]["enabled"] is enabled:break
+                        except OSError:time.sleep(.025)
+                    self.assertIs(observed["presentationPacing"]["enabled"],enabled)
+                _read_pipe(process.pid, acknowledge=lambda _status: struct.pack("<c3xIQQQ",b"B",process.pid,1,2,3))
+                time.sleep(.05)
+                observed=validate_status(_read_pipe(process.pid),instance)
+                self.assertFalse(observed["presentationPacing"]["identityVerified"], "Invalid HWNDs must never authorize adaptive writes")
                 self.assertTrue(observed["capture"]["runtimeVerified"])
                 self.assertEqual(observed["capture"]["traceVersion"], 1)
                 self.assertIn("callbackInvocations", observed["capture"]["progress"])

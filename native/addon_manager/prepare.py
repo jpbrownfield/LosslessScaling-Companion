@@ -316,7 +316,7 @@ def prepare(source: Path):
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_cache.h", "cursor_cache.cpp", "cursor_cache_contract.h", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
@@ -325,9 +325,9 @@ def prepare(source: Path):
                      '    target_sources(${feature_test} PRIVATE src/core/hook_util.cpp)\n'
                      '  endif()\n'
                      'endforeach()\n'
-                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp)\n'
+                     'target_sources(Lossless PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp src/core/cursor_cache.cpp)\n'
                      'foreach(test_target eam_uipreview eam_coretest eam_sampletest eam_guitest eam_captureprobe)\n'
-                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp)\n'
+                     '  target_sources(${test_target} PRIVATE src/core/companion_bridge.cpp src/core/component_loader.cpp src/core/hdr_probe.cpp src/core/cursor_guard.cpp src/core/cursor_cache.cpp)\n'
                      '  target_compile_definitions(${test_target} PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
                      'endforeach()\n'
                      'target_compile_definitions(Lossless PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
@@ -339,7 +339,7 @@ def prepare(source: Path):
                      'add_library(lsc_fake_engine SHARED src/core/fake_engine.cpp)\n'
                      'add_executable(lsc_panel_test src/core/panel_test.cpp src/gui/window/window_device.cpp)\n'
                      'target_link_libraries(lsc_panel_test d3d11 dxgi user32)\n'
-                     'add_executable(lsc_cursor_test src/core/cursor_test.cpp src/core/cursor_guard.cpp src/core/hook_util.cpp)\n'
+                     'add_executable(lsc_cursor_test src/core/cursor_test.cpp src/core/cursor_guard.cpp src/core/cursor_cache.cpp src/core/hook_util.cpp)\n'
                      'target_include_directories(lsc_cursor_test PRIVATE ${minhook_SOURCE_DIR}/include)\n'
                      'target_link_libraries(lsc_cursor_test user32 minhook)\n'
                      'set_target_properties(lsc_fake_engine PROPERTIES OUTPUT_NAME "Lossless_original")\n'

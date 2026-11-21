@@ -10,7 +10,7 @@ import logging
 import struct
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.9"
+MANAGED_HOST_VERSION = "build-7-lsc.11"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 logger = logging.getLogger("LSCompanion.AddonHost")
@@ -63,7 +63,7 @@ def capture_trace_report(pid: int, *, expected_created_at: float | None = None) 
             status = validate_status(_read_pipe(pid), instance)
             snapshots.append({key: status.get(key) for key in (
                 "available", "pid", "createdAt", "sampledAt", "hostVersion", "startupError",
-                "neuralBackend", "capture", "presentationPacing", "addons")})
+                "neuralBackend", "capture", "cursor", "presentationPacing", "addons")})
             snapshots[-1]["metrics"] = {key: value for key, value in status["metrics"].items()
                                         if key in {"DLSSNR02", "LSC-AMDNR"}}
         except (OSError, ValueError, TypeError, RecursionError) as error:
@@ -133,8 +133,9 @@ def _read_pipe(pid, timeout_ms=500, *, acknowledge=None):
             raise ValueError("Host telemetry exceeded its size limit")
         payload = json.loads(buffer.raw[:size])
         receipt = acknowledge(payload) if acknowledge is not None else b"1"
-        if receipt not in (b"1", b"E", b"D") and not (
-                isinstance(receipt, bytes) and len(receipt) == 16 and receipt[:4] == b"E\0\0\0"):
+        if receipt not in (b"1", b"E", b"D", b"C", b"c", b"P", b"p") and not (
+                isinstance(receipt, bytes) and ((len(receipt) == 16 and receipt[:4] == b"E\0\0\0") or
+                    (len(receipt) == 32 and receipt[:4] == b"B\0\0\0"))):
             raise ValueError("Unsupported host receipt")
         transfer(kernel.WriteFile, ctypes.create_string_buffer(receipt), len(receipt))
         return payload
@@ -164,6 +165,40 @@ def runtime_status(executable):
         return validate_status(payload, instance)
     except (OSError, ValueError, TypeError, RecursionError) as error:
         return {"available": False, "reason": str(error), "pid": instance[0]}
+
+
+def set_cursor_recovery(executable, enabled: bool, *, timeout=1.5):
+    """Apply the global cursor preference to the identified running host."""
+    from .adapter_report import configured_process
+    if type(enabled) is not bool:
+        raise ValueError("Cursor recovery state must be a boolean")
+    instance = configured_process(executable)
+    if not instance:
+        return {"available": False, "reason": "Lossless Scaling is not running"}
+
+    def acknowledge(payload):
+        status = validate_status(payload, instance)
+        if (status.get("cursor") or {}).get("controlProtocol") != 1:
+            raise ValueError("Restart LS with the updated Companion host to apply cursor recovery")
+        return b"C" if enabled else b"c"
+
+    _read_pipe(instance[0], acknowledge=acknowledge)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if configured_process(executable) != instance:
+            raise ValueError("Lossless Scaling restarted during the cursor recovery request")
+        try:
+            status = validate_status(_read_pipe(instance[0]), instance)
+        except OSError:
+            time.sleep(0.025)
+            continue
+        if configured_process(executable) != instance:
+            raise ValueError("Lossless Scaling restarted during the cursor recovery request")
+        if (status.get("cursor") or {}).get("recoveryEnabled") is enabled:
+            logger.info("Custom game cursor recovery confirmed: enabled=%s; host PID=%s", enabled, instance[0])
+            return status
+        time.sleep(0.025)
+    raise ValueError("The LS host did not confirm the cursor recovery setting")
 
 
 def set_passthrough(executable, enabled: bool, *, expected_pid=None, target_pid=None, target_hwnd=None, timeout=1.5):
@@ -230,3 +265,35 @@ def set_passthrough(executable, enabled: bool, *, expected_pid=None, target_pid=
     raise TimeoutError(f"The addon host did not confirm overlay input (host {(status or {}).get('hostVersion', 'unknown')}; "
                        f"requested={detail.get('controlRequested')}, pending={detail.get('controlPending')}, "
                        f"interactive={detail.get('interactive')}). See Debug for details.")
+
+
+def presentation_status(executable, instance, *, binding=None, enabled=None):
+    """One bounded pipe transaction; confirmation arrives in the next snapshot.
+
+    Every request validates the process incarnation, including creation time. No
+    retries/sleeps in the controller's polling path and no work on game threads.
+    """
+    from .adapter_report import configured_process
+    if configured_process(executable) != instance:
+        raise ValueError("Configured LS process changed")
+
+    def receipt(payload):
+        status = validate_status(payload, instance)
+        pacing = status.get("presentationPacing") or {}
+        if pacing.get("version") != 2 or pacing.get("controlProtocol") != 1:
+            raise ValueError("Update the Companion add-on host and restart LS for adaptive limiting")
+        if enabled is not None:
+            if type(enabled) is not bool:
+                raise ValueError("Monitoring state must be boolean")
+            return b"P" if enabled else b"p"
+        if binding is not None:
+            pid, source, output, context = binding
+            if not (0 < pid <= 0xFFFFFFFF and all(type(x) is int and 0 < x <= 0xFFFFFFFFFFFFFFFF for x in (source, output, context))):
+                raise ValueError("Invalid presentation binding")
+            return struct.pack("<c3xIQQQ", b"B", pid, source, output, context)
+        return b"1"
+
+    payload = _read_pipe(instance[0], timeout_ms=100, acknowledge=receipt)
+    if configured_process(executable) != instance:
+        raise ValueError("LS restarted during telemetry read")
+    return validate_status(payload, instance)

@@ -1,5 +1,16 @@
 # Third-party notices
 
+## Bundled AMD FidelityFX CAS
+
+The included `LSC_AMD_CAS.fx` is a ReShade port of the sharpen-only five-sample
+path in [AMD FidelityFX CAS](https://github.com/GPUOpen-Effects/FidelityFX-CAS/blob/master/ffx-cas/ffx_cas.h),
+copyright (c) 2017-2019 Advanced Micro Devices, Inc., under the MIT license.
+It uses the default green-channel coefficient, exact square root/reciprocal math,
+and no diagonal samples or scaling. Companion adds SDR/scRGB/HDR10 conversion,
+display-peak normalization, edge clamping, and a strength blend that preserves
+signed/above-peak HDR values. The complete AMD license is retained in the deployed
+shader source, embedded in [`reshade_cas.py`](companion/services/reshade_cas.py).
+
 ## Optional Display Commander and Lilium effects
 
 Companion can download the upstream x64 ReShade add-on from

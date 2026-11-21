@@ -143,6 +143,20 @@ class CursorRecoveryTests(unittest.TestCase):
         recovery.update(value, 99, 100)
         refresh.assert_called_once()
 
+    def test_disabling_preference_cancels_pending_and_future_cursor_messages(self):
+        recovery, value, refresh, clock = self.environment()
+        recovery.update(value, 42, 82)
+        recovery.update(value, 99, 100)
+        recovery.update(value, 42, 82)
+        clock.return_value = 2
+        for pid, hwnd in ((42, 82), (99, 100), (42, 82)):
+            recovery.update(value, pid, hwnd, enabled=False)
+        refresh.assert_called_once()
+        recovery.update(value, 42, 82)
+        recovery.update(value, 99, 100)
+        recovery.update(value, 42, 82)
+        self.assertEqual(refresh.call_count, 2)
+
     def test_stop_resize_new_session_and_benchmark_cancel_old_requests(self):
         for change in ("stop", "target", "session", "benchmark", "update"):
             with self.subTest(change=change):

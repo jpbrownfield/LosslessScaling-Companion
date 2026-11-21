@@ -163,7 +163,8 @@ def measure_visible_marker(
 
 
 class PresentMonCapture:
-    def __init__(self, executable: Path, output_dir: Path):
+    def __init__(self, executable: Path, output_dir: Path, *, qpc_time_ms: bool = False):
+        self.qpc_time_ms = qpc_time_ms
         self.executable = executable.resolve(strict=True)
         self.output_dir = output_dir.resolve()
         self.process: Optional[subprocess.Popen] = None
@@ -186,6 +187,8 @@ class PresentMonCapture:
             str(max(1.0, seconds)),
             "--terminate_after_timed",
         ]
+        if self.qpc_time_ms:
+            command.append("--qpc_time_ms")
         for name in dict.fromkeys(process_names):
             if not name or name != Path(name).name:
                 raise ValueError(f"Unsafe PresentMon process name: {name!r}")

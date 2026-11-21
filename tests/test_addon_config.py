@@ -13,6 +13,17 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_window_behavior_cursor_preference_overrides_stale_profile_and_defaults_on(self):
+        from companion.core.models import AppConfig
+        service = self.service()
+        profile = Profile(name="Game", addon_config={"global": {"companion": {"cursor_cache_recovery": False}}})
+        self.assertTrue(AppConfig().restore_game_cursor_on_focus)
+        for enabled in (True, False, True):
+            service.profile_manager.config.restore_game_cursor_on_focus = enabled
+            profile.addon_config["global"]["companion"]["cursor_cache_recovery"] = not enabled
+            materialized = service.effective(profile, reshade_enabled=False)
+            self.assertIs(materialized["global"]["companion"]["cursor_cache_recovery"], enabled)
+
     def test_native_fps_corner_survives_panel_capture_and_profile_materialization(self):
         import json
         for corner in range(4):

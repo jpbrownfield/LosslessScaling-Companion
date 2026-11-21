@@ -78,6 +78,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--dynamic-limiter", action="store_true",
         help="Exercise the real DynamicLimiterController using a temporary RTSS profile",
     )
+    parser.add_argument("--adaptive-acceptance", action="store_true", help="Add fixed-cap monitoring ABBA and independent LS feedback acceptance verdicts")
+    parser.add_argument("--monitoring-phase-seconds", type=float, default=20.)
     parser.add_argument("--rtss-path")
     parser.add_argument("--minimum-fps", type=int, default=30)
     parser.add_argument("--maximum-fps", type=int, default=120)
@@ -268,7 +270,7 @@ def default_profile_limiter_settings(
     configured_limit = (
         profile.rtss.framerate_limit
         if effective_mode == "static"
-        else profile.rtss.learned_framerate_limit or profile.rtss.maximum_framerate_limit
+        else (profile.rtss.learned_framerate_limit if profile.rtss.automatic_calibration_disabled else None) or profile.rtss.maximum_framerate_limit
     )
     return {
         "effective_mode": effective_mode,
@@ -353,6 +355,12 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
     except Exception as error:
         print(f"PresentMon preflight failed: {error}", file=sys.stderr)
         return 2
+    if args.adaptive_acceptance and not args.dynamic_limiter:
+        print("--adaptive-acceptance requires --dynamic-limiter", file=sys.stderr)
+        return 2
+    if args.adaptive_acceptance and args.monitoring_phase_seconds < 15:
+        print("Monitoring phases must last at least 15 seconds", file=sys.stderr)
+        return 2
     if args.dynamic_limiter and args.no_scale:
         print("--dynamic-limiter cannot be combined with --no-scale.", file=sys.stderr)
         return 2
@@ -393,6 +401,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
     limiter: Optional[DynamicLimiterController] = None
     limiter_profile: Optional[Profile] = None
     rtss: Optional[RtssProfileManager] = None
+    monitoring_restore = None
     scaling_may_have_started = False
     report = {
         "schema_version": 1,
@@ -432,7 +441,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                     "--width", str(args.width),
                     "--height", str(args.height),
                     "--shader-load", str(args.shader_load),
-                    "--duration", str(int(args.duration + 30)),
+                    "--duration", str(int(args.duration + 60 + (4*args.monitoring_phase_seconds+35 if args.adaptive_acceptance else 0))),
                     "--event-log", str(run_dir / "source-input-events.csv"),
                 )
             )
@@ -535,6 +544,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             )
             limiter_manager.config.profiles = [limiter_profile]
             limiter_manager.config.active_profile_id = limiter_profile.id
+            limiter_manager.config.lossless_scaling_exe_path = manager.config.lossless_scaling_exe_path
             limiter_manager.config.rtss_frame_limiting_enabled = True
             limiter_manager.config.rtss_install_path = args.rtss_path or manager.config.rtss_install_path
             limiter_manager.save_config()
@@ -544,19 +554,53 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             limiter_state.current_scaled_target = {
                 "pid": workload.pid,
                 "processName": benchmark_exe.name,
+                "hwnd": hwnd,
             }
             limiter = DynamicLimiterController(limiter_manager, limiter_state, rtss)
             limiter._lossless_pid = lossless_pid
+            limiter_state.scaling_target_hwnd = hwnd
         else:
             report["default_profile_rtss"] = {
                 "enabled": False,
                 "settings_adjusted": False,
             }
 
-        capture = PresentMonCapture(presentmon_exe, run_dir)
+        capture = PresentMonCapture(presentmon_exe, run_dir, qpc_time_ms=args.dynamic_limiter)
         process_names = [benchmark_exe.name]
         if lossless_pid:
             process_names.append("LosslessScaling.exe")
+        if args.adaptive_acceptance:
+            from companion.services.adaptive_benchmark import monitoring_comparison, cap_response_check
+            from companion.services.addon_host import presentation_status
+            initial_host = presentation_status(manager.config.lossless_scaling_exe_path, instance)
+            monitoring_restore = (manager.config.lossless_scaling_exe_path, instance, initial_host["presentationPacing"]["enabled"])
+            presentation_status(manager.config.lossless_scaling_exe_path, instance, enabled=True)
+            # Establish the production binding and initial cap before fixed-cap A/B.
+            limiter.poll()
+            if limiter._session is None:
+                raise RuntimeError("Adaptive benchmark could not establish source/LS identity")
+            limiter.shadow_only = True
+            limiter._session.policy.shadow_only = True
+            def monitoring_progress(index, enabled, pacing):
+                if enabled:
+                    limiter.poll()
+                if progress_callback:
+                    progress_callback({"type": "DYNAMIC_LIMITER_PROGRESS", "sample": {
+                        "state": "monitoring_comparison", "message": f"Monitoring {'on' if enabled else 'off'}: phase {index+1}/4", "pacing": pacing}})
+            report["monitoring_overhead"] = monitoring_comparison(
+                executable=manager.config.lossless_scaling_exe_path, instance=instance,
+                binding=limiter._session.binding, presentmon=presentmon_exe, directory=run_dir,
+                source_pid=workload.pid, process_names=process_names,
+                fixed_cap=limiter._session.current_limit, rtss=rtss, profile=limiter_profile,
+                phase_seconds=args.monitoring_phase_seconds, cancelled=lambda: workload.poll() is not None,
+                sample_callback=monitoring_progress)
+            report["cap_response"] = cap_response_check(rtss=rtss, profile=limiter_profile,
+                presentmon=presentmon_exe, directory=run_dir, process_names=process_names,
+                source_pid=workload.pid, fixed_cap=limiter._session.current_limit,
+                minimum=args.minimum_fps, baseline_phases=report["monitoring_overhead"].get("phases", []))
+            limiter.shadow_only = False
+            # The adaptive arm starts with fresh history, and does not write during ABBA.
+            limiter.clear_sessions()
         capture.start(process_names, args.duration)
         recorder = GpuSampleRecorder(process_ids)
         recorder.start()
@@ -673,15 +717,16 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
         }
         if limiter and limiter_profile:
             report["dynamic_limiter_result"] = limiter_profile.rtss.model_dump()
-            convergence = summarize_dynamic_limiter(
+            from companion.services.adaptive_benchmark import summarize_adaptive
+            convergence = summarize_adaptive(report["limiter_status_samples"], duration=args.duration,
+                                             warmup=args.warmup, overhead=report.get("monitoring_overhead"),
+                                             csv_paths=capture.csv_files(), source_pid=workload.pid, ls_pid=lossless_pid, cap_response=report.get("cap_response"))
+            # Keep the legacy headroom result as descriptive evidence, never as
+            # the LS-performance acceptance gate.
+            convergence["headroom_observation"] = summarize_dynamic_limiter(
                 report["limiter_status_samples"], target_percent=args.ls_gpu_target,
                 duration_seconds=args.duration, warmup_seconds=args.warmup,
-                settling_seconds=args.settling_seconds, tolerance_percent=args.target_tolerance,
-            )
-            readbacks = report["limiter_status_samples"]
-            convergence["rtss_profile_verified"] = bool(readbacks and all(row["rtss_profile_verified"] for row in readbacks))
-            if not convergence["rtss_profile_verified"]:
-                convergence.update(status="fail", failure_reason="RTSS profile readback did not match the requested limits")
+                settling_seconds=args.settling_seconds, tolerance_percent=args.target_tolerance)
             report["dynamic_limiter_benchmark"] = convergence
             if convergence["status"] != "pass":
                 exit_code = 4
@@ -696,7 +741,11 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
         if recorder:
             recorder.stop()
         if limiter:
-            limiter.close()
+            try:
+                limiter.close()
+            except Exception as error:
+                report["limiter_cleanup_error"] = str(error)
+                exit_code = max(exit_code, 3)
         if rtss and limiter_profile and limiter_profile.rtss.managed_target_process:
             try:
                 report["rtss_profile_restored"] = rtss.remove_profile(limiter_profile)
@@ -705,6 +754,15 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                 exit_code = max(exit_code, 3)
         if capture:
             capture.stop()
+        if monitoring_restore:
+            try:
+                from companion.services.addon_host import presentation_status
+                exe, original_instance, original_enabled = monitoring_restore
+                presentation_status(exe, original_instance, enabled=original_enabled)
+                report["monitoring_state_restored"] = True
+            except Exception as error:
+                report["monitoring_restore_error"] = str(error)
+                exit_code = max(exit_code, 3)
         if scaling_may_have_started:
             try:
                 overlay_active = inspector.detect_lossless_scaling_overlay_window()[0]

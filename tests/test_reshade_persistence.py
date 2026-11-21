@@ -1,12 +1,14 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from companion.core.profile_manager import ProfileManager
 from companion.services.asset_store import AssetStore
 from companion.services.deployment_manager import DeploymentManager
 from companion.services.reshade_profiles import BUILTIN_PROFILES, ReshadeProfileService, LILIUM_INPUT_EFFECT
+from companion.services.reshade_cas import AMD_CAS_EFFECT, AMD_CAS_PROVIDER, AMD_CAS_TECHNIQUE
 
 
 class ReShadePersistenceTests(unittest.TestCase):
@@ -21,7 +23,7 @@ class ReShadePersistenceTests(unittest.TestCase):
         for profile in self.manager.config.reshade_profiles:
             package = self.service._folder(profile.id) / "packages/22/Shaders"
             package.mkdir(parents=True)
-            for filename in profile.shaders["22"]:
+            for filename in profile.shaders.get("22", []):
                 name = "lilium__cas_hdr_ps" if "cas_hdr" in filename else "lilium__inverse_tone_mapping"
                 (package / filename).write_text(f"technique {name} {{ pass {{}} }}", encoding="utf-8")
             self.service._write_files(profile)
@@ -46,6 +48,97 @@ class ReShadePersistenceTests(unittest.TestCase):
                 passive = self.service.config_path(profile.id).read_text(encoding="utf-8")
                 self.assertIn("KeyOverlay=0,0,0,0", passive)
 
+    def test_default_refresh_restores_preparation_and_order_and_keeps_tuning_and_backup(self):
+        profile = self.manager.config.reshade_profiles[2]
+        preset = self.shared(profile)
+        self.edit(preset, "0.73", disable=True)
+        parser = self.service._parse_preset(preset.read_text(encoding="utf-8"))
+        parser["lilium__inverse_tone_mapping.fx"]["InputTrc"] = "4"
+        parser["lilium__inverse_tone_mapping.fx"]["GammaIn"] = "0.15"
+        preset.write_text(self.service._preset_text(parser), encoding="utf-8")
+        before = preset.read_text(encoding="utf-8")
+        # A user preset and its tuning are outside the refresh scope.
+        custom = profile.model_copy(update={"id": "custom", "name": "Custom"}, deep=True)
+        self.manager.config.reshade_profiles.append(custom)
+        custom_folder = self.service._folder(custom.id)
+        custom_folder.mkdir()
+        custom_preset = custom_folder / "Custom.ini"
+        custom_preset.write_text("Techniques=custom\n", encoding="utf-8")
+        with patch.object(self.service, "_install_selected_shaders") as install:
+            result = self.service.refresh_builtin_profiles()
+        install.assert_not_called()
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(len(result["refreshed"]), 3)
+        saved = self.service._parse_preset(preset.read_text(encoding="utf-8"))
+        expected = ("LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,"
+                    "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx," +
+                    AMD_CAS_TECHNIQUE)
+        self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], expected)
+        self.assertEqual(saved["__LSC_PRESET_ROOT__"]["TechniqueSorting"], expected)
+        self.assertEqual(saved["Shader.fx"]["Strength"], "0.73")
+        self.assertEqual(saved["lilium__inverse_tone_mapping.fx"]["InputTrc"], "2")
+        self.assertEqual(saved["lilium__inverse_tone_mapping.fx"]["GammaIn"], "0.15")
+        backups = list(preset.parent.glob("default-refresh-backups/*/*.ini"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(encoding="utf-8"), before)
+        self.assertEqual(custom_preset.read_text(encoding="utf-8"), "Techniques=custom\n")
+        deployed = self.service.deployment_files(profile.id)
+        self.assertFalse(any("default-refresh-backups" in item["relative_path"] for item in deployed))
+
+    def test_failed_default_acquisition_reports_error_and_keeps_existing_preset(self):
+        profile = self.manager.config.reshade_profiles[1]
+        before = self.shared(profile).read_bytes()
+        missing = self.service._folder(profile.id) / "packages/22/Shaders/lilium__inverse_tone_mapping.fx"
+        missing.unlink()
+        with patch.object(self.service, "_install_selected_shaders", side_effect=OSError("offline")):
+            result = self.service.refresh_builtin_profiles()
+        self.assertEqual(result["errors"], [{"id": profile.id, "message": "offline"}])
+        self.assertEqual(len(result["refreshed"]), 2)
+        self.assertEqual(self.shared(profile).read_bytes(), before)
+
+    def test_legacy_combined_cas_migrates_with_preparation_first_and_preserves_disabled_cas(self):
+        for cas_enabled in (True, False):
+            with self.subTest(cas_enabled=cas_enabled):
+                current = self.manager.config.reshade_profiles[2]
+                legacy = current.model_copy(update={"shaders": {"22": [
+                    "lilium__inverse_tone_mapping.fx", "lilium__cas_hdr.fx"]}}, deep=True)
+                self.manager.config.reshade_profiles[2] = legacy
+                preset = self.shared(legacy)
+                cas = "lilium__cas_hdr_ps@lilium__cas_hdr.fx"
+                itm = "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx"
+                preset.write_text(f"Techniques={cas + ',' if cas_enabled else ''}{itm}\n"
+                    f"TechniqueSorting={cas},{itm}\n[LS Companion]\nEffectsInitialized=1\nLiliumInputVersion=1\n"
+                    "[lilium__inverse_tone_mapping.fx]\nInputTrc=2\nGammaIn=0.15\n"
+                    "[lilium__cas_hdr.fx]\nSHARPEN_AMOUNT=0.15\n", encoding="utf-8")
+                self.service._builtins_checked = False
+                with patch.object(self.service, "_install_selected_shaders") as install:
+                    self.service.payload()
+                install.assert_not_called()
+                migrated = self.manager.config.reshade_profiles[2]
+                self.assertEqual(migrated.shaders, BUILTIN_PROFILES[2].shaders)
+                saved = self.service._parse_preset(preset.read_text(encoding="utf-8"))
+                enabled = saved["__LSC_PRESET_ROOT__"]["Techniques"].split(",")
+                expected = ["LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx", itm]
+                self.assertEqual(enabled, expected + ([AMD_CAS_TECHNIQUE] if cas_enabled else []))
+                self.assertEqual(saved["__LSC_PRESET_ROOT__"]["TechniqueSorting"], ",".join(expected + [AMD_CAS_TECHNIQUE]))
+                self.assertAlmostEqual(float(saved[AMD_CAS_EFFECT]["Sharpness"]), 4 / 9, places=6)
+                self.assertEqual(saved[AMD_CAS_EFFECT]["Strength"], "1.000000")
+                self.assertEqual(saved["lilium__inverse_tone_mapping.fx"]["GammaIn"], "0.15")
+                files = self.service.deployment_files(legacy.id)
+                self.assertTrue(any(item["relative_path"].endswith(AMD_CAS_EFFECT) for item in files))
+
+    def test_basic_amd_cas_is_installable_offline_and_uses_shared_hdr_peak(self):
+        profile = self.manager.config.reshade_profiles[0]
+        self.manager.config.reshade_hdr_peak_nits = 1200
+        with patch("companion.services.reshade_profiles.urllib.request.urlopen") as network:
+            self.service.save(profile)
+        network.assert_not_called()
+        self.service.refresh_hdr_peak_settings()
+        saved = self.service._parse_preset(self.shared(profile).read_text(encoding="utf-8"))
+        self.assertEqual(saved[AMD_CAS_EFFECT]["HdrPeakNits"], "1200.000000")
+        self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], AMD_CAS_TECHNIQUE)
+        self.assertEqual(profile.shaders, {AMD_CAS_PROVIDER: [AMD_CAS_EFFECT]})
+
     def shared(self, profile):
         return self.service._folder(profile.id) / self.service._preset_filename(profile.name)
 
@@ -63,7 +156,7 @@ class ReShadePersistenceTests(unittest.TestCase):
             with self.subTest(profile=profile.id):
                 initial = self.service._parse_preset(self.shared(profile).read_text(encoding="utf-8"))
                 enabled = initial["__LSC_PRESET_ROOT__"]["Techniques"]
-                for effect in profile.shaders["22"]:
+                for effect in [name for files in profile.shaders.values() for name in files]:
                     self.assertIn("@" + effect, enabled)
                 config = self.service.config_path(profile.id, interactive=True).read_text(encoding="utf-8")
                 path = f".\\reshade-shaders\\LSCompanion\\{profile.id}\\{self.shared(profile).name}"
@@ -114,7 +207,7 @@ class ReShadePersistenceTests(unittest.TestCase):
         package = shared.parent / "packages/22/Shaders"
         (package / "New.fx").write_text("technique NewEffect { pass {} }", encoding="utf-8")
         updated = profile.model_copy(deep=True)
-        updated.shaders["22"].append("New.fx")
+        updated.shaders.setdefault("22", []).append("New.fx")
         self.service._write_files(updated)
         saved = self.service._parse_preset(shared.read_text(encoding="utf-8"))
         self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], "NewEffect@New.fx")

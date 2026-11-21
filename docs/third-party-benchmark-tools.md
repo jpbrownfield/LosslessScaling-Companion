@@ -27,47 +27,47 @@ third-party components retain their own licenses:
 
 https://github.com/DiligentGraphics/DiligentSamples
 
-## Dynamic limiter benchmark
+## Adaptive limiter acceptance benchmark
 
-The Benchmark panel's **Run limiter benchmark** action runs the bundled workload
-for five minutes at the foreground monitor's full pixel resolution. Choose the
-GPU headroom reserve independently of the saved profile. The default profile's current
-scaling/add-on configuration and minimum/maximum FPS bounds remain in use;
-ordinary profile calibration is paused during this dedicated test.
+**Run limiter benchmark**, and the last **Debug ? Application tests** item, use
+the existing bundled workload and PresentMon runner. Allow about seven minutes:
+four fixed-cap 20-second monitoring off/on/on/off arms, a separate 15-second
+source-cap response check, then five minutes of actual adaptive control.
+Ordinary profile calibration is paused and a temporary RTSS profile is restored
+in `finally`; no automatic results are saved into the original presets.
 
-The target is **spare capacity on the GPU adapters used by LS**, not LS's own
-utilization. A 15% reserve means their busiest engines should remain at or below
-85% combined utilization. Process activity is summed within each physical adapter
-and engine; engine types and separate GPUs are never added together. If LS uses
-multiple adapters, the least available reserve is used. Missing adapter telemetry
-is unknown capacity, not free capacity. LS using 5% on a fast GPU can be healthy.
+The controller grades LS relative presentation cadence, with headroom as
+supporting resource evidence. LS consuming only 5% GPU can be healthy. Game GPU
+activity is descriptive, never the LS performance target. Capture/presentation
+LUIDs identify actual devices independently of GPU numbering.
 
-This is a conservative utilization-based headroom policy, not a measurement of
-whether individual LS frames met their deadlines. PresentMon frame timings remain
-available for pacing inspection; the headroom verdict does not certify frame
-delivery or infer expected output FPS without an authoritative frame-rate target.
+Reports have separate telemetry-validity, cap-enforcement, LS-benefit and monitoring
+cost verdicts. A high reserve or successful profile write cannot pass the LS
+benefit test. Adaptive ETW captures use `--qpc_time_ms` to align source and bound-LS
+swapchain frames with native before/after windows. Displayed timing must be
+available for an independent benefit pass. A smooth workload without a beneficial
+pressure case is inconclusive rather than a success.
 
-The live table and retained JSON record elapsed time, requested FPS limit, RTSS
-profile readback, game GPU use, LS GPU use, adapter headroom, and controller state.
-The final report includes limit changes, first reserve-hit time, settling statistics,
-reserve occupancy, maximum shortfall, and failure reason. PresentMon captures retain actual frame
-timings; RTSS profile readback alone does not prove its hook enforced every limit.
+ABBA keeps the cap and workload fixed. Acceptance budgets are max(0.10 ms, 2%)
+for p95 and max(0.20 ms, 3%) for p99; drift, missing frames, changed context or a
+failed monitoring control prevents a pass. These are initial hardware acceptance
+budgets. The CPU-only native microbenchmark does not establish real frametime cost.
 
-A pass requires a complete final 30-second settling window, at least 80% of the
-expected telemetry samples, and adapter headroom at or above reserve minus two
-percentage points for at least 90% of those samples. Missing telemetry, an
-incomplete run, mismatched RTSS profile values, minimum-FPS exhaustion, or a
-no-response controller result cannot pass. This does not guarantee an arbitrary
-target is attainable with every GPU, workload, frame-generation mode, or FPS range.
+The native observer uses fixed storage, no GPU readbacks/waits, no per-frame
+logging, a try-lock and off-render-thread sorting. The on arms also run controller
+inspection/GPU sampling in shadow mode. All arms retain PresentMon, so this is an
+incremental monitoring comparison, not a measurement of PresentMon's own cost.
 
-RTSS must be installed and running, and PresentMon must be verified. The test
-uses a temporary RTSS profile, restores previous limiter keys afterward, and
-does not save calibration to the user's profiles. Raising resolution increases
-shader work but does not itself prove GPU saturation; inspect workload qualification
-and both processes' telemetry before generalizing the result to a game.
+PresentMon 2.x `CPUStartTime` is milliseconds; legacy `TimeInSeconds` is seconds.
+The parser handles these separately. See the [official column documentation](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md#csv-columns).
 
-Standalone equivalent:
+RTSS must be installed/running and PresentMon verified before the run. The test
+retains report JSON, native observations, cap readbacks and CSVs. The application
+diagnostic includes them in a nested evidence ZIP. Live RTSS convergence and
+monitoring cost still require a run on the target GPU/display configuration.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/benchmark_lossless_scaling.py --dynamic-limiter --monitor-resolution --duration 300 --gpu-headroom 15 --input-probes 0 --yes
+.\.venv\Scripts\python.exe scripts/benchmark_lossless_scaling.py --dynamic-limiter --adaptive-acceptance --monitor-resolution --duration 300 --gpu-headroom 15 --input-probes 0 --yes
 ```
+
+See [policy and validation details](../rtss%20dynamic%20limiting%20notes.md).

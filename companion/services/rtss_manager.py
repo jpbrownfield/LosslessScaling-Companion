@@ -128,6 +128,19 @@ class RtssProfileManager:
                                                  values["Limit"], process_name, profile.rtss.limit_method, profile.name, profile_path)
         return profile_path
 
+    def read_limit(self, profile: Profile) -> Optional[int]:
+        """Read stored RTSS cap; this does not prove runtime enforcement."""
+        if not profile.rtss.managed_install_path or not profile.rtss.managed_target_process:
+            return None
+        path = self._profiles_dir(Path(profile.rtss.managed_install_path)) / f"{profile.rtss.managed_target_process}.cfg"
+        try:
+            text = self._read_text(path)
+            limit = self._get_value(text, "Framerate", "Limit")
+            denominator = self._get_value(text, "Framerate", "LimitDenominator")
+            return int(limit) if limit is not None and denominator == 1 else None
+        except (OSError, ValueError, TypeError):
+            return None
+
     def remove_profile(self, profile: Profile, configured_path: Optional[str] = None) -> bool:
         root = self.detect_install(profile.rtss.managed_install_path or configured_path)
         if root is None:

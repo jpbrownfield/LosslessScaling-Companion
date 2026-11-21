@@ -81,11 +81,11 @@ class ReshadeProfileFileTests(unittest.TestCase):
             def install(profile, _catalog):
                 package = service._folder(profile.id) / "packages" / "22" / "Shaders"
                 package.mkdir(parents=True, exist_ok=True)
-                if "lilium__inverse_tone_mapping.fx" in profile.shaders["22"]:
+                if "lilium__inverse_tone_mapping.fx" in profile.shaders.get("22", []):
                     (package / "lilium__inverse_tone_mapping.fx").write_text(
                         "technique lilium__inverse_tone_mapping { pass {} }", encoding="utf-8"
                     )
-                if "lilium__cas_hdr.fx" in profile.shaders["22"]:
+                if "lilium__cas_hdr.fx" in profile.shaders.get("22", []):
                     (package / "lilium__cas_hdr.fx").write_text(
                         "technique lilium__cas_hdr_ps { pass {} }", encoding="utf-8"
                     )
@@ -108,7 +108,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertIn(
                 "Techniques=LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,"
                 "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx,"
-                "lilium__cas_hdr_ps@lilium__cas_hdr.fx",
+                "LSC_AMD_CAS@LSC_AMD_CAS.fx",
                 preset.read_text(encoding="utf-8"),
             )
             self.assertIn("TargetBrightness=1200.000000", preset.read_text(encoding="utf-8"))
@@ -204,9 +204,9 @@ class ReshadeProfileFileTests(unittest.TestCase):
             tmp_path = Path(directory)
             manager = ProfileManager(config_dir=tmp_path / "config")
             profile = ManagedReshadeProfile(
-                id="lsc-basic-sharpening",
-                name="Basic Sharpening (Low Cost)",
-                shaders={"22": ["lilium__cas_hdr.fx"]},
+                id="lsc-sdr-to-hdr",
+                name="SDR to HDR (Low Cost)",
+                shaders={"22": ["lilium__inverse_tone_mapping.fx"]},
             )
             manager.config.reshade_profiles = [profile]
             service = ReshadeProfileService(manager)
@@ -214,11 +214,11 @@ class ReshadeProfileFileTests(unittest.TestCase):
                 "id": "22",
                 "name": "Lilium",
                 "downloadUrl": "https://github.com/example/lilium/archive/master.zip",
-                "shaders": ["lilium__cas_hdr.fx"],
+                "shaders": ["lilium__inverse_tone_mapping.fx"],
             }]
             folder = service._folder(profile.id)
             folder.mkdir(parents=True)
-            preset = folder / "Basic Sharpening Low Cost.ini"
+            preset = folder / "SDR to HDR Low Cost.ini"
             preset.write_text("Techniques=stale\n", encoding="utf-8")
             (folder / "ReShade.ini").write_text("stale", encoding="utf-8")
             (folder / "ReShade.Interactive.ini").write_text("stale", encoding="utf-8")
@@ -226,7 +226,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             def install(candidate, _catalog):
                 shader_dir = service._folder(candidate.id) / "packages" / "22" / "Shaders"
                 shader_dir.mkdir(parents=True, exist_ok=True)
-                for filename in candidate.shaders["22"]:
+                for filename in candidate.shaders.get("22", []):
                     (shader_dir / filename).write_text(
                         "technique TestEffect { pass {} }", encoding="utf-8"
                     )
@@ -235,7 +235,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
                 files = service.deployment_files(profile.id)
 
             self.assertTrue(any(call.args[0].id == profile.id for call in mocked.call_args_list))
-            self.assertTrue(any(item["relative_path"].endswith("lilium__cas_hdr.fx") for item in files))
+            self.assertTrue(any(item["relative_path"].endswith("lilium__inverse_tone_mapping.fx") for item in files))
 
     def test_imported_ini_is_copied_into_named_profile_storage(self):
         with tempfile.TemporaryDirectory() as directory:

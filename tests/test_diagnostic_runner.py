@@ -108,7 +108,13 @@ class DiagnosticRunnerTests(unittest.TestCase):
 
     def test_nr_benchmark_captures_before_stop_and_restores_after_success_or_waiting(self):
         from companion.services.asset_store import AssetStore
-        for processed, slow_start, trace_error in ((True, False, False), (False, False, False), (True, True, False), (True, False, True)):
+        for processed, slow_start, trace_error, actual_gpu in (
+            (True, False, False, None), (False, False, False, None),
+            (True, True, False, None), (True, False, True, None),
+            (True, False, False, "NVIDIA GeForce RTX 5050"),
+            (True, False, False, "NVIDIA GeForce RTX 3090 Ti"),
+            (True, False, False, ""),
+        ):
             with self.subTest(processed=processed, slow_start=slow_start, trace_error=trace_error), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 executable, workload, settings = root / "LosslessScaling.exe", root / "LSBenchmark.exe", root / "Settings.xml"
@@ -136,7 +142,7 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 watcher.stop_lossless_scaling.side_effect = stop_host
                 watcher.launch_lossless_scaling.side_effect = launch_host
                 automation = Mock()
-                automation._desired_gpu_route.return_value = {}
+                automation._desired_gpu_route.return_value = {"gpuName": "NVIDIA GeForce RTX 5050"} if actual_gpu is not None else {}
                 automation.resolve_deployment_files.return_value = [{"relative_path": "fixture"}]
                 automation.deployment_manager.apply.return_value = {"files": [{"relative_path": executable.name,
                     "deployed_sha256": AssetStore.sha256(executable)}]}
@@ -183,13 +189,16 @@ class DiagnosticRunnerTests(unittest.TestCase):
                         patch("scripts.benchmark_lossless_scaling.focus_window", return_value=True), \
                         patch("companion.services.ls_inspector.LosslessScalingInspector") as inspector, \
                         patch("companion.services.diagnostic_runner.subprocess.Popen", return_value=process) as launch, \
+                        patch("companion.services.diagnostic_runner.runtime_status", return_value={
+                            "capture": {"adapter": actual_gpu, "captures": 7 if processed else 0}}), \
                         patch("companion.services.diagnostic_runner.time.sleep"):
                     inspector.return_value._find_log_file.return_value = None
                     observation = SimpleNamespace(is_active=True, to_dict=lambda: {"is_active": True})
                     inspector.return_value.inspect_current_scaling_target.side_effect = (
                         [SimpleNamespace(is_active=not slow_start), observation, observation])
                     result = runner._nr_capture_trace()
-                self.assertEqual(result["status"], "pass" if processed and not trace_error else "fail")
+                expected_pass = processed and not trace_error and actual_gpu in (None, "NVIDIA GeForce RTX 5050")
+                self.assertEqual(result["status"], "pass" if expected_pass else "fail")
                 self.assertEqual(events, ["start", "trace", "stop"])
                 launch.assert_called_once_with([str(workload), "--duration", "300"], cwd=str(root))
                 native_settings.update_profile.assert_called_once_with("Native Default", profile.native_scaling_settings, backup=False)
@@ -200,6 +209,8 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 else:
                     self.assertEqual(attempt["captureTrace"], trace)
                     self.assertEqual(attempt["runtimeChecks"]["neuralFramesProcessed"], processed)
+                    if actual_gpu is not None:
+                        self.assertEqual(attempt["gpuRouteMatches"], actual_gpu == "NVIDIA GeForce RTX 5050")
                 self.assertEqual(settings.read_bytes(), b"original settings")
                 self.assertIs(state.current_active_profile, previous)
                 self.assertTrue(state.auto_scale_enabled)
@@ -592,6 +603,15 @@ class DiagnosticRunnerTests(unittest.TestCase):
         self.assertEqual([item[0] for item in plan], [
             "configuration", "profile_integrity", "profile_matching",
         ])
+
+    def test_adaptive_acceptance_benchmark_is_last_and_requires_setup(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        self.assertEqual(runner.catalog()[-1]["id"], "rtss_adaptive_benchmark")
+        plan=[item[0] for item in runner._execution_plan("rtss_adaptive_benchmark")]
+        self.assertEqual(plan[-1], "rtss_adaptive_benchmark")
+        self.assertIn("benchmark",plan)
+        self.assertIn("rtss",plan)
+        self.assertIn("rtss_adaptive_benchmark",runner.LS_MUTATING_TESTS)
 
     def test_run_all_includes_lilium_diagnostic(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)

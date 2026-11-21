@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "hdr_probe.h"
+#include "cursor_cache.h"
+#include <cstdio>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
@@ -32,30 +34,64 @@ float pendingWhite=0;
 thread_local bool scanning=false;
 std::mutex pacingGate;
 PacingProbe pacing;
+PacingWindows pacingWindows;
 IDXGISwapChain* pacingChain=nullptr;
-double pacingLast=0;
-std::atomic<uint64_t> observedPresents{0},successfulPresents{0},eligiblePresents{0};
+double pacingLast=0,pacingMetadataLast=0;
+std::atomic<bool> pacingEnabled{true};
+std::atomic<uint64_t> observedPresents{0},successfulPresents{0},eligiblePresents{0},pacingDrops{0};
+uint64_t bindingContext=0, pacingGeneration=1, sourceWindow=0, outputWindow=0, deviceToken=0;
+DWORD sourcePid=0;
+uint64_t focusEpoch=0;
+HMONITOR outputMonitor=nullptr;
+DWORD refreshRate=0, monitorWidth=0, monitorHeight=0;
+RECT sourceRect{}, outputRect{};
+std::atomic<uint64_t> resizeEpoch{0};uint64_t observedResizeEpoch=0;
+std::array<IDXGISwapChain*,8> rejectedChains{};size_t rejectedNext=0;
+bool focused=false, identityVerified=false;
+std::string presentationLuid;
 thread_local bool insidePresent=false;
+
 double ClockMs() {
-    LARGE_INTEGER tick{},frequency{};QueryPerformanceCounter(&tick);QueryPerformanceFrequency(&frequency);
-    return 1000.0*static_cast<double>(tick.QuadPart)/frequency.QuadPart;
+    static const double scale=[] { LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);return 1000.0/frequency.QuadPart; }();
+    LARGE_INTEGER tick{};QueryPerformanceCounter(&tick);return tick.QuadPart*scale;
+}
+void ResetPacing() {
+    pacing=PacingProbe{};pacingWindows.Reset();pacingChain=nullptr;pacingLast=0;pacingMetadataLast=0;
+    deviceToken=0;presentationLuid.clear();rejectedChains.fill(nullptr);++pacingGeneration;
 }
 void RecordPresentation(IDXGISwapChain* chain,double entered,double returned,HRESULT result) {
     ++observedPresents;
     if(result!=S_OK)return;
     ++successfulPresents;
-    DXGI_SWAP_CHAIN_DESC desc{};
-    if(FAILED(chain->GetDesc(&desc))||!desc.OutputWindow||!IsWindowVisible(desc.OutputWindow)
-       ||IsIconic(desc.OutputWindow)||desc.BufferDesc.Width<160||desc.BufferDesc.Height<90)return;
-    wchar_t klass[128]{};GetClassNameW(desc.OutputWindow,klass,128);
-    if(wcsstr(klass,L"HwndWrapper")||wcsstr(klass,L"ImGui"))return;
+    std::unique_lock lock(pacingGate,std::try_to_lock);
+    if(!lock.owns_lock()) {++pacingDrops;return;}
+    if(observedResizeEpoch!=resizeEpoch.load()) {observedResizeEpoch=resizeEpoch.load();ResetPacing();}
+    // Metadata discovery touches COM/USER32 on selection and at most once per
+    // two seconds, before completing a window, to catch device/pointer reuse.
+    // No stealing a bound output after inactivity or accepting a helper chain.
+    if(pacingChain!=chain || entered-pacingMetadataLast>=2000) {
+        for(auto* rejected:rejectedChains)if(rejected==chain)return;
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if(FAILED(chain->GetDesc(&desc))||!desc.OutputWindow||!IsWindowVisible(desc.OutputWindow)||IsIconic(desc.OutputWindow)||desc.BufferDesc.Width<160||desc.BufferDesc.Height<90)return;
+        wchar_t title[128]{},klass[128]{};
+        GetWindowTextW(desc.OutputWindow,title,128);GetClassNameW(desc.OutputWindow,klass,128);
+        if(wcscmp(title,L"LosslessScaling")||wcsstr(klass,L"HwndWrapper")||wcsstr(klass,L"ImGui")) {rejectedChains[rejectedNext++%rejectedChains.size()]=chain;return;}
+        if(outputWindow && reinterpret_cast<uint64_t>(desc.OutputWindow)!=outputWindow)return;
+        ComPtr<IDXGIDevice> dxgiDevice;ComPtr<IDXGIAdapter> adapter;
+        if(FAILED(chain->GetDevice(IID_PPV_ARGS(&dxgiDevice)))||FAILED(dxgiDevice->GetAdapter(&adapter)))return;
+        DXGI_ADAPTER_DESC ad{};if(FAILED(adapter->GetDesc(&ad)))return;
+        char luid[32]{};std::snprintf(luid,sizeof(luid),"%08x:%08x",unsigned(ad.AdapterLuid.HighPart),unsigned(ad.AdapterLuid.LowPart));
+        const auto token=reinterpret_cast<uint64_t>(dxgiDevice.Get());
+        if(pacingChain && (pacingChain!=chain || deviceToken!=token || presentationLuid!=luid))ResetPacing();
+        pacingMetadataLast=entered;
+        presentationLuid=luid;deviceToken=reinterpret_cast<uint64_t>(dxgiDevice.Get());
+        pacingChain=chain;
+    }
     ++eligiblePresents;
-    std::unique_lock lock(pacingGate,std::try_to_lock);if(!lock.owns_lock())return;
-    if(pacingChain!=chain) {
-        if(entered-pacingLast<2000)return;
-        pacing=PacingProbe{};pacingChain=chain;
-    } else if(entered-pacingLast>2000)pacing=PacingProbe{};
-    pacing.Observe(entered,returned);pacingLast=entered;
+    if(pacingLast && entered-pacingLast>2000) {ResetPacing();return;}
+    if(sourcePid)pacingWindows.Observe(entered,returned,pacingDrops.load());
+    else pacing.Observe(entered,returned);
+    pacingLast=entered;
 }
 const char* source=R"(
 Texture2D<float4> frame : register(t0);
@@ -93,25 +129,30 @@ void Initialize(ID3D11Device* dev) {
 }
 using Present=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*,UINT,UINT);
 using Present1=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain1*,UINT,UINT,const DXGI_PRESENT_PARAMETERS*);
+using Resize=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*,UINT,UINT,UINT,DXGI_FORMAT,UINT);
+Resize originalResize=nullptr;
+HRESULT STDMETHODCALLTYPE OnResize(IDXGISwapChain* chain,UINT count,UINT width,UINT height,DXGI_FORMAT format,UINT flags) {
+    ++resizeEpoch;return originalResize(chain,count,width,height,format,flags);
+}
 using SetColor=HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain3*,DXGI_COLOR_SPACE_TYPE);
 Present originalPresent=nullptr;Present1 originalPresent1=nullptr;SetColor originalColor=nullptr;
 HRESULT STDMETHODCALLTYPE OnPresent(IDXGISwapChain* chain,UINT interval,UINT flags) {
     if(insidePresent||(flags&DXGI_PRESENT_TEST))return originalPresent(chain,interval,flags);
-    insidePresent=true;const double entered=ClockMs();
+    insidePresent=true;const bool monitor=pacingEnabled.load(std::memory_order_relaxed);const double entered=monitor?ClockMs():0;
     if(!(flags&DXGI_PRESENT_TEST))ObserveHdrPresentation(chain);
     const auto result=originalPresent(chain,interval,flags);
-    RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
+    if(monitor)RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
 }
 HRESULT STDMETHODCALLTYPE OnPresent1(IDXGISwapChain1* chain,UINT interval,UINT flags,const DXGI_PRESENT_PARAMETERS* p) {
     if(insidePresent||(flags&DXGI_PRESENT_TEST))return originalPresent1(chain,interval,flags,p);
-    insidePresent=true;const double entered=ClockMs();
+    insidePresent=true;const bool monitor=pacingEnabled.load(std::memory_order_relaxed);const double entered=monitor?ClockMs():0;
     if(!(flags&DXGI_PRESENT_TEST))ObserveHdrPresentation(chain);
     const auto result=originalPresent1(chain,interval,flags,p);
-    RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
+    if(monitor)RecordPresentation(chain,entered,ClockMs(),result);insidePresent=false;return result;
 }
 HRESULT STDMETHODCALLTYPE OnColor(IDXGISwapChain3* chain,DXGI_COLOR_SPACE_TYPE color) {
     const auto hr=originalColor(chain,color);
-    if(SUCCEEDED(hr)) { std::lock_guard lock(gate);if(colors.size()>128)colors.clear();colors[chain]=color; }
+    if(SUCCEEDED(hr)) { ++resizeEpoch;std::lock_guard lock(gate);if(colors.size()>128)colors.clear();colors[chain]=color; }
     return hr;
 }
 }
@@ -189,9 +230,60 @@ void ObserveHdrPresentation(IDXGISwapChain* chain) {
     } catch(const std::exception& e) {status.ready=false;status.error=e.what();Reset();}
 }
 HdrProbeStatus HdrProbeSnapshot() {std::lock_guard lock(gate);return status;}
-PacingSnapshot PresentationPacingSnapshot() {
+void EnablePresentationMonitoring(bool enabled) {
+    std::lock_guard lock(pacingGate);if(pacingEnabled.exchange(enabled)!=enabled)ResetPacing();
+}
+void BindPresentation(DWORD pid,uint64_t source,uint64_t output,uint64_t context) {
     std::lock_guard lock(pacingGate);
-    auto result=ClockMs()-pacingLast>2000?PacingSnapshot{}:pacing.Snapshot();
+    DWORD owner=0;GetWindowThreadProcessId(reinterpret_cast<HWND>(source),&owner);
+    DWORD outputOwner=0;GetWindowThreadProcessId(reinterpret_cast<HWND>(output),&outputOwner);
+    wchar_t title[128]{};GetWindowTextW(reinterpret_cast<HWND>(output),title,128);
+    if(!pid||owner!=pid||outputOwner!=GetCurrentProcessId()||wcscmp(title,L"LosslessScaling")) {sourcePid=0;sourceWindow=outputWindow=bindingContext=0;identityVerified=false;ResetPacing();return;}
+    if(sourcePid!=pid||sourceWindow!=source||outputWindow!=output||bindingContext!=context) {
+        sourcePid=pid;sourceWindow=source;outputWindow=output;bindingContext=context;ResetPacing();
+    }
+}
+PacingSnapshot PresentationPacingSnapshot() {
+    PacingWindows completed;
+    PacingProbe recent;
+    PacingSnapshot metadata;
+    {
+        std::lock_guard lock(pacingGate);
+        const auto source=reinterpret_cast<HWND>(sourceWindow),output=reinterpret_cast<HWND>(outputWindow);
+        DWORD owner=0,outputOwner=0;GetWindowThreadProcessId(source,&owner);GetWindowThreadProcessId(output,&outputOwner);
+        const auto foreground=GetForegroundWindow();
+        const bool hasFocus=foreground==source||foreground==output;
+        const auto epoch=cursor::CacheFocusEvents();
+        const auto monitor=MonitorFromWindow(output,MONITOR_DEFAULTTONULL);
+        MONITORINFOEXW info{};info.cbSize=sizeof(info);DEVMODEW mode{};mode.dmSize=sizeof(mode);
+        if(monitor&&GetMonitorInfoW(monitor,&info))EnumDisplaySettingsW(info.szDevice,ENUM_CURRENT_SETTINGS,&mode);
+        const bool valid=sourcePid&&owner==sourcePid&&outputOwner==GetCurrentProcessId()
+            &&IsWindowVisible(source)&&!IsIconic(source)&&IsWindowVisible(output)&&!IsIconic(output)&&hasFocus&&mode.dmDisplayFrequency;
+        RECT sr{},orr{};GetClientRect(source,&sr);GetClientRect(output,&orr);
+        if(memcmp(&sr,&sourceRect,sizeof(sr))||memcmp(&orr,&outputRect,sizeof(orr)))ResetPacing();
+        sourceRect=sr;outputRect=orr;
+        if(valid!=identityVerified||hasFocus!=focused||epoch!=focusEpoch||monitor!=outputMonitor
+            ||refreshRate!=mode.dmDisplayFrequency||monitorWidth!=mode.dmPelsWidth||monitorHeight!=mode.dmPelsHeight)ResetPacing();
+        identityVerified=valid;focused=hasFocus;focusEpoch=epoch;outputMonitor=monitor;
+        refreshRate=mode.dmDisplayFrequency;monitorWidth=mode.dmPelsWidth;monitorHeight=mode.dmPelsHeight;
+        completed=pacingWindows;if(!sourcePid)recent=pacing;
+        metadata.enabled=pacingEnabled.load();metadata.identityVerified=identityVerified;metadata.focused=focused;
+        metadata.generation=pacingGeneration;metadata.sourcePid=sourcePid;metadata.sourceWindow=sourceWindow;
+        metadata.outputWindow=outputWindow;metadata.chain=reinterpret_cast<uint64_t>(pacingChain);metadata.device=deviceToken;
+        metadata.monitor=reinterpret_cast<uint64_t>(outputMonitor);metadata.refreshHz=refreshRate;
+        metadata.monitorWidth=monitorWidth;metadata.monitorHeight=monitorHeight;
+        metadata.context=bindingContext;metadata.presentationLuid=presentationLuid;
+        metadata.dropped=pacingDrops.load();metadata.ageMs=pacingLast?ClockMs()-pacingLast:1e9;
+    }
+    // Sorting is exclusively on the telemetry reader, after releasing the render mutex.
+    auto result=completed.Snapshot();
+    if(!sourcePid)result=metadata.ageMs>2000?PacingSnapshot{}:recent.Snapshot(); // legacy measurement only
+    result.enabled=metadata.enabled;result.identityVerified=metadata.identityVerified;result.focused=metadata.focused;
+    result.generation=metadata.generation;result.sourcePid=metadata.sourcePid;result.sourceWindow=metadata.sourceWindow;
+    result.outputWindow=metadata.outputWindow;result.chain=metadata.chain;result.device=metadata.device;
+    result.monitor=metadata.monitor;result.refreshHz=metadata.refreshHz;result.monitorWidth=metadata.monitorWidth;result.monitorHeight=metadata.monitorHeight;
+    result.context=metadata.context;result.presentationLuid=metadata.presentationLuid;result.totalDropped=metadata.dropped;
+    result.ageMs=result.endedMs?ClockMs()-result.endedMs:metadata.ageMs;
     result.observedPresents=observedPresents.load();result.successfulPresents=successfulPresents.load();
     result.eligiblePresents=eligiblePresents.load();return result;
 }
@@ -209,6 +301,7 @@ void StartHdrProbe() {
     auto hr=D3D11CreateDeviceAndSwapChain(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,nullptr,0,D3D11_SDK_VERSION,&d,&chain,&dev,nullptr,nullptr);
     if(SUCCEEDED(hr)) {
         MH_Initialize();auto** table=*reinterpret_cast<void***>(chain.Get());
+        if(MH_CreateHook(table[13],reinterpret_cast<void*>(&OnResize),reinterpret_cast<void**>(&originalResize))==MH_OK)MH_EnableHook(table[13]);
         if(MH_CreateHook(table[8],reinterpret_cast<void*>(&OnPresent),reinterpret_cast<void**>(&originalPresent))==MH_OK)MH_EnableHook(table[8]);
         ComPtr<IDXGISwapChain1> one;if(SUCCEEDED(chain.As(&one))) {
             auto** t=*reinterpret_cast<void***>(one.Get());

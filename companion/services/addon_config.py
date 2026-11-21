@@ -158,6 +158,7 @@ class AddonConfigService:
         ui["open_on_start"] = False
         companion["managed"] = True
         companion["headless"] = False
+        companion["cursor_cache_recovery"] = getattr(self.profile_manager.config, "restore_game_cursor_on_focus", True)
         ui.setdefault("hotkey_enabled", False)
         global_settings["auto_load"] = True
 

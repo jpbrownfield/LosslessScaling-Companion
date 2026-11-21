@@ -720,10 +720,19 @@ class ProcessWatcher:
         """Launches Lossless Scaling if auto-launch is configured and it's not running."""
         return self.launch_lossless_scaling()
 
+    def sync_cursor_recovery_setting(self) -> None:
+        from .addon_host import set_cursor_recovery
+        try:
+            set_cursor_recovery(self.profile_manager.config.lossless_scaling_exe_path,
+                                self.profile_manager.config.restore_game_cursor_on_focus)
+        except (OSError, ValueError) as error:
+            logger.warning("Cursor recovery preference saved; apply to the next updated LS session: %s", error)
+
     def check_foreground_and_update(self) -> Optional[ProcessInfo]:
         """Polls the foreground window, updates state, and detects profile switches."""
         info = self.get_foreground_window_info()
-        self._cursor_recovery.update(self.state, info.pid if info else 0, info.hwnd if info else 0)
+        self._cursor_recovery.update(self.state, info.pid if info else 0, info.hwnd if info else 0,
+                                     enabled=getattr(self.profile_manager.config, "restore_game_cursor_on_focus", True))
         if not info:
             return None
 

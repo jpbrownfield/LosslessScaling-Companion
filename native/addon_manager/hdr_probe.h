@@ -19,6 +19,8 @@ void StartHdrProbe();
 bool IsHdrProbeDispatch();
 HdrProbeStatus HdrProbeSnapshot();
 PacingSnapshot PresentationPacingSnapshot();
+void BindPresentation(DWORD sourcePid, uint64_t sourceWindow, uint64_t outputWindow, uint64_t context);
+void EnablePresentationMonitoring(bool enabled);
 // Also used by the off-screen GPU fixture. Production calls only from Present.
 void ObserveHdrPresentation(IDXGISwapChain* chain);
 }
