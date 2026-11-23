@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 #include "hdr_probe.h"
-#include "cursor_cache.h"
 #include <cstdio>
 #include <d3d11.h>
 #include <d3dcompiler.h>
@@ -243,7 +242,7 @@ void BindPresentation(DWORD pid,uint64_t source,uint64_t output,uint64_t context
         sourcePid=pid;sourceWindow=source;outputWindow=output;bindingContext=context;ResetPacing();
     }
 }
-PacingSnapshot PresentationPacingSnapshot() {
+PacingSnapshot PresentationPacingSnapshot(uint64_t observedFocusEpoch) {
     PacingWindows completed;
     PacingProbe recent;
     PacingSnapshot metadata;
@@ -253,7 +252,7 @@ PacingSnapshot PresentationPacingSnapshot() {
         DWORD owner=0,outputOwner=0;GetWindowThreadProcessId(source,&owner);GetWindowThreadProcessId(output,&outputOwner);
         const auto foreground=GetForegroundWindow();
         const bool hasFocus=foreground==source||foreground==output;
-        const auto epoch=cursor::CacheFocusEvents();
+        const auto epoch=observedFocusEpoch;
         const auto monitor=MonitorFromWindow(output,MONITOR_DEFAULTTONULL);
         MONITORINFOEXW info{};info.cbSize=sizeof(info);DEVMODEW mode{};mode.dmSize=sizeof(mode);
         if(monitor&&GetMonitorInfoW(monitor,&info))EnumDisplaySettingsW(info.szDevice,ENUM_CURRENT_SETTINGS,&mode);

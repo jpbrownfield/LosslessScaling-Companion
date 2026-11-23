@@ -181,7 +181,7 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"driver",d.driver},{"format",d.format},
         {"adapterLuid",d.adapterLuid},{"adapterSource",d.captureAdapterObserved?"capture_frame":"device_creation"},
         {"captureApi",d.capture},{"frameGeneration",d.fg},{"scaler",d.scaler},{"hdr",d.hdr}};
-    const auto pacing=PresentationPacingSnapshot();
+    const auto pacing=PresentationPacingSnapshot(cursor::CacheFocusEvents());
     result["presentationPacing"]={{"version",2},{"controlProtocol",1},{"scope","LS successful Present calls; not displayed frames"},
         {"intervals",pacing.intervals},{"medianMs",pacing.medianMs},{"p95Ms",pacing.p95Ms},
         {"maximumMs",pacing.maximumMs},{"relativeStalls",pacing.relativeStalls},

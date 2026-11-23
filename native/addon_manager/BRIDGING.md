@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **9**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **12**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -530,6 +530,14 @@ The release builder runs `lsc_pacing_probe_test`, including duration windows,
 repeated readers, overflow and a CPU collection microbenchmark. The latter is not
 a live GPU frametime verdict. Existing opt-in real-engine capture fixtures remain
 available via `LSC_TEST_CAPTURE_PROBE` and `EAM_PROBE_LS_PACING=1`.
+
+## Standalone HDR probe build (revision 12)
+
+The bridge passes the cursor focus-event epoch into `PresentationPacingSnapshot`.
+This preserves focus-change invalidation in the host while allowing the standalone
+HDR probe to link without the cursor hook implementation. Standalone probes use
+an epoch of zero. Validate with the complete `scripts/build_addon_manager.py`
+build, including the final HDR fixture build, rather than selected host targets.
 
 ## Distribution and validation limits
 

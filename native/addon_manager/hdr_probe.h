@@ -18,7 +18,8 @@ struct HdrProbeStatus {
 void StartHdrProbe();
 bool IsHdrProbeDispatch();
 HdrProbeStatus HdrProbeSnapshot();
-PacingSnapshot PresentationPacingSnapshot();
+// The bridge supplies the cursor tracker's epoch; standalone probes have none.
+PacingSnapshot PresentationPacingSnapshot(uint64_t observedFocusEpoch=0);
 void BindPresentation(DWORD sourcePid, uint64_t sourceWindow, uint64_t outputWindow, uint64_t context);
 void EnablePresentationMonitoring(bool enabled);
 // Also used by the off-screen GPU fixture. Production calls only from Present.
