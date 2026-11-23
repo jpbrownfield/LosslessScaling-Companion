@@ -137,28 +137,72 @@ test('pending scaling commands are visible without claiming scaling is active', 
   assert.equal(context.runtimeScalingActive, false);
 });
 
-test('dynamic benchmark results render the target verdict and timestamped RTSS trace safely', () => {
+function benchmarkDashboard() {
   const nodes = new Map();
-  const element = () => ({children: [], replaceChildren() {this.children = [];}, appendChild(child) {this.children.push(child);}});
+  const element = () => ({
+    children: [],
+    replaceChildren() { this.children = []; },
+    appendChild(child) { this.children.push(child); },
+    set innerHTML(_value) { throw new Error('Benchmark results must render as text'); },
+  });
   const context = vm.createContext({document: {
-    getElementById(id) {if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id);},
+    getElementById(id) { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); },
     createElement: element,
   }});
   const code = html.slice(html.indexOf('    function renderDynamicLimiterBenchmark(result)'), html.indexOf('    function renderBenchmarkStatus(msg)'));
   vm.runInContext(code, context);
-  context.renderDynamicLimiterBenchmark({dynamicLimiter: {status: 'pass', policy_version: 1, target_percent: 25, final_limit: 91, adjustment_count: 29,
-    settling_headroom_percent: {median: 26}, settling_target_fraction: 0.95},
-    workloadResolution: {width: 3840, height: 2160},
-    limiterTrace: [{elapsed_seconds: 31, current_limit: 91, rtss_readback_limit: 91, game_gpu_percent: 60, lossless_gpu_percent: 5, gpu_headroom_percent: 26, state: 'calibrated'}]});
-  assert.match(nodes.get('dynamicLimiterBenchmarkSummary').textContent, /Reserve sustained: 25%.*3840 x 2160/);
-  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children.length, 1);
-  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children[0].children[2].textContent, 91);
-  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children[0].children[5].textContent, 26);
-  context.renderDynamicLimiterBenchmark({dynamicLimiter: {status: 'pass', target_percent: 25}});
-  assert.match(nodes.get('dynamicLimiterBenchmarkSummary').textContent, /retired LS utilization target/);
-  context.renderDynamicLimiterBenchmark(null);
-  assert.equal(nodes.get('dynamicLimiterBenchmarkResults').hidden, true);
-  assert.equal(nodes.get('dynamicLimiterBenchmarkTrace').children.length, 0);
+  return {nodes, render: result => context.renderDynamicLimiterBenchmark(result)};
+}
+
+test('adaptive benchmark renders independent verdicts and timestamped LS timing safely', () => {
+  const app = benchmarkDashboard();
+  const message = '<img src=x onerror=alert(1)>';
+  app.render({dynamicLimiter: {
+    status: 'inconclusive', policy_version: 2,
+    telemetry_validity: {status: 'pass'}, cap_enforcement: {status: 'pass'},
+    ls_benefit: {status: 'inconclusive'}, monitoring_overhead: {status: 'pass'},
+  }, limiterTrace: [{elapsed_seconds: 31, current_limit: 91, rtss_readback_limit: 91,
+    pacing: {p95Ms: 12.345}, lossless_gpu_percent: 5, gpu_headroom_percent: 26,
+    state: 'no_response', message}]});
+  const summary = app.nodes.get('dynamicLimiterBenchmarkSummary').textContent;
+  assert.match(summary, /Telemetry: pass/);
+  assert.match(summary, /Source cap: pass/);
+  assert.match(summary, /LS benefit: inconclusive/);
+  assert.match(summary, /Monitoring cost: pass/);
+  assert.match(summary, /Absolute display delivery unverified/);
+  assert.doesNotMatch(summary, /Reserve sustained/);
+  assert.equal(app.nodes.get('dynamicLimiterBenchmarkResults').hidden, false);
+  const rows = app.nodes.get('dynamicLimiterBenchmarkTrace').children;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].children.map(cell => cell.textContent),
+    ['31.0', 91, 91, '12.35', 5, 26, `no_response: ${message}`]);
+});
+
+test('legacy or unknown benchmark policies show a migration notice and clear old traces', () => {
+  const app = benchmarkDashboard();
+  for (const policy of [undefined, 0, 1, 3]) {
+    app.render({dynamicLimiter: {status: 'running', policy_version: 2},
+      limiterTrace: [{elapsed_seconds: 1, state: 'observing'}]});
+    assert.equal(app.nodes.get('dynamicLimiterBenchmarkTrace').children.length, 1);
+    app.render({dynamicLimiter: {status: 'pass', policy_version: policy, target_percent: 25}});
+    assert.match(app.nodes.get('dynamicLimiterBenchmarkSummary').textContent, /Previous policy report.*adaptive acceptance benchmark/);
+    assert.equal(app.nodes.get('dynamicLimiterBenchmarkTrace').children.length, 0);
+  }
+  app.render(null);
+  assert.equal(app.nodes.get('dynamicLimiterBenchmarkResults').hidden, true);
+  assert.equal(app.nodes.get('dynamicLimiterBenchmarkTrace').children.length, 0);
+});
+
+test('missing adaptive verdicts stay unverified rather than inheriting an overall pass', () => {
+  const app = benchmarkDashboard();
+  app.render({dynamicLimiter: {status: 'pass', policy_version: 2, telemetry_validity: {status: 'pass'}}});
+  const summary = app.nodes.get('dynamicLimiterBenchmarkSummary').textContent;
+  assert.match(summary, /Telemetry: pass/);
+  assert.match(summary, /Source cap: unverified/);
+  assert.match(summary, /LS benefit: unverified/);
+  assert.match(summary, /Monitoring cost: unverified/);
+  app.render({dynamicLimiter: {status: 'running', policy_version: 2, message: 'Monitoring off: phase 1/4'}});
+  assert.equal(app.nodes.get('dynamicLimiterBenchmarkSummary').textContent, 'Monitoring off: phase 1/4');
 });
 
 test('live limiter progress is routed to the renderer and accumulates adjustment samples', () => {
@@ -169,6 +213,7 @@ test('live limiter progress is routed to the renderer and accumulates adjustment
   context.receiveDynamicLimiterProgress({sample: {current_limit: 120, lossless_gpu_percent: 10}, targetPercent: 25});
   context.receiveDynamicLimiterProgress({sample: {current_limit: 119, lossless_gpu_percent: 12}, targetPercent: 25});
   assert.equal(rendered.at(-1).dynamicLimiter.status, 'running');
+  assert.equal(rendered.at(-1).dynamicLimiter.policy_version, 2);
   assert.equal(rendered.at(-1).dynamicLimiter.adjustment_count, 1);
   assert.equal(rendered.at(-1).limiterTrace.length, 2);
   assert.match(html, /msg.type === 'DYNAMIC_LIMITER_PROGRESS'\) \{\s*receiveDynamicLimiterProgress\(msg\);/);
