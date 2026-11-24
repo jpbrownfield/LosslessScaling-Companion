@@ -560,6 +560,11 @@ It requires ReShade to be installed, verifies its deployed DLL and runtime
 initialization alongside NR frame processing, and restores the previous settings
 and deployment afterward. Its existing capture trace includes cursor counters.
 
+GPU diagnostic fixtures must identify real capture samples with
+`adapterSource="capture_frame"`; a device-creation adapter is not capture proof.
+Both CI test gates save JUnit results and expose individual failures through
+`scripts/report_pytest_failures.py` annotations, including assertion details.
+
 The same trace reports enabled cursor recovery and 56 focus events but no cache
 invalidations. It cannot establish which cursor gate prevented a refresh. New
 `cacheQueries`, `cacheImageQueries`, `cacheHiddenSkips`, `cacheUnfocusedSkips` and
