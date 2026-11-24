@@ -17,6 +17,7 @@ class AppState:
         self._revision = 0
         self.simulation_mode: bool = False
         self.is_scaling_active: bool = False
+        self.scaling_runtime_error: str = ""
         self.current_scaled_target: Dict[str, Any] = {}
         self.current_active_profile: Optional[Profile] = None
         self.current_foreground_process: Optional[str] = None
@@ -60,6 +61,7 @@ class AppState:
             if existed and changed and name in {
                 "lossless_scaling_running", "is_scaling_active", "auto_scale_enabled",
                 "update_in_progress", "gpu_mapping_in_progress", "benchmark_mode_active",
+                "scaling_runtime_error",
             }:
                 logging.getLogger("LSCompanion.State").info("%s: %s -> %s", name, previous, value)
             if changed and name != "connected_clients":

@@ -14,6 +14,7 @@ import zipfile
 from companion.services.addon_host import (
     MANAGED_HOST_VERSION, MANAGED_HOST_ARCHIVE, _read_pipe,
     addon_version_key, runtime_status, validate_status, set_passthrough, set_cursor_recovery, presentation_status,
+    scaling_runtime_error,
 )
 from companion.services.automatic_updates import newer_addon_version
 from companion.services.release_providers import BundledAddonManagerReleaseProvider, ReleaseManager, ProviderRegistry
@@ -119,6 +120,27 @@ class NativeCaptureVariantTests(unittest.TestCase):
 
 
 class AddonHostTests(unittest.TestCase):
+    def test_explicit_runtime_errors_are_reported_for_the_selected_backend(self):
+        nv = {"id": "DLSSNR02", "enabled": True, "level": 3, "status": "Missing NR model\nCapture 0x0"}
+        amd = {"id": "LSC-AMDNR", "enabled": True, "level": 3, "status": "AMD runtime missing"}
+        status = {"available": True, "neuralBackend": "NVIDIA", "addons": [amd, nv]}
+        self.assertEqual(scaling_runtime_error(status), "DLSSNR02: Missing NR model")
+        status["neuralBackend"] = "AMD"
+        self.assertEqual(scaling_runtime_error(status), "LSC-AMDNR: AMD runtime missing")
+        status["startupError"] = "Host initialization failed"
+        self.assertEqual(scaling_runtime_error(status), "Host initialization failed")
+        self.assertEqual(scaling_runtime_error({**status, "available": False}), "")
+
+    def test_idle_and_disabled_neural_rendering_do_not_claim_scaling_failure(self):
+        addon = {"id": "DLSSNR02", "enabled": True, "level": 0, "status": "Waiting for source application"}
+        status = {"available": True, "addons": [addon], "capture": {"support": "Waiting"}}
+        self.assertEqual(scaling_runtime_error(status), "")
+        status["capture"]["hookError"] = "Capture hook installation failed"
+        self.assertEqual(scaling_runtime_error(status), "Capture hook installation failed")
+        addon["enabled"] = False
+        addon["level"] = 3
+        self.assertEqual(scaling_runtime_error(status), "")
+
     def test_cursor_recovery_requests_are_confirmed_by_fresh_host_state(self):
         for enabled in (False, True):
             before = self.sample(cursor={"controlProtocol": 1, "recoveryEnabled": not enabled})

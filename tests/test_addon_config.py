@@ -13,6 +13,22 @@ from companion.services.release_providers import ProviderRegistry
 
 
 class AddonConfigServiceTests(unittest.TestCase):
+    def test_model_default_follows_current_clone_but_custom_paths_survive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = AddonConfigService(SimpleNamespace(config_dir=directory,
+                config=SimpleNamespace(default_addon_config={}, lossless_scaling_exe_path=str(Path(directory) / "current/LosslessScaling.exe"))))
+            retired = Path(directory) / "runtime/lossless-scaling/installations/retired/nvngx_dlssnr.dll"
+            current = Path(directory) / "current/nvngx_dlssnr.dll"
+            custom = Path(directory) / "models/nvngx_dlssnr.dll"
+            for path, removed in (("", True), (" \t", True), (str(retired), True), (str(current), True), (str(custom), False)):
+                with self.subTest(path=path):
+                    profile = Profile(name="Game", addon_config={"addons": {"DLSSNR02": {"_enabled": True, "modelPath": path}}})
+                    result = service.effective(profile, reshade_enabled=False)["addons"]["DLSSNR02"]
+                    self.assertEqual("modelPath" not in result, removed)
+                    if not removed:
+                        self.assertEqual(result["modelPath"], str(custom))
+                    self.assertEqual(profile.addon_config["addons"]["DLSSNR02"]["modelPath"], path)
+
     def test_window_behavior_cursor_preference_overrides_stale_profile_and_defaults_on(self):
         from companion.core.models import AppConfig
         service = self.service()

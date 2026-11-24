@@ -52,7 +52,7 @@ from .input_simulator import InputSimulator
 from .runtime_logging import runtime_log_buffer
 from .self_update import CompanionUpdateService
 from .automatic_updates import AutomaticUpdates, newer_addon_version
-from .addon_host import runtime_status as addon_runtime_status, addon_version_key
+from .addon_host import runtime_status as addon_runtime_status, addon_version_key, scaling_runtime_error
 from .gpu_index_refresh import IdleGpuIndexRefresh
 from .profile_icons import ProfileIconService
 from .reshade_overlay import ReShadeOverlayController
@@ -328,11 +328,30 @@ class CompanionWebSocketServer:
 
     async def _reshade_overlay_loop(self):
         next_capture = 0.0
+        next_health = 0.0
+        health_unavailable_since = None
         try:
             while True:
                 try:
+                    overlay_eligible = self.reshade_overlay.eligible()
+                    health_active = self.state.is_scaling_active and self.config.addon_manager_enabled
+                    health_due = health_active and time.monotonic() >= next_health
                     status = (await self._run_background_thread(addon_runtime_status, self.config.lossless_scaling_exe_path)
-                              if self.reshade_overlay.eligible() else {"available": False})
+                              if overlay_eligible or health_due else {"available": False})
+                    if health_due:
+                        if status.get("available"):
+                            health_unavailable_since = None
+                            self.state.scaling_runtime_error = scaling_runtime_error(status)
+                        elif health_unavailable_since is None:
+                            health_unavailable_since = time.monotonic()
+                        elif time.monotonic() - health_unavailable_since >= 3.0:
+                            self.state.scaling_runtime_error = (
+                                "Cannot verify scaling: addon host telemetry is unavailable. "
+                                + str(status.get("reason") or "Restart Lossless Scaling."))
+                        next_health = time.monotonic() + 1.0
+                    elif not health_active:
+                        health_unavailable_since = None
+                        self.state.scaling_runtime_error = ""
                     was_open = self.reshade_overlay.active
                     self.reshade_overlay.update(status)
                     if time.monotonic() >= next_capture or (was_open and not self.reshade_overlay.active):
@@ -3294,6 +3313,7 @@ class CompanionWebSocketServer:
             "scalingTarget": state["current_scaled_target"],
             "dynamicLimiter": state["dynamic_limiter_status"],
             "scalingControl": state["scaling_control_status"],
+            "scalingRuntimeError": state["scaling_runtime_error"] if state["is_scaling_active"] else "",
             "gpuIndexMapping": state["gpu_mapping_status"],
             "gloamHdrStatus": self.automation.gloam_integration.snapshot(),
         }

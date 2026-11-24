@@ -65,7 +65,9 @@ The host and addon suite are separate components with their own licences.
 
 The replacement Neural Rendering addon, `DLSSNR02`, is GPL-3.0-only. Its matching
 `NeuralRendering-source.zip`, licence and component notices are retained beside
-its binaries. The package also contains our patched host's source, build overlay,
+its binaries. Companion rebuilds it with NR failure recovery and model-path fixes;
+that ZIP includes the modified source, dependencies and build commands. The
+package also contains our patched host's source, build overlay,
 and pinned build dependencies in `licenses/LSAddonManager/CompanionHost-source.zip`.
 The user-provided proprietary `nvngx_dlssnr.dll` is never bundled.
 

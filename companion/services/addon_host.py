@@ -10,10 +10,35 @@ import logging
 import struct
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.13"
+MANAGED_HOST_VERSION = "build-7-lsc.14"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 logger = logging.getLogger("LSCompanion.AddonHost")
+
+
+def scaling_runtime_error(status):
+    """Read explicit failures from cached telemetry; idle capture is not an error."""
+    if not status.get("available"):
+        return ""
+    if status.get("startupError"):
+        return str(status["startupError"])
+    backend = status.get("neuralBackend")
+    active_nr = "LSC-AMDNR" if backend == "AMD" else "DLSSNR02"
+    neural_enabled = False
+    for addon in status.get("addons", []):
+        if not addon.get("enabled"):
+            continue
+        if addon.get("id") in {"DLSSNR02", "LSC-AMDNR"}:
+            if addon.get("id") != active_nr:
+                continue
+            neural_enabled = True
+        if addon.get("faulted") or addon.get("error") or addon.get("level", 0) >= 2:
+            message = addon.get("error") or addon.get("status") or "Addon failed"
+            return f"{addon.get('name') or addon.get('id')}: {str(message).splitlines()[0]}"
+    if neural_enabled:
+        capture = status.get("capture") or {}
+        return str(capture.get("hookError") or capture.get("error") or "")
+    return ""
 
 
 def addon_version_key(value: object) -> tuple:

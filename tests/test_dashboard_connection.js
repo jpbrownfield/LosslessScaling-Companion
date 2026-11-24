@@ -137,6 +137,19 @@ test('pending scaling commands are visible without claiming scaling is active', 
   assert.equal(context.runtimeScalingActive, false);
 });
 
+test('runtime addon failures replace the green scaling label while stop stays available', () => {
+  const status = [];
+  const context = vm.createContext({runtimeScalingActive: false, runtimeActiveProfile: null,
+    renderProxyMenuAction() {}, renderRuntimeScalingStatus() {}, setRuntimeStatus: (...args) => status.push(args)});
+  vm.runInContext(html.slice(html.indexOf('    function renderRuntime(msg)'), html.indexOf('    function activeProfileUsesProxy()')), context);
+  const running = {isScalingActive: true, losslessScalingFound: true, losslessScalingRunning: true};
+  context.renderRuntime({...running, scalingRuntimeError: 'NR unavailable: runtime missing'});
+  assert.deepEqual(status.at(-1), ['NR unavailable: runtime missing', 'not-found']);
+  assert.equal(context.runtimeScalingActive, true);
+  context.renderRuntime({...running, scalingRuntimeError: ''});
+  assert.equal(status.at(-1)[1], 'active');
+});
+
 function benchmarkDashboard() {
   const nodes = new Map();
   const element = () => ({

@@ -198,6 +198,21 @@ class AddonConfigService:
                 "_enabled": amd_nr.enabled(data),
                 "dataPath": str(amd_nr.cache_path(self.profile_manager.config_dir)),
             }
+        # The host saves its resolved default beside the running LS executable.
+        # Managed clones change after updates: retain the default's meaning,
+        # rather than pinning a profile to a retired clone's absolute filename.
+        neural = data["addons"]["DLSSNR02"]
+        managed_root = (Path(self.profile_manager.config_dir) / "runtime/lossless-scaling").resolve()
+        live = self.live_path(getattr(self.profile_manager.config, "lossless_scaling_exe_path", None))
+        for key in ("modelPath", "amdModelPath"):
+            value = neural.get(key)
+            if not isinstance(value, str):
+                continue
+            candidate = Path(value.strip()).resolve()
+            if (not value.strip() or (candidate.name.casefold() == "nvngx_dlssnr.dll"
+                    and (candidate.is_relative_to(managed_root)
+                         or (live is not None and candidate.parent == live.parent.parent)))):
+                neural.pop(key, None)
         mode = sm86_sr.selection(data)
         if mode != "Off":
             # The proxy pins this too. Keep the visible/upstream setting aligned,

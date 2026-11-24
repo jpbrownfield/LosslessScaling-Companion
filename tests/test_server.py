@@ -5,7 +5,7 @@ import urllib.request
 import json
 import threading
 from pathlib import Path
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 from companion.core.profile_manager import ProfileManager
 from companion.core.state import AppState
@@ -70,6 +70,50 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    async def test_nr_health_is_polled_without_reshade_at_most_once_per_second(self):
+        from companion.services.server import addon_runtime_status
+        self.state.is_scaling_active = True
+        clock = [0.0]
+        status = {"available": True, "addons": [{"id": "DLSSNR02", "enabled": True,
+                  "level": 3, "status": "NR model was not found"}]}
+        async def sleep(_):
+            clock[0] += 0.25
+            if clock[0] >= 1.5:
+                raise asyncio.CancelledError
+        async def background(function, *args):
+            return status if function is addon_runtime_status else None
+        with patch.object(self.server.reshade_overlay, "eligible", return_value=False), \
+             patch.object(self.server, "_run_background_thread", new=AsyncMock(side_effect=background)) as run, \
+             patch.object(self.server.live_performance, "refresh"), \
+             patch("companion.services.server.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("companion.services.server.asyncio.sleep", side_effect=sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.server._reshade_overlay_loop()
+        self.assertEqual(sum(call.args[0] is addon_runtime_status for call in run.call_args_list), 2)
+        self.assertEqual(self.state.scaling_runtime_error, "DLSSNR02: NR model was not found")
+        self.assertEqual(self.server._runtime_payload()["scalingRuntimeError"], self.state.scaling_runtime_error)
+        self.state.is_scaling_active = False
+        self.assertEqual(self.server._runtime_payload()["scalingRuntimeError"], "")
+
+    async def test_lost_host_telemetry_reports_unverified_scaling_after_a_grace_period(self):
+        self.state.is_scaling_active = True
+        clock = [0.0]
+        async def sleep(_):
+            if clock[0] < 3:
+                self.assertEqual(self.state.scaling_runtime_error, "")
+            clock[0] += 0.25
+            if clock[0] >= 4:
+                raise asyncio.CancelledError
+        with patch.object(self.server.reshade_overlay, "eligible", return_value=False), \
+             patch.object(self.server, "_run_background_thread", new=AsyncMock(return_value={"available": False, "reason": "Host stopped responding"})), \
+             patch.object(self.server.live_performance, "refresh"), \
+             patch("companion.services.server.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("companion.services.server.asyncio.sleep", side_effect=sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.server._reshade_overlay_loop()
+        self.assertIn("Cannot verify scaling", self.state.scaling_runtime_error)
+        self.assertIn("Host stopped responding", self.state.scaling_runtime_error)
 
     async def test_general_settings_reads_overlap_without_blocking_event_loop(self):
         websocket = self.FakeWebSocket()

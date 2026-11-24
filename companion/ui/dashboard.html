@@ -2177,6 +2177,10 @@
         return;
       }
       if (runtimeScalingActive) {
+        if (msg.scalingRuntimeError) {
+          setRuntimeStatus(msg.scalingRuntimeError, 'not-found');
+          return;
+        }
         const target = msg.scalingTarget || {};
         const executable = target.processName || (target.exePath || '').split(/[\\/]/).pop() || 'Unknown application';
         const profile = runtimeActiveProfile && runtimeActiveProfile.name || 'Unknown profile';

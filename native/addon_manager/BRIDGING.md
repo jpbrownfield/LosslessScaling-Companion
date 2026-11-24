@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **13**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **14**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -15,9 +15,10 @@ python scripts/build_addon_manager.py
 
 Both source and release downloads are SHA-256 pinned. The script builds the MIT
 host from source, extracts the verified release using its documented `--extract`
-mode, replaces only `Lossless.dll`, and emits
-`build/native/LSAddonManager-Companion.zip`. The unchanged NR/upscaler binaries
-and all accompanying source, runtimes and licences come from that release.
+mode, replaces `Lossless.dll` and the rebuilt NR addon/forwarder, and emits
+`build/native/LSAddonManager-Companion.zip`. Other upstream addon binaries,
+runtimes and licences come from that release. Both source ZIPs include the
+patched NR source, pinned dependencies and reproduction commands.
 The package never includes `nvngx_dlssnr.dll` or user configuration.
 The builder also builds and bundles `LSC-AdapterReport` and the separate MIT
 `LSC-AMDNR` addon. Their sources/licences are in the host source archive.
@@ -28,6 +29,19 @@ not replace our host with an unreviewed upstream release. New upstream versions
 are incorporated by rebuilding and releasing Companion.
 
 ## Deliberate patch surface
+
+Revision 14 removes render-thread waits after NR failures or unsupported profiles.
+The original capture continues unchanged and the failure remains visible until
+explicit retry, reconfiguration or disable. Untagged compute shaders (including
+ReShade's own passes) are skipped rather than treated as failed LS captures.
+Missing models are checked before GPU initialization, with the attempted path in
+the error. Blank model paths use the running executable's default; Companion
+removes captured defaults pointing at retired managed clones. Explicit external
+model paths remain authoritative. `neural_statustest` exercises the actual addon
+on WARP with a missing model, blank default and callback failure status; the
+routing fixture checks that a required callback returning false cannot freeze LS.
+Companion reads explicit addon failures in the background at most once a second
+when the overlay does not already need telemetry, and shows them in runtime status.
 
 Revision 9 adds capture progress diagnostics to the existing host status pipe.
 `capture.traceVersion=1`, `capture.progress` and `capture.shaderSamples` distinguish
@@ -578,9 +592,10 @@ of cursor restoration. Interactive Prey and Warframe validation remains required
 
 ## Distribution and validation limits
 
-The host is MIT; the NR addon is GPL-3.0-only. Its verified corresponding source
-ZIP is retained unchanged. Our package also includes `CompanionHost-source.zip`
-with the patched host, overlay, build script and exact ImGui/MinHook dependencies.
+The host is MIT; the NR addon is GPL-3.0-only. Its corresponding source ZIP
+contains the patched NR source, recovery tests and build commands. Our package
+also includes `CompanionHost-source.zip` with the same complete source, patched
+host, overlay, build script and exact ImGui/MinHook dependencies.
 Other runtimes retain their own notices. Neither the proprietary NR model nor
 Lossless Scaling's engine is redistributed.
 

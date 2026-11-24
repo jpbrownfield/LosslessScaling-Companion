@@ -8,6 +8,9 @@
 #include <windows.h>
 #include <iostream>
 #include <stdexcept>
+#include <future>
+#include <chrono>
+#include "real_frame_hook.h"
 namespace eam {
 struct CompanionRoutingTest {
     static void Vendor(HostImpl& h,unsigned v){h.m_realVendor.store(v);}
@@ -16,11 +19,14 @@ struct CompanionRoutingTest {
 struct Fixture {
     HMODULE dll=nullptr;
     bool (*reg)(IHost*,bool)=nullptr;void (*remove)()=nullptr;unsigned (*calls)()=nullptr;
+    void (*fail)(bool)=nullptr;void (*require)(bool)=nullptr;
     explicit Fixture(const wchar_t* path){dll=LoadLibraryW(path);if(!dll)throw std::runtime_error("Load routing fixture");
         reg=reinterpret_cast<decltype(reg)>(GetProcAddress(dll,"Register"));
         remove=reinterpret_cast<decltype(remove)>(GetProcAddress(dll,"Remove"));
         calls=reinterpret_cast<decltype(calls)>(GetProcAddress(dll,"Calls"));
-        if(!reg||!remove||!calls)throw std::runtime_error("Fixture exports");}
+        fail=reinterpret_cast<decltype(fail)>(GetProcAddress(dll,"Fail"));
+        require=reinterpret_cast<decltype(require)>(GetProcAddress(dll,"Require"));
+        if(!reg||!remove||!calls||!fail||!require)throw std::runtime_error("Fixture exports");}
 };
 static void Expect(bool ok,const char* text){if(!ok)throw std::runtime_error(text);}
 static bool Generic(const EamRealFrame&,void*){return true;}
@@ -82,15 +88,34 @@ static void TestDispatchIdentity(const wchar_t* reshade) {
     context->CSSetShader(compute.Get(),nullptr,0);
     for(unsigned i=0;i<3;++i)context->Dispatch(1,1,1);
     Expect(D3D11Hook::GetDispatchCount()==3 && dispatchCallbacks==3,"Every dispatch reaches callbacks exactly once");
+    Expect(host.SetRealFrameCallback(Generic,nullptr),"Register generic required transform");
+    host.RequireRealFrameProcessing(true);
+    auto unsupported=std::async(std::launch::async,[&]{context->Dispatch(1,1,1);});
+    const bool unsupportedReturned=unsupported.wait_for(std::chrono::seconds(2))==std::future_status::ready;
+    host.RequireRealFrameProcessing(false); // Release old required-profile loops before joining.
+    unsupported.get();host.SetRealFrameCallback(nullptr,nullptr);
+    Expect(unsupportedReturned,"Unsupported NR profile must not stall ordinary dispatch");
+    Expect(dispatchCallbacks==4,"Unsupported NR still executes ordinary dispatch callbacks");
     Expect(host.GetD3D11DeviceContext()==context.Get(),"Public host context retains its original identity");
     D3D11Hook::Shutdown();
     context->Dispatch(1,1,1);
-    Expect(dispatchCallbacks==3,"Shutdown stops dispatch callbacks");
+    Expect(dispatchCallbacks==4,"Shutdown stops dispatch callbacks");
     std::cout<<"Dispatch identity passed (native, proxy contract, shader identity, exactly-once callbacks).\n";
 }
 int wmain(int argc,wchar_t** argv){try {
-    TestDispatchIdentity(argc>1?argv[1]:nullptr);
     Fixture nv(L"routing-fixtures/DLSSNR02.dll"),amd(L"routing-fixtures/LSC_AMDNR.dll");
+    {
+        eam::HostImpl host;Expect(nv.reg(&host,true),"Register required failing NR");nv.fail(true);
+        auto result=std::async(std::launch::async,[&]{
+            eam::CompanionRoutingTest::Vendor(host,0x10de);EamRealFrame frame;return host.InvokeRealFrame(frame);
+        });
+        const bool returned=result.wait_for(std::chrono::seconds(2))==std::future_status::ready;
+        nv.require(false); // Also releases older blocking implementations on failure.
+        Expect(!result.get(),"Failed NR preserves original");nv.fail(false);nv.remove();
+        Expect(returned,"Required NR failure must not block render thread");
+        Expect(RealFrameHook::Support()==EamFrameSupport::CallbackFailed,"NR failure remains visible");
+    }
+    TestDispatchIdentity(argc>1?argv[1]:nullptr);
     for(bool amdFirst:{false,true})for(unsigned vendor:{0x10deu,0x1002u,0x8086u}) {
         eam::HostImpl host;unsigned nvBefore=nv.calls(),amdBefore=amd.calls();
         if(amdFirst){Expect(amd.reg(&host,false),"AMD registration");Expect(nv.reg(&host,true),"NV alongside AMD");}

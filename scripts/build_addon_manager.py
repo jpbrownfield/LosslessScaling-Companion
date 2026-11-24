@@ -1,7 +1,7 @@
-"""Build the pinned Companion host and package the unmodified upstream addon suite.
+"""Build the pinned Companion host and NR recovery overlay.
 
-The MIT host receives our overlay and separate AMD addon. The release's GPL NR
-binaries, matching source, licences and upscaler runtimes are copied byte for byte.
+The GPL NR addon is rebuilt with its complete corresponding source. Other
+upstream addon binaries, licences and upscaler runtimes retain their pinned form.
 """
 from __future__ import annotations
 import argparse
@@ -148,6 +148,14 @@ def build(cache: Path):
     subprocess.run([cmake, "-S", str(source / "manager"), "-B", str(work / "host"), "-A", "x64",
         f'-DLSC_HOST_VERSION={lock["version"]}', f'-DEAM_BUILD_NUMBER={tag.removeprefix("build-")}',
         *dependency_options], check=True)
+    subprocess.run([cmake, "-S", str(source / "addons/NeuralRendering"),
+                    "-B", str(work / "neural"), "-A", "x64",
+                    f"-DFETCHCONTENT_SOURCE_DIR_IMGUI={dependencies['imgui']}"], check=True)
+    subprocess.run([cmake, "--build", str(work / "neural"), "--config", "Release",
+                    "--target", "neural_statustest", "neural_forwardertest", "--parallel", "4"], check=True)
+    for name in ("neural_statustest", "neural_forwardertest"):
+        subprocess.run([str(work / "neural/Release" / (name + ".exe"))],
+                       check=True, cwd=work / "neural/Release", timeout=60)
     targets = ["Lossless", "lsc_headless_smoke", "lsc_fake_engine", "lsc_panel_test", "lsc_routing_test", "lsc_cursor_test", "lsc_capture_trace_test", "lsc_pacing_probe_test", "eam_featurestest"]
     fps_test = (source / "manager/tools/fps_counter_test.cpp").is_file()
     if fps_test:
@@ -173,6 +181,15 @@ def build(cache: Path):
                     "-A", "x64", f"-DLSC_MINHOOK_SOURCE={dependencies['minhook']}"], check=True)
     subprocess.run([cmake, "--build", str(ROOT / "build/hdr_session"), "--config", "Release"], check=True)
     payload, upstream_notices = extract_release(release_archive, work)
+    for name in ("DLSSNR02.dll", "NeuralRendering_nvngx.dll"):
+        shutil.copy2(work / "neural/Release" / name, payload / "addons/DLSSNR02" / name)
+    nr_notice = payload / "addons/DLSSNR02/NOTICE.md"
+    modification = ("\n\nCompanion revision 14 (2026-11-23): rebuilt from the pinned source with "
+                    "nonblocking NR failure recovery, model-path fallback and error reporting fixes. "
+                    "NeuralRendering-source.zip contains the complete modified source and build commands.\n")
+    if modification not in nr_notice.read_text(encoding="utf-8"):
+        with nr_notice.open("a", encoding="utf-8") as output:
+            output.write(modification)
     shutil.copy2(work / "host/Release/Lossless.dll", payload / "Lossless.dll")
     helper = payload / "addons/LSC-AdapterReport"
     helper.mkdir(parents=True, exist_ok=True)
@@ -202,8 +219,7 @@ def build(cache: Path):
     shutil.copy2(OVERLAY / "BRIDGING.md", notices / "BRIDGING.md")
     shutil.copy2(ROOT / "native/vendor/losslessproxy-sdk/LICENSE", notices / "LosslessProxy-SDK-LICENSE.txt")
 
-    # Host source plus the overlay and exact fetched dependencies. The NR's own
-    # corresponding-source ZIP is retained from the verified upstream release.
+    # Complete corresponding source, including the GPL NR recovery overlay.
     with zipfile.ZipFile(notices / "CompanionHost-source.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(source.rglob("*")):
             if path.is_file() and not any(part in {".git", "build"} for part in path.relative_to(source).parts):
@@ -233,9 +249,13 @@ def build(cache: Path):
             "-DFETCHCONTENT_SOURCE_DIR_IMGUI=<absolute>/dependencies/imgui "
             "-DFETCHCONTENT_SOURCE_DIR_MINHOOK=<absolute>/dependencies/minhook\n"
             "cmake --build host --config Release --target Lossless\n"
+            "cmake -S upstream/addons/NeuralRendering -B neural -A x64 -DFETCHCONTENT_SOURCE_DIR_IMGUI=<absolute>/dependencies/imgui\n"
+            "cmake --build neural --config Release --target DLSSNR02 neural_statustest\n"
+            "neural/Release/neural_statustest.exe\n"
             "The amd-runtime/ tree already has the adapter-selection patch applied.\n"
             "cmake -S native/amd_neuralrender -B amd -A x64 -DLSC_UPSTREAM_SOURCE=<absolute>/upstream -DLSC_AMD_RUNTIME_SOURCE=<absolute>/amd-runtime\n"
             "cmake --build amd --config Release\n")
+    shutil.copy2(notices / "CompanionHost-source.zip", payload / "addons/DLSSNR02/NeuralRendering-source.zip")
     deployment = []
     for path in sorted(payload.rglob("*")):
         if not path.is_file():

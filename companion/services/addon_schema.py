@@ -23,7 +23,7 @@ PICTURE = [
 
 ADDONS = [
     dict(id="DLSSNR02", name="DLSS 5 Neural Rendering",
-         description="Enhances real captures before LSFG. The capture GPU selects native NVIDIA NR or the separate AMD backend automatically. Requires LS 3.2.2.0, WGC and your imported model. AMD additionally needs the optional runtime and compatible Windows HIP hardware; use FSR, XeSS or NIS for scaling. Use LSFG 3 or FG Off; FG Off requires Scaling Off or NIS. NVIDIA model errors pause capture; AMD errors preserve the original capture. NVIDIA flow/HDR/picture controls do not apply to AMD; AMD uses compute flow, automatic exposure and ratio composition. AMD limits: 8 passes, intensity/structure/tone 1, detail 2.",
+         description="Enhances real captures before LSFG. The capture GPU selects native NVIDIA NR or the separate AMD backend automatically. Requires LS 3.2.2.0, WGC and your imported model. AMD additionally needs the optional runtime and compatible Windows HIP hardware; use FSR, XeSS or NIS for scaling. Use LSFG 3 or FG Off; FG Off requires Scaling Off or NIS. NR errors preserve original frames and appear in runtime status. NVIDIA flow/HDR/picture controls do not apply to AMD; AMD uses compute flow, automatic exposure and ratio composition. AMD limits: 8 passes, intensity/structure/tone 1, detail 2.",
          fields=[flag("enabled", "Process captured frames", "1"),
                  number("scalePercent", "Working resolution (%)", 25, 100, "1", "100"),
                  choice("preset", "Model", [["0", "Default"], ["1", "Original (A)"], ["2", "Fast (B)"], ["3", "Preset 3"]]),

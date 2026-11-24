@@ -83,12 +83,11 @@ bool HostImpl::InvokeRealFrame(const EamRealFrame& frame) {
     if(!CallReal(hook.callback,frame,hook.owner,&applied)) {
         RealFrameHook::CallbackFailed();
         LOG_ERROR("Host","Real-frame transform faulted");
-        while(RealFrameRequired())Sleep(25);
+        // A failed optional transform must not hold LS's render thread hostage.
         if(useAmd){m_amdRealModule.store(nullptr);m_amdRealRequired.store(false);}
         else {m_realModule.store(nullptr);m_realRequired.store(false);}
         hook={};m_realCount.store((m_realHook.callback?1:0)+(m_amdRealHook.callback?1:0),std::memory_order_release);return false;
     }
     if(!applied&&RealFrameRequired())RealFrameHook::CallbackFailed();
-    while(!applied&&RealFrameRequired())Sleep(25);
     return applied;
 }

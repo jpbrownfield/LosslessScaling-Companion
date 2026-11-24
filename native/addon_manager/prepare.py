@@ -2,6 +2,10 @@
 from pathlib import Path
 import argparse
 import shutil
+if __package__:
+    from .prepare_nr import patch_nr
+else:
+    from prepare_nr import patch_nr
 
 
 def replace_once(path, before, after):
@@ -187,6 +191,7 @@ def patch_passthrough(manager: Path):
 def prepare(source: Path):
     overlay = Path(__file__).resolve().parent
     manager = source / "manager"
+    patch_nr(source, replace_once, overlay)
     dispatch = manager / "src/core/d3d11_hook.cpp"
     replace_once(dispatch, '#include "d3d11_hook.h"',
                  '#include "d3d11_hook.h"\n#include "context_identity.h"')
