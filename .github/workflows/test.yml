@@ -14,7 +14,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r companion/requirements.txt pytest
-      - run: python -m pytest -v
+      - name: Run Python tests
+        shell: pwsh
+        run: |
+          python -m pytest -v --junitxml=build/python-tests.xml
+          if ($LASTEXITCODE -ne 0) {
+            python scripts/report_pytest_failures.py build/python-tests.xml
+            throw "Python tests failed; see the failure annotations"
+          }
       - name: Run JavaScript tests
         shell: pwsh
         run: |

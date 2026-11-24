@@ -87,8 +87,11 @@ jobs:
       - name: Run application tests
         shell: pwsh
         run: |
-          python -m pytest -q
-          if ($LASTEXITCODE -ne 0) { throw "Python tests failed" }
+          python -m pytest -q --junitxml=build/python-tests.xml
+          if ($LASTEXITCODE -ne 0) {
+            python scripts/report_pytest_failures.py build/python-tests.xml
+            throw "Python tests failed; see the failure annotations"
+          }
           node tests/check_javascript.js companion/ui/dashboard.html
           if ($LASTEXITCODE -ne 0) { throw "Dashboard JavaScript validation failed" }
           foreach ($testFile in (Get-ChildItem -LiteralPath tests -Filter 'test_*.js' -File | Sort-Object Name)) {
