@@ -8,7 +8,7 @@ const code = html.slice(html.indexOf('    function setActiveProfileSection('), h
 
 function editor() {
   const ids = ['profileBasicsPanel', 'profileScalingPanel', 'profileAddonsPanel',
-    'profileReshadePanel', 'profileRtssPanel', 'profileSpecialKPanel'];
+    'profileReshadePanel', 'profileRtssPanel'];
   function element(id) {
     return {id, events: {}, attributes: {}, dataset: {}, open: false,
       classList: {contains: name => name === 'profile-major-panel'},
@@ -52,7 +52,7 @@ function editor() {
 
 test('header navigation opens a collapsed panel before scrolling and focusing its heading', () => {
   const {panels, buttons, content} = editor();
-  assert.deepEqual(panels.map(panel => panel.open), [true, true, false, false, false, false]);
+  assert.deepEqual(panels.map(panel => panel.open), [true, true, false, false, false]);
   buttons[2].events.click[0]();
   assert.equal(panels[2].open, true);
   assert.equal(panels[0].open, true);
@@ -67,12 +67,12 @@ test('header navigation opens a collapsed panel before scrolling and focusing it
 test('arrow, Home and End keys move navigation focus without changing panel settings', () => {
   const {panels, buttons} = editor();
   let prevented = 0;
-  for (const [index, key, target] of [[0, 'ArrowLeft', 5], [5, 'ArrowRight', 0], [1, 'End', 5], [4, 'Home', 0]]) {
+  for (const [index, key, target] of [[0, 'ArrowLeft', 4], [4, 'ArrowRight', 0], [1, 'End', 4], [4, 'Home', 0]]) {
     buttons[index].events.keydown[0]({key, preventDefault() { prevented++; }});
     assert.ok(buttons[target].focused);
   }
   assert.equal(prevented, 4);
-  assert.deepEqual(panels.map(panel => panel.open), [true, true, false, false, false, false]);
+  assert.deepEqual(panels.map(panel => panel.open), [true, true, false, false, false]);
 });
 
 test('invalid settings reveal all enclosing disclosures and update the navigation', () => {
@@ -91,17 +91,17 @@ test('scroll tracking follows the section beneath the sticky header and the last
   content.scrollTop = 600;
   content.events.scroll[0]();
   assert.equal(buttons[2].attributes['aria-current'], 'location');
-  panels[5].open = true;
+  panels[4].open = true;
   content.scrollTop = content.scrollHeight - content.clientHeight;
   content.events.scroll[0]();
-  assert.equal(buttons[5].attributes['aria-current'], 'location');
+  assert.equal(buttons[4].attributes['aria-current'], 'location');
 });
 
 test('reopening a profile resets its view without duplicating event handlers', () => {
   const {context, panels, buttons, content} = editor();
-  buttons[5].events.click[0]();
+  buttons[4].events.click[0]();
   context.initializeProfileSections();
-  assert.equal(panels[5].open, false);
+  assert.equal(panels[4].open, false);
   assert.equal(content.scrollTop, 0);
   assert.equal(buttons[0].attributes['aria-current'], 'location');
   assert.equal(buttons[0].events.click.length, 1);

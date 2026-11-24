@@ -33,7 +33,7 @@ function dashboard(saved = {}, query = '') {
     if (!nodes.has(id)) nodes.set(id, element());
     return nodes.get(id);
   };
-  const titles = [[], ['Startup', 'GPU Selection'], ['Companion Addon Host', 'Process Lasso integration', 'RTSS frame limiting', 'ReShade', 'ReShade profiles', 'Special K'], ['GPU workload', 'PresentMon'], []];
+  const titles = [[], ['Startup', 'GPU Selection'], ['Companion Addon Host', 'Process Lasso integration', 'RTSS frame limiting', 'ReShade', 'ReShade profiles'], ['GPU workload', 'PresentMon'], []];
   const panels = ['profiles', 'general', 'lossless-addons', 'performance-benchmark', 'testing'].map((key, index) => {
     const panel = element();
     panel.id = key;
@@ -118,7 +118,7 @@ test('clicking Add-ons lists its headings and selecting one focuses and scrolls 
   buttons[2].onclick();
   const menu = get('dashboard-subsections-lossless-addons');
   const links = menu.children[0].children;
-  assert.deepEqual(links.map(link => link.textContent), ['Companion Addon Host', 'Process Lasso integration', 'RTSS frame limiting', 'ReShade', 'ReShade profiles', 'Special K']);
+  assert.deepEqual(links.map(link => link.textContent), ['Companion Addon Host', 'Process Lasso integration', 'RTSS frame limiting', 'ReShade', 'ReShade profiles']);
   assert.equal(menu.classList.contains('is-open'), true);
   assert.equal(menu.inert, false);
   assert.equal(buttons[2].attributes['aria-expanded'], 'true');

@@ -79,15 +79,14 @@ test('capture status distinguishes missing settings, idle hooks and unmatched re
   assert.doesNotMatch(ready, /no supported capture matched|No LS compute/);
 });
 
-test('runtime status reaches both global and profile views and clears stale success on disconnect', () => {
-  const nodes = Object.fromEntries(['addonRuntimeStatus', 'profileAddonRuntimeStatus'].map(id => [id, {
+test('runtime diagnostics stay outside profile editing and clear stale success on disconnect', () => {
+  const nodes = Object.fromEntries(['addonRuntimeStatus'].map(id => [id, {
     setAttribute(_, value) { this.state = value; }, textContent: ''}]));
   const context = {document: {getElementById(id) { return nodes[id]; }}};
   vm.runInNewContext(html.slice(runtimeStart, runtimeEnd), context);
   context.renderAddonRuntimeStatus({available: true, hostVersion: 'test', neuralBackend: 'NVIDIA',
     addons: [{id: 'DLSSNR02', enabled: true, loaded: true, status: 'Waiting'}]});
-  assert.equal(nodes.profileAddonRuntimeStatus.textContent, nodes.addonRuntimeStatus.textContent);
-  assert.match(nodes.profileAddonRuntimeStatus.textContent, /NVIDIA/);
+  assert.match(nodes.addonRuntimeStatus.textContent, /NVIDIA/);
   context.renderAddonRuntimeStatus({available: false, reason: 'Lossless Scaling stopped'});
   for (const node of Object.values(nodes)) {
     assert.equal(node.state, 'unavailable');

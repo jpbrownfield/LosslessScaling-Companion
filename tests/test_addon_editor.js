@@ -182,9 +182,10 @@ test('live scaling status immediately follows Scale Now inside the sidebar', () 
   assert.doesNotMatch(footer, /Switch to your app/);
 });
 
-test('profile addons retain the advanced panel without a bulk disable button or handler', () => {
+test('profile addons omit runtime diagnostics and retain the global advanced panel', () => {
   assert.doesNotMatch(html, /disableOptionalAddonsBtn|Disable extra features/);
-  assert.match(html, /id="openProfileAddonPanelBtn"/);
+  assert.doesNotMatch(html, /id="openProfileAddonPanelBtn"|id="profileAddonRuntimeStatus"/);
+  assert.match(html, /id="openProxyMenuBtn"/);
 });
 
 test('addon toolbar binds and tolerates clicks before the connection opens', () => {

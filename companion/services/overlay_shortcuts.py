@@ -6,6 +6,9 @@ from pathlib import Path
 from ..core.keyboard_keys import KEY_LABELS
 from .input_simulator import InputSimulator
 
+# Keep legacy bindings for later use without exposing or reserving their keys.
+SPECIAL_K_PANEL_VISIBLE = False
+
 DEFAULT_OVERLAY_HOTKEYS = {
     "overlay_toggle": "ctrl+home",
     "profile_editor": "delete", "addon_manager": "insert",
@@ -53,7 +56,7 @@ def validate_overlay_hotkeys(value):
     seen = set()
     for key, binding in result.items():
         parsed = parse_shortcut(binding)
-        if parsed:
+        if parsed and (key != "special_k_panel" or SPECIAL_K_PANEL_VISIBLE):
             if parsed[:2] in seen:
                 raise ValueError("Overlay shortcuts must use different keys")
             seen.add(parsed[:2])

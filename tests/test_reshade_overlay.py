@@ -573,12 +573,13 @@ class ReShadeOverlayTests(unittest.TestCase):
                 self.assertTrue(controller.dispatch_action("overlay_toggle"))
                 self.assertTrue(controller.active)
 
-    def test_special_k_custom_binding_is_passive_and_takes_priority(self):
+    def test_retired_special_k_panel_has_no_shortcut_hint_or_config_reads(self):
         controller, _, state, listener, _, seen = environment()
         state.current_active_profile.graphics.special_k.enabled = True
-        with patch("companion.services.reshade_overlay.special_k_menu_hotkey", return_value=("ctrl+f10", True)):
+        with patch("companion.services.reshade_overlay.special_k_menu_hotkey", return_value=("ctrl+f10", True)) as read:
             controller.update(status(components=[{"id": "special-k", "loaded": True}]))
-        self.assertIn({"key": "Ctrl+F10", "label": "Special K panel"}, seen[-1]["hotkey_hints"])
+        read.assert_not_called()
+        self.assertFalse(any(item["label"] == "Special K panel" for item in seen[-1]["hotkey_hints"]))
         self.assertNotIn("special_k_panel", listener.set_overlay_actions.call_args.args[0])
 
 
@@ -602,6 +603,8 @@ class OverlayShortcutTests(unittest.TestCase):
         self.assertEqual(parse_shortcut("-")[:2], (0, 0xBD))
         self.assertEqual(parse_shortcut("Ctrl+Shift+Backspace")[:2], (6, 8))
         self.assertIsNone(parse_shortcut(""))
+        # A hidden integration must not reserve a key against visible controls.
+        self.assertEqual(validate_overlay_hotkeys({"performance_graph": "-"})["performance_graph"], "-")
         for invalid in ({"profile_editor": "insert"}, {"unknown": "f8"}, {"profile_editor": "bad+key"}):
             with self.assertRaises(ValueError):
                 validate_overlay_hotkeys(invalid)

@@ -299,7 +299,7 @@ class AddonConfigServiceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('id="addonManagerEnabled"', dashboard)
         self.assertIn("Open advanced panel", dashboard)
-        self.assertIn("Add-ons for this profile", dashboard)
+        self.assertIn('id="profileAddonsHeading"', dashboard)
         self.assertIn('id="addonEditorCards"', dashboard)
         self.assertNotIn('id="echoConfigJson"', dashboard)
 

@@ -13,7 +13,7 @@ from ..core.keyboard_keys import PUNCTUATION_KEYS, KEY_LABELS
 from .input_simulator import InputSimulator
 from .addon_host import set_passthrough
 from .overlay_shortcuts import (DEFAULT_OVERLAY_HOTKEYS, ACTION_LABELS, parse_shortcut,
-                                special_k_menu_hotkey)
+                                special_k_menu_hotkey, SPECIAL_K_PANEL_VISIBLE)
 logger = logging.getLogger("LSCompanion.Overlay")
 
 
@@ -125,7 +125,7 @@ class ReShadeOverlayController:
             logger.info("Overlay state: eligible=%s; menu requested=%s; profile=%s; anchor HWND=%s; "
                         "ReShade selected=%s; input active=%s; input requested=%s", *overlay_state)
             self._last_overlay_state = overlay_state
-        self._special_k_loaded = bool(active and profile.graphics.special_k.enabled
+        self._special_k_loaded = bool(SPECIAL_K_PANEL_VISIBLE and active and profile.graphics.special_k.enabled
                                       and any(item.get("id") == "special-k" and item.get("loaded") is True
                                               for item in status.get("components", []) if isinstance(item, dict)))
         if self._special_k_loaded:

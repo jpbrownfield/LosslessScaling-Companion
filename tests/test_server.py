@@ -1441,7 +1441,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Community Runtime Warning", body)
             self.assertIn("Download Full Add-On build", body)
             self.assertIn('data-addon-download="reshade"', body)
-            self.assertIn('data-addon-download="special-k"', body)
+            self.assertNotIn('data-addon-download="special-k"', body)
             self.assertNotIn('data-addon-import=', body)
             self.assertNotIn('Import downloaded runtime', body)
             self.assertNotIn('Import installed runtime', body)
@@ -1710,6 +1710,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         for provider in ("sm86-sr", "amd-neural-render-runtime"):
             self.assertEqual(status["latestVersions"][provider], versions[provider])
         self.assertNotIn("display-commander", status["latestVersions"])
+        self.assertNotIn("special-k", status["latestVersions"])
         self.assertEqual(status["releaseUrls"]["ls-addon-manager"], "https://example.test/ls-addon-manager/v2.0.0")
 
     async def test_readonly_local_client_cannot_mutate_profiles(self):

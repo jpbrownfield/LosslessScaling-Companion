@@ -12,7 +12,7 @@ test('host settings omit runtime details while keeping the enabled toggle and ad
   assert.doesNotMatch(host, /addonRuntimeStatus|addon-host-runtime|Runtime status/);
   assert.match(host, /id="addonManagerEnabled"[^>]*checked/);
   assert.match(host, /id="openProxyMenuBtn"/);
-  assert.match(html, /id="profileAddonRuntimeStatus"/);
+  assert.doesNotMatch(html, /id="profileAddonRuntimeStatus"/);
 });
 
 test('display settings omit routing diagnostics and clean install has a decorative recycle icon', () => {

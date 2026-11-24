@@ -2495,7 +2495,7 @@ class CompanionWebSocketServer:
 
     async def _refresh_addon_updates(self, *, force: bool) -> Dict:
         async with self.addon_update_lock:
-            providers = ("ls-addon-manager", "reshade", "special-k")
+            providers = ("ls-addon-manager", "reshade")
             # Cards need release metadata on first load, including backends
             # which are optional and are not part of automatic installation.
             check_providers = (*providers, "sm86-sr", "amd-neural-render-runtime")
@@ -2532,7 +2532,7 @@ class CompanionWebSocketServer:
             if self.config.addon_manager.version:
                 selected["ls-addon-manager"].append(self.config.addon_manager.version)
             for profile in self.config.profiles:
-                for provider in ("reshade", "special-k"):
+                for provider in ("reshade",):
                     component = getattr(profile.graphics, provider.replace("-", "_"))
                     if component.enabled or (provider == "reshade" and profile.reshade and profile.reshade.enabled):
                         # Match the resolver's selection for an unpinned profile.

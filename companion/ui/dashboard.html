@@ -485,8 +485,8 @@
     .addon-host-runtime { display:flex; flex-direction:column; gap:12px; padding:24px; border-left:1px solid var(--card-border); background:rgba(10,15,22,.3); }
     .addon-runtime-title { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:650; }
     .addon-runtime-title::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--text-muted); }
-    #addonRuntimeStatus, #profileAddonRuntimeStatus { white-space:pre-line; overflow-wrap:anywhere; font-size:12px; line-height:1.75; }
-    #addonRuntimeStatus[data-state="error"], #profileAddonRuntimeStatus[data-state="error"] { color:#fca5a5; }
+    #addonRuntimeStatus { white-space:pre-line; overflow-wrap:anywhere; font-size:12px; line-height:1.75; }
+    #addonRuntimeStatus[data-state="error"] { color:#fca5a5; }
     .addon-host-toggle { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:13px 15px; border:1px solid var(--card-border); border-radius:9px; background:var(--surface-bg); }
     .addon-host-toggle strong { display:block; font-size:13px; font-weight:600; }
     .addon-host-toggle p { color:var(--text-muted); font-size:12px; margin-top:2px; }
@@ -519,6 +519,9 @@
     .profile-major-panel > summary { list-style:none; cursor:pointer; gap:10px; user-select:none; }
     .profile-major-panel > summary::-webkit-details-marker { display:none; }
     .profile-major-panel > summary::before { content:'\203a'; display:inline-block; color:var(--text-muted); font-size:22px; line-height:1; transition:transform .15s; }
+    .profile-addons-heading { font-size:16px; color:var(--text-muted); margin:24px 0 12px; }
+    .profile-addon-group { scroll-margin-top:calc(var(--profile-header-height, 130px) + 16px); }
+    #profileAddonsPanel .addon-editor-card { border:0; padding:0; background:transparent; box-shadow:none; }
     .profile-major-panel[open] > summary::before { transform:rotate(90deg); }
     .profile-major-panel[open] > summary { border-bottom:1px solid var(--card-border); }
     .profile-major-panel > .profile-addon-section, .profile-major-panel > .integration-section { margin:0; padding:20px; border:0; border-radius:0; background:transparent; }
@@ -715,9 +718,9 @@
               </div>
               <div class="form-row">
                 <div class="form-group"><label for="overlayPerformanceGraphHotkey">Performance graph</label><input id="overlayPerformanceGraphHotkey" type="text" value="=" maxlength="64" placeholder="=" autocomplete="off" spellcheck="false"></div>
-                <div class="form-group"><label for="overlaySpecialKPanelHotkey">Special K panel</label><input id="overlaySpecialKPanelHotkey" type="text" value="-" maxlength="64" placeholder="-" autocomplete="off" spellcheck="false"></div>
+
               </div>
-              <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, the Companion overlay shortcut opens or closes the overlay and enables or disables input passthrough for ReShade. Open the Companion overlay first, then use the ReShade configuration menu shortcut for its shader and preset menu. Switching to another app temporarily suspends interaction; returning to the game or Lossless Scaling restores it if the overlay was left on. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. Punctuation and numpad operators are supported; shifted symbols are shown as Shift plus the base key. ReShade supports Ctrl, Alt and Shift combinations. Special K's custom panel binding takes priority. ReShade key changes apply the next time scaling starts.</p>
+              <p class="item-sub" style="white-space:normal;margin-top:10px">While scaling, the Companion overlay shortcut opens or closes the overlay and enables or disables input passthrough for ReShade. Open the Companion overlay first, then use the ReShade configuration menu shortcut for its shader and preset menu. Switching to another app temporarily suspends interaction; returning to the game or Lossless Scaling restores it if the overlay was left on. Submenu shortcuts work while Companion's overlay is open. Click Set key, hold any modifiers, then press a key; Escape cancels and Clear disables a Companion shortcut. Punctuation and numpad operators are supported; shifted symbols are shown as Shift plus the base key. ReShade supports Ctrl, Alt and Shift combinations. ReShade key changes apply the next time scaling starts.</p>
             </section>
           </div>
         </section>
@@ -857,7 +860,7 @@
             <div id="reshadeProfileList" class="reshade-profile-list"><div class="item-sub">Loading profiles...</div></div>
           </div>
         </section>
-        <section class="addon-card addon-card-wide"><div class="addon-card-header"><div><h3>Special K</h3><p class="addon-description">Optional HDR conversion and presentation features. Enable and configure it per profile.</p></div><span class="addon-badge" data-addon-badge="special-k">Not installed</span></div><div class="addon-status" data-addon-status="special-k">Checking the Special K installation...</div><div class="addon-actions"><a class="btn btn-primary" href="https://www.special-k.info/" target="_blank" rel="noopener noreferrer" data-addon-download="special-k">Download and install Special K</a><button class="btn btn-secondary" type="button" data-addon-check="special-k">Check version</button></div></section>
+
       </div>
       <section class="settings-group">
         <h2 class="settings-group-title">Gloam HDR integration</h2>
@@ -1039,10 +1042,10 @@
         <nav id="profileSectionNav" class="profile-section-nav" aria-label="Profile settings sections">
           <button type="button" data-profile-section-link="profileBasicsPanel" aria-controls="profileBasicsPanel">Profile</button>
           <button type="button" data-profile-section-link="profileScalingPanel" aria-controls="profileScalingPanel">Lossless Scaling</button>
-          <button type="button" data-profile-section-link="profileAddonsPanel" aria-controls="profileAddonsPanel">Add-ons</button>
+          <button type="button" data-profile-section-link="profileAddonsPanel" aria-controls="profileAddonsPanel">DLSS 5</button>
           <button type="button" data-profile-section-link="profileReshadePanel" aria-controls="profileReshadePanel">ReShade</button>
           <button type="button" data-profile-section-link="profileRtssPanel" aria-controls="profileRtssPanel">RTSS</button>
-          <button type="button" data-profile-section-link="profileSpecialKPanel" aria-controls="profileSpecialKPanel">Special K</button>
+
         </nav>
       </div>
       <form id="profileForm">
@@ -1179,13 +1182,12 @@
           </div>
         </details>
 
+        <section class="profile-addon-group" aria-labelledby="profileAddonsHeading">
+        <h3 id="profileAddonsHeading" class="profile-addons-heading">Add-ons</h3>
         <details id="profileAddonsPanel" class="settings-group profile-settings-group profile-major-panel">
-          <summary class="settings-group-title">Add-ons for this profile</summary>
+          <summary class="settings-group-title">DLSS 5</summary>
           <div class="settings-group-content">
-            <div class="addon-profile-intro"><p>Choose upscalers in Scaling above. Enable extra features here; detailed tuning is available in the advanced panel while scaling. Panel edits are saved to the active profile. Profile changes apply on the next scaling start.</p><button id="openProfileAddonPanelBtn" class="btn btn-secondary" type="button">Advanced panel (active profile)</button></div>
-            <div class="addon-runtime-profile"><strong>Live runtime (active profile)</strong><p id="profileAddonRuntimeStatus" class="addon-description" role="status">Checking the running Lossless Scaling instance. This reports the active profile, including when you are editing another profile.</p></div>
             <p id="addonHostNotice" class="profile-warning" hidden>The addon host is disabled. Enable it in Add-ons to run these settings.</p>
-            <div class="addon-profile-toolbar"><input id="addonEditorSearch" type="search" placeholder="Find an extra feature..." aria-label="Find an extra feature" autocomplete="off"><span id="addonEditorSummary" class="addon-editor-summary"></span></div>
             <span id="addonEditorStatus" class="addon-editor-status" role="status" aria-live="polite">Loading add-on settings...</span>
             <div id="addonEditorCards" class="addon-editor-grid"></div>
             <div id="addonManagerFields" hidden></div>
@@ -1248,30 +1250,7 @@
         </div>
         </details>
 
-        <details id="profileSpecialKPanel" class="settings-group profile-settings-group profile-major-panel">
-          <summary class="settings-group-title">Special K</summary>
-        <div id="specialKSettings" class="profile-addon-section disabled">
-            <div class="form-group checkbox-group"><input id="specialKEnabled" type="checkbox"><label for="specialKEnabled" style="color:#fff;font-size:13px">Enable Special K for this profile</label></div>
-            <fieldset id="specialKFields" disabled>
-              <div class="form-group checkbox-group"><input id="specialKSdrToHdr" type="checkbox"><label for="specialKSdrToHdr">SDR-to-HDR conversion</label></div>
-              <div id="specialKHDRSettings" hidden>
-                <div id="specialKHDRWarning" class="profile-warning"><strong>Use only with an SDR application.</strong> Do not also enable ReShade tone mapping; stacking tone mappers can clip highlights and distort color.</div>
-                <div class="form-row">
-                  <div class="form-group"><label>HDR Peak Brightness (nits)</label><input id="specialKPeakBrightness" type="number" value="1000" min="80" max="10000" step="10"></div>
-                  <div class="form-group"><label>HDR Paper White (nits)</label><input id="specialKPaperWhite" type="number" value="203" min="80" max="1000" step="1"></div>
-                </div>
-                <div class="form-group checkbox-group"><input id="specialKTemporaryWindowsHdr" type="checkbox"><label for="specialKTemporaryWindowsHdr">Temporarily enable Windows HDR while scaling</label></div>
-              </div>
-              <fieldset class="vendor-settings" data-addon-vendor="NVIDIA" disabled>
-              <div class="form-group checkbox-group"><input id="specialKSmoothMotion" type="checkbox"><label for="specialKSmoothMotion" class="experimental-label">NVIDIA Smooth Motion</label></div>
-              <p class="item-sub" style="white-space:normal;margin:-6px 0 0 24px">Creates or updates an NVIDIA application profile for LosslessScaling.exe only, and enables Special K's required flip-metering path. Global NVIDIA settings are not changed.</p>
-              <p id="specialKSmoothMotionAvailability" class="item-sub" style="white-space:normal;margin:5px 0 0 24px"></p>
-              </fieldset>
-            </fieldset>
-            <p class="item-sub" style="white-space:normal;margin-top:10px">Special K is independent of Companion Addon Host. Import it once, then enable it per profile.</p>
-        </div>
-        </details>
-
+        </section>
       </form>
     </div>
   </div>
@@ -2205,12 +2184,6 @@
       if (!button) return;
       button.hidden = !(runtimeScalingActive && (!controlSettings || controlSettings.addonManagerEnabled !== false));
       button.title = 'Show the advanced add-on panel for the active profile.';
-      const profileButton = document.getElementById('openProfileAddonPanelBtn');
-      if (profileButton) {
-        const profileId = document.getElementById('profileId')?.value;
-        profileButton.disabled = button.hidden || !profileId || profileId !== runtimeActiveProfile?.id;
-        profileButton.title = profileButton.disabled ? 'Activate and scale this profile to open its advanced panel.' : button.title;
-      }
     }
 
     function renderUpdatePreferences() {
@@ -2255,7 +2228,7 @@
       document.getElementById('restoreGameCursorOnFocus').checked = controlSettings.restoreGameCursorOnFocus !== false;
       document.getElementById('overlayIndicatorEnabled').checked = controlSettings.overlayIndicatorEnabled !== false;
       const overlayHotkeys = {overlay_toggle: 'ctrl+home', profile_editor: 'delete', addon_manager: 'insert', performance_graph: '=', special_k_panel: '-', ...controlSettings.overlayHotkeys};
-      for (const [id, key] of [['overlayToggleHotkey', 'overlay_toggle'], ['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph'], ['overlaySpecialKPanelHotkey', 'special_k_panel']]) {
+      for (const [id, key] of [['overlayToggleHotkey', 'overlay_toggle'], ['overlayProfileEditorHotkey', 'profile_editor'], ['overlayAddonManagerHotkey', 'addon_manager'], ['overlayPerformanceGraphHotkey', 'performance_graph']]) {
         document.getElementById(id).value = overlayHotkeys[key];
       }
       renderGpuRoutingSettings();
@@ -2344,7 +2317,6 @@
         select.appendChild(option);
       }
       select.value = selected;
-      renderSpecialKSettings();
       applyAddonVendorAvailability();
     }
 
@@ -2576,7 +2548,6 @@
         ? `${dlssnrRuntimes.length} validated x64 DLSS 5 runtime${dlssnrRuntimes.length === 1 ? '' : 's'} available.`
         : 'DLSS 5 runtime not installed.';
       renderExternalSourceStatus('reshade', msg.externalSources && msg.externalSources.reshade);
-      renderExternalSourceStatus('special-k', msg.externalSources && msg.externalSources['special-k']);
       updateAddonInstallButtons();
       updateAddonDownloadLinks();
     }
@@ -2793,7 +2764,7 @@
         && ws.readyState === WebSocket.OPEN
       ) {
         addonAutoImportInFlight.add(provider);
-        setGraphicsStatus(`${provider === 'reshade' ? 'ReShade Full Add-On' : 'Special K'} detected. Importing and installing automatically...`);
+        setGraphicsStatus('ReShade Full Add-On detected. Importing and installing automatically...');
         ws.send(JSON.stringify({
           type: 'IMPORT_GRAPHICS_SOURCE', provider,
           operationId: crypto.randomUUID().replaceAll('-', '')
@@ -2802,6 +2773,7 @@
     }
 
     function renderAddonUpdateNotice(updates, latestVersions) {
+      updates = updates.filter(item => item.provider !== 'special-k');
       addonUpdateItems = updates;
       renderNotificationBell();
       latestAddonVersions = { ...latestAddonVersions, ...latestVersions };
@@ -2914,7 +2886,7 @@
         document.getElementById('companionUpdateText').textContent = `Update failed: ${operation.error}`;
         document.getElementById('companionUpdateStatusText').textContent = `Update failed: ${operation.error}`;
       }
-      if (operation && !operation.busy && operation.provider !== 'companion') setGraphicsStatus(operation.error ? `Update failed: ${operation.error}` : 'Component ready. Running scaling sessions are not interrupted for ReShade/Special K updates.');
+      if (operation && !operation.busy && operation.provider !== 'companion') setGraphicsStatus(operation.error ? `Update failed: ${operation.error}` : 'Component ready. Running scaling sessions are not interrupted by component updates.');
     }
 
     async function installGraphicsAddon(provider) {
@@ -2987,7 +2959,7 @@
           setGraphicsStatus(`Stopped checking for ${provider} after five minutes. Use Refresh status to check again.`);
         }
       };
-      setGraphicsStatus(`Waiting for ${provider === 'reshade' ? 'the ReShade Full Add-On download' : 'Special K installation'}...`);
+      setGraphicsStatus('Waiting for the ReShade Full Add-On download...');
       check();
       addonDetectionTimers[provider] = setInterval(check, 5000);
     }
@@ -3010,19 +2982,6 @@
         select.appendChild(option);
       }
       select.value = selected || '';
-    }
-
-    function renderSpecialKSettings() {
-      const enabled = document.getElementById('specialKEnabled').checked;
-      document.getElementById('specialKSettings').classList.toggle('disabled', !enabled);
-      document.getElementById('specialKFields').disabled = !enabled;
-      document.getElementById('specialKHDRSettings').hidden = !document.getElementById('specialKSdrToHdr').checked;
-      const hasNvidia = addonVendorDetected('NVIDIA');
-      const smoothMotion = document.getElementById('specialKSmoothMotion');
-      smoothMotion.disabled = !enabled || !hasNvidia;
-      document.getElementById('specialKSmoothMotionAvailability').textContent = hasNvidia
-        ? 'NVIDIA GPU detected.'
-        : 'Unavailable because no NVIDIA GPU was detected.';
     }
 
     function requestProcesses() {
@@ -3569,7 +3528,7 @@
     }
 
     function renderAddonRuntimeStatus(status) {
-      const outputs = ['addonRuntimeStatus', 'profileAddonRuntimeStatus']
+      const outputs = ['addonRuntimeStatus']
         .map(id => document.getElementById(id)).filter(Boolean);
       outputs.forEach(output => {
         if (!status.available) {
@@ -3632,7 +3591,7 @@
       host.replaceChildren();
       const query = (document.getElementById('addonEditorSearch')?.value || '').trim().toLowerCase();
       const view = renderAddonEditor.view || (renderAddonEditor.view = new Map());
-      const basic = {DLSSNR02: ['scalePercent', 'preset', 'intensity'], WindowedMode: []};
+      const basic = {DLSSNR02: ['scalePercent', 'preset', 'intensity']};
       const passthrough = addonEditorDraft.addons.ReShadePassthrough ||= {};
       passthrough._enabled = !!(document.getElementById('reshadeManagedProfile').value
         );
@@ -3662,9 +3621,7 @@
         name.textContent = addon.name;
         const description = document.createElement('span');
         description.className = 'addon-description';
-        description.textContent = addon.id === 'DLSSNR02'
-          ? 'Enhance captured frames before frame generation. The capture GPU selects the backend automatically.'
-          : 'Virtual display and output positioning. Configure the layout in the advanced panel.';
+        description.textContent = 'Enhance captured frames before frame generation. Changes apply on the next scaling start.';
         copy.append(name, description);
         title.appendChild(copy);
         const toggle = document.createElement('label');
@@ -4077,7 +4034,6 @@
       addonScalingSavePending = false;
       addonEditorDraft = structuredClone(profile && profile.addon_config || { global: {}, addons: {} });
       renderAddonEditor.view = new Map();
-      document.getElementById('addonEditorSearch').value = '';
       if (!addonEditorDraft.global || typeof addonEditorDraft.global !== 'object') addonEditorDraft.global = {};
       if (!addonEditorDraft.addons || typeof addonEditorDraft.addons !== 'object') addonEditorDraft.addons = {};
       renderNativeSettings(profile);
@@ -4116,14 +4072,6 @@
           ? `Saved learned limit: ${rtss.learned_framerate_limit} FPS${rtss.game_gpu_baseline_percent == null ? '' : ` · Gameplay baseline: ${rtss.game_gpu_baseline_percent.toFixed(1)}%`}${rtss.automatic_calibration_disabled ? ' · Manual calibration locked; reset to resume automatic learning' : ''}`
           : 'No dynamic calibration data.';
         renderReshadeProfileChoices(profile.reshade && profile.reshade.managed_profile_id || '');
-        const graphics = profile.graphics || {};
-        const specialK = graphics.special_k || {};
-        document.getElementById('specialKEnabled').checked = !!specialK.enabled;
-        document.getElementById('specialKSdrToHdr').checked = !!specialK.sdr_to_hdr;
-        document.getElementById('specialKPeakBrightness').value = specialK.hdr_peak_brightness_nits == null ? 1000 : specialK.hdr_peak_brightness_nits;
-        document.getElementById('specialKPaperWhite').value = specialK.hdr_paper_white_nits == null ? 203 : specialK.hdr_paper_white_nits;
-        document.getElementById('specialKTemporaryWindowsHdr').checked = !!specialK.temporary_windows_hdr;
-        document.getElementById('specialKSmoothMotion').checked = !!specialK.experimental_smooth_motion;
       } else {
         document.getElementById('modalTitle').textContent = 'Create Profile';
         document.getElementById('profileId').value = '';
@@ -4136,7 +4084,6 @@
       updateRtssTargetHelper();
       renderRtssModeSettings();
       renderRtssProfileAvailability();
-      renderSpecialKSettings();
       renderProfileTargetValidation();
       renderAddonEditor();
       document.getElementById('addonEditorStatus').textContent = 'Changes save automatically for this profile.';
@@ -4842,9 +4789,7 @@
       renderRtssModeSettings();
       renderDefaultRtssModeSettings();
     };
-    document.getElementById('addonEditorSearch').addEventListener('input', renderAddonEditor);
-    document.getElementById('specialKEnabled').onchange = renderSpecialKSettings;
-    document.getElementById('specialKSdrToHdr').onchange = renderSpecialKSettings;
+    document.getElementById('addonEditorSearch')?.addEventListener('input', renderAddonEditor);
     document.getElementById('targetType').onchange = () => {
       document.getElementById('targetValue').value = '';
       renderTargetType();
@@ -4924,11 +4869,11 @@
           restoreGameCursorOnFocus: document.getElementById('restoreGameCursorOnFocus').checked,
           overlayIndicatorEnabled: document.getElementById('overlayIndicatorEnabled').checked,
           overlayHotkeys: {
+            ...(controlSettings.overlayHotkeys || {}),
             overlay_toggle: document.getElementById('overlayToggleHotkey').value.trim(),
             profile_editor: document.getElementById('overlayProfileEditorHotkey').value.trim(),
             addon_manager: document.getElementById('overlayAddonManagerHotkey').value.trim(),
             performance_graph: document.getElementById('overlayPerformanceGraphHotkey').value.trim(),
-            special_k_panel: document.getElementById('overlaySpecialKPanelHotkey').value.trim(),
           },
           processLassoPerformanceModeScaling: document.getElementById('processLassoPerformanceModeScaling').checked,
           processLassoLogPath: document.getElementById('processLassoLogPath').value.trim(),
@@ -5053,13 +4998,13 @@
       }
     }
     ['overlayToggleHotkey', 'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey',
-      'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey'].forEach(id => installKeyPicker(id));
+      'overlayPerformanceGraphHotkey'].forEach(id => installKeyPicker(id));
     installKeyPicker('reshadeOverlayHotkey', true, false, false);
     installKeyPicker('overrideHotkeyKey', true, false);
 
     [
       'runAtStartup', 'overlayIndicatorEnabled', 'addonManagerEnabled', 'sunshineMatchEncoderGpu', 'gloamHdrEnabled',
-      'overlayToggleHotkey', 'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey', 'overlayPerformanceGraphHotkey', 'overlaySpecialKPanelHotkey',
+      'overlayToggleHotkey', 'overlayProfileEditorHotkey', 'overlayAddonManagerHotkey', 'overlayPerformanceGraphHotkey',
       'overrideLosslessHotkey',
       'preferredScalingGpu',
       'snapNearFullscreenWindowsToMonitor',
@@ -5156,7 +5101,6 @@
       ws.send(JSON.stringify({ type: 'OPEN_PROXY_MENU' }));
     }
     document.getElementById('openProxyMenuBtn').onclick = openAdvancedAddonPanel;
-    document.getElementById('openProfileAddonPanelBtn').onclick = openAdvancedAddonPanel;
     function downloadBenchmarkTool(provider, button) {
       button.disabled = true;
       document.getElementById('performanceBenchmarkStatus').textContent = 'Downloading and verifying release asset...';
@@ -5352,17 +5296,7 @@
               version: (editingOriginalProfile && editingOriginalProfile.graphics && editingOriginalProfile.graphics.reshade && editingOriginalProfile.graphics.reshade.version)
                 || (installedReshadePackage && installedReshadePackage.version) || null
             },
-            special_k: {
-              enabled: document.getElementById('specialKEnabled').checked,
-              version: existingSpecialK.version || null,
-              channel: existingSpecialK.channel || 'stable',
-              update_policy: existingSpecialK.update_policy || 'notify',
-              sdr_to_hdr: document.getElementById('specialKSdrToHdr').checked,
-              hdr_peak_brightness_nits: Number(document.getElementById('specialKPeakBrightness').value),
-              hdr_paper_white_nits: Number(document.getElementById('specialKPaperWhite').value),
-              temporary_windows_hdr: document.getElementById('specialKTemporaryWindowsHdr').checked,
-              experimental_smooth_motion: document.getElementById('specialKSmoothMotion').checked
-            }
+            special_k: structuredClone(existingSpecialK)
           },
           dll_overrides: dllOverrides
         }
@@ -5426,8 +5360,7 @@
     window.addEventListener('beforeunload', () => { if (addonEditorTimer) saveAddonEditor(); });
     setInterval(() => {
       if (!document.hidden && ws && ws.readyState === WebSocket.OPEN
-          && (document.getElementById('profileModal').classList.contains('active')
-              || !document.getElementById('losslessAddonsPanel').hidden)) {
+          && !document.getElementById('losslessAddonsPanel').hidden) {
         ws.send(JSON.stringify({ type: 'GET_ADDON_RUNTIME_STATUS' }));
       }
     }, 2000);

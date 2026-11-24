@@ -137,12 +137,7 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertNotIn("LosslessProxy Updates</label>", self.html)
 
     def test_hidden_special_k_package_choices_are_preserved_on_save(self):
-        self.assertIn("version: existingSpecialK.version || null", self.html)
-        self.assertIn("channel: existingSpecialK.channel || 'stable'", self.html)
-        self.assertIn(
-            "update_policy: existingSpecialK.update_policy || 'notify'",
-            self.html,
-        )
+        self.assertIn("special_k: structuredClone(existingSpecialK)", self.html)
         self.assertIn("version: existingLosslessProxy.version || null", self.html)
         self.assertIn("channel: existingLosslessProxy.channel || 'stable'", self.html)
         self.assertIn(
@@ -172,11 +167,11 @@ class NativeProfileEditorContractTests(unittest.TestCase):
 
     def test_major_profile_panels_have_native_disclosures_and_header_navigation(self):
         panels = re.findall(r'<details id="(profile\w+Panel)" class="settings-group profile-settings-group profile-major-panel"', self.html)
-        self.assertEqual(len(panels), 6)
+        self.assertEqual(len(panels), 5)
         for panel_id in panels:
             self.assertIn(f'data-profile-section-link="{panel_id}" aria-controls="{panel_id}"', self.html)
         self.assertIn('<summary class="settings-group-title">Lossless Scaling Profile Settings</summary>', self.html)
-        self.assertIn('<summary class="settings-group-title">Add-ons for this profile</summary>', self.html)
+        self.assertIn('<summary class="settings-group-title">DLSS 5</summary>', self.html)
         self.assertIn('aria-label="Profile settings sections"', self.html)
         self.assertIn('revealProfileSetting(node)', self.html)
 
@@ -187,11 +182,10 @@ class NativeProfileEditorContractTests(unittest.TestCase):
         self.assertNotIn("function renderNeuralRenderSettings()", self.html)
         self.assertNotIn("selectedNeuralSamplingPreset", self.html)
 
-    def test_special_k_is_a_separate_profile_section_and_rtx_hdr_toggle_is_removed(self):
-        echo_editor = self.html.index('id="addonEditorCards"')
-        special_k = self.html.index('id="specialKSettings"', echo_editor)
-        self.assertGreater(special_k, echo_editor)
-        self.assertIn("Special K is independent of Companion Addon Host", self.html)
+    def test_special_k_and_rtx_hdr_controls_are_removed(self):
+        self.assertNotIn('id="specialKSettings"', self.html)
+        self.assertNotIn('id="profileSpecialKPanel"', self.html)
+        self.assertNotIn('id="overlaySpecialKPanelHotkey"', self.html)
         self.assertGreaterEqual(self.html.count('class="profile-addon-section'), 1)
         self.assertNotIn('id="nvidiaRtxHdrEnabled"', self.html)
         self.assertNotIn("NVIDIA RTX HDR for Lossless Scaling", self.html)

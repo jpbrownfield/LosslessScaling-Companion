@@ -308,7 +308,7 @@ class GraphicsResolver:
             graphics.reshade.enabled or graphics.special_k.enabled
             or any(override.enabled for override in profile.dll_overrides)
         ):
-            raise GraphicsResolutionError("Enable the Companion Addon Host to load ReShade, Special K or custom DLLs")
+            raise GraphicsResolutionError("Enable the Companion Addon Host to load graphics add-ons or custom DLLs")
         if addon_manager_enabled is True:
             manager_package = self._package(
                 "ls-addon-manager",
