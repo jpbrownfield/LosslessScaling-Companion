@@ -949,6 +949,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOAD_STARTED" for item in payloads))
         self.assertTrue(any(item["type"] == "COMPANION_UPDATE_DOWNLOADED" for item in payloads))
         self.assertTrue(any(item["type"] == "COMPANION_INSTALLER_LAUNCHED" for item in payloads))
+        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0", automatic=True)
         self.server.on_installer_launched.assert_called_once_with()
 
     async def test_dashboard_can_download_and_launch_update_in_one_operation(self):
@@ -980,7 +981,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("COMPANION_UPDATE_DOWNLOADED", types)
         self.assertIn("COMPANION_INSTALLER_STARTING", types)
         self.assertIn("COMPANION_INSTALLER_LAUNCHED", types)
-        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
+        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0", automatic=True)
         self.server.on_installer_launched.assert_called_once_with()
 
     async def test_tray_can_download_and_launch_detected_update(self):
@@ -1006,7 +1007,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, expected)
         self.server.companion_updater.download.assert_called_once_with("1.1.0", progress_callback=ANY)
-        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0")
+        self.server.companion_updater.launch_installer.assert_called_once_with("1.1.0", automatic=True)
         self.server.on_installer_launched.assert_called_once_with()
 
     async def test_dashboard_can_import_a_detected_graphics_source(self):

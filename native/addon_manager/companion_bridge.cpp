@@ -138,6 +138,7 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
         {"startupError",startupError},{"addons",json::array()},{"metrics",json::object()},
         {"sm86Sr",sr},{"components",ComponentStatus()},{"neuralBackend",vendor==0x1002?"AMD":vendor==0x10de?"NVIDIA":vendor?"unsupported":"waiting"}};
     auto& config=eam::ConfigManager::Instance();
+    const auto cache=cursor::CacheStats();
     result["cursor"]={{"sharedHandleGuard",cursor::Ready()},
                       {"selfReplacementsPrevented",cursor::Prevented()},
                       {"guardError",cursor::Error()},
@@ -147,7 +148,10 @@ json Snapshot(eam::AddonManager* manager, const std::string& startupError) {
                       {"cacheRecoveryError",cursor::CacheRecoveryError()},
                       {"cacheInvalidations",cursor::CacheInvalidations()},
                       {"cacheMissingImageRetries",cursor::CacheMissingImageRetries()},
-                      {"cacheFocusEvents",cursor::CacheFocusEvents()}};
+                      {"cacheFocusEvents",cursor::CacheFocusEvents()},
+                      {"cacheQueries",cache.queries},{"cacheImageQueries",cache.imageQueries},
+                      {"cacheHiddenSkips",cache.hiddenSkips},{"cacheUnfocusedSkips",cache.unfocusedSkips},
+                      {"cacheSettlingRetries",cache.settlingRetries}};
     result["reshade"]={{"interactive",!eam::features::reshade::Status().empty()},
         {"controlAvailable",eam::features::reshade::CompanionControlAvailable()},
         {"controlProtocol",2},

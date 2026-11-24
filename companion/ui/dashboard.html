@@ -760,7 +760,7 @@
                   <a id="companionReleaseLink" class="btn btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Release notes</a>
                   <button id="laterCompanionUpdateBtn" class="btn btn-secondary" type="button">Later</button>
                   <button id="downloadCompanionUpdateBtn" class="btn btn-primary" type="button">Download and install</button>
-                  <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Run installer</button>
+                  <button id="installCompanionUpdateBtn" class="btn btn-primary" type="button" hidden>Install and restart</button>
                 </div>
               </aside>
               <div class="settings-toolbar">
@@ -2055,12 +2055,12 @@
             renderCompanionUpdate(companionUpdateState);
           } else if (msg.type === 'COMPANION_INSTALLER_STARTING') {
             companionUpdateBusy = true;
-            document.getElementById('companionUpdateText').textContent = `Verified. Starting the LS Companion ${msg.version} installer...`;
-            document.getElementById('companionUpdateStatusText').textContent = 'Starting the Windows installer. Approve the administrator prompt if it appears.';
+            document.getElementById('companionUpdateText').textContent = `Verified. Installing LS Companion ${msg.version}...`;
+            document.getElementById('companionUpdateStatusText').textContent = 'Preparing the update. Companion will restart automatically. Approve the administrator prompt if it appears.';
           } else if (msg.type === 'COMPANION_INSTALLER_LAUNCHED') {
-            companionUpdateBusy = false;
-            document.getElementById('companionUpdateText').textContent = `Installer for ${msg.version} launched. Follow its prompts; Companion may close during installation.`;
-            document.getElementById('companionUpdateStatusText').textContent = `Installer for ${msg.version} launched. Follow the Windows prompts.`;
+            companionUpdateBusy = true;
+            document.getElementById('companionUpdateText').textContent = `Installing LS Companion ${msg.version}. Companion will reopen automatically.`;
+            document.getElementById('companionUpdateStatusText').textContent = `Updating to ${msg.version}. Companion will reopen automatically.`;
           } else if (msg.type === 'CONTROL_SETTINGS_SAVED') {
             generalSettingsSaveInFlight = false;
             controlSettings = msg.controlSettings;
@@ -2882,7 +2882,7 @@
       const restarting = operation.phase === 'restarting';
       document.getElementById('updateLockTitle').textContent = restarting ? 'Restarting Companion' : 'Installing updates';
       document.getElementById('updateLockMessage').textContent = restarting
-        ? 'The verified installer is replacing Companion. The app will reopen when it finishes.'
+        ? 'Companion is being updated and will reopen automatically.'
         : `${componentProgressLabel(operation)} ${operation.provider === 'companion' ? 'LS Companion' : operation.provider || 'components'}${operation.version ? ` ${operation.version}` : ''}`;
       const progress = document.getElementById('updateLockProgress');
       if (operation.totalBytes > 0) progress.value = Math.min(100, Math.round(operation.receivedBytes * 100 / operation.totalBytes));
@@ -2938,7 +2938,7 @@
       const visible = updateNotificationsEnabled() && !!status.updateAvailable && ignored !== status.latestVersion;
       const updateActionAvailable = !!status.updateAvailable && !!status.latestVersion;
       checkButton.textContent = updateActionAvailable
-        ? (status.downloaded ? 'Run installer' : 'Download and install')
+        ? (status.downloaded ? 'Install and restart' : 'Download and install')
         : 'Check for updates';
       checkButton.classList.toggle('btn-primary', updateActionAvailable);
       checkButton.classList.toggle('btn-secondary', !updateActionAvailable);
@@ -3304,9 +3304,9 @@
         const description = test.id === 'reshade_lilium'
           ? 'After reproducing the Lilium error, capture ReShade compiler logs and deployed shader files without restarting scaling.'
           : test.id === 'nr_capture_current'
-          ? 'Run while NR is stuck in the affected application. Captures the current preset, actual GPU, capture progress and NR metrics without restarting scaling.'
+          ? 'Run while NR is stuck in the affected application. Captures the current preset, GPU evidence, capture progress and NR metrics without restarting scaling.'
           : test.id === 'nr_capture_trace'
-          ? 'Runs a separate benchmark with WGC, LSFG 3, HDR and Scaling Off. This replaces the current preset for the test; use the current-application inspection to diagnose a failing session.'
+          ? 'Runs a separate benchmark with WGC, LSFG 3, HDR, ReShade and Scaling Off. This replaces the current preset for the test; use the current-application inspection to diagnose a failing session.'
           : dependencies.length ? `Runs prerequisites: ${dependencies.join(', ')}` : 'No prerequisites.';
         return `<div class="diagnostic-test-action">
           <div><strong>${escapeHtml(test.name)}</strong><div class="item-sub" style="white-space:normal">${escapeHtml(description)}</div></div>
@@ -4738,7 +4738,7 @@
       if (componentOperation?.busy || companionUpdateBusy) return;
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;
       confirmDialog(
-        `Download, verify, and install LS Companion ${companionUpdateState.latestVersion}? Companion will close after the Windows installer starts.`,
+        `Download, verify, and update LS Companion ${companionUpdateState.latestVersion}? Companion will restart automatically when the update is ready.`,
         { title: 'Update LS Companion', okLabel: 'Download and install' }
       ).then(accepted => {
         if (!accepted || componentOperation?.busy || companionUpdateBusy) return;
@@ -4754,8 +4754,8 @@
       if (componentOperation?.busy || companionUpdateBusy) return;
       if (!companionUpdateState || !companionUpdateState.latestVersion) return;
       confirmDialog(
-        `Run the verified LS Companion ${companionUpdateState.latestVersion} installer now? The installer may close the running companion while replacing its files.`,
-        { title: 'Install Companion Update', okLabel: 'Run Installer' }
+        `Install the verified LS Companion ${companionUpdateState.latestVersion} update now? Companion will restart automatically.`,
+        { title: 'Update LS Companion', okLabel: 'Install and restart' }
       ).then(accepted => {
         if (!accepted || componentOperation?.busy || companionUpdateBusy) return;
         companionUpdateBusy = true;
@@ -5204,7 +5204,7 @@
       if (!button || button.disabled) return;
       const testId = button.dataset.runDiagnostic;
       if (testId === 'nr_capture_trace' && !await confirmDialog(
-        'Run the benchmark with DLSS5 NR enabled, LSFG 3, HDR, and Scaling Off? This stops active scaling and restarts Lossless Scaling. Temporary deployment and settings are restored afterward.',
+        'Run the benchmark with DLSS5 NR and ReShade enabled, LSFG 3, HDR, and Scaling Off? This stops active scaling and restarts Lossless Scaling. Temporary deployment and settings are restored afterward.',
         { title: 'DLSS5 NR benchmark reproduction' })) return;
       button.disabled = true;
       document.getElementById('diagnosticsStatus').textContent = 'Starting selected test...';

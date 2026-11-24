@@ -435,6 +435,10 @@ class NativeAddonHostTests(unittest.TestCase):
                 self.assertTrue(observed["cursor"]["cacheRecovery"])
                 self.assertEqual(observed["cursor"]["cacheRecoveryError"], 0)
                 self.assertFalse(observed["cursor"]["recoveryEnabled"])
+                for counter in ("cacheQueries", "cacheImageQueries", "cacheHiddenSkips",
+                                "cacheUnfocusedSkips", "cacheSettlingRetries"):
+                    self.assertIsInstance(observed["cursor"][counter], int)
+                    self.assertGreaterEqual(observed["cursor"][counter], 0)
                 for enabled in (True, False, True):
                     _read_pipe(process.pid, acknowledge=lambda _status: b"C" if enabled else b"c")
                     deadline = time.monotonic() + 3

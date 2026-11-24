@@ -104,7 +104,7 @@ class DiagnosticRunner:
             ("configuration", "Configuration schema and persistence", self._configuration),
             ("gpu_route_validation", "Live GPU routing: requested vs. actual GPU", self._gpu_route_validation),
             ("nr_capture_current", "DLSS5 NR: inspect current application without restarting", self._nr_capture_current),
-            ("nr_capture_trace", "DLSS5 NR benchmark reproduction (LSFG 3 + HDR)", self._nr_capture_trace),
+            ("nr_capture_trace", "DLSS5 NR benchmark reproduction (LSFG 3 + HDR + ReShade)", self._nr_capture_trace),
             ("profile_integrity", "Profile IDs, defaults, and targets", self._profile_integrity),
             ("profile_matching", "Application and browser profile matching", self._profile_matching),
             ("profile_persistence_behavior", "Profile create, save, reload, and match behavior", self._profile_persistence_behavior),
@@ -140,11 +140,12 @@ class DiagnosticRunner:
             return self._result("warn", str(error))
         result = self._run_live_addon_deployment_behavior(profiles=[profile], capture_neural_trace=True)
         result["summary"] = (
-            "DLSS5 NR processed benchmark frames with LSFG 3, HDR and Scaling Off; capture trace saved."
+            "DLSS5 NR processed benchmark frames with ReShade, LSFG 3, HDR and Scaling Off; capture trace saved."
             if result["status"] == "pass" else
-            "DLSS5 NR benchmark reproduction failed; inspect the saved capture trace, runtime checks and logs."
+            "DLSS5 NR + ReShade benchmark reproduction failed; inspect the saved capture trace, runtime checks and logs."
         )
         result["details"]["requestedNativeSettings"] = dict(profile.native_scaling_settings)
+        result["details"]["requestedReShadeVersion"] = profile.graphics.reshade.version
         return result
 
     def _nr_capture_current(self) -> Dict:
@@ -173,8 +174,12 @@ class DiagnosticRunner:
                      and metrics.get("model_ms", 0) > 0)
         details = result["details"]
         details.pop("limitation", None)
-        details["captureAdapter"] = capture.get("adapter")
-        details["captureAdapterLuid"] = capture.get("adapterLuid")
+        capture_verified = capture.get("adapterSource") == "capture_frame"
+        details["captureAdapterVerified"] = capture_verified
+        details["captureAdapter"] = capture.get("adapter") if capture_verified else None
+        details["captureAdapterLuid"] = capture.get("adapterLuid") if capture_verified else None
+        details["observedDevice"] = {"adapter": capture.get("adapter"), "adapterLuid": capture.get("adapterLuid"),
+                                     "source": capture.get("adapterSource")}
         details["observedSettings"] = {key: capture.get(key) for key in ("configured", "captureApi", "frameGeneration", "scaler", "hdr")}
         details["addonStatus"] = addon.get("status", "")
         if not addon.get("enabled") or not addon.get("loaded"):
@@ -800,11 +805,18 @@ class DiagnosticRunner:
         return profiles
 
     def _nr_reproduction_profile(self) -> Profile:
-        profile = next((profile for profile in self._installed_addon_profiles()
+        profiles = self._installed_addon_profiles()
+        profile = next((profile for profile in profiles
                         if profile.graphics.neural_render.implementation == "lsp_neural_render"), None)
         if profile is None:
             raise ValueError("Install the Companion add-on manager and import the x64 nvngx_dlssnr.dll runtime before running the NR benchmark reproduction.")
-        profile.name = "Experimental Live DLSS5 NR capture reproduction"
+        reshade = next((item for item in profiles if item.graphics.reshade.enabled), None)
+        if reshade is None:
+            raise ValueError("Install ReShade before running the HDR DLSS5 NR + ReShade benchmark reproduction.")
+        profile.graphics.reshade.enabled = True
+        profile.graphics.reshade.version = reshade.graphics.reshade.version
+        profile.reshade = ReshadeConfig(enabled=True, menu_proxy_enabled=True)
+        profile.name = "Experimental Live DLSS5 NR + ReShade capture reproduction"
         profile.native_scaling_settings.update({
             "FrameGeneration": "LSFG3", "CaptureApi": "WGC",
             "HdrSupport": "true", "ScalingType": "Off",

@@ -24,7 +24,6 @@ from ..core.models import ManagedReshadeProfile
 from ..core.profile_manager import ProfileManager
 from .hdr_display import HdrDisplayDetector
 from .overlay_shortcuts import reshade_key_data
-from .reshade_cas import AMD_CAS_EFFECT, AMD_CAS_PACKAGE, AMD_CAS_PROVIDER, AMD_CAS_SOURCE, AMD_CAS_TECHNIQUE
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +38,11 @@ def _serialized(method):
 
 LILIUM_INPUT_EFFECT = "LSC_PrepareLiliumSDR.fx"
 LILIUM_INPUT_TECHNIQUE = f"LSC_PrepareLiliumSDR@{LILIUM_INPUT_EFFECT}"
+LILIUM_CAS_EFFECT = "lilium__cas_hdr.fx"
+LILIUM_CAS_TECHNIQUE = f"lilium__cas_hdr_ps@{LILIUM_CAS_EFFECT}"
+# Identifiers retained only to migrate existing presets away from the retired port.
+LEGACY_CAS_PROVIDER = "lsc"
+LEGACY_CAS_EFFECT = "LSC_AMD_CAS.fx"
 # Lilium expects normalized SDR, even when its destination is an HDR swapchain.
 # The captured Windows HDR image instead uses absolute scRGB/PQ luminance.
 LILIUM_INPUT_SOURCE = r'''#include "lilium__include/include_main.fxh"
@@ -74,14 +78,14 @@ FALLBACK_CATALOG = [
     {"id": "29", "name": "AdvancedAutoHDR by Pumbo", "description": "HDR tone-mapping helpers", "repositoryUrl": "https://github.com/Filoppi/PumboAutoHDR", "downloadUrl": "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip", "shaders": ["AdvancedAutoHDR.fx", "ConvertColorSpace.fx"]},
 ]
 
-# Lightweight starter presets use bundled AMD CAS and Lilium inverse tone mapping.
+# Starter presets use Lilium CAS and inverse tone mapping.
 # Keeping the selections ordered also defines execution order:
 # the combined preset expands SDR into HDR before applying HDR-aware CAS.
 BUILTIN_PROFILES = (
     ManagedReshadeProfile(
         id="lsc-basic-sharpening",
         name="Basic Sharpening (Low Cost)",
-        shaders={AMD_CAS_PROVIDER: [AMD_CAS_EFFECT]},
+        shaders={"22": [LILIUM_CAS_EFFECT]},
     ),
     ManagedReshadeProfile(
         id="lsc-sdr-to-hdr",
@@ -91,7 +95,7 @@ BUILTIN_PROFILES = (
     ManagedReshadeProfile(
         id="lsc-sharpening-sdr-to-hdr",
         name="Sharpening + SDR to HDR (Low Cost)",
-        shaders={"22": ["lilium__inverse_tone_mapping.fx"], AMD_CAS_PROVIDER: [AMD_CAS_EFFECT]},
+        shaders={"22": ["lilium__inverse_tone_mapping.fx", LILIUM_CAS_EFFECT]},
     ),
 )
 
@@ -201,7 +205,7 @@ class ReshadeProfileService:
                         if (section.casefold(), key.casefold()) in {
                             ("lilium__inverse_tone_mapping.fx", "targetbrightness"),
                             (LILIUM_INPUT_EFFECT.casefold(), "sdrwhitenits"),
-                            (AMD_CAS_EFFECT.casefold(), "hdrpeaknits"),
+                            (LEGACY_CAS_EFFECT.casefold(), "hdrpeaknits"),
                         } or section == "LS Companion":
                             continue
                         if after.get(key) == before.get(key):
@@ -270,18 +274,18 @@ class ReshadeProfileService:
 
     def catalog(self, *, force: bool = False) -> List[Dict]:
         if self._catalog is not None and not force:
-            return [dict(AMD_CAS_PACKAGE), *self._catalog]
+            return [dict(item) for item in self._catalog]
         try:
             request = urllib.request.Request(CATALOG_URL, headers={"User-Agent": "LS-Companion/1"})
             with urllib.request.urlopen(request, timeout=10) as response:
                 catalog = self._parse_catalog(response.read().decode("utf-8-sig"))
             if catalog:
                 self._catalog = catalog
-                return [dict(AMD_CAS_PACKAGE), *catalog]
+                return [dict(item) for item in catalog]
         except (OSError, ValueError, configparser.Error):
             pass
         self._catalog = [dict(item) for item in FALLBACK_CATALOG]
-        return [dict(AMD_CAS_PACKAGE), *self._catalog]
+        return [dict(item) for item in self._catalog]
 
     @_serialized
     def payload(self) -> Dict:
@@ -360,27 +364,26 @@ class ReshadeProfileService:
             self.profile_manager.save_config()
 
         catalog = self.catalog()
-        # Only untouched effect selections migrate automatically. Customized and
-        # imported presets can opt in with Refresh default presets.
+        # Replace only the retired port; retain other selected effects and names.
+        # Imported presets remain owned by their author.
         migrated = False
-        legacy_selections = {
-            "lsc-basic-sharpening": ["lilium__cas_hdr.fx"],
-            "lsc-sharpening-sdr-to-hdr": ["lilium__inverse_tone_mapping.fx", "lilium__cas_hdr.fx"],
-        }
         for index, profile in enumerate(profiles):
-            template = next((item for item in BUILTIN_PROFILES if item.id == profile.id), None)
-            legacy = legacy_selections.get(profile.id)
-            if (template is None or legacy is None or profile.imported_preset
-                    or profile.shaders != {"22": legacy}):
+            if (profile.imported_preset
+                    or LEGACY_CAS_EFFECT not in profile.shaders.get(LEGACY_CAS_PROVIDER, [])):
                 continue
-            updated = template.model_copy(update={"name": profile.name}, deep=True)
+            updated = profile.model_copy(deep=True)
+            updated.shaders[LEGACY_CAS_PROVIDER].remove(LEGACY_CAS_EFFECT)
+            if not updated.shaders[LEGACY_CAS_PROVIDER]:
+                del updated.shaders[LEGACY_CAS_PROVIDER]
+            effects = updated.shaders.setdefault("22", [])
+            if LILIUM_CAS_EFFECT not in effects:
+                effects.append(LILIUM_CAS_EFFECT)
             try:
-                self._write_bundled_shaders(updated)
                 if self._missing_selected_shaders(updated):
                     self._install_selected_shaders(updated, catalog)
                 self._write_files(updated)
-            except (OSError, ValueError, zipfile.BadZipFile) as exc:
-                logger.warning("Could not migrate built-in AMD CAS profile %s: %s", profile.id, exc)
+            except (OSError, ValueError, zipfile.BadZipFile, configparser.Error) as exc:
+                logger.warning("Could not restore Lilium CAS in profile %s: %s", profile.id, exc)
                 continue
             profiles[index] = updated
             migrated = True
@@ -388,9 +391,9 @@ class ReshadeProfileService:
             self.profile_manager.save_config()
         builtin_ids = {profile.id for profile in BUILTIN_PROFILES}
         for profile in profiles:
-            if profile.id not in builtin_ids or profile.imported_preset:
+            if (profile.id not in builtin_ids or profile.imported_preset
+                    or LEGACY_CAS_EFFECT in profile.shaders.get(LEGACY_CAS_PROVIDER, [])):
                 continue
-            self._write_bundled_shaders(profile)
             folder = self._folder(profile.id)
             preset = folder / self._preset_filename(profile.name)
             if (
@@ -434,7 +437,6 @@ class ReshadeProfileService:
             profile = template.model_copy(deep=True)
             previous = next((item for item in profiles if item.id == profile.id), None)
             try:
-                self._write_bundled_shaders(profile)
                 if self._missing_selected_shaders(profile):
                     self._install_selected_shaders(profile, catalog)
                 if self._missing_selected_shaders(profile):
@@ -548,12 +550,6 @@ class ReshadeProfileService:
                 allowed = set(package.get("shaders") or [])
                 if not set(selected).issubset(allowed):
                     raise ValueError(f"A selected shader is not published by {package['name']}")
-                if provider_id == AMD_CAS_PROVIDER:
-                    provider_root = staging / provider_id
-                    provider_root.mkdir()
-                    if AMD_CAS_EFFECT in selected:
-                        (provider_root / AMD_CAS_EFFECT).write_text(AMD_CAS_SOURCE, encoding="utf-8")
-                    continue
                 url = str(package.get("downloadUrl") or "")
                 if not url.startswith("https://github.com/") or not url.casefold().endswith(".zip"):
                     raise ValueError(f"{package['name']} does not publish a supported GitHub ZIP")
@@ -630,7 +626,6 @@ class ReshadeProfileService:
     def _write_files(self, profile: ManagedReshadeProfile, *, refresh_defaults: bool = False) -> None:
         folder = self._folder(profile.id)
         folder.mkdir(parents=True, exist_ok=True)
-        self._write_bundled_shaders(profile)
         preset = folder / self._preset_filename(profile.name)
         previous_profile = next((p for p in self.profile_manager.config.reshade_profiles if p.id == profile.id), None)
         previous_preset = folder / self._preset_filename(previous_profile.name) if previous_profile else preset
@@ -656,8 +651,6 @@ class ReshadeProfileService:
                     techniques.append(entry)
         technique_list = ",".join(techniques)
         sections = []
-        if AMD_CAS_EFFECT.casefold() in selected_keys:
-            sections.append(f"[{AMD_CAS_EFFECT}]\nHdrPeakNits={self._resolved_hdr_peak_nits():.6f}\n")
         if "lilium__inverse_tone_mapping.fx" in selected_keys:
             self._write_lilium_input(folder)
             technique_list = ",".join([LILIUM_INPUT_TECHNIQUE, *techniques])
@@ -678,13 +671,15 @@ class ReshadeProfileService:
             saved = self._parse_preset(previous_content)
             old_files = {name.casefold() for files in (previous_profile.shaders.values() if previous_profile else []) for name in files}
             # Legacy presets can omit sections for effects left at their defaults.
-            replacing_cas = (AMD_CAS_EFFECT.casefold() in selected_keys
-                and "lilium__cas_hdr.fx" not in selected_keys
-                and ("lilium__cas_hdr.fx" in old_files or (
-                    not saved.has_section(AMD_CAS_EFFECT) and saved.has_section("lilium__cas_hdr.fx"))))
+            replacing_cas = (LILIUM_CAS_EFFECT.casefold() in selected_keys
+                and LEGACY_CAS_EFFECT.casefold() not in selected_keys
+                and (LEGACY_CAS_EFFECT.casefold() in old_files or any(
+                    name.partition("@")[2].casefold() == LEGACY_CAS_EFFECT.casefold()
+                    for key in ("Techniques", "TechniqueSorting")
+                    for name in saved["__LSC_PRESET_ROOT__"].get(key, "").split(","))))
             if replacing_cas:
                 self._migrate_cas_settings(saved)
-                old_files.add(AMD_CAS_EFFECT.casefold())  # Preserve disabled CAS.
+                old_files.add(LILIUM_CAS_EFFECT.casefold())  # Preserve disabled CAS.
             available = technique_list.split(",") if technique_list else []
             root = saved["__LSC_PRESET_ROOT__"]
             enabled = [name for name in root.get("Techniques", "").split(",") if name in available]
@@ -701,8 +696,8 @@ class ReshadeProfileService:
                 if (itm in enabled and LILIUM_INPUT_TECHNIQUE in available
                         and saved.get("lilium__inverse_tone_mapping.fx", "InputTrc", fallback="2") == "2"):
                     enabled = [LILIUM_INPUT_TECHNIQUE, *[name for name in enabled if name != LILIUM_INPUT_TECHNIQUE]]
-                if itm in enabled and AMD_CAS_TECHNIQUE in enabled:
-                    enabled = [name for name in enabled if name != AMD_CAS_TECHNIQUE] + [AMD_CAS_TECHNIQUE]
+                if itm in enabled and LILIUM_CAS_TECHNIQUE in enabled:
+                    enabled = [name for name in enabled if name != LILIUM_CAS_TECHNIQUE] + [LILIUM_CAS_TECHNIQUE]
             root["Techniques"] = ",".join(dict.fromkeys(enabled))
             root["TechniqueSorting"] = ",".join(dict.fromkeys(
                 [name for name in root.get("TechniqueSorting", "").split(",") if name in available] + available))
@@ -725,32 +720,24 @@ class ReshadeProfileService:
         self._update_imported_hdr_peak(preset)
         self._sync_sdr_white(preset)
         self._write_config(profile, preset)
-
-    def _write_bundled_shaders(self, profile: ManagedReshadeProfile) -> None:
-        if AMD_CAS_EFFECT not in profile.shaders.get(AMD_CAS_PROVIDER, []):
-            return
-        destination = self._folder(profile.id) / "packages" / AMD_CAS_PROVIDER / AMD_CAS_EFFECT
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if not destination.is_file() or destination.read_text(encoding="utf-8") != AMD_CAS_SOURCE:
-            self._atomic_write(destination, AMD_CAS_SOURCE)
+        if LILIUM_CAS_EFFECT.casefold() in selected_keys and LEGACY_CAS_EFFECT.casefold() not in selected_keys:
+            (folder / "packages" / LEGACY_CAS_PROVIDER / LEGACY_CAS_EFFECT).unlink(missing_ok=True)
 
     @staticmethod
     def _migrate_cas_settings(parser) -> None:
         root = parser["__LSC_PRESET_ROOT__"]
         for key in ("Techniques", "TechniqueSorting"):
-            root[key] = ",".join(AMD_CAS_TECHNIQUE if name.partition("@")[2].casefold() == "lilium__cas_hdr.fx"
+            root[key] = ",".join(LILIUM_CAS_TECHNIQUE if name.partition("@")[2].casefold() == LEGACY_CAS_EFFECT.casefold()
                                  else name for name in root.get(key, "").split(","))
-        if not parser.has_section(AMD_CAS_EFFECT):
-            parser.add_section(AMD_CAS_EFFECT)
+        if not parser.has_section(LILIUM_CAS_EFFECT):
+            parser.add_section(LILIUM_CAS_EFFECT)
         try:
-            amount = float(parser.get("lilium__cas_hdr.fx", "SHARPEN_AMOUNT", fallback="0.1"))
-            if not math.isfinite(amount):
+            sharpness = float(parser.get(LEGACY_CAS_EFFECT, "Sharpness", fallback="0.0"))
+            strength = float(parser.get(LEGACY_CAS_EFFECT, "Strength", fallback="0.8"))
+            if not math.isfinite(sharpness) or not math.isfinite(strength):
                 raise ValueError("Invalid legacy CAS amount")
-            amount = min(max(amount, 0.0), 0.2)
-            sharpness = max(0.0, (8.0 - 1.0 / amount) / 3.0) if amount else 0.0
-            section = parser[AMD_CAS_EFFECT]
-            section.setdefault("Sharpness", f"{sharpness:.6f}")
-            section.setdefault("Strength", f"{min(amount * 8.0, 1.0):.6f}")
+            amount = min(max(strength, 0.0), 1.0) / (8.0 - 3.0 * min(max(sharpness, 0.0), 1.0))
+            parser[LILIUM_CAS_EFFECT].setdefault("SHARPEN_AMOUNT", f"{amount:.6f}")
         except ValueError:
             pass  # Malformed legacy tuning falls back to the shader defaults.
 
@@ -813,7 +800,8 @@ class ReshadeProfileService:
                 missing.append(template.name)
                 continue
             folder = self._folder(profile.id)
-            if (self._missing_selected_shaders(profile)
+            if (LEGACY_CAS_EFFECT in profile.shaders.get(LEGACY_CAS_PROVIDER, [])
+                    or self._missing_selected_shaders(profile)
                     or not (folder / self._preset_filename(profile.name)).is_file()
                     or not (folder / "ReShade.ini").is_file()
                     or not (folder / "ReShade.Interactive.ini").is_file()):
@@ -827,7 +815,6 @@ class ReshadeProfileService:
         preset = folder / self._preset_filename(profile.name)
         if not preset.is_file():
             return
-        self._write_bundled_shaders(profile)
         self._migrate_lilium_input(profile, preset)
         self._sync_sdr_white(preset)
         self._update_imported_hdr_peak(preset)
@@ -837,7 +824,7 @@ class ReshadeProfileService:
         updated = content
         nits = None
         for effect, uniform in (("lilium__inverse_tone_mapping.fx", "TargetBrightness"),
-                                (AMD_CAS_EFFECT, "HdrPeakNits")):
+                                (LEGACY_CAS_EFFECT, "HdrPeakNits")):
             section = re.compile(r"(?ims)(^\[" + re.escape(effect) + r"\][^\r\n]*\r?\n)(.*?)(?=^\[|\Z)")
             match = section.search(updated)
             if not match:

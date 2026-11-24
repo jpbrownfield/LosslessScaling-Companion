@@ -15,6 +15,7 @@ std::atomic<bool> ready{false};
 std::atomic<bool> enabled{true};
 std::atomic<DWORD> error{0};
 std::atomic<uint64_t> focusEpoch{0}, focusEvents{0}, invalidations{0}, missingImageRetries{0};
+std::atomic<uint64_t> queries{0}, imageQueries{0}, hiddenSkips{0}, unfocusedSkips{0}, settlingRetries{0};
 BYTE* engineBase=nullptr;
 decltype(&GetCursorInfo) originalGetCursorInfo=nullptr;
 WINEVENTPROC originalFocusEvent=nullptr;
@@ -28,6 +29,7 @@ void CALLBACK ObserveFocusEvent(HWINEVENTHOOK hook, DWORD event, HWND window,
 }
 
 BOOL WINAPI ObserveCursorInfo(PCURSORINFO info) {
+    queries.fetch_add(1,std::memory_order_relaxed);
     const auto caller=_ReturnAddress();
     const BOOL result=originalGetCursorInfo(info);
     const DWORD saved=GetLastError();
@@ -36,6 +38,7 @@ BOOL WINAPI ObserveCursorInfo(PCURSORINFO info) {
     if (ready && enabled && result && info && info->cbSize==sizeof(CURSORINFO)
             && caller==engineBase+contract::kCursorInfoReturn
             && engineBase[contract::kMultiDisplay]) {
+        imageQueries.fetch_add(1,std::memory_order_relaxed);
         auto* owner=reinterpret_cast<BYTE*>(info)-contract::kCursorInfoOffset;
         HCURSOR cached=nullptr;
         void* image=nullptr;
@@ -43,11 +46,14 @@ BOOL WINAPI ObserveCursorInfo(PCURSORINFO info) {
         std::memcpy(&cached,owner+contract::kCachedShapeOffset,sizeof(cached));
         std::memcpy(&image,owner+contract::kImageOffset,sizeof(image));
         std::memcpy(&target,engineBase+contract::kTargetWindow,sizeof(target));
+        const bool focused=GetForegroundWindow()==target,visible=info->flags==CURSOR_SHOWING;
+        if(!focused)unfocusedSkips.fetch_add(1,std::memory_order_relaxed);
+        if(!visible)hiddenSkips.fetch_add(1,std::memory_order_relaxed);
         thread_local CacheRecovery recovery;
         const auto reason=recovery.Update(reinterpret_cast<uintptr_t>(owner),
             reinterpret_cast<uintptr_t>(target),reinterpret_cast<uintptr_t>(info->hCursor),
-            focusEpoch.load(),GetTickCount64(),GetForegroundWindow()==target,
-            info->flags==CURSOR_SHOWING,cached==info->hCursor,image!=nullptr);
+            focusEpoch.load(),GetTickCount64(),focused,
+            visible,cached==info->hCursor,image!=nullptr);
         if (reason!=CacheRefresh::None) {
             // Invalidate only the identity, on LS's render thread. LS releases
             // the old image and builds its replacement immediately after this
@@ -56,6 +62,7 @@ BOOL WINAPI ObserveCursorInfo(PCURSORINFO info) {
             std::memcpy(owner+contract::kCachedShapeOffset,&cached,sizeof(cached));
             ++invalidations;
             if (reason==CacheRefresh::MissingImage) ++missingImageRetries;
+            if (reason==CacheRefresh::FocusSettling) settlingRetries.fetch_add(1,std::memory_order_relaxed);
         }
     }
     SetLastError(saved);
@@ -110,4 +117,7 @@ DWORD CacheRecoveryError(){return error;}
 uint64_t CacheInvalidations(){return invalidations;}
 uint64_t CacheMissingImageRetries(){return missingImageRetries;}
 uint64_t CacheFocusEvents(){return focusEvents;}
+CacheTelemetry CacheStats(){return {queries.load(std::memory_order_relaxed),imageQueries.load(std::memory_order_relaxed),
+    hiddenSkips.load(std::memory_order_relaxed),unfocusedSkips.load(std::memory_order_relaxed),
+    settlingRetries.load(std::memory_order_relaxed)};}
 }

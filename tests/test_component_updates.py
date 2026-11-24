@@ -122,7 +122,7 @@ class ComponentOperationTests(unittest.IsolatedAsyncioTestCase):
         self.socket.send = disconnect_after_launch
         await self.server.process_message(self.socket, json.dumps({"type": action, "version": "2.0.0"}))
         await asyncio.sleep(0)
-        self.server.companion_updater.launch_installer.assert_called_once_with("2.0.0")
+        self.server.companion_updater.launch_installer.assert_called_once_with("2.0.0", automatic=True)
         self.server.on_installer_launched.assert_called_once_with()
         self.assertTrue(self.server._update_handoff)
         self.assertEqual(self.server.component_operation_status["phase"], "restarting")

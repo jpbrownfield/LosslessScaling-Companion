@@ -44,10 +44,19 @@ def api():
 
 
 class CursorRefreshTests(unittest.TestCase):
+    def test_delivered_message_ignored_by_game_does_not_claim_cursor_recovery(self):
+        native = api()
+        native.user.SendMessageTimeoutW.side_effect = None
+        native.user.SendMessageTimeoutW.return_value = 1
+        evidence = refresh_game_cursor(42, 82, api=native)
+        self.assertEqual(evidence["outcome"], "unhandled")
+        self.assertFalse(evidence["handled"])
+        self.assertEqual(evidence["error"], 0)
+
     def test_requests_game_owned_shape_without_global_cursor_or_input_changes(self):
         native = api()
         evidence = refresh_game_cursor(42, 82, api=native)
-        self.assertEqual(evidence["outcome"], "refreshed")
+        self.assertEqual(evidence["outcome"], "refresh_requested")
         self.assertEqual(evidence["after"]["handle"], 123456)
         args = native.user.SendMessageTimeoutW.call_args.args
         self.assertEqual(args[:6], (82, 0x20, 82, 1 | (0x200 << 16), 0x23, 30))
@@ -116,7 +125,7 @@ class CursorRefreshTests(unittest.TestCase):
 class CursorRecoveryTests(unittest.TestCase):
     def environment(self):
         clock = Mock(return_value=0)
-        refresh = Mock(return_value={"outcome": "refreshed"})
+        refresh = Mock(return_value={"outcome": "refresh_requested"})
         return CursorRecovery(refresh, clock), state(), refresh, clock
 
     def test_only_focus_return_triggers_three_bounded_attempts(self):

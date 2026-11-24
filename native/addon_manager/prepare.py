@@ -187,6 +187,15 @@ def patch_passthrough(manager: Path):
 def prepare(source: Path):
     overlay = Path(__file__).resolve().parent
     manager = source / "manager"
+    dispatch = manager / "src/core/d3d11_hook.cpp"
+    replace_once(dispatch, '#include "d3d11_hook.h"',
+                 '#include "d3d11_hook.h"\n#include "context_identity.h"')
+    replace_once(dispatch, '    if (!IsLossless(context)) g_lsContexts[g_nextContext.fetch_add(1) % kContexts].store(context, std::memory_order_release);',
+                 '    // Resolve proxy identity once at device creation, never on the render path.\n'
+                 '    const auto nativeContext=lsc::NativeDispatchContext(context);\n'
+                 '    if (!nativeContext) { RealFrameHook::HookFailed("Cannot identify LS immediate context"); return; }\n'
+                 '    if (!IsLossless(nativeContext.Get())) g_lsContexts[g_nextContext.fetch_add(1) % kContexts].store(nativeContext.Get(), std::memory_order_release);\n'
+                 '    if (nativeContext.Get()!=context) LOG_INFO("D3D11Hook", "Tracking native context %p behind proxy %p", nativeContext.Get(), context);')
     patch_passthrough(manager)
     # ReShade also detours the system D3D11 entry points. Its D3D11 hook skips
     # WARP devices, so keep the small manager UI on software rendering. LS and
@@ -316,7 +325,7 @@ def prepare(source: Path):
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_cache.h", "cursor_cache.cpp", "cursor_cache_contract.h", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "context_identity.h", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_cache.h", "cursor_cache.cpp", "cursor_cache_contract.h", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'

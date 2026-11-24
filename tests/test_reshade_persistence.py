@@ -7,8 +7,10 @@ from pathlib import Path
 from companion.core.profile_manager import ProfileManager
 from companion.services.asset_store import AssetStore
 from companion.services.deployment_manager import DeploymentManager
-from companion.services.reshade_profiles import BUILTIN_PROFILES, ReshadeProfileService, LILIUM_INPUT_EFFECT
-from companion.services.reshade_cas import AMD_CAS_EFFECT, AMD_CAS_PROVIDER, AMD_CAS_TECHNIQUE
+from companion.services.reshade_profiles import (
+    BUILTIN_PROFILES, ReshadeProfileService, LILIUM_INPUT_EFFECT,
+    LILIUM_CAS_EFFECT, LILIUM_CAS_TECHNIQUE, LEGACY_CAS_EFFECT, LEGACY_CAS_PROVIDER,
+)
 
 
 class ReShadePersistenceTests(unittest.TestCase):
@@ -72,7 +74,7 @@ class ReShadePersistenceTests(unittest.TestCase):
         saved = self.service._parse_preset(preset.read_text(encoding="utf-8"))
         expected = ("LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,"
                     "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx," +
-                    AMD_CAS_TECHNIQUE)
+                    LILIUM_CAS_TECHNIQUE)
         self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], expected)
         self.assertEqual(saved["__LSC_PRESET_ROOT__"]["TechniqueSorting"], expected)
         self.assertEqual(saved["Shader.fx"]["Strength"], "0.73")
@@ -96,20 +98,24 @@ class ReShadePersistenceTests(unittest.TestCase):
         self.assertEqual(len(result["refreshed"]), 2)
         self.assertEqual(self.shared(profile).read_bytes(), before)
 
-    def test_legacy_combined_cas_migrates_with_preparation_first_and_preserves_disabled_cas(self):
+    def test_amd_cas_migrates_back_to_lilium_with_preparation_first_and_preserves_disabled_cas(self):
         for cas_enabled in (True, False):
             with self.subTest(cas_enabled=cas_enabled):
                 current = self.manager.config.reshade_profiles[2]
-                legacy = current.model_copy(update={"shaders": {"22": [
-                    "lilium__inverse_tone_mapping.fx", "lilium__cas_hdr.fx"]}}, deep=True)
+                legacy = current.model_copy(update={"shaders": {
+                    "22": ["lilium__inverse_tone_mapping.fx"],
+                    LEGACY_CAS_PROVIDER: [LEGACY_CAS_EFFECT]}}, deep=True)
                 self.manager.config.reshade_profiles[2] = legacy
                 preset = self.shared(legacy)
-                cas = "lilium__cas_hdr_ps@lilium__cas_hdr.fx"
+                cas = f"LSC_AMD_CAS@{LEGACY_CAS_EFFECT}"
                 itm = "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx"
+                retired = preset.parent / "packages" / LEGACY_CAS_PROVIDER / LEGACY_CAS_EFFECT
+                retired.parent.mkdir(exist_ok=True)
+                retired.write_text("technique LSC_AMD_CAS { pass {} }", encoding="utf-8")
                 preset.write_text(f"Techniques={cas + ',' if cas_enabled else ''}{itm}\n"
                     f"TechniqueSorting={cas},{itm}\n[LS Companion]\nEffectsInitialized=1\nLiliumInputVersion=1\n"
                     "[lilium__inverse_tone_mapping.fx]\nInputTrc=2\nGammaIn=0.15\n"
-                    "[lilium__cas_hdr.fx]\nSHARPEN_AMOUNT=0.15\n", encoding="utf-8")
+                    f"[{LEGACY_CAS_EFFECT}]\nSharpness=0.444444444\nStrength=1.0\n", encoding="utf-8")
                 self.service._builtins_checked = False
                 with patch.object(self.service, "_install_selected_shaders") as install:
                     self.service.payload()
@@ -119,25 +125,63 @@ class ReShadePersistenceTests(unittest.TestCase):
                 saved = self.service._parse_preset(preset.read_text(encoding="utf-8"))
                 enabled = saved["__LSC_PRESET_ROOT__"]["Techniques"].split(",")
                 expected = ["LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx", itm]
-                self.assertEqual(enabled, expected + ([AMD_CAS_TECHNIQUE] if cas_enabled else []))
-                self.assertEqual(saved["__LSC_PRESET_ROOT__"]["TechniqueSorting"], ",".join(expected + [AMD_CAS_TECHNIQUE]))
-                self.assertAlmostEqual(float(saved[AMD_CAS_EFFECT]["Sharpness"]), 4 / 9, places=6)
-                self.assertEqual(saved[AMD_CAS_EFFECT]["Strength"], "1.000000")
+                self.assertEqual(enabled, expected + ([LILIUM_CAS_TECHNIQUE] if cas_enabled else []))
+                self.assertEqual(saved["__LSC_PRESET_ROOT__"]["TechniqueSorting"], ",".join(expected + [LILIUM_CAS_TECHNIQUE]))
+                self.assertAlmostEqual(float(saved[LILIUM_CAS_EFFECT]["SHARPEN_AMOUNT"]), 0.15, places=6)
                 self.assertEqual(saved["lilium__inverse_tone_mapping.fx"]["GammaIn"], "0.15")
                 files = self.service.deployment_files(legacy.id)
-                self.assertTrue(any(item["relative_path"].endswith(AMD_CAS_EFFECT) for item in files))
+                self.assertTrue(any(item["relative_path"].endswith(LILIUM_CAS_EFFECT) for item in files))
+                self.assertFalse(any(item["relative_path"].endswith(LEGACY_CAS_EFFECT) for item in files))
+                self.assertFalse(retired.exists())
 
-    def test_basic_amd_cas_is_installable_offline_and_uses_shared_hdr_peak(self):
+    def test_basic_lilium_cas_uses_the_lilium_package(self):
         profile = self.manager.config.reshade_profiles[0]
-        self.manager.config.reshade_hdr_peak_nits = 1200
-        with patch("companion.services.reshade_profiles.urllib.request.urlopen") as network:
-            self.service.save(profile)
-        network.assert_not_called()
-        self.service.refresh_hdr_peak_settings()
+        self.service._write_files(profile)
         saved = self.service._parse_preset(self.shared(profile).read_text(encoding="utf-8"))
-        self.assertEqual(saved[AMD_CAS_EFFECT]["HdrPeakNits"], "1200.000000")
-        self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], AMD_CAS_TECHNIQUE)
-        self.assertEqual(profile.shaders, {AMD_CAS_PROVIDER: [AMD_CAS_EFFECT]})
+        self.assertEqual(saved["__LSC_PRESET_ROOT__"]["Techniques"], LILIUM_CAS_TECHNIQUE)
+        self.assertEqual(profile.shaders, {"22": [LILIUM_CAS_EFFECT]})
+
+    def test_failed_lilium_download_keeps_existing_amd_preset_and_reports_not_ready(self):
+        current = self.manager.config.reshade_profiles[0]
+        legacy = current.model_copy(update={"shaders": {LEGACY_CAS_PROVIDER: [LEGACY_CAS_EFFECT]}}, deep=True)
+        self.manager.config.reshade_profiles[0] = legacy
+        folder = self.service._folder(legacy.id)
+        (folder / "packages/22/Shaders" / LILIUM_CAS_EFFECT).unlink()
+        old_shader = folder / "packages" / LEGACY_CAS_PROVIDER / LEGACY_CAS_EFFECT
+        old_shader.parent.mkdir()
+        old_shader.write_text("technique LSC_AMD_CAS { pass {} }", encoding="utf-8")
+        preset = self.shared(legacy)
+        original = f"Techniques=LSC_AMD_CAS@{LEGACY_CAS_EFFECT}\n[LS Companion]\nEffectsInitialized=1\n"
+        preset.write_text(original, encoding="utf-8")
+        with patch.object(self.service, "_install_selected_shaders", side_effect=OSError("offline")):
+            with self.assertRaisesRegex(ValueError, "default presets could not be prepared"):
+                self.service.prepare_builtin_profiles()
+        self.assertIs(self.manager.config.reshade_profiles[0], legacy)
+        self.assertEqual(preset.read_text(encoding="utf-8"), original)
+        self.assertTrue(old_shader.is_file())
+
+    def test_amd_migration_keeps_custom_name_other_effects_and_existing_lilium_tuning(self):
+        custom = BUILTIN_PROFILES[0].model_copy(update={"id": "custom-cas", "name": "My CAS",
+            "shaders": {LEGACY_CAS_PROVIDER: [LEGACY_CAS_EFFECT], "22": ["Extra.fx"]}}, deep=True)
+        self.manager.config.reshade_profiles.append(custom)
+        folder = self.service._folder(custom.id)
+        package = folder / "packages/22/Shaders"
+        package.mkdir(parents=True)
+        (package / LILIUM_CAS_EFFECT).write_text("technique lilium__cas_hdr_ps { pass {} }", encoding="utf-8")
+        (package / "Extra.fx").write_text("technique Extra { pass {} }", encoding="utf-8")
+        preset = self.shared(custom)
+        preset.write_text(f"Techniques=LSC_AMD_CAS@{LEGACY_CAS_EFFECT},Extra@Extra.fx\n"
+            "[LS Companion]\nEffectsInitialized=1\n[lilium__cas_hdr.fx]\nSHARPEN_AMOUNT=0.13\n"
+            "[Extra.fx]\nStrength=0.7\n", encoding="utf-8")
+        self.service._ensure_builtin_profiles()
+        migrated = self.manager.config.reshade_profiles[-1]
+        self.assertEqual(migrated.name, "My CAS")
+        self.assertEqual(migrated.shaders, {"22": ["Extra.fx", LILIUM_CAS_EFFECT]})
+        saved = self.service._parse_preset(preset.read_text(encoding="utf-8"))
+        self.assertEqual(saved[LILIUM_CAS_EFFECT]["SHARPEN_AMOUNT"], "0.13")
+        self.assertEqual(saved["Extra.fx"]["Strength"], "0.7")
+        self.assertEqual(set(saved["__LSC_PRESET_ROOT__"]["Techniques"].split(",")),
+                         {"Extra@Extra.fx", LILIUM_CAS_TECHNIQUE})
 
     def shared(self, profile):
         return self.service._folder(profile.id) / self.service._preset_filename(profile.name)

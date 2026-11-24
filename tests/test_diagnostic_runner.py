@@ -11,6 +11,41 @@ from companion.core.state import AppState
 from companion.services.diagnostic_runner import DiagnosticRunner
 
 
+class CurrentCaptureAdapterTests(unittest.TestCase):
+    def inspect(self, source, advancing=False):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(
+            state=SimpleNamespace(current_active_profile=None),
+            config=SimpleNamespace(preferred_scaling_gpu_device_id=None,
+                                   preferred_scaling_gpu_name=None))
+        first = {"capture": {"captures": 0}, "metrics": {"DLSSNR02": {"accepted": 0}}}
+        last = {"capture": {"adapterSource": source, "adapter": "NVIDIA GPU",
+                            "adapterLuid": "gpu-luid", "captures": int(advancing)},
+                "addons": [{"id": "DLSSNR02", "enabled": True, "loaded": True}],
+                "metrics": {"DLSSNR02": {"accepted": int(advancing), "model_ms": 2.0}}}
+        runner._collect_nr_capture_trace = Mock(return_value=runner._result(
+            "pass", "Collected", trace={"samples": [first, last]}))
+        return runner._nr_capture_current()
+
+    def test_device_creation_does_not_identify_the_capture_gpu(self):
+        result = self.inspect("device_creation")
+        self.assertEqual(result["status"], "warn")
+        details = result["details"]
+        self.assertFalse(details["captureAdapterVerified"])
+        self.assertIsNone(details["captureAdapter"])
+        self.assertIsNone(details["captureAdapterLuid"])
+        self.assertEqual(details["observedDevice"]["adapter"], "NVIDIA GPU")
+        self.assertIn("No LS compute dispatches", result["summary"])
+
+    def test_capture_frame_identifies_the_gpu_processing_nr(self):
+        result = self.inspect("capture_frame", advancing=True)
+        self.assertEqual(result["status"], "pass")
+        details = result["details"]
+        self.assertTrue(details["captureAdapterVerified"])
+        self.assertEqual(details["captureAdapter"], "NVIDIA GPU")
+        self.assertEqual(details["captureAdapterLuid"], "gpu-luid")
+
+
 class CaptureTraceCommandTests(unittest.TestCase):
     def payload(self, **changes):
         return {"schema": 1, "pid": 123, "createdAt": 900.0, "sampledAt": 1000.0,
@@ -71,16 +106,34 @@ class DiagnosticRunnerTests(unittest.TestCase):
                                                    "HdrSupport": "false", "ScalingType": "NIS"})
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
         runner.server = SimpleNamespace(config=SimpleNamespace(profiles=[default]), asset_store=Mock())
-        runner.server.asset_store.list_packages.return_value = [{"provider": "ls-addon-manager", "version": "build-7-lsc.9"}]
+        runner.server.asset_store.list_packages.return_value = [
+            {"provider": "ls-addon-manager", "version": "build-7-lsc.13"},
+            {"provider": "reshade", "version": "6.7.0"},
+            {"provider": "reshade", "version": "6.8.0"}]
         runner.server.asset_store.list_imports.return_value = [{"filename": "nvngx_dlssnr.dll", "architecture": "x64", "sha256": "a" * 64}]
         profile = runner._nr_reproduction_profile()
         self.assertEqual(profile.graphics.neural_render.implementation, "lsp_neural_render")
         self.assertEqual(profile.graphics.neural_render.runtime_asset_sha256, "a" * 64)
         self.assertTrue(profile.addon_config["addons"]["DLSSNR02"]["_enabled"])
+        self.assertTrue(profile.graphics.reshade.enabled)
+        self.assertEqual(profile.graphics.reshade.version, "6.8.0")
+        self.assertTrue(profile.reshade.enabled)
+        self.assertTrue(profile.reshade.menu_proxy_enabled)
         self.assertEqual(profile.native_scaling_settings, {"FrameGeneration": "LSFG3", "CaptureApi": "WGC",
                                                          "HdrSupport": "true", "ScalingType": "Off"})
         self.assertEqual(default.native_scaling_settings["CaptureApi"], "DXGI")
         self.assertEqual(default.native_scaling_settings["HdrSupport"], "false")
+        self.assertFalse(default.graphics.reshade.enabled)
+
+    def test_nr_reproduction_requires_reshade_instead_of_silently_omitting_it(self):
+        runner = DiagnosticRunner.__new__(DiagnosticRunner)
+        runner.server = SimpleNamespace(config=SimpleNamespace(profiles=[]), asset_store=Mock())
+        runner.server.asset_store.list_packages.return_value = [
+            {"provider": "ls-addon-manager", "version": "build-7-lsc.13"}]
+        runner.server.asset_store.list_imports.return_value = [
+            {"filename": "nvngx_dlssnr.dll", "architecture": "x64", "sha256": "a" * 64}]
+        with self.assertRaisesRegex(ValueError, "Install ReShade"):
+            runner._nr_reproduction_profile()
 
     def test_nr_reproduction_requires_imported_runtime_and_host(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
@@ -226,6 +279,7 @@ class DiagnosticRunnerTests(unittest.TestCase):
         entry = next(item for item in runner.catalog() if item["id"] == "nr_capture_trace")
         self.assertFalse(entry["readOnly"])
         self.assertIn("benchmark reproduction", entry["name"])
+        self.assertIn("ReShade", entry["name"])
         self.assertIn("nr_capture_trace", runner.LS_MUTATING_TESTS)
         self.assertEqual(entry["dependencies"], [])
         self.assertEqual([item[0] for item in runner._execution_plan("nr_capture_trace")], ["nr_capture_trace"])
@@ -238,6 +292,8 @@ class DiagnosticRunnerTests(unittest.TestCase):
                 config=SimpleNamespace(lossless_scaling_exe_path="LosslessScaling.exe"))
             runner = DiagnosticRunner(server)
             profile = Profile(name="NR reproduction")
+            profile.graphics.reshade.enabled = True
+            profile.graphics.reshade.version = "6.8.0"
             runner._nr_reproduction_profile = Mock(return_value=profile)
             runner._run_live_addon_deployment_behavior = Mock(return_value=runner._result(
                 "pass", "done", testedProfiles=[{"captureTrace": {"details": {"trace": report}}}]))
@@ -249,6 +305,8 @@ class DiagnosticRunnerTests(unittest.TestCase):
             with zipfile.ZipFile(result["archivePath"]) as bundle:
                 saved = json.loads(bundle.read("ls-companion-diagnostics/nr_capture_trace.log"))
             self.assertEqual(saved["status"], "pass")
+            self.assertEqual(saved["details"]["requestedReShadeVersion"], "6.8.0")
+            self.assertIn("with ReShade", saved["summary"])
             self.assertEqual(saved["details"]["testedProfiles"][0]["captureTrace"]["details"]["trace"], report)
             self.assertEqual([item["id"] for item in result["results"]],
                              ["nr_capture_trace", "environment_reset"])
@@ -335,11 +393,20 @@ class DiagnosticRunnerTests(unittest.TestCase):
                      "capture": {"captures": 10}, "metrics": {"DLSSNR02": {"accepted": 5, "model_ms": 2.0}}}
         check = lambda: DiagnosticRunner._addon_runtime_checks(profile, root, files, modules, logs, telemetry)
         self.assertTrue(all(check().values()))
+        profile.graphics.reshade.enabled = True
+        self.assertFalse(check()["reshadeModulesLoaded"])
+        files.append({"relative_path": ".companion/components/reshade/ReShade64.dll",
+                      "source_package": "reshade/6.8.0/hash"})
+        modules.append(str(root / files[-1]["relative_path"]))
+        self.assertTrue(check()["reshadeModulesLoaded"])
+        self.assertFalse(check()["reshadeRuntimeInitialized"])
+        logs["ReShade.log"] = "Recreated runtime environment on runtime 000001234567 ('ReShade.ini')."
+        self.assertTrue(all(check().values()))
         telemetry["metrics"]["DLSSNR02"]["accepted"] = 0
         self.assertFalse(check()["neuralFramesProcessed"])
         telemetry["addons"][0]["faulted"] = True
         self.assertFalse(check()["neuralAddonHealthy"])
-        modules.pop()
+        modules.remove(str(root / "nvngx_dlssnr.dll"))
         self.assertFalse(check()["neuralModulesLoaded"])
 
     def test_saved_gpu_map_does_not_hide_failed_idle_discovery(self):

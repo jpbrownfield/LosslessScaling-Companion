@@ -85,7 +85,8 @@ def refresh_game_cursor(pid: int, hwnd: int, *, api=None) -> dict:
     accepted = user.SendMessageTimeoutW(recipient, 0x0020, recipient, 1 | (0x0200 << 16),
                                         0x0001 | 0x0002 | 0x0020, 30, ctypes.byref(reply))
     error = 0 if accepted else ctypes.get_last_error()
-    return {"outcome": "refreshed" if accepted else "message_failed", "error": error,
+    outcome = ("refresh_requested" if reply.value else "unhandled") if accepted else "message_failed"
+    return {"outcome": outcome, "error": error,
             "handled": bool(reply.value), "recipient": recipient,
             "before": before, "after": api.snapshot()}
 
@@ -127,8 +128,8 @@ class CursorRecovery:
             self._attempts.pop(0)
             try:
                 evidence = self.refresh(pid, hwnd)
-                if evidence.get("outcome") in ("refreshed", "message_failed"):
-                    logger.info("Scaled game cursor refresh after focus return: PID=%s HWND=%s remaining=%s evidence=%s",
+                if evidence.get("outcome") in ("refresh_requested", "unhandled", "message_failed"):
+                    logger.info("Scaled game cursor refresh request after focus return: PID=%s HWND=%s remaining=%s evidence=%s",
                                 pid, hwnd, len(self._attempts), evidence)
                 else:
                     logger.debug("Skipped scaled game cursor refresh: PID=%s HWND=%s evidence=%s", pid, hwnd, evidence)

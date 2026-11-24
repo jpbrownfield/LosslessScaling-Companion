@@ -4,14 +4,17 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const html = fs.readFileSync('companion/ui/dashboard.html', 'utf8');
-const code = html.slice(html.indexOf('    function renderAddonUpdateNotice('), html.indexOf('    function renderCompanionUpdate('));
+const code = html.slice(html.indexOf('    function renderAddonUpdateNotice('), html.indexOf('    function startAddonDetection('));
+const companionActions = html.slice(html.indexOf("    document.getElementById('checkCompanionUpdateBtn').onclick"),
+  html.indexOf("    document.getElementById('closeModalBtn').onclick"));
 
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; }
+  constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.classList = {toggle() {}}; }
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); }
   replaceChildren() { this.children = []; }
   focus() {}
+  click() { return this.onclick?.(); }
   removeAttribute(key) { delete this[key]; }
 }
 
@@ -23,7 +26,7 @@ function dashboard() {
     renderNotificationBell() {},
     updateNotificationsEnabled: () => true,
     addonUpdateItems: [], latestAddonVersions: {}, componentOperation: null,
-    companionUpdateBusy: false,
+    companionUpdateBusy: false, companionUpdateState: null,
     document: {body: {classList: {toggle() {}}}, getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element('div')); return nodes.get(id); },
       createElement: tag => new Element(tag), querySelectorAll: () => []},
     localStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value)},
@@ -36,6 +39,7 @@ function dashboard() {
     ws: {readyState: 1, send: message => sent.push(JSON.parse(message))}, WebSocket: {OPEN: 1},
   });
   vm.runInContext(code, context);
+  vm.runInContext(companionActions, context);
   const updates = [{provider: 'ls-addon-manager', name: 'Echo', currentVersion: '1.0.5', latestVersion: '1.0.6'},
     {provider: 'reshade', name: 'ReShade', currentVersion: '6.7.0', latestVersion: '6.8.0'}];
   context.renderAddonUpdateNotice(updates, {});
@@ -101,3 +105,21 @@ test('a completed older update does not disable the next release', () => {
   context.renderComponentOperation({provider: 'ls-addon-manager', busy: false, phase: 'complete', version: '1.0.6'});
   assert.equal(button(0).disabled, true);
 });
+
+for (const downloaded of [false, true]) {
+  test(`Companion settings action ${downloaded ? 'installs a cached update' : 'downloads and installs'} with restart guidance`, async () => {
+    const {context, nodes, sent} = dashboard();
+    let confirmation;
+    context.confirmDialog = async message => { confirmation = message; return true; };
+    context.renderCompanionUpdate({updateAvailable: true, latestVersion: '2.0.0', currentVersion: '1.0.0', downloaded});
+    assert.equal(nodes.get('checkCompanionUpdateBtn').textContent, downloaded ? 'Install and restart' : 'Download and install');
+    assert.equal(nodes.get('downloadCompanionUpdateBtn').hidden, downloaded);
+    assert.equal(nodes.get('installCompanionUpdateBtn').hidden, !downloaded);
+    nodes.get('checkCompanionUpdateBtn').click();
+    await Promise.resolve();
+    assert.match(confirmation, /restart automatically/);
+    assert.deepEqual(sent, [{type: downloaded ? 'INSTALL_COMPANION_UPDATE' : 'APPLY_COMPANION_UPDATE', version: '2.0.0'}]);
+    assert.equal(context.companionUpdateBusy, true);
+    assert.equal(nodes.get('checkCompanionUpdateBtn').disabled, true);
+  });
+}

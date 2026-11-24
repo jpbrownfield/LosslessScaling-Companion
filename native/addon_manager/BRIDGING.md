@@ -1,7 +1,7 @@
 # Companion bridge to FriedSnowman's addon manager
 
 The source of truth is `upstream.lock.json`. Current baseline: **build-7**, commit
-`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **12**. This replaces
+`d13c33ed5f3e094812f2258bb95c523d73047ccb`; Companion revision **13**. This replaces
 Echo's integration. There is no conversion of Echo NR settings or package pins.
 
 ## Reproduce the package
@@ -538,6 +538,38 @@ This preserves focus-change invalidation in the host while allowing the standalo
 HDR probe to link without the cursor hook implementation. Standalone probes use
 an epoch of zero. Validate with the complete `scripts/build_addon_manager.py`
 build, including the final HDR fixture build, rather than selected host targets.
+
+## ReShade context identity and cursor resume (revision 13)
+
+The November 23 live Warframe trace has a loaded NR addon but zero observed
+dispatches. ReShade was loaded; the successful November 20 benchmark did not load
+it. ReShade wraps the immediate context, while the runtime Dispatch detour receives
+the underlying context. Registering only the wrapper caused the identity filter to
+reject that work before capture diagnostics ran. Device attachment now resolves
+ReShade's owned `IID_UnwrappedObject` interface and verifies its D3D11 context
+interface once. The host retains the public wrapper; the render hook compares the
+native identity. There is no additional per-dispatch query, lock, allocation or
+readback. See ReShade v6.8.0's `source/com_utils.hpp` and
+`source/d3d11/d3d11_device_context.cpp`.
+
+`lsc_routing_test` validates the unwrapping contract, software-device dispatch and
+shader identity, exactly-once callbacks and shutdown. An optional official ReShade
+DLL argument exercises its real hardware proxy, requiring a supported GPU.
+The HDR DLSS5 NR benchmark now enables the latest installed ReShade runtime too.
+It requires ReShade to be installed, verifies its deployed DLL and runtime
+initialization alongside NR frame processing, and restores the previous settings
+and deployment afterward. Its existing capture trace includes cursor counters.
+
+The same trace reports enabled cursor recovery and 56 focus events but no cache
+invalidations. It cannot establish which cursor gate prevented a refresh. New
+`cacheQueries`, `cacheImageQueries`, `cacheHiddenSkips`, `cacheUnfocusedSkips` and
+`cacheSettlingRetries` counters distinguish those paths. Counters use relaxed
+atomics and do not add logging or GPU work to stable frames. A same-handle focus
+return now permits three delayed rechecks even if the cached image pointer is
+non-null: a pointer does not prove its pixels survived resume. The four-attempt
+limit, foreground and visibility requirements remain; Multi-display stays enabled.
+An unhandled WM_SETCURSOR request is reported as `unhandled`, rather than evidence
+of cursor restoration. Interactive Prey and Warframe validation remains required.
 
 ## Distribution and validation limits
 

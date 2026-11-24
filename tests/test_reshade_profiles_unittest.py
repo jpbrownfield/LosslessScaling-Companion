@@ -108,7 +108,7 @@ class ReshadeProfileFileTests(unittest.TestCase):
             self.assertIn(
                 "Techniques=LSC_PrepareLiliumSDR@LSC_PrepareLiliumSDR.fx,"
                 "lilium__inverse_tone_mapping@lilium__inverse_tone_mapping.fx,"
-                "LSC_AMD_CAS@LSC_AMD_CAS.fx",
+                "lilium__cas_hdr_ps@lilium__cas_hdr.fx",
                 preset.read_text(encoding="utf-8"),
             )
             self.assertIn("TargetBrightness=1200.000000", preset.read_text(encoding="utf-8"))

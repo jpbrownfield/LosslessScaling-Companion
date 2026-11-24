@@ -209,6 +209,41 @@ class AutomaticUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.server.on_installer_launched.assert_called_once_with()
         self.assertEqual(self.server.component_operation_status["phase"], "restarting")
 
+    async def test_manual_cached_updates_use_silent_relaunch_offline(self):
+        payload = b"verified cached manual update"
+        digest = hashlib.sha256(payload).hexdigest()
+        releases = Mock()
+        releases.check.return_value = [{"version": "2.0.0", "assets": [
+            {"name": INSTALLER_NAME}, {"name": CHECKSUM_NAME},
+        ]}]
+        service = CompanionUpdateService(releases, self.manager.config_dir, enabled=True)
+        with patch.object(service, "_download_bytes", side_effect=[
+            f"{digest}  {INSTALLER_NAME}".encode(), payload,
+        ]):
+            service.download("2.0.0")
+        releases.check.reset_mock()
+        releases.check.side_effect = OSError("Network unavailable")
+        for action in ("APPLY_COMPANION_UPDATE", "INSTALL_COMPANION_UPDATE"):
+            with self.subTest(action=action):
+                server = CompanionWebSocketServer(self.manager, AppState())
+                server.companion_updater = CompanionUpdateService(releases, self.manager.config_dir, enabled=True)
+                server.on_installer_launched = Mock()
+                client = Mock(send=AsyncMock())
+                server.client_authority[client] = "dashboard"
+                with patch("companion.services.self_update.urllib.request.urlopen", side_effect=OSError("Network unavailable")) as network, patch(
+                    "companion.services.self_update.ctypes.windll.shell32.ShellExecuteW", return_value=42,
+                ) as launch:
+                    await server.process_message(client, json.dumps({"type": action, "version": "2.0.0"}))
+                    await asyncio.sleep(0)
+                network.assert_not_called()
+                launch.assert_called_once()
+                for flag in ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/AUTOMATICUPDATE=1", "/WAITPID=", "/DIR="):
+                    self.assertIn(flag, launch.call_args.args[3])
+                server.on_installer_launched.assert_called_once_with()
+                self.assertTrue(server.component_operation_status["locked"])
+                self.assertEqual(server.component_operation_status["phase"], "restarting")
+        releases.check.assert_not_called()
+
     async def test_companion_handoff_is_silent_and_remains_locked_until_shutdown(self):
         self.server.addon_update_status = {"updates": []}
         self.server.companion_update_status = {"supported": True, "updateAvailable": True, "latestVersion": "2.0.0", "downloaded": False}

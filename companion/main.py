@@ -260,7 +260,7 @@ class CompanionApplication:
         )
 
     def install_update(self, version: str):
-        """Download, verify, and launch the selected release from the tray."""
+        """Download, verify, and silently apply the selected release from the tray."""
         if not self.loop or not self.loop.is_running():
             raise RuntimeError("The companion update service is not running yet")
         return asyncio.run_coroutine_threadsafe(

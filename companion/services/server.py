@@ -1631,7 +1631,7 @@ class CompanionWebSocketServer:
                 await websocket.send(json.dumps({
                     "type": "COMPANION_INSTALLER_STARTING", "version": version,
                 }))
-                launched = await self._launch_companion_installer(version, automatic=websocket is self._automatic_update_client)
+                launched = await self._launch_companion_installer(version)
                 await websocket.send(json.dumps(launched))
                 return
 
@@ -2601,12 +2601,14 @@ class CompanionWebSocketServer:
                 logger.exception("Automatic update failed")
             await asyncio.sleep(30)
 
-    async def _launch_companion_installer(self, version: str, *, automatic: bool = False) -> Dict:
+    async def _launch_companion_installer(self, version: str) -> Dict:
         if self.component_operation_status:
             self.component_operation_status.update(phase='installing', receivedBytes=0, totalBytes=0)
             await self._broadcast_component_operation()
-        kwargs = {"automatic": True} if automatic else {}
-        result = await self._run_background_thread(self.companion_updater.launch_installer, version, **kwargs)
+        # Every in-app entry point shares the silent update/relaunch flow.
+        result = await self._run_background_thread(
+            self.companion_updater.launch_installer, version, automatic=True,
+        )
         self._update_handoff = True
         # The WebView2 helper may disconnect as soon as setup starts. Once the
         # installer owns the handoff, shutdown must not depend on a socket send.

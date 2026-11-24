@@ -59,6 +59,24 @@ static void TestImageCache() {
           "Unknown scaling target is left alone");
     Check(recovery.Update(12,22,0,5,9500,true,true,true,false)==CacheRefresh::None,
           "A null cursor is never made visible by cache recovery");
+    CacheRecovery settling;
+    Check(settling.Update(11,21,71,1,0,true,true,true,true)==CacheRefresh::FocusReturn,"Focus burst starts with one refresh");
+    for(auto tick:{150ULL,400ULL,650ULL})
+        Check(settling.Update(11,21,71,1,tick,true,true,true,true)==CacheRefresh::FocusSettling,
+              "Focus return rechecks a non-null stale image after resume");
+    Check(settling.Update(11,21,71,1,900,true,true,true,true)==CacheRefresh::None,
+          "Focus settling uploads stop after four total attempts");
+    Check(settling.Update(11,21,71,2,1000,false,true,true,true)==CacheRefresh::None,
+          "Unrelated focus never refreshes the cursor");
+    Check(settling.Update(11,21,71,2,1100,true,false,true,true)==CacheRefresh::None,
+          "Settling never makes an intentionally hidden cursor visible");
+    CacheRecovery natural;
+    Check(natural.Update(11,21,71,0,0,true,true,false,true)==CacheRefresh::None,
+          "Initial natural image build does not start a focus retry burst");
+    Check(natural.Update(11,21,71,1,1000,true,true,false,true)==CacheRefresh::None,
+          "LS handles a changed cache identity during focus return");
+    Check(natural.Update(11,21,71,1,1150,true,true,true,true)==CacheRefresh::FocusSettling,
+          "Natural focus-return rebuild also rechecks a non-null stale image");
 }
 int main(){try {
     TestImageCache();
