@@ -15,7 +15,7 @@ class CurrentNrSessionTests(unittest.TestCase):
         profile = Profile(name="Failing game", native_scaling_settings={"CaptureApi": "WGC", "FrameGeneration": "LSFG3"},
                           preferred_gpu_name="NVIDIA GeForce RTX 5050")
         runner.server = SimpleNamespace(state=SimpleNamespace(current_active_profile=profile), config=AppConfig())
-        first = {"available": True, "capture": {"adapter": "NVIDIA GeForce RTX 5050", "support": "Ready",
+        first = {"available": True, "capture": {"adapter": "NVIDIA GeForce RTX 5050", "adapterSource": "capture_frame", "support": "Ready",
                  "configured": True, "captureApi": 1, "frameGeneration": 1, "scaler": 0, "hdr": True,
                  "captures": 143, "dispatches": 13379, "progress": {"captureShaderMatches": 143}},
                  "addons": [{"id": "DLSSNR02", "enabled": True, "loaded": True, "status": "Running"}],
@@ -31,6 +31,7 @@ class CurrentNrSessionTests(unittest.TestCase):
         runner, _, _ = self.runner()
         result = runner._nr_capture_current()
         self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["details"]["captureAdapterVerified"])
         self.assertEqual(result["details"]["captureAdapter"], "NVIDIA GeForce RTX 5050")
         self.assertEqual(result["details"]["activeProfile"]["name"], "Failing game")
         self.assertEqual(result["details"]["observedSettings"]["frameGeneration"], 1)
