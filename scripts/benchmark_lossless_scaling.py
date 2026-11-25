@@ -80,6 +80,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--adaptive-acceptance", action="store_true", help="Add fixed-cap monitoring ABBA and independent LS feedback acceptance verdicts")
     parser.add_argument("--monitoring-phase-seconds", type=float, default=20.)
+    parser.add_argument("--single-gpu-name", help="Adaptive acceptance only: temporarily run the workload and LS on this uniquely named GPU, with NR off")
     parser.add_argument("--rtss-path")
     parser.add_argument("--minimum-fps", type=int, default=30)
     parser.add_argument("--maximum-fps", type=int, default=120)
@@ -312,9 +313,14 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             file=sys.stderr,
         )
         return 2
+    if args.single_gpu_name and not (args.adaptive_acceptance and args.dynamic_limiter):
+        print("--single-gpu-name requires --dynamic-limiter --adaptive-acceptance", file=sys.stderr)
+        return 2
 
     try:
         benchmark_exe, bundled_workload = resolve_benchmark_executable(args.benchmark_exe)
+        if args.single_gpu_name and not bundled_workload:
+            raise ValueError("Single-GPU acceptance requires the bundled workload for verified adapter selection")
         monitor_bounds = monitor_workload_bounds() if args.monitor_resolution else None
         if monitor_bounds:
             if not bundled_workload:
@@ -402,6 +408,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
     limiter_profile: Optional[Profile] = None
     rtss: Optional[RtssProfileManager] = None
     monitoring_restore = None
+    single_gpu_setup = None
     scaling_may_have_started = False
     report = {
         "schema_version": 1,
@@ -434,6 +441,11 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
     }
     exit_code = 0
     try:
+        if args.single_gpu_name:
+            from companion.services.single_gpu_benchmark import SingleGpuSetup
+            single_gpu_setup = SingleGpuSetup(manager, automation, watcher, args.single_gpu_name, run_dir)
+            report["single_gpu_request"] = {"requested": args.single_gpu_name, "selected": single_gpu_setup.gpu,
+                                            "profile": single_gpu_setup.profile.model_dump(mode="json")}
         workload_command = [str(benchmark_exe)]
         if bundled_workload:
             workload_command.extend(
@@ -441,10 +453,13 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                     "--width", str(args.width),
                     "--height", str(args.height),
                     "--shader-load", str(args.shader_load),
-                    "--duration", str(int(args.duration + 60 + (4*args.monitoring_phase_seconds+35 if args.adaptive_acceptance else 0))),
+                    "--duration", str(int(args.duration + 120 + (4*args.monitoring_phase_seconds+35 if args.adaptive_acceptance else 0))),
                     "--event-log", str(run_dir / "source-input-events.csv"),
                 )
             )
+        if single_gpu_setup:
+            workload_command.extend(("--adapter-name", single_gpu_setup.gpu["name"],
+                                     "--adapter-report", str(run_dir / "source-adapter.json")))
         workload_command.extend(args.benchmark_arg)
         report["workload_command"] = workload_command
         workload = subprocess.Popen(workload_command, cwd=benchmark_exe.parent)
@@ -454,6 +469,9 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
         if not focus_window(hwnd):
             raise RuntimeError("Windows did not grant the benchmark foreground ownership")
         report.update({"benchmark_pid": workload.pid, "benchmark_hwnd": hwnd})
+        if single_gpu_setup:
+            report["source_adapter"] = json.loads((run_dir / "source-adapter.json").read_text(encoding="utf-8"))
+            single_gpu_setup.apply(hwnd, workload.pid, benchmark_exe)
 
         if default_profile:
             automation.activate_profile(
@@ -477,7 +495,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             scaling_may_have_started = True
             if not automation.set_scaling(
                 True,
-                profile=default_profile,
+                profile=single_gpu_setup.profile if single_gpu_setup else default_profile,
                 reason="performance_benchmark",
                 force=True,
                 target_pid=workload.pid,
@@ -545,6 +563,8 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             limiter_manager.config.profiles = [limiter_profile]
             limiter_manager.config.active_profile_id = limiter_profile.id
             limiter_manager.config.lossless_scaling_exe_path = manager.config.lossless_scaling_exe_path
+            limiter_manager.config.addon_manager_enabled = manager.config.addon_manager_enabled
+            limiter_manager.config.addon_manager = manager.config.addon_manager.model_copy(deep=True)
             limiter_manager.config.rtss_frame_limiting_enabled = True
             limiter_manager.config.rtss_install_path = args.rtss_path or manager.config.rtss_install_path
             limiter_manager.save_config()
@@ -579,6 +599,18 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             limiter.poll()
             if limiter._session is None:
                 raise RuntimeError("Adaptive benchmark could not establish source/LS identity")
+            if single_gpu_setup:
+                from companion.services.single_gpu_benchmark import verify_gpu_context
+                route_deadline = time.monotonic()+20
+                while True:
+                    host = presentation_status(manager.config.lossless_scaling_exe_path, instance, binding=limiter._session.binding)
+                    report["single_gpu_host"] = host
+                    if host.get("capture", {}).get("captures", 0) > 0 and host.get("presentationPacing", {}).get("presentationLuid"):
+                        report["single_gpu_identity"] = verify_gpu_context(report["source_adapter"], host, single_gpu_setup.gpu["name"])
+                        break
+                    if workload.poll() is not None or time.monotonic() >= route_deadline:
+                        raise RuntimeError("Timed out verifying independent source intake and the single-GPU route")
+                    time.sleep(.5)
             limiter.shadow_only = True
             limiter._session.policy.shadow_only = True
             def monitoring_progress(index, enabled, pacing):
@@ -593,7 +625,8 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                 source_pid=workload.pid, process_names=process_names,
                 fixed_cap=limiter._session.current_limit, rtss=rtss, profile=limiter_profile,
                 phase_seconds=args.monitoring_phase_seconds, cancelled=lambda: workload.poll() is not None,
-                sample_callback=monitoring_progress)
+                sample_callback=monitoring_progress,
+                expected_luid=report.get("source_adapter", {}).get("adapterLuid"))
             report["cap_response"] = cap_response_check(rtss=rtss, profile=limiter_profile,
                 presentmon=presentmon_exe, directory=run_dir, process_names=process_names,
                 source_pid=workload.pid, fixed_cap=limiter._session.current_limit,
@@ -728,6 +761,9 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                 duration_seconds=args.duration, warmup_seconds=args.warmup,
                 settling_seconds=args.settling_seconds, tolerance_percent=args.target_tolerance)
             report["dynamic_limiter_benchmark"] = convergence
+            if single_gpu_setup:
+                context = presentation_status(manager.config.lossless_scaling_exe_path, instance, binding=limiter._session.binding)
+                report["single_gpu_identity_final"] = verify_gpu_context(report["source_adapter"], context, single_gpu_setup.gpu["name"])
             if convergence["status"] != "pass":
                 exit_code = 4
     except KeyboardInterrupt:
@@ -784,6 +820,14 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                 workload.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 workload.kill()
+                workload.wait(timeout=5)
+        if single_gpu_setup:
+            try:
+                single_gpu_setup.restore()
+                report["single_gpu_settings_restored"] = True
+            except Exception as error:
+                report["single_gpu_restore_error"] = str(error)
+                exit_code = max(exit_code, 3)
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         report["exit_code"] = exit_code
         _write_json(run_dir / "result.json", report)

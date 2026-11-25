@@ -4,6 +4,8 @@
 #include <shellapi.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <dxgi1_2.h>
+#include <cstdio>
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +26,7 @@ struct Options {
     int duration_seconds = 0;
     bool vsync = false;
     std::wstring event_log;
+    std::wstring adapter_name, adapter_report;
 };
 
 Options g_options;
@@ -53,6 +56,8 @@ Options parse_options() {
         else if (arg == L"--shader-load") result.shader_load = _wtoi(argument_value(argc, argv, i).c_str());
         else if (arg == L"--duration") result.duration_seconds = _wtoi(argument_value(argc, argv, i).c_str());
         else if (arg == L"--event-log") result.event_log = argument_value(argc, argv, i);
+        else if (arg == L"--adapter-name") result.adapter_name = argument_value(argc, argv, i);
+        else if (arg == L"--adapter-report") result.adapter_report = argument_value(argc, argv, i);
         else if (arg == L"--vsync") result.vsync = true;
     }
     LocalFree(argv);
@@ -142,6 +147,27 @@ struct Constants {
     float flash_active;
     float flash_phase;
 };
+
+bool write_adapter_report(ID3D11Device* device) {
+    if(g_options.adapter_report.empty())return true;
+    IDXGIDevice* dxgi=nullptr;IDXGIAdapter* adapter=nullptr;DXGI_ADAPTER_DESC desc{};
+    HRESULT hr=device->QueryInterface(__uuidof(IDXGIDevice),reinterpret_cast<void**>(&dxgi));
+    if(SUCCEEDED(hr))hr=dxgi->GetAdapter(&adapter);
+    if(SUCCEEDED(hr))hr=adapter->GetDesc(&desc);
+    release(adapter);release(dxgi);if(FAILED(hr))return false;
+    char name[512]{},luid[32]{};
+    WideCharToMultiByte(CP_UTF8,0,desc.Description,-1,name,sizeof name,nullptr,nullptr);
+    snprintf(luid,sizeof luid,"%08X:%08X",unsigned(desc.AdapterLuid.HighPart),unsigned(desc.AdapterLuid.LowPart));
+    std::string escaped;
+    for(unsigned char c:std::string(name)) {
+        if(c=='"'||c=='\\')escaped+='\\';
+        if(c<32){char code[8]{};snprintf(code,sizeof code,"\\u%04x",c);escaped+=code;}
+        else escaped+=char(c);
+    }
+    std::ofstream stream(std::filesystem::path(g_options.adapter_report),std::ios::trunc);
+    stream<<"{\"version\":1,\"adapter\":\""<<escaped<<"\",\"adapterLuid\":\""<<luid<<"\"}\n";
+    return bool(stream);
+}
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
@@ -178,18 +204,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     IDXGISwapChain* swap_chain = nullptr;
     D3D_FEATURE_LEVEL feature_level{};
     const D3D_FEATURE_LEVEL requested[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    IDXGIAdapter1* selected_adapter=nullptr;
+    if(!g_options.adapter_name.empty()) {
+        IDXGIFactory1* factory=nullptr;
+        if(FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),reinterpret_cast<void**>(&factory))))return 10;
+        unsigned matches=0;
+        for(UINT index=0;;++index) {
+            IDXGIAdapter1* candidate=nullptr;if(factory->EnumAdapters1(index,&candidate)!=S_OK)break;
+            DXGI_ADAPTER_DESC1 desc{};candidate->GetDesc1(&desc);
+            if(!(desc.Flags&DXGI_ADAPTER_FLAG_SOFTWARE)&&!_wcsicmp(desc.Description,g_options.adapter_name.c_str())) {
+                ++matches;release(selected_adapter);selected_adapter=candidate;candidate=nullptr;
+            }
+            release(candidate);
+        }
+        release(factory);
+        // An explicit request must never silently choose another adapter.
+        if(matches!=1){release(selected_adapter);return 11;}
+    }
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr,
+        selected_adapter,
 #ifdef LSC_BENCHMARK_TEST_WARP
         // The input integration fixture uses the real benchmark window on
         // machines without a hardware GPU. Production benchmarks stay native.
-        D3D_DRIVER_TYPE_WARP,
+        selected_adapter?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_WARP,
 #else
-        D3D_DRIVER_TYPE_HARDWARE,
+        selected_adapter?D3D_DRIVER_TYPE_UNKNOWN:D3D_DRIVER_TYPE_HARDWARE,
 #endif
         nullptr, 0, requested, 2,
         D3D11_SDK_VERSION, &swap_desc, &swap_chain, &device, &feature_level, &context);
+    release(selected_adapter);
     if (FAILED(hr)) return 4;
+    if(!write_adapter_report(device))return 12;
 
     ID3D11Texture2D* back_buffer = nullptr;
     ID3D11RenderTargetView* render_target = nullptr;

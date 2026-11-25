@@ -10,7 +10,7 @@ import logging
 import struct
 import time
 
-MANAGED_HOST_VERSION = "build-7-lsc.14"
+MANAGED_HOST_VERSION = "build-7-lsc.15"
 MANAGED_HOST_ARCHIVE = "LSAddonManager-Companion.zip"
 MAX_STATUS_BYTES = 262144
 logger = logging.getLogger("LSCompanion.AddonHost")

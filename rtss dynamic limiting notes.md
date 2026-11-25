@@ -1,6 +1,6 @@
 # RTSS Dynamic Limiting Notes
 
-Updated: 2026-11-20. Local implementation: policy 2, host build-7-lsc.11.
+Updated: 2026-11-25. Implementation: policy 2, host build-7-lsc.15.
 
 ## Objective and implementation status
 
@@ -10,10 +10,16 @@ grade LS health. Low LS utilization never requests a reduction. GPU headroom is
 supporting resource-pressure evidence, not proof of LS performance or a minimum
 LS utilization target.
 
+The intended use is a single GPU shared by the game and LS: reducing game work
+can leave LS more headroom. Separate game/LS GPUs generally do not need this.
+This is help text, not an adapter-based restriction on user configuration.
+
 The native observer, shadow evaluator, reversible adaptive controller, dashboard,
 and acceptance benchmark are connected. Automatic actions require trusted native
-identity and complete independent windows. This is a local source/build result;
-it has not been deployed to a user's running LS installation or published.
+identity and complete independent windows. The policy/controller and acceptance
+runner already existed in the released application. Revision 15 separates source
+observation from NR and adds the dedicated 3090 acceptance recipe; those changes
+still require live acceptance on the target machine.
 
 | Component | Implementation |
 | --- | --- |
@@ -67,6 +73,18 @@ the mutex before sorting. There are no GPU queries/readbacks/waits, per-frame
 allocations, disk writes or telemetry logging in this observer. COM/USER32 metadata
 checks occur on chain selection and the bounded metadata refresh, not every frame.
 The existing opt-in HDR pixel sampler is separate and unchanged.
+
+Revision 15 observes verified capture/scaler dispatches without registering an NR
+callback. Executed captures update intake counts and actual capture-device LUID;
+skipped, untagged, malformed or interrupted dispatches do not count. NR backend
+restrictions do not prevent observation of a positively identified capture. The observer
+does not allocate/copy GPU textures, replace bindings, initialize NR or wait for a
+telemetry reader. Device/texture metadata is cached across captures. Independent
+observation runs only while a bound controller renews a five-second lease; the
+benchmark's monitoring-off arms disable it. Normal NR transforms remain separate.
+The controller requires `capture.observationVersion >= 2` and positive adapter
+evidence. Missing evidence holds the cap and reports unavailable rather than
+appearing healthy or saving a calibration.
 
 Ephemeral P/p host controls bypass timing collection for the benchmark's off arms.
 The CPU collection microbenchmark is an implementation check, **not** a substitute
@@ -129,9 +147,17 @@ The existing RTSS manager restores/removes only its managed limiter keys.
 
 ## Acceptance benchmark and reports
 
-The last **Debug ? Application tests** item is **Adaptive RTSS: LS benefit and
-monitoring overhead (about 7 minutes)**. The existing **Run limiter benchmark**
-button uses the same runner. Both require RTSS installed/running, verified
+The last **Debug / Application tests** item is **Adaptive RTSS: single-GPU 3090
+and monitoring overhead (about 8 minutes)**. It explicitly selects the uniquely
+mapped 3090 (including a 3090 Ti), runs both the workload and LS on it, and uses
+temporary WGC / LSFG 3 / Scaling Off / SDR settings with NR and ReShade disabled.
+The workload reports its actual D3D11 device; capture and presentation LUIDs must
+match that device. Missing/ambiguous adapters or mismatched routes fail instead
+of falling back to another GPU. The private XML and prior deployment are restored
+afterward, including failure paths. No saved profile or learned cap is replaced.
+
+The existing **Run limiter benchmark** button uses the same measurement runner
+with the current routing/settings, without forcing a 3090. Both require RTSS installed/running, verified
 PresentMon, the bundled workload and a current Companion host.
 
 The run includes:
@@ -154,7 +180,9 @@ window boundaries, rather than file timestamps or an assumed FG multiplier.
 Reports separate telemetry validity, cap enforcement, LS benefit, descriptive
 headroom and monitoring overhead. Native benefit alone cannot pass the independent
 LS-benefit check: aligned source/LS swapchain evidence and displayed timing are
-required. A smooth workload with no beneficial pressure trial is inconclusive.
+required. Every aligned before/after window needs adequate ETW coverage; a short
+burst with many rows cannot substitute for the whole window. A smooth workload
+with no beneficial pressure trial is inconclusive.
 
 Report JSON, per-window decisions/reasons, context, RTSS readbacks and PresentMon
 CSVs are preserved. The application diagnostic includes a nested evidence ZIP.
@@ -162,7 +190,7 @@ Exceptions/interruptions restore the monitoring state and temporary RTSS profile
 cleanup failures remain visible and prevent success.
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/benchmark_lossless_scaling.py --dynamic-limiter --adaptive-acceptance --monitor-resolution --duration 300 --gpu-headroom 15 --input-probes 0 --yes
+.\.venv\Scripts\python.exe scripts/benchmark_lossless_scaling.py --dynamic-limiter --adaptive-acceptance --single-gpu-name 3090 --monitor-resolution --duration 300 --gpu-headroom 15 --input-probes 0 --yes
 ```
 
 ## Validation and remaining hardware acceptance

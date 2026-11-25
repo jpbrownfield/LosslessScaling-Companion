@@ -184,8 +184,8 @@ def build(cache: Path):
     for name in ("DLSSNR02.dll", "NeuralRendering_nvngx.dll"):
         shutil.copy2(work / "neural/Release" / name, payload / "addons/DLSSNR02" / name)
     nr_notice = payload / "addons/DLSSNR02/NOTICE.md"
-    modification = ("\n\nCompanion revision 14 (2026-11-23): rebuilt from the pinned source with "
-                    "nonblocking NR failure recovery, model-path fallback and error reporting fixes. "
+    modification = (f"\n\nCompanion {lock['version']} (2026-11-25): rebuilt from the pinned source with "
+                    "nonblocking NR failure recovery, model-path fallback, error reporting and independent capture observation. "
                     "NeuralRendering-source.zip contains the complete modified source and build commands.\n")
     if modification not in nr_notice.read_text(encoding="utf-8"):
         with nr_notice.open("a", encoding="utf-8") as output:

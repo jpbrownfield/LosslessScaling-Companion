@@ -6,6 +6,7 @@ incremental observer cost, including polling/sorting, without adaptive writes.
 from __future__ import annotations
 
 import statistics
+import math
 import time
 from pathlib import Path
 
@@ -43,9 +44,15 @@ def summarize_overhead(phases):
     if any(not p.get("ls", {}).get("swapchain_verified") or p["ls"]["rows"] < 120
            or p["ls"]["span_seconds"] < p["seconds"]-4 for p in phases):
         return {**result, "reason": "Missing full-duration PresentMon evidence for the bound LS swapchain"}
+    if any(p.get("source", {}).get("rows", 0) < 120 or p["source"].get("span_seconds", 0) < p["seconds"]-4 for p in phases):
+        return {**result, "reason": "Missing full-duration source PresentMon evidence"}
     off = [p for p in phases if not p["enabled"]]; on = [p for p in phases if p["enabled"]]
     def metric(phase, group, name, key):
         return phase[group]["metrics"][name][key]
+    if any(type(metric(p,"ls","frame_time_ms",key)) not in (int,float)
+           or not math.isfinite(metric(p,"ls","frame_time_ms",key)) or metric(p,"ls","frame_time_ms",key) <= 0
+           for p in phases for key in ("median", "p95", "p99")):
+        return {**result, "reason": "LS percentile evidence is missing or invalid"}
     if any(metric(p, "source", "frame_time_ms", "mean") in (None, 0) for p in phases):
         return {**result, "reason": "Source-rate evidence is missing"}
     rates = [1000/metric(p,"source","frame_time_ms","mean") for p in phases]
@@ -76,7 +83,7 @@ def summarize_overhead(phases):
 
 def monitoring_comparison(*, executable, instance, binding, presentmon, directory, source_pid,
                           process_names, fixed_cap, rtss, profile, phase_seconds=20.,
-                          cancelled=lambda: False, sample_callback=None):
+                          cancelled=lambda: False, sample_callback=None, expected_luid=None):
     phases = []
     previous_enabled = None
     try:
@@ -119,6 +126,9 @@ def monitoring_comparison(*, executable, instance, binding, presentmon, director
                     phase["control_confirmed"] &= all(host.get("capture",{}).get(k)==v for k,v in capture_context.items()) and all(pacing.get(k)==v for k,v in monitor_context.items())
                     if enabled and pacing.get("swapchain") not in (0, chain):
                         phase["control_confirmed"] = False
+                    if enabled and expected_luid:
+                        from .dynamic_limiter import DynamicLimiterController
+                        phase["control_confirmed"] &= DynamicLimiterController._luid(pacing.get("presentationLuid")) == DynamicLimiterController._luid(expected_luid)
                     phase["samples"].append({"pacing": pacing, "capture": host.get("capture"), "sampledAt": host.get("sampledAt")})
                     if sample_callback:
                         sample_callback(index, enabled, pacing)
@@ -177,6 +187,7 @@ def presentmon_trial_evidence(paths, source_pid, ls_pid, decisions):
     results = []
     def selected(pid, chain, spans):
         chosen = []
+        stamps = [[] for _ in spans]
         for row in rows:
             if str(row.get("ProcessID", "")).strip() != str(pid):
                 continue
@@ -186,9 +197,24 @@ def presentmon_trial_evidence(paths, source_pid, ls_pid, decisions):
                 stamp = float(row["CPUStartQPCTime"])
             except (ValueError, KeyError):
                 continue
-            if any(start <= stamp < end for start,end in spans):
-                chosen.append(row)
-        return summarize_presentmon_rows(chosen)
+            if not math.isfinite(stamp):
+                continue
+            for index, (start, end) in enumerate(spans):
+                if start <= stamp < end:
+                    chosen.append(row);stamps[index].append(stamp);break
+        summary = summarize_presentmon_rows(chosen)
+        # A burst of many rows cannot stand in for an entire native window.
+        # Require coverage of every before/after span, including its boundaries.
+        coverage = []
+        for (start, end), times in zip(spans, stamps):
+            times = sorted(set(times))
+            span = end-start
+            gaps = [b-a for a,b in zip(times, times[1:])]
+            coverage.append(bool(len(times) >= 30 and (times[-1]-times[0])/span >= .8
+                                 and times[0]-start <= span*.1 and end-times[-1] <= span*.1
+                                 and gaps and max(gaps) <= max(250., statistics.median(gaps)*10)))
+        summary["aligned_window_coverage"] = bool(coverage) and all(coverage)
+        return summary
     for decision in decisions:
         comparison = decision.get("comparison") or {}
         if not comparison:
@@ -196,11 +222,17 @@ def presentmon_trial_evidence(paths, source_pid, ls_pid, decisions):
         before, after = comparison.get("beforeWindows", []), comparison.get("afterWindows", [])
         chain = (decision.get("pacing") or {}).get("swapchain")
         evidence = {"status": "inconclusive", "comparison": comparison, "swapchain": chain, "nativeAccepted": decision.get("benefit_confirmed") is True}
+        def valid(spans):
+            return bool(spans) and all(isinstance(pair, (list, tuple)) and len(pair) == 2
+                and all(type(x) in (int, float) and math.isfinite(x) for x in pair)
+                and 1800 <= pair[1]-pair[0] <= 2500 for pair in spans) and all(a[1] <= b[0] for a,b in zip(spans,spans[1:]))
+        if not valid(before) or not valid(after) or before[-1][1] > after[0][0]:
+            results.append({**evidence, "reason": "Invalid or overlapping native comparison windows"});continue
         source_before = selected(source_pid, None, before)
         source_after = selected(source_pid, None, after)
         ls_before = selected(ls_pid, chain, before)
         ls_after = selected(ls_pid, chain, after)
-        if not chain or any(s["rows"] < 60 for s in (source_before,source_after,ls_before,ls_after)):
+        if not chain or any(s["rows"] < 60 or not s["aligned_window_coverage"] for s in (source_before,source_after,ls_before,ls_after)):
             results.append({**evidence, "reason": "Missing aligned source/LS swapchain ETW evidence"});continue
         mean_before = source_before["metrics"]["frame_time_ms"]["mean"]
         mean_after = source_after["metrics"]["frame_time_ms"]["mean"]

@@ -192,6 +192,10 @@ class DynamicLimiterController:
         if not pacing.get("identityVerified") or not pacing.get("focused") or any(pacing.get(k) != v for k,v in zip(("sourcePid", "sourceWindow", "outputWindow", "context"), session.binding)):
             return self._unavailable("Waiting for focused, bound LS presentation identity", profile)
         capture = host.get("capture") or {}
+        if capture.get("observationVersion", 0) < 2:
+            return self._unavailable("Update the Companion add-on host for capture observation independent of NR", profile)
+        if capture.get("adapterSource") != "capture_frame" or not self._luid(capture.get("adapterLuid")):
+            return self._unavailable("Waiting for verified source capture intake; the cap is held", profile)
         session.telemetry_context = {
             "lsPid": instance[0], "lsCreatedAt": instance[1], "sourcePid": pid,
             "sourceCreatedAt": identity[1],
@@ -234,8 +238,8 @@ class DynamicLimiterController:
         # smoothness or proof of displayed/generated frames.
         stamp, captures = host.get("sampledAt"), capture.get("captures")
         intake = None
-        if (isinstance(stamp, (int,float)) and isinstance(captures, int)
-                and capture.get("adapterSource") == "capture_frame"):
+        if (isinstance(stamp, (int,float)) and not isinstance(stamp, bool) and math.isfinite(stamp)
+                and type(captures) is int and captures >= 0):
             if session.intake:
                 old_stamp, old_count = session.intake
                 if captures <= old_count:
@@ -243,6 +247,8 @@ class DynamicLimiterController:
                 if 1 <= stamp-old_stamp <= 4 and captures > old_count:
                     intake = (captures-old_count)/(stamp-old_stamp)
             session.intake = stamp, captures
+        else:
+            return self._unavailable("Source capture-intake measurements are unavailable; the cap is held", profile)
         from dataclasses import replace
         window = replace(window, intake_fps=intake)
         if self.time_fn()-session.last_gpu_at >= 2:
@@ -250,8 +256,8 @@ class DynamicLimiterController:
             session.last_gpu_at = self.time_fn()
         adapters = session.utilization.get("gpu_adapters", [])
         known = {self._luid(x) for x in adapters}
-        expected = {self._luid(pacing["presentationLuid"]), self._luid(capture.get("adapterLuid", ""))} - {None}
-        if not adapters or not expected.issubset(known):
+        expected = {self._luid(pacing["presentationLuid"]), self._luid(capture.get("adapterLuid", ""))}
+        if None in expected or not adapters or not expected.issubset(known):
             return self._unavailable("GPU headroom cannot be joined to capture/presentation adapter LUIDs", profile)
         verified = self.rtss_manager.read_limit(profile) == session.current_limit
         if not verified:

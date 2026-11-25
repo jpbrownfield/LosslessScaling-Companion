@@ -102,6 +102,7 @@ static void TestDispatchIdentity(const wchar_t* reshade) {
     Expect(dispatchCallbacks==4,"Shutdown stops dispatch callbacks");
     std::cout<<"Dispatch identity passed (native, proxy contract, shader identity, exactly-once callbacks).\n";
 }
+#include "capture_observer_test.inc"
 int wmain(int argc,wchar_t** argv){try {
     Fixture nv(L"routing-fixtures/DLSSNR02.dll"),amd(L"routing-fixtures/LSC_AMDNR.dll");
     {
@@ -116,6 +117,7 @@ int wmain(int argc,wchar_t** argv){try {
         Expect(RealFrameHook::Support()==EamFrameSupport::CallbackFailed,"NR failure remains visible");
     }
     TestDispatchIdentity(argc>1?argv[1]:nullptr);
+    TestCaptureObservation();
     for(bool amdFirst:{false,true})for(unsigned vendor:{0x10deu,0x1002u,0x8086u}) {
         eam::HostImpl host;unsigned nvBefore=nv.calls(),amdBefore=amd.calls();
         if(amdFirst){Expect(amd.reg(&host,false),"AMD registration");Expect(nv.reg(&host,true),"NV alongside AMD");}

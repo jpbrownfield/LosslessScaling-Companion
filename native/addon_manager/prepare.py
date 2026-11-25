@@ -106,6 +106,22 @@ def patch_capture_diagnostics(capture: Path):
                  '    if(!executed){captureTrace.Count(CaptureStep::CaptureSkipped);return;}')
 
 
+def patch_capture_observer(capture: Path):
+    header = capture.with_suffix(".h")
+    replace_once(header, 'void SettingsChanging();',
+                 'void SettingsChanging();\nvoid EnableCaptureObservation(bool);\nbool CaptureObservationEnabled();\n'
+                 '#ifdef LSC_CAPTURE_OBSERVER_TEST\nvoid VerifyCaptureFixture();\n#endif')
+    text = capture.read_text(encoding="utf-8")
+    begin = text.index('void Before(eam::HostImpl*')
+    end = text.index('void Shutdown()', begin)
+    replace_once(capture, text[begin:end], '#include "capture_observer.inc"\n')
+    replace_once(capture, '    ++captures; lastCapture=GetTickCount64();', '')
+    replace_once(capture, '    std::lock_guard<std::mutex> lock(diagnosticMutex);diagnostic.adapter=name;diagnostic.driver=driver;',
+                 '    std::lock_guard<std::mutex> lock(diagnosticMutex);\n'
+                 '    if(!fromCapture&&diagnostic.captureAdapterObserved)return;\n'
+                 '    diagnostic.adapter=name;diagnostic.driver=driver;')
+
+
 def patch_passthrough(manager: Path):
     source = manager / "src/features/reshade_passthrough.cpp"
     header = manager / "src/features/reshade_passthrough.h"
@@ -280,6 +296,7 @@ def prepare(source: Path):
                      'void RenderUpdateSettings(updates::Checker& checker) {\n'
                      f'    if ({managed}) {{ ImGui::TextDisabled("Updates are provided by Lossless Scaling Companion."); return; }}')
     patch_capture_diagnostics(capture)
+    patch_capture_observer(capture)
     status_text = manager / "src/gui/window/status_text.cpp"
     replace_once(status_text,
                  '    std::string text="LS GPU: "+(d.adapter.empty()?std::string("not observed yet"):d.adapter);',
@@ -330,7 +347,7 @@ def prepare(source: Path):
     replace_once(dispatch, '#include "d3d11_hook.h"', '#include "d3d11_hook.h"\n#include "hdr_probe.h"')
     replace_once(dispatch, 'if (t_dispatching || !ctx || !IsLossless(ctx))',
                  'if (lsc::IsHdrProbeDispatch() || t_dispatching || !ctx || !IsLossless(ctx))')
-    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "context_identity.h", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_cache.h", "cursor_cache.cpp", "cursor_cache_contract.h", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
+    for name in ("companion_bridge.h", "companion_bridge.cpp", "component_loader.h", "component_loader.cpp", "context_identity.h", "hdr_probe.h", "hdr_probe.cpp", "pacing_probe.h", "pacing_probe_test.cpp", "cursor_guard.h", "cursor_guard.cpp", "cursor_cache.h", "cursor_cache.cpp", "cursor_cache_contract.h", "cursor_test.cpp", "capture_trace.h", "capture_trace_test.cpp", "capture_observer.inc", "capture_observer_test.inc", "companion_real_frame.inc", "headless_smoke.cpp", "fake_engine.cpp", "routing_fixture.cpp", "routing_test.cpp", "panel_test.cpp"):
         shutil.copy2(overlay / name, manager / "src/core" / name)
     with (manager / "CMakeLists.txt").open("a", encoding="utf-8") as output:
         output.write('\n# Companion overlay: rendering sources and SDK are unchanged.\n'
@@ -363,6 +380,7 @@ def prepare(source: Path):
                      'get_target_property(routing_includes eam_coretest INCLUDE_DIRECTORIES)\n'
                      'target_include_directories(lsc_routing_test PRIVATE ${routing_includes})\n'
                      'target_compile_definitions(lsc_routing_test PRIVATE LSC_HOST_VERSION="${LSC_HOST_VERSION}")\n'
+                      'target_compile_definitions(lsc_routing_test PRIVATE LSC_CAPTURE_OBSERVER_TEST)\n'
                      'target_compile_options(lsc_routing_test PRIVATE /MP4 /FS)\n'
                      'target_link_libraries(lsc_routing_test d3d11 dxgi d3dcompiler bcrypt minhook)\n'
                      'foreach(vendor DLSSNR02 LSC_AMDNR)\n'

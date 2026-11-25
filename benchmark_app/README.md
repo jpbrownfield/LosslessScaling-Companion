@@ -15,4 +15,12 @@ cl /nologo /std:c++17 /O2 /EHsc /DUNICODE /D_UNICODE `
 ```
 
 Options: `--width`, `--height`, `--shader-load`, `--duration`, `--event-log`,
-and `--vsync`.
+`--vsync`, `--adapter-name` (exact DXGI name), and `--adapter-report` (JSON path).
+An explicit adapter request must match exactly one hardware adapter; it fails
+instead of falling back. The report contains the actual device name and LUID.
+
+The last Debug / Application tests item in Companion runs adaptive RTSS acceptance
+on the 3090 with NR off. It checks workload/capture/presentation adapter identity,
+fixed-cap monitoring overhead, independent cap response and bounded adaptation,
+then restores the temporary settings and includes the CSV/JSON evidence in the
+exported diagnostic ZIP. RTSS must already be installed and running.

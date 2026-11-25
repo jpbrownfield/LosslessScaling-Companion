@@ -895,7 +895,10 @@
               <div class="form-group checkbox-group section-primary-toggle"><input id="rtssFrameLimitingEnabled" type="checkbox"><label for="rtssFrameLimitingEnabled">Enable RTSS Frame Limiting integration</label></div>
               <div class="form-group"><label>Default Limiting Mode</label><select id="rtssDefaultLimitMode"><option value="static">Static</option><option value="dynamic">Dynamic calibration</option></select></div>
               <div id="rtssDefaultStaticLimitGroup" class="form-group"><label>Default static frame limit for new profiles</label><input id="rtssDefaultStaticFramerateLimit" type="number" value="60" min="1" max="1000" step="1"></div>
-              <div id="rtssDefaultGpuTargetGroup" class="form-group"><label>Default GPU headroom reserve (%)</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5"></div>
+              <div id="rtssDefaultGpuTargetGroup" class="form-group">
+                <label>Default GPU headroom reserve (%)</label><input id="rtssDefaultGpuTargetPercent" type="number" value="15" min="1" max="100" step="0.5">
+                <p class="item-sub" style="white-space:normal">Dynamic limiting preserves LS GPU headroom on single-GPU setups by limiting game rendering. It is unnecessary when the game and LS use separate GPUs.</p>
+              </div>
             </div>
             <div class="settings-column">
               <div class="form-group"><label>Install directory override (optional)</label><div class="input-with-button"><input id="rtssInstallPath" type="text" placeholder="Blank uses automatic detection"><button id="browseRtssInstallBtn" class="btn btn-secondary" type="button">Browse</button></div><div id="rtssStatus" style="white-space:normal"></div></div>
@@ -1222,6 +1225,7 @@
               <input type="number" id="rtssFramerateLimit" value="60" min="1" max="1000">
             </div>
             <div id="rtssDynamicSettings">
+              <p class="item-sub" style="white-space:normal; margin-bottom:10px">Dynamic limiting preserves LS GPU headroom on single-GPU setups by limiting game rendering. It is unnecessary when the game and LS use separate GPUs.</p>
               <div class="form-row">
                 <div class="form-group"><label>GPU headroom reserve (%)</label><input id="rtssGpuTargetPercent" type="number" min="1" max="100" step="0.5" placeholder="Use global reserve"></div>
                 <div class="form-group"><label>Minimum game FPS</label><input id="rtssMinimumFramerate" type="number" value="30" min="1" max="1000"></div>

@@ -130,7 +130,7 @@ class DiagnosticRunner:
             ("rtss", "RTSS integration readiness", self._rtss),
             ("startup", "Windows startup integration", self._startup),
             ("runtime", "Companion runtime and WebSocket state", self._runtime),
-            ("rtss_adaptive_benchmark", "Adaptive RTSS: LS benefit and monitoring overhead (about 7 minutes)", self._rtss_adaptive_benchmark),
+            ("rtss_adaptive_benchmark", "Adaptive RTSS: single-GPU 3090 and monitoring overhead (about 8 minutes)", self._rtss_adaptive_benchmark),
         )
 
     def _nr_capture_trace(self) -> Dict:
@@ -2169,6 +2169,7 @@ class DiagnosticRunner:
         report_root = self._behavior_root.parent / "adaptive-benchmark"
         command = self.server._benchmark_launch_command(workload, presentmon, dynamic_limiter=True)
         command[command.index("--report-dir")+1] = str(report_root)
+        command.extend(["--single-gpu-name", "3090"])
         try:
             self._claim_benchmark()
             if self.server.state.is_scaling_active:
@@ -2190,6 +2191,8 @@ class DiagnosticRunner:
             return self._result(status, "Adaptive RTSS acceptance: "+verdict.get("status", "failed before verdict")+
                                 ". Telemetry, source-cap response, LS benefit, and observer overhead are reported separately.",
                                 exitCode=code, verdict=verdict, evidenceArchive=Path(archive).name if archive else None,
+                                 singleGpuIdentity=report.get("single_gpu_identity"),
+                                 singleGpuSettingsRestored=report.get("single_gpu_settings_restored"),
                                 rtssRestored=report.get("rtss_profile_restored"), error=report.get("error"))
         finally:
             try:

@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <cstdio>
 using Microsoft::WRL::ComPtr;
+namespace RealFrameHook {void EnableCaptureObservation(bool) {}}
 int main() {
     lsc::StartHdrProbe();
     HANDLE map=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,(L"Local\\LSCHdrProbe-"+std::to_wstring(GetCurrentProcessId())).c_str());

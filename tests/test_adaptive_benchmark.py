@@ -62,7 +62,7 @@ class AdaptiveBenchmarkTests(unittest.TestCase):
             path=Path(folder)/"p.csv"
             lines=["ProcessID,SwapChainAddress,CPUStartQPCTime,FrameTime,DisplayedTime"]
             for start,cap,ls_time in ((10000,100,18.),(20000,98,10.)):
-                for i in range(120):
+                for i in range(200):
                     tick=start+i*10
                     lines.append(f"100,0x1,{tick},{1000/cap},10")
                     interval=ls_time if i%5==0 else 10.
@@ -78,6 +78,21 @@ class AdaptiveBenchmarkTests(unittest.TestCase):
             evidence=presentmon_trial_evidence([path],100,200,[decision])[0]
             self.assertFalse(evidence["cap_enforced"])
             self.assertNotEqual(evidence["status"],"pass")
+
+    def test_short_burst_or_overlapping_windows_cannot_pass_independent_confirmation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"p.csv"
+            lines = ["ProcessID,SwapChainAddress,CPUStartQPCTime,FrameTime,DisplayedTime"]
+            for start in (10000, 20000):
+                for index in range(120):
+                    lines.extend((f"100,0x1,{start+index},10,10", f"200,0xabc,{start+index},10,10"))
+            path.write_text("\n".join(lines))
+            decision = {"pacing": {"swapchain": 0xabc}, "benefit_confirmed": True,
+                        "comparison": {"beforeWindows": [[10000, 12000]], "afterWindows": [[20000, 22000]],
+                                       "previousLimit": 100, "proposedLimit": 98}}
+            self.assertEqual(presentmon_trial_evidence([path],100,200,[decision])[0]["status"], "inconclusive")
+            decision["comparison"]["afterWindows"] = [[11000, 13000]]
+            self.assertIn("overlapping", presentmon_trial_evidence([path],100,200,[decision])[0]["reason"])
 
     def test_controlled_cap_step_verifies_source_rate_and_restores_fixed_cap(self):
         with tempfile.TemporaryDirectory() as folder:

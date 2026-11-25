@@ -680,6 +680,32 @@ class DiagnosticRunnerTests(unittest.TestCase):
         self.assertIn("rtss",plan)
         self.assertIn("rtss_adaptive_benchmark",runner.LS_MUTATING_TESTS)
 
+    def test_adaptive_debug_test_requests_3090_and_bundles_csv_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = DiagnosticRunner.__new__(DiagnosticRunner)
+            runner._behavior_root = Path(directory)/"sandbox"
+            runner.server = SimpleNamespace(config=AppConfig(addon_manager_enabled=True), state=AppState(),
+                process_watcher=Mock(), automation=Mock(), _embedded_benchmark_executable=lambda: "LSBenchmark.exe",
+                _verified_benchmark_executable=lambda _: "PresentMon.exe",
+                _benchmark_launch_command=lambda *a, **k: ["--report-dir", "placeholder", "--dynamic-limiter", "--adaptive-acceptance"])
+            def run(command):
+                self.assertEqual(command[command.index("--single-gpu-name")+1], "3090")
+                target = Path(command[command.index("--report-dir")+1])/"run"
+                target.mkdir(parents=True)
+                (target/"frames.csv").write_text("frame evidence")
+                (target/"result.json").write_text(json.dumps({"dynamic_limiter_benchmark": {"status": "inconclusive"},
+                    "rtss_profile_restored": True, "single_gpu_settings_restored": True}))
+                return 4
+            with patch("companion.services.rtss_manager.RtssProfileManager") as rtss, patch(
+                    "scripts.benchmark_lossless_scaling.main", side_effect=run):
+                rtss.return_value.status.return_value = {"installed": True, "running": True}
+                result = runner._rtss_adaptive_benchmark()
+            self.assertEqual(result["status"], "warn")
+            self.assertTrue(result["details"]["singleGpuSettingsRestored"])
+            self.assertFalse(runner.server.state.benchmark_mode_active)
+            with zipfile.ZipFile(Path(directory)/result["details"]["evidenceArchive"]) as archive:
+                self.assertIn("run/frames.csv", archive.namelist())
+
     def test_run_all_includes_lilium_diagnostic(self):
         runner = DiagnosticRunner.__new__(DiagnosticRunner)
 

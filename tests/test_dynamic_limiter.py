@@ -107,7 +107,7 @@ class DynamicLimiterTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def host(self, exe, instance, *, binding):
-        return {"sampledAt": self.now, "capture": {"captures": self.count, "adapterSource": "capture_frame", "adapterLuid": "00000000:00000001"},
+        return {"sampledAt": self.now, "capture": {"observationVersion": 2, "captures": self.count, "adapterSource": "capture_frame", "adapterLuid": "00000000:00000001"},
                 "presentationPacing": {"version": 2, "enabled": True, "identityVerified": True, "focused": self.focus,
                     "sourcePid": binding[0], "sourceWindow": binding[1], "outputWindow": binding[2], "context": binding[3],
                     "generation": self.generation, "sequence": self.sequence, "startedMs": (self.now-2)*1000,
@@ -279,6 +279,31 @@ class DynamicLimiterTests(unittest.TestCase):
         result=self.step(10)
         self.assertEqual(result["state"],"shadow_trial")
         self.assertEqual(self.rtss.limits,[100])
+
+    def test_missing_independent_capture_evidence_cannot_look_healthy(self):
+        original = self.controller.presentation_fn
+        for field, value in (("observationVersion", 1), ("adapterSource", "device_creation"),
+                             ("adapterLuid", ""), ("captures", None)):
+            def host(*args, **kwargs):
+                snapshot = original(*args, **kwargs)
+                snapshot["capture"][field] = value
+                return snapshot
+            self.controller.presentation_fn = host
+            with self.subTest(field=field):
+                self.assertEqual(self.step(4)["state"], "unavailable")
+        self.assertEqual(self.rtss.limits, [100])
+
+    def test_losing_capture_adapter_evidence_rolls_back_trial(self):
+        self.ratio = 1.7
+        self.step(4)
+        original = self.controller.presentation_fn
+        def missing(*args, **kwargs):
+            snapshot = original(*args, **kwargs)
+            snapshot["capture"]["adapterSource"] = "device_creation"
+            return snapshot
+        self.controller.presentation_fn = missing
+        self.assertEqual(self.step()["state"], "unavailable")
+        self.assertEqual(self.rtss.limits, [100, 98, 100])
 
     def test_benchmark_ownership_blocks_all_profile_writes(self):
         self.state.benchmark_mode_active=True

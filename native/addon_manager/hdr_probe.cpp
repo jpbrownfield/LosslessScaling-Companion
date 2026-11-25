@@ -13,6 +13,8 @@
 #include <cstring>
 #include <stdexcept>
 using Microsoft::WRL::ComPtr;
+// The standalone HDR fixture supplies a no-op; the host links the real observer.
+namespace RealFrameHook {void EnableCaptureObservation(bool);}
 namespace lsc { namespace {
 std::mutex gate;
 HdrProbeStatus status;
@@ -231,16 +233,18 @@ void ObserveHdrPresentation(IDXGISwapChain* chain) {
 HdrProbeStatus HdrProbeSnapshot() {std::lock_guard lock(gate);return status;}
 void EnablePresentationMonitoring(bool enabled) {
     std::lock_guard lock(pacingGate);if(pacingEnabled.exchange(enabled)!=enabled)ResetPacing();
+    RealFrameHook::EnableCaptureObservation(enabled&&sourcePid);
 }
 void BindPresentation(DWORD pid,uint64_t source,uint64_t output,uint64_t context) {
     std::lock_guard lock(pacingGate);
     DWORD owner=0;GetWindowThreadProcessId(reinterpret_cast<HWND>(source),&owner);
     DWORD outputOwner=0;GetWindowThreadProcessId(reinterpret_cast<HWND>(output),&outputOwner);
     wchar_t title[128]{};GetWindowTextW(reinterpret_cast<HWND>(output),title,128);
-    if(!pid||owner!=pid||outputOwner!=GetCurrentProcessId()||wcscmp(title,L"LosslessScaling")) {sourcePid=0;sourceWindow=outputWindow=bindingContext=0;identityVerified=false;ResetPacing();return;}
+    if(!pid||owner!=pid||outputOwner!=GetCurrentProcessId()||wcscmp(title,L"LosslessScaling")) {sourcePid=0;sourceWindow=outputWindow=bindingContext=0;identityVerified=false;ResetPacing();RealFrameHook::EnableCaptureObservation(false);return;}
     if(sourcePid!=pid||sourceWindow!=source||outputWindow!=output||bindingContext!=context) {
         sourcePid=pid;sourceWindow=source;outputWindow=output;bindingContext=context;ResetPacing();
     }
+    RealFrameHook::EnableCaptureObservation(pacingEnabled.load());
 }
 PacingSnapshot PresentationPacingSnapshot(uint64_t observedFocusEpoch) {
     PacingWindows completed;
