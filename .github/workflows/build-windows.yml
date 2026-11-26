@@ -279,7 +279,10 @@ jobs:
           $signArguments = @()
           if ($env:LS_COMPANION_RELEASE_CHANNEL -eq 'full') {
             $signScript = (Resolve-Path -LiteralPath scripts/sign_release.ps1).Path
-            $signCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File $q' + $signScript + '$q -Path $f'
+            # Reuse this engine: Windows PowerShell 5.1 inherits pwsh's module
+            # path and can fail to load the Authenticode cmdlets from it.
+            $signEngine = Join-Path $PSHOME 'pwsh.exe'
+            $signCommand = '$q' + $signEngine + '$q -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $q' + $signScript + '$q -Path $f'
             $signArguments = @('/DSignRelease=1', "/Scompanion=$signCommand")
           }
           & $compiler "/DMyAppVersion=$version" @signArguments installer/LosslessCompanion.iss
