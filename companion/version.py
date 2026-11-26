@@ -35,5 +35,10 @@ def stable_version_tuple(value: str):
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+def is_full_release_version(value: str) -> bool:
+    version = stable_version_tuple(value)
+    return version is not None and version[2] == 0
+
+
 __version__ = current_version()
 

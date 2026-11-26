@@ -52,6 +52,7 @@ jobs:
     with:
       source_ref: ${{ needs.prepare.outputs.source_sha }}
       release_version: ${{ needs.prepare.outputs.version }}
+      release_channel: beta
 
   publish:
     name: Promote tested pins and publish new release

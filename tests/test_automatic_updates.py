@@ -244,6 +244,16 @@ class AutomaticUpdateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(server.component_operation_status["phase"], "restarting")
         releases.check.assert_not_called()
 
+    async def test_beta_status_never_queues_an_automatic_companion_install(self):
+        self.server.addon_update_status = {"updates": []}
+        self.server._process_message = AsyncMock()
+        for version, prerelease in (("2.0.15", False), ("2.1.0", True)):
+            self.server.companion_update_status = {"supported": True, "updateAvailable": True,
+                "latestVersion": version, "prerelease": prerelease}
+            await self.server.automatic_updates.run_pending()
+        self.server._process_message.assert_not_awaited()
+        self.assertFalse(self.server.state.update_in_progress)
+
     async def test_companion_handoff_is_silent_and_remains_locked_until_shutdown(self):
         self.server.addon_update_status = {"updates": []}
         self.server.companion_update_status = {"supported": True, "updateAvailable": True, "latestVersion": "2.0.0", "downloaded": False}

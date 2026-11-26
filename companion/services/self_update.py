@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 from urllib.parse import urlparse
 
-from ..version import current_version, stable_version_tuple
+from ..version import current_version, stable_version_tuple, is_full_release_version
 from .asset_store import AssetStore, UnsafeAssetError
 from .release_providers import (
     GitHubReleaseProvider,
@@ -57,15 +57,15 @@ class CompanionUpdateService:
 
     def _verified_installer(self, version: str) -> tuple[Path, Dict]:
         normalized = str(version or "").strip().removeprefix("v")
-        if stable_version_tuple(normalized) is None:
-            raise UnsafeAssetError("A stable companion version is required")
+        if not is_full_release_version(normalized):
+            raise UnsafeAssetError("A full companion release (x.y.0) is required")
         directory = (self.root / normalized).resolve()
         receipt_path = directory / "update.json"
         if directory.parent != self.root.resolve() or not receipt_path.is_file():
             raise UnsafeAssetError("Verified companion installer is unavailable")
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         if (not isinstance(receipt, dict) or receipt.get("version") != normalized
-                or receipt.get("filename") != INSTALLER_NAME):
+                or receipt.get("filename") != INSTALLER_NAME or receipt.get("releaseChannel") != "full"):
             raise UnsafeAssetError("Companion installer receipt does not match the requested version")
         installer = (directory / INSTALLER_NAME).resolve()
         if installer.parent != directory or not installer.is_file():
@@ -94,7 +94,7 @@ class CompanionUpdateService:
         releases = self.release_manager.check("companion", channel="stable", force=force)
         valid = [
             item for item in releases
-            if stable_version_tuple(str(item.get("version") or ""))
+            if self._full_release(item)
             and self._asset(item, INSTALLER_NAME)
             and self._asset(item, CHECKSUM_NAME)
         ]
@@ -118,7 +118,13 @@ class CompanionUpdateService:
             "releaseNotes": latest.get("notes") if latest else None,
             "downloaded": bool(latest and self._cached_receipt(str(latest.get("version") or ""))),
             "supported": True,
+            "releaseChannel": "full",
         }
+
+    @staticmethod
+    def _full_release(item: Dict) -> bool:
+        return bool(is_full_release_version(str(item.get("version") or ""))
+                    and not item.get("prerelease") and not item.get("draft"))
 
     @staticmethod
     def _download_bytes(
@@ -172,8 +178,8 @@ class CompanionUpdateService:
             if not self.enabled:
                 raise RuntimeError("Companion updates are available only in packaged builds")
             normalized = str(version or "").strip().removeprefix("v")
-            if stable_version_tuple(normalized) is None:
-                raise ValueError("A stable companion version is required")
+            if not is_full_release_version(normalized):
+                raise ValueError("A full companion release (x.y.0) is required; install betas manually from GitHub")
             cached = self._cached_receipt(normalized)
             if cached:
                 return {
@@ -184,7 +190,7 @@ class CompanionUpdateService:
                 }
             releases = self.release_manager.check("companion", channel="stable", force=True)
             release = next(
-                (item for item in releases if str(item.get("version") or "").removeprefix("v") == normalized),
+                (item for item in releases if self._full_release(item) and str(item.get("version") or "").removeprefix("v") == normalized),
                 None,
             )
             if release is None:
@@ -216,6 +222,7 @@ class CompanionUpdateService:
                 "sha256": calculated,
                 "path": str(destination.resolve()),
                 "releaseUrl": release.get("html_url"),
+                "releaseChannel": "full",
             }
             AssetStore._atomic_json(destination_dir / "update.json", receipt)
             return {

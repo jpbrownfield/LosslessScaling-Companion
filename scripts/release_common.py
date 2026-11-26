@@ -1,4 +1,4 @@
-"""Stage ALL changes, commit and push a sequential release without confirmation."""
+"""Shared preflight and publication commits for beta and full releases."""
 from __future__ import annotations
 
 import argparse
@@ -23,12 +23,13 @@ def version_tuple(value: str) -> tuple[int, int, int]:
     return tuple(map(int, value.split(".")))
 
 
-def next_version(value: str) -> str:
+def next_version(value: str, *, channel="beta") -> str:
     major, minor, patch = version_tuple(value)
-    if minor > 9 or patch > 9:
-        raise ReleaseError("Sequential numbering requires minor and patch digits from 0 to 9.")
-    number = major * 100 + minor * 10 + patch + 1
-    return f"{number // 100}.{number // 10 % 10}.{number % 10}"
+    if channel == "beta":
+        return f"{major}.{minor}.{patch + 1}"
+    if channel == "full":
+        return f"{major}.{minor + 1}.0"
+    raise ReleaseError(f"Unknown release channel: {channel}")
 
 
 
@@ -57,7 +58,7 @@ def latest_version(history: str, local_tags: str, remote_refs: str) -> str:
     return max(versions, key=version_tuple)
 
 
-def release(root: Path, *, remote="origin", message="Release", dry_run=False) -> str:
+def release(root: Path, *, remote="origin", message="Release", dry_run=False, channel="beta") -> str:
     root = Path(git(root, "rev-parse", "--show-toplevel"))
     if git(root, "branch", "--show-current") != "main":
         raise ReleaseError("Switch to main first; the release workflow only publishes branch releases from main.")
@@ -86,12 +87,12 @@ def release(root: Path, *, remote="origin", message="Release", dry_run=False) ->
     except ReleaseError as error:
         raise ReleaseError("Remote main is ahead, diverged, or unknown locally. Fetch/pull and reconcile main first.") from error
     current = latest_version(git(root, "log", "--format=%B"), git(root, "tag", "--list"), refs)
-    upcoming = next_version(current)
-    commit_message = f"@{upcoming} {message.strip()}"
+    upcoming = next_version(current, channel=channel)
+    commit_message = f"@{upcoming} [{channel}] {message.strip()}"
     status = git(root, "status", "--short", "--untracked-files=all")
     if not status:
         raise ReleaseError("No changes to release. Nothing was staged, committed or pushed.")
-    print(f"Release {current} -> {upcoming}")
+    print(f"{channel.capitalize()} release {current} -> {upcoming}")
     print(f"Destination: {remote}/main ({push_urls[0]})")
     print(f"Commit: {commit_message}\n\nAll non-ignored changes will be staged, including deletions:\n{status}")
     if dry_run:
@@ -116,19 +117,15 @@ def release(root: Path, *, remote="origin", message="Release", dry_run=False) ->
     return upcoming
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(channel: str, argv=None) -> int:
+    parser = argparse.ArgumentParser(description=f"Stage all non-ignored changes, commit and push a {channel} release without confirmation.")
     parser.add_argument("--message", default="Release", help="Commit description after the automatic @version marker")
     parser.add_argument("--remote", default="origin", help="Git remote (default: origin)")
     parser.add_argument("--dry-run", action="store_true", help="Read-only preview; still checks remote refs")
     args = parser.parse_args(argv)
     try:
-        release(Path(__file__).resolve().parent, **vars(args))
+        release(Path(__file__).resolve().parents[1], channel=channel, **vars(args))
     except (ReleaseError, OSError, EOFError, KeyboardInterrupt) as error:
         print(f"Release stopped: {error}", file=sys.stderr)
         return 1
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

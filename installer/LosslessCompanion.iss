@@ -20,6 +20,10 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\LosslessCompanion.exe
+#ifdef SignRelease
+SignTool=companion
+SignedUninstaller=yes
+#endif
 
 [Files]
 Source: "..\dist\LosslessCompanion\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

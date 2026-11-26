@@ -103,6 +103,13 @@ class ReleaseManagerTests(unittest.TestCase):
         self.assertIsNotNone(provider.asset_pattern.search("LosslessCompanion-Setup-x64.exe.sha256"))
         self.assertIsNone(provider.asset_pattern.search("LosslessCompanion-portable.zip"))
 
+    def test_companion_stable_discovery_uses_latest_so_beta_count_cannot_hide_it(self):
+        provider = ProviderRegistry().get("companion")
+        with patch("companion.services.release_providers._request_json", return_value={
+                "tag_name": "v0.10.0", "prerelease": False, "assets": []}) as request:
+            self.assertEqual(provider.list_releases()[0].version, "v0.10.0")
+        self.assertTrue(request.call_args.args[0].endswith("/releases/latest"))
+
     def test_presentmon_provider_accepts_only_x64_console_binary(self):
         provider = ProviderRegistry().get("presentmon")
         self.assertIsNotNone(provider.asset_pattern.search("PresentMon-2.4.1-x64.exe"))

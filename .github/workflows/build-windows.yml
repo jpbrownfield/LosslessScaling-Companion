@@ -3,6 +3,18 @@ name: Build Windows executable
 on:
   push:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Test build version (artifacts only; leave blank for development)'
+        type: string
+        required: false
+      release_channel:
+        description: 'Test build channel (full exercises signing; requires patch zero)'
+        type: choice
+        options:
+          - beta
+          - full
+        default: beta
   workflow_call:
     inputs:
       source_ref:
@@ -11,6 +23,16 @@ on:
       release_version:
         type: string
         required: true
+      release_channel:
+        type: string
+        default: beta
+    secrets:
+      WINDOWS_SIGNING_PFX_BASE64:
+        required: false
+      WINDOWS_SIGNING_PFX_PASSWORD:
+        required: false
+      WINDOWS_SIGNING_CERT_SHA256:
+        required: false
     outputs:
       installer_artifact:
         description: Verified installer and addon host artifact ID
@@ -30,6 +52,7 @@ jobs:
       installer_artifact: ${{ steps.updater_artifact.outputs.artifact-id }}
       release_tag: ${{ steps.release_version.outputs.tag }}
       release_from_commit: ${{ steps.release_version.outputs.from_commit }}
+      release_channel: ${{ steps.release_version.outputs.channel }}
       source_sha: ${{ steps.source.outputs.sha }}
 
     steps:
@@ -47,29 +70,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not resolve the build source" }
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "sha=$sha"
 
-      - name: Resolve embedded application version
-        shell: pwsh
-        env:
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          REQUESTED_VERSION: ${{ inputs.release_version }}
-        run: |
-          $version = "0.0.0-dev"
-          if ($env:REQUESTED_VERSION) {
-            if ($env:REQUESTED_VERSION -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid requested release version" }
-            $version = $env:REQUESTED_VERSION
-          } elseif ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -match '^v(?<version>\d+\.\d+\.\d+)$') {
-            $version = $Matches.version
-          } elseif (
-            $env:REF_TYPE -eq "branch" -and
-            $env:REF_NAME -eq "main" -and
-            $env:COMMIT_MESSAGE -match '@(?<version>\d+\.\d+\.\d+)(?![\d.])'
-          ) {
-            $version = $Matches.version
-          }
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "LS_COMPANION_VERSION=$version"
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -77,6 +77,28 @@ jobs:
           architecture: x64
           cache: pip
           cache-dependency-path: companion/requirements.txt
+
+      - name: Resolve embedded application version
+        id: release_version
+        shell: pwsh
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REQUESTED_VERSION: ${{ inputs.release_version }}
+          REQUESTED_CHANNEL: ${{ inputs.release_channel || 'beta' }}
+        run: |
+          python scripts/resolve_release.py
+          if ($LASTEXITCODE -ne 0) { throw "Invalid release identity" }
+
+      - name: Require full-release signing credentials
+        if: steps.release_version.outputs.channel == 'full'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.WINDOWS_SIGNING_CERT_SHA256 }}
+        run: ./scripts/sign_release.ps1 -CheckCredentials
 
       - name: Install build dependencies
         shell: pwsh
@@ -180,6 +202,15 @@ jobs:
         shell: pwsh
         run: python -m PyInstaller --clean --noconfirm LosslessCompanion.spec
 
+      - name: Sign full-release application
+        if: steps.release_version.outputs.channel == 'full'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.WINDOWS_SIGNING_CERT_SHA256 }}
+        run: ./scripts/sign_release.ps1 -Path dist/LosslessCompanion/LosslessCompanion.exe
+
       - name: Verify build output
         shell: pwsh
         run: |
@@ -226,31 +257,12 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Resolve release version
-        id: release_version
-        shell: pwsh
-        env:
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-        run: |
-          $tag = ""
-          $fromCommit = "false"
-          if ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -match '^v\d+\.\d+\.\d+$') {
-            $tag = $env:REF_NAME
-          } elseif (
-            $env:REF_TYPE -eq "branch" -and
-            $env:REF_NAME -eq "main" -and
-            $env:COMMIT_MESSAGE -match '@(?<version>\d+\.\d+\.\d+)(?![\d.])'
-          ) {
-            $tag = "v$($Matches.version)"
-            $fromCommit = "true"
-          }
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "tag=$tag"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "from_commit=$fromCommit"
-
       - name: Build and verify updater installer
         shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.WINDOWS_SIGNING_CERT_SHA256 }}
         run: |
           New-Item -ItemType Directory -Force build/package | Out-Null
           $webviewBootstrapper = "build/package/MicrosoftEdgeWebview2Setup.exe"
@@ -264,14 +276,36 @@ jobs:
             Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
           if (-not $compiler) { throw "Inno Setup compiler was not installed" }
           $version = $env:LS_COMPANION_VERSION -replace '-dev$', ''
-          & $compiler "/DMyAppVersion=$version" installer/LosslessCompanion.iss
+          $signArguments = @()
+          if ($env:LS_COMPANION_RELEASE_CHANNEL -eq 'full') {
+            $signScript = (Resolve-Path -LiteralPath scripts/sign_release.ps1).Path
+            $signCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File $q' + $signScript + '$q -Path $f'
+            $signArguments = @('/DSignRelease=1', "/Scompanion=$signCommand")
+          }
+          & $compiler "/DMyAppVersion=$version" @signArguments installer/LosslessCompanion.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
           $installer = "dist/installer/LosslessCompanion-Setup-x64.exe"
           $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($env:LS_COMPANION_RELEASE_CHANNEL -eq 'full') {
+            ./scripts/sign_release.ps1 -Path $installer -VerifyOnly
+            $signature = Get-AuthenticodeSignature -LiteralPath $installer
+            [IO.File]::WriteAllBytes((Join-Path (Resolve-Path dist/installer).Path 'LSCompanion-CodeSigning.cer'), $signature.SignerCertificate.RawData)
+            @{channel='full'; certificateSha256=$env:WINDOWS_SIGNING_CERT_SHA256.ToLowerInvariant(); installerSha256=$digest} |
+              ConvertTo-Json | Set-Content -LiteralPath dist/installer/release-signing.json -Encoding utf8
+          }
           "$digest  LosslessCompanion-Setup-x64.exe" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii -NoNewline
           Copy-Item -LiteralPath build/native/LSAddonManager-Companion.zip -Destination dist/installer/LSAddonManager-Companion.zip
           $hostDigest = (Get-FileHash -LiteralPath dist/installer/LSAddonManager-Companion.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hostDigest  LSAddonManager-Companion.zip" | Set-Content -LiteralPath dist/installer/LSAddonManager-Companion.zip.sha256 -Encoding ascii -NoNewline
+
+      - name: Test signed installation and tamper rejection
+        if: steps.release_version.outputs.channel == 'full'
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          WINDOWS_SIGNING_CERT_SHA256: ${{ secrets.WINDOWS_SIGNING_CERT_SHA256 }}
+        run: ./scripts/test_signed_installer.ps1
 
       - name: Upload verified updater installer
         id: updater_artifact
@@ -288,7 +322,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: companion-release-publish
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Download verified release artifacts
         uses: actions/download-artifact@v4
         with:
@@ -309,14 +353,9 @@ jobs:
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           RELEASE_FROM_COMMIT: ${{ needs.build.outputs.release_from_commit }}
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
-        working-directory: release-artifacts
+          RELEASE_CHANNEL: ${{ needs.build.outputs.release_channel }}
+        shell: bash
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [ "$RELEASE_FROM_COMMIT" = true ]; then
-              echo "Release $RELEASE_TAG already exists; use a new @x.x.x version" >&2
-              exit 1
-            fi
-            gh release upload "$RELEASE_TAG" ./*.exe ./*.zip ./*.sha256 --clobber
-          else
-            gh release create "$RELEASE_TAG" ./*.exe ./*.zip ./*.sha256 --target "$SOURCE_SHA" --generate-notes --title "$RELEASE_TAG"
-          fi
+          args=(--directory release-artifacts --tag "$RELEASE_TAG" --channel "$RELEASE_CHANNEL" --source "$SOURCE_SHA")
+          if [ "$RELEASE_FROM_COMMIT" = true ]; then args+=(--from-commit); fi
+          python scripts/publish_release.py "${args[@]}"

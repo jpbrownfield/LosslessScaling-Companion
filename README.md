@@ -466,7 +466,7 @@ location. Its shortcut page enables a Start Menu shortcut by default and offers
 an unchecked desktop-shortcut option. The installed application retains its own
 `requireAdministrator` manifest.
 
-Packaged builds check this repository's stable GitHub Releases at dashboard
+Packaged builds check this repository's full GitHub Releases (`x.y.0`) at dashboard
 startup and once per day. You can also open **Settings → Updates** and
 select **Check for updates** to bypass the cached result immediately. When a newer semantic version is available, Companion
 offers to download `LosslessCompanion-Setup-x64.exe`, requires the matching
@@ -474,7 +474,10 @@ offers to download `LosslessCompanion-Setup-x64.exe`, requires the matching
 and then waits for explicit confirmation before launching it unless automatic
 installation is enabled. Source and simulation runs never download or launch
 production Companion updates. The checksum guards
-against corruption and mismatched assets; releases are not currently code-signed.
+against corruption and mismatched assets. New full releases sign the application,
+installer and uninstaller with the configured Authenticode certificate. Beta
+releases (`x.y.1`, `x.y.2`, ...), GitHub prereleases and cached beta installers
+never trigger in-app updates. Betas remain available for manual installation.
 
 **Notify me about Companion and add-on updates** is enabled by default.
 **Automatically install updates** is opt-in and takes priority over update
@@ -559,8 +562,9 @@ workflow. Its `LosslessCompanion-windows-x64-<commit>` artifact contains the
 complete one-folder application and is retained with the workflow run for 30 days.
 The workflow can also be started manually from the Actions tab. To publish a
 versioned GitHub Release without manually creating a tag, include a semantic
-version marker such as `@1.2.3` anywhere in a commit message pushed to `main`.
-The workflow creates release tag `v1.2.3` and attaches the elevated
+version marker such as `@0.10.0 [full]` or `@0.9.6 [beta]` at the start of a commit
+message pushed to `main`. Use the release helpers below to allocate these safely.
+The workflow creates the corresponding numeric tag and attaches the elevated
 `LosslessCompanion-Setup-x64.exe` installer plus its SHA-256 checksum. The same
 version is embedded in the packaged executable for update comparison.
 Release versions are immutable through this shortcut, so reusing an existing
@@ -577,9 +581,10 @@ Both the legacy ZIP and Build 7's standalone installer are supported. The verifi
 installer is used only with `--extract` inside the build folder.
 
 After those checks pass, the workflow advances `main` without force and publishes
-the next sequential Companion release. It attaches the installer and checksum,
-plus `LSAddonManager-Companion.zip` and its checksum. Companion's existing updater
-detects the new installer release normally. A failed patch, build, test, checksum,
+the next patch-only Companion beta. It attaches the installer and checksum,
+plus `LSAddonManager-Companion.zip` and its checksum. These scheduled releases
+are GitHub prereleases, never latest, and do not trigger Companion self-updates.
+A failed patch, build, test, checksum,
 or concurrent change to `main` prevents publication; uploaded files remain in a
 draft until promotion succeeds. Interrupted publication can be retried without
 allocating another version when the automation commit is still at the head of
@@ -594,23 +599,64 @@ cover startup and integration; live GPU image quality/performance still require
 hardware validation. The panel window smoke test reports a skip when the runner
 has no hardware D3D11 device; headless host and routing checks still run.
 
-To stage all non-ignored changes, commit and push the next sequential release
-from `main`, use the repository-root helper:
+To stage all non-ignored changes, commit and push from `main`, use one of the
+repository-root release helpers:
 
 ```powershell
-python create_release.py --dry-run
-python create_release.py --message "Describe this release"
+python create_beta_release.py --dry-run
+python create_beta_release.py --message "Describe this beta"
+python create_full_release.py --dry-run
+python create_full_release.py --message "Describe this full release"
 ```
 
-The helper checks commit-message versions and local/remote release tags, then
-increments with decimal rollover (`0.4.9` becomes `0.5.0`; `4.9.9` becomes
-`5.0.0`). Running it stages everything, including deletions, commits and pushes
+The helpers check commit-message versions and local/remote release tags. Betas
+increment only the patch, without rollover (`0.9.9` becomes `0.9.10`). Full
+releases increment the minor and reset the patch (`0.9.58` becomes `0.10.0`).
+The next beta is then `0.10.1`. Betas are published as prereleases with
+`latest=false`; full releases are stable and become latest unless a newer full
+release has already finished building. Running either helper stages everything,
+including deletions, commits and pushes
 immediately without confirmation. Use `--dry-run` for a read-only preview.
 It refuses an out-of-date/diverged `main`
 and never force-pushes or creates release tags itself. If pushing fails after
 the commit succeeds, it retains that commit and prints a manual push command;
 retry that push rather than creating another release. A successful push starts
 the existing CI release workflow; it does not guarantee the build will pass.
+
+Generate the local signing identity once on Windows:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/new_signing_certificate.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign_release.ps1 -CheckCredentials
+```
+
+The generator creates a three-year RSA-3072/SHA-256 certificate with code-signing
+usage, a password-protected `.signing/LSCompanion.pfx`, its public `.cer`, and
+`.env.release-signing`. Private files are ignored by Git and restricted to the
+current Windows account and SYSTEM. Existing signing identities are not replaced.
+Keep an offline backup; losing the private key changes the release signing identity.
+
+To test signing without publishing or triggering updates, run **Build Windows
+executable** from the GitHub Actions tab. Set `release_version` to `0.10.0`
+and `release_channel` to `full`. A supplied test version disables publication;
+the signed application and installer remain downloadable workflow artifacts.
+Full builds also install silently on the runner, verify the installed application
+and uninstaller signatures, reject a tampered executable, and uninstall.
+
+Copy the three values from `.env.release-signing` to identically named GitHub
+Actions repository secrets: `WINDOWS_SIGNING_PFX_BASE64`,
+`WINDOWS_SIGNING_PFX_PASSWORD`, and `WINDOWS_SIGNING_CERT_SHA256`. The last value is
+the public certificate's SHA-256 fingerprint. Full-release CI stops immediately
+if these credentials are missing, mismatched or expired; betas do not need them.
+Full installers include a signed uninstaller through Inno Setup's SignTool hook.
+Signing occurs before hashes/artifact uploads. Full GitHub releases also attach
+the public `LSCompanion-CodeSigning.cer` and `release-signing.json` evidence.
+
+This is self-signing, not a publicly trusted publisher certificate. No certificate
+is installed into Windows trust stores by these scripts, so Windows/SmartScreen
+warnings may remain. Signatures currently have no timestamp and require a valid
+certificate at verification time. See [Microsoft's signing guidance](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_signing)
+and [Inno Setup's signing documentation](https://jrsoftware.org/inno-setup/documentation/topic_setup_signtool.htm).
 
 ---
 

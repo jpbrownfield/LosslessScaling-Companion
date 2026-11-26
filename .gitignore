@@ -11,3 +11,12 @@ build/
 ls.zip
 
 sandbox/
+
+# Local code-signing credentials and certificate private keys.
+.env
+.env.*
+!.env.example
+!.env.release-signing.example
+.signing/
+*.pfx
+*.p12

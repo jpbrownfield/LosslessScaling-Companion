@@ -205,9 +205,16 @@ class GitHubReleaseProvider(ReleaseProvider):
         self.provider_id = provider_id
         self.repository = repository
         self.asset_pattern = re.compile(asset_pattern, re.IGNORECASE)
+        if provider_id == "companion":
+            self.cache_identity = "full-releases-v1"
 
     def list_releases(self, *, channel: str = "stable") -> List[ReleaseInfo]:
-        raw = _request_json(f"https://api.github.com/repos/{self.repository}/releases?per_page=30")
+        if self.provider_id == "companion" and channel == "stable":
+            # A long sequence of betas must not push the latest full release
+            # out of a fixed-size list. GitHub's latest pointer excludes betas.
+            raw = [_request_json(f"https://api.github.com/repos/{self.repository}/releases/latest")]
+        else:
+            raw = _request_json(f"https://api.github.com/repos/{self.repository}/releases?per_page=30")
         if not isinstance(raw, list):
             raise RuntimeError("Unexpected GitHub release response")
         releases = []

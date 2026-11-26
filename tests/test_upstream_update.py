@@ -165,11 +165,11 @@ class UpstreamUpdateTests(unittest.TestCase):
             with patch.object(updater, "updated_files", side_effect=lambda root, rel, commit:
                               real(root, rel, commit, Mock(return_value="1" * 64))):
                 plan = updater.prepare(self.root, api, REPO)
-        self.assertEqual(plan["version"], "4.6.0")
+        self.assertEqual(plan["version"], "4.5.10")
         self.assertEqual(plan["source_sha"], SOURCE)
         commits = [call.args[1] for call in api.api.call_args_list if call.args[0].endswith("/git/commits")]
         self.assertEqual(commits[0]["parents"], [BASE])
-        self.assertEqual(commits[0]["message"], "@4.6.0 Update FriedSnowman addon manager to build-6")
+        self.assertEqual(commits[0]["message"], "@4.5.10 [beta] Update FriedSnowman addon manager to build-6")
         writes = [call for call in api.api.call_args_list if len(call.args) > 1]
         self.assertTrue(writes)
         self.assertFalse(any("heads/main" in call.args[0] for call in writes))
@@ -186,14 +186,14 @@ class UpstreamUpdateTests(unittest.TestCase):
         self.assertFalse(any(len(call.args) > 1 for call in api.api.call_args_list))
 
     def test_retry_before_promotion_reuses_draft_version_instead_of_allocating_again(self):
-        pending = dict(draft=True, tag_name="v4.6.0", body=updater.marker("build-6") + f"\nBase commit: `{BASE}`")
+        pending = dict(draft=True, tag_name="v4.5.10", body=updater.marker("build-6") + f"\nBase commit: `{BASE}`")
         api = self.api(existing_branch=True, own=[pending])
         real = updater.updated_files
         with patch.object(updater, "updated_files", side_effect=lambda root, rel, commit:
                           real(root, rel, commit, Mock(return_value="1" * 64))), \
              patch.object(updater, "validate_candidate"):
             plan = updater.prepare(self.root, api, REPO)
-        self.assertEqual(plan["version"], "4.6.0")
+        self.assertEqual(plan["version"], "4.5.10")
         self.assertEqual(plan["source_sha"], SOURCE)
 
     def test_moved_upstream_tag_fails_instead_of_silently_changing_pins(self):
@@ -212,26 +212,26 @@ class UpstreamUpdateTests(unittest.TestCase):
 
     def test_retry_after_promotion_reuses_version_and_commit(self):
         self.git.side_effect = lambda root, *args: (
-            "@4.6.0 Update FriedSnowman addon manager to build-5" if args == ("log", "-1", "--format=%B")
+            "@4.5.10 Update FriedSnowman addon manager to build-5" if args == ("log", "-1", "--format=%B")
             else self.git_result(root, *args))
         api = self.api(upstream=release("build-5"))
         plan = updater.prepare(self.root, api, REPO)
         self.assertTrue(plan["recovery"])
         self.assertEqual(plan["source_sha"], BASE)
-        self.assertEqual(plan["version"], "4.6.0")
+        self.assertEqual(plan["version"], "4.5.10")
         self.assertFalse(any(len(call.args) > 1 for call in api.api.call_args_list))
 
     def test_retry_after_manual_candidate_fix_finds_draft_by_its_exact_commit(self):
-        pending = dict(draft=True, tag_name="v4.6.0", body=updater.marker("build-5"), target_commitish=BASE)
+        pending = dict(draft=True, tag_name="v4.5.10", body=updater.marker("build-5"), target_commitish=BASE)
         plan = updater.prepare(self.root, self.api(upstream=release("build-5"), own=[pending]), REPO)
         self.assertTrue(plan["recovery"])
-        self.assertEqual(plan["version"], "4.6.0")
+        self.assertEqual(plan["version"], "4.5.10")
 
     def test_published_update_is_not_rebuilt_or_announced_again(self):
         self.git.side_effect = lambda root, *args: (
-            "@4.6.0 Update FriedSnowman addon manager to build-5" if args == ("log", "-1", "--format=%B")
+            "@4.5.10 Update FriedSnowman addon manager to build-5" if args == ("log", "-1", "--format=%B")
             else self.git_result(root, *args))
-        own = [dict(tag_name="v4.6.0", draft=False)]
+        own = [dict(tag_name="v4.5.10", draft=False)]
         result = updater.prepare(self.root, self.api(upstream=release("build-5"), own=own), REPO)
         self.assertFalse(result["changed"])
 
@@ -243,7 +243,7 @@ class UpstreamPublishTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.plan = dict(changed=True, repository=REPO, base_branch="main", base_sha=BASE,
                          source_sha=SOURCE, upstream_tag="build-6", upstream_commit=COMMIT,
-                         version="4.6.0", release_tag="v4.6.0",
+                         version="4.5.10", release_tag="v4.5.10",
                          pin={**pin(), "tag": "build-6", "commit": COMMIT, "version": "build-6-lsc.1"})
         for name in updater.ASSETS:
             data = ("verified " + name).encode()
@@ -258,11 +258,11 @@ class UpstreamPublishTests(unittest.TestCase):
 
     def api(self, *, main=BASE, existing=None, latest=None, fail_promotion=False, tag_exists=True, listed=None):
         def request(path, data=None, **kwargs):
-            if path.endswith("/releases/tags/v4.6.0"):
+            if path.endswith("/releases/tags/v4.5.10"):
                 return existing
             if path.endswith("/releases?per_page=100"):
                 return listed or []
-            if path.endswith("/commits/v4.6.0"):
+            if path.endswith("/commits/v4.5.10"):
                 return {"sha": SOURCE} if tag_exists else None
             if path.endswith("/git/ref/heads/main"):
                 return {"object": {"sha": main}}
@@ -285,7 +285,8 @@ class UpstreamPublishTests(unittest.TestCase):
         self.assertIn("--draft", self.events[0][1])
         self.assertEqual(self.events[2][1], {"sha": SOURCE, "force": False})
         self.assertIn("--draft=false", self.events[3][1])
-        self.assertIn("--latest", self.events[3][1])
+        self.assertIn("--latest=false", self.events[3][1])
+        self.assertIn("--prerelease", self.events[3][1])
         notes = (self.root / "upstream-release-notes.md").read_text()
         self.assertIn(updater.marker("build-6"), notes)
         self.assertIn(COMMIT, notes)
@@ -346,7 +347,7 @@ class UpstreamPublishTests(unittest.TestCase):
         self.assertEqual(self.events, [])
 
     def test_recovers_owned_draft_before_github_creates_its_tag(self):
-        existing = dict(tag_name="v4.6.0", draft=True, target_commitish=SOURCE,
+        existing = dict(tag_name="v4.5.10", draft=True, target_commitish=SOURCE,
                         body=updater.marker("build-6"))
         updater.publish(self.plan, self.api(tag_exists=False, listed=[existing]), self.root, run=self.run_gh)
         self.assertEqual([event[0] for event in self.events], ["upload", "promote", "edit"])

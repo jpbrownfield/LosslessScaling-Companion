@@ -6,21 +6,28 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import create_release
-from create_release import ReleaseError, git, latest_version, next_version, release
+from scripts import release_common as create_release
+from scripts.release_common import ReleaseError, git, latest_version, next_version, release
 
 
 class ReleaseVersionTests(unittest.TestCase):
-    def test_sequential_rollovers(self):
-        for current, expected in (("4.5.8", "4.5.9"), ("4.5.9", "4.6.0"),
-                                  ("4.9.9", "5.0.0"), ("0.4.9", "0.5.0")):
+    def test_beta_only_increments_patch_without_rollover(self):
+        for current, expected in (("4.5.8", "4.5.9"), ("4.5.9", "4.5.10"),
+                                  ("4.9.99", "4.9.100"), ("0.10.0", "0.10.1")):
             with self.subTest(current=current):
                 self.assertEqual(next_version(current), expected)
 
     def test_invalid_or_non_digit_components_are_rejected(self):
-        for value in ("v4.5.9", "4.5", "4.5.9-dev", "4.10.0", "4.0.10"):
+        for value in ("v4.5.9", "4.5", "4.5.9-dev", "4.-1.0", "4.0.beta"):
             with self.subTest(value=value), self.assertRaises(ReleaseError):
                 next_version(value)
+
+    def test_full_increments_minor_and_resets_patch(self):
+        self.assertEqual(next_version("0.9.58", channel="full"), "0.10.0")
+        self.assertEqual(next_version("0.10.3", channel="full"), "0.11.0")
+        self.assertEqual(next_version("4.99.1", channel="full"), "4.100.0")
+        with self.assertRaises(ReleaseError):
+            next_version("1.0.0", channel="unknown")
 
     def test_versions_compared_numerically_across_history_and_remote_tags(self):
         self.assertEqual(latest_version("@0.4.9 notes\n@0.3.0 old", "v0.4.8\nv99.0.0-dev",
@@ -60,8 +67,8 @@ class ReleaseGitTests(unittest.TestCase):
     def test_stages_commits_and_pushes_release_using_existing_workflow_marker(self):
         (self.root / "tracked.txt").unlink()
         with patch("builtins.input", side_effect=AssertionError("Release must not prompt")):
-            self.assertEqual(release(self.root, message="Cached runtimes"), "4.6.0")
-        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "@4.6.0 Cached runtimes")
+            self.assertEqual(release(self.root, message="Cached runtimes"), "4.5.10")
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "@4.5.10 [beta] Cached runtimes")
         self.assertEqual(git(self.root, "status", "--porcelain"), "")
         self.assertEqual(git(self.root, "ls-remote", "origin", "refs/heads/main").split()[0],
                          git(self.root, "rev-parse", "HEAD"))
@@ -70,7 +77,7 @@ class ReleaseGitTests(unittest.TestCase):
     def test_dry_run_does_not_change_head_index_or_remote(self):
         before = git(self.root, "rev-parse", "HEAD")
         status = git(self.root, "status", "--porcelain")
-        self.assertEqual(release(self.root, dry_run=True), "4.6.0")
+        self.assertEqual(release(self.root, dry_run=True), "4.5.10")
         self.assertEqual(git(self.root, "rev-parse", "HEAD"), before)
         self.assertEqual(git(self.root, "status", "--porcelain"), status)
         self.assertEqual(git(self.root, "diff", "--cached"), "")
@@ -95,10 +102,10 @@ class ReleaseGitTests(unittest.TestCase):
                 raise ReleaseError("simulated push rejection")
             return real_git(root, *args)
 
-        with patch("create_release.git", side_effect=failing_push):
+        with patch.object(create_release, "git", side_effect=failing_push):
             with self.assertRaisesRegex(ReleaseError, "created locally, but push failed"):
                 release(self.root)
-        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "@4.6.0 Release")
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "@4.5.10 [beta] Release")
         self.assertEqual(git(self.root, "status", "--porcelain"), "")
         self.assertNotEqual(git(self.root, "ls-remote", "origin", "refs/heads/main").split()[0],
                             git(self.root, "rev-parse", "HEAD"))
@@ -115,3 +122,7 @@ class ReleaseGitTests(unittest.TestCase):
     def test_duplicate_message_marker_is_rejected(self):
         with self.assertRaisesRegex(ReleaseError, "another @version"):
             release(self.root, message="@9.9.9 unrelated marker")
+
+    def test_full_release_uses_minor_bump_and_explicit_channel(self):
+        self.assertEqual(release(self.root, channel="full", message="Stable milestone"), "4.6.0")
+        self.assertEqual(git(self.root, "log", "-1", "--format=%s"), "@4.6.0 [full] Stable milestone")

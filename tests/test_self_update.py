@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +73,19 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertTrue(status["updateAvailable"])
         self.assertEqual(status["latestVersion"], "2.0.0")
 
+    def test_beta_and_prerelease_metadata_never_trigger_app_updates(self):
+        versions = [self.release("v2.0.15"), dict(self.release("v3.0.0"), prerelease=True), self.release("v2.0.0")]
+        manager = SimpleNamespace(check=lambda *a, **k: versions)
+        with tempfile.TemporaryDirectory() as directory, patch(
+                "companion.services.self_update.current_version", return_value="1.9.48"):
+            service = CompanionUpdateService(manager, Path(directory), enabled=True)
+            self.assertEqual(service.check()["latestVersion"], "2.0.0")
+            for version in ("2.0.15", "3.0.0"):
+                with self.subTest(version=version), patch.object(service, "_download_bytes") as download:
+                    with self.assertRaises(ValueError):
+                        service.download(version)
+                    download.assert_not_called()
+
     def test_download_verifies_checksum_and_launch_rechecks_file(self):
         installer = b"verified installer payload"
         digest = hashlib.sha256(installer).hexdigest()
@@ -105,6 +119,21 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertEqual(Path(arguments[2]).name, INSTALLER_NAME)
         self.assertIn("/CLOSEAPPLICATIONS", arguments[3])
         self.assertIn("/FORCECLOSEAPPLICATIONS", arguments[3])
+
+    def test_old_or_beta_cached_receipts_cannot_bypass_the_full_release_filter(self):
+        payload = b"cached beta fixture"
+        with tempfile.TemporaryDirectory() as directory:
+            service = CompanionUpdateService(Mock(), Path(directory), enabled=True)
+            for version, channel in (("2.0.15", "full"), ("2.0.0", "beta"), ("2.1.0", None)):
+                target = Path(directory)/"updates"/version
+                target.mkdir(parents=True)
+                (target/INSTALLER_NAME).write_bytes(payload)
+                (target/"update.json").write_text(json.dumps({"version":version,"filename":INSTALLER_NAME,
+                    "sha256":hashlib.sha256(payload).hexdigest(),"releaseChannel":channel}))
+                with self.subTest(version=version), patch("companion.services.self_update.ctypes.windll.shell32.ShellExecuteW") as launch:
+                    with self.assertRaises(UnsafeAssetError):
+                        service.launch_installer(version, automatic=True)
+                    launch.assert_not_called()
 
     def test_download_reports_installer_byte_progress(self):
         installer = b"verified installer payload"

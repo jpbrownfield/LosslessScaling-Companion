@@ -60,7 +60,8 @@ native_binaries.append((str(amd_probe_fixture), "tools/probe-fixture"))
 version_metadata = Path("build/package/version.json")
 version_metadata.parent.mkdir(parents=True, exist_ok=True)
 version_metadata.write_text(
-    json.dumps({"version": os.environ.get("LS_COMPANION_VERSION", "0.0.0-dev")}),
+    json.dumps({"version": os.environ.get("LS_COMPANION_VERSION", "0.0.0-dev"),
+                "release_channel": os.environ.get("LS_COMPANION_RELEASE_CHANNEL", "development")}),
     encoding="utf-8",
 )
 app_icon = Path("build/package/LosslessCompanion.ico")

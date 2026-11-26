@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from create_release import ReleaseError, git, latest_version, next_version, version_tuple
+from scripts.release_common import ReleaseError, git, latest_version, next_version, version_tuple
 
 UPSTREAM = "FriedSnowman/ls-addon-manager"
 LOCK = "native/addon_manager/upstream.lock.json"
@@ -127,7 +127,8 @@ def validate_plan(plan):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", plan["repository"]):
         raise UpdateError("Invalid destination repository")
     build_number(plan["upstream_tag"])
-    version_tuple(plan["version"])
+    if version_tuple(plan["version"])[2] == 0:
+        raise UpdateError("Scheduled upstream updates must use a positive-patch beta version")
     for key in ("base_sha", "source_sha", "upstream_commit"):
         if not SHA.fullmatch(plan[key]):
             raise UpdateError(f"Invalid {key}")
@@ -167,7 +168,7 @@ def prepare(root, api, repository):
     # Recover publication after a successful promotion followed by an API/upload
     # failure. No second version is allocated for the same main commit.
     message = git(root, "log", "-1", "--format=%B")
-    recovery = re.fullmatch(r"@(\d+\.\d+\.\d+) Update FriedSnowman addon manager to (build-\d+)\s*", message)
+    recovery = re.fullmatch(r"@(\d+\.\d+\.\d+) (?:\[beta\] )?Update FriedSnowman addon manager to (build-\d+)\s*", message)
     if number == build_number(pin["tag"]):
         if api.api(f"/repos/{UPSTREAM}/commits/{tag}")["sha"] != pin["commit"]:
             raise UpdateError("The pinned upstream tag moved to another commit; review it manually")
@@ -208,7 +209,7 @@ def prepare(root, api, repository):
         tree = api.api(f"/repos/{repository}/git/trees", {"base_tree": tree, "tree": [
             {"path": path, "mode": "100644", "type": "blob", "content": content} for path, content in files.items()]})["sha"]
         source_sha = api.api(f"/repos/{repository}/git/commits", {
-            "message": f"@{version} Update FriedSnowman addon manager to {tag}", "tree": tree, "parents": [base]})["sha"]
+            "message": f"@{version} [beta] Update FriedSnowman addon manager to {tag}", "tree": tree, "parents": [base]})["sha"]
         api.api(f"/repos/{repository}/git/refs", {"ref": "refs/heads/" + branch, "sha": source_sha})
     plan = dict(changed=True, repository=repository, base_branch="main", base_sha=base, source_sha=source_sha,
         upstream_tag=tag, upstream_commit=commit, version=version, release_tag="v" + version,
@@ -290,13 +291,13 @@ def publish(plan, api, directory, *, run=subprocess.run):
         run(["gh", "release", *args, "--repo", repo], check=True)
 
     if not existing:
-        gh("create", tag, "--target", sha, "--draft", "--title", tag, "--notes-file", str(notes))
+        gh("create", tag, "--target", sha, "--draft", "--prerelease", "--title", tag + " Beta", "--notes-file", str(notes))
     gh("upload", tag, *(str(path) for path in files), "--clobber")
     if require_unchanged_main() != sha:
         api.api(f"/repos/{repo}/git/refs/heads/main", {"sha": sha, "force": False}, method="PATCH")
     # The release remains a draft until every artifact is uploaded and main's
     # tested source pins are committed. Protected-branch rejection stops here.
-    gh("edit", tag, "--draft=false", "--latest")
+    gh("edit", tag, "--draft=false", "--prerelease", "--latest=false")
 
 
 def main(argv=None):

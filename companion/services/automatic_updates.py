@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from .addon_host import addon_version_key
+from ..version import is_full_release_version
 
 logger = logging.getLogger("LSCompanion.AutoUpdates")
 AUTOMATIC_ADDONS = frozenset({"ls-addon-manager", "reshade", "special-k"})
@@ -53,6 +54,7 @@ class AutomaticUpdates:
         companion = server.companion_update_status or {}
         jobs = [(item["provider"], str(item["latestVersion"])) for item in addons]
         if (companion.get("updateAvailable") and companion.get("supported")
+                and is_full_release_version(companion.get("latestVersion")) and not companion.get("prerelease")
                 and server.companion_updater.automatic_retry_allowed(str(companion['latestVersion']))):
             jobs.append(("companion", str(companion["latestVersion"])))
         jobs = [job for job in jobs if self.retry_after.get(job, 0) <= now]
