@@ -290,7 +290,7 @@ jobs:
             ./scripts/sign_release.ps1 -Path $installer -VerifyOnly
             $signature = Get-AuthenticodeSignature -LiteralPath $installer
             [IO.File]::WriteAllBytes((Join-Path (Resolve-Path dist/installer).Path 'LSCompanion-CodeSigning.cer'), $signature.SignerCertificate.RawData)
-            @{channel='full'; certificateSha256=$env:WINDOWS_SIGNING_CERT_SHA256.ToLowerInvariant(); installerSha256=$digest} |
+            @{channel='full'; certificateSha256=$env:WINDOWS_SIGNING_CERT_SHA256.Trim().ToLowerInvariant(); installerSha256=$digest} |
               ConvertTo-Json | Set-Content -LiteralPath dist/installer/release-signing.json -Encoding utf8
           }
           "$digest  LosslessCompanion-Setup-x64.exe" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii -NoNewline

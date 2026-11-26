@@ -56,13 +56,21 @@ $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
     [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64), $env:WINDOWS_SIGNING_PFX_PASSWORD,
     [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
 try {
-    $expected = $env:WINDOWS_SIGNING_CERT_SHA256.ToLowerInvariant()
+    $expected = $env:WINDOWS_SIGNING_CERT_SHA256.Trim().ToLowerInvariant()
+    if ($expected -notmatch '^[0-9a-f]{64}$') {
+        throw 'WINDOWS_SIGNING_CERT_SHA256 must contain only the 64-character SHA-256 value.'
+    }
     $eku = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
-    if (-not $certificate.HasPrivateKey -or (Certificate-Digest $certificate) -ne $expected -or
-        $certificate.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow -or
-        $certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or
-        $eku.Count -ne 1 -or '1.3.6.1.5.5.7.3.3' -notin @($eku[0].EnhancedKeyUsages | ForEach-Object { $_.Value })) {
-        throw 'The signing certificate is expired, mismatched, or lacks a private key/code-signing usage.'
+    if (-not $certificate.HasPrivateKey) { throw 'The signing PFX does not contain a private key.' }
+    if ((Certificate-Digest $certificate) -ne $expected) {
+        throw 'WINDOWS_SIGNING_CERT_SHA256 does not match the certificate in WINDOWS_SIGNING_PFX_BASE64.'
+    }
+    if ($certificate.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow) { throw 'The signing certificate has expired.' }
+    if ($certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow) {
+        throw "The signing certificate is not valid until $($certificate.NotBefore.ToUniversalTime().ToString('O'))."
+    }
+    if ($eku.Count -ne 1 -or '1.3.6.1.5.5.7.3.3' -notin @($eku[0].EnhancedKeyUsages | ForEach-Object { $_.Value })) {
+        throw 'The signing certificate lacks code-signing usage.'
     }
     if ($CheckCredentials) { Write-Host 'Full-release signing credentials verified.'; return }
     if (-not $Path.Count) { throw 'Supply at least one file to sign or verify.' }
