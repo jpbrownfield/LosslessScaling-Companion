@@ -21,7 +21,7 @@ from .ls_settings import LosslessSettingsXml
 from .proxy_menu import AddonManagerMenuController
 from .startup_guard import launch_hidden
 from .external_process import external_dll_search
-from .cursor_recovery import CursorRecovery
+from .cursor_recovery import CursorRecovery, CursorRecoveryEvents
 
 logger = logging.getLogger("LSCompanion.ProcessWatcher")
 
@@ -64,6 +64,11 @@ class ProcessWatcher:
         self._last_foreground_hwnd: Optional[int] = None
         self._recent_unscaled_foreground: Optional[Tuple[float, ProcessInfo]] = None
         self._cursor_recovery = CursorRecovery()
+        self._cursor_events = CursorRecoveryEvents(
+            state, lambda: bool(
+                getattr(self.profile_manager.config, "restore_game_cursor_on_focus", True)
+                and not getattr(self.profile_manager, "repair_session", False)
+                and not getattr(self.state, "gpu_mapping_in_progress", False)))
         self.on_profile_changed = on_profile_changed
         self.on_scaling_target_closed = on_scaling_target_closed
         self.on_lossless_scaling_started = on_lossless_scaling_started
@@ -727,12 +732,24 @@ class ProcessWatcher:
                                 self.profile_manager.config.restore_game_cursor_on_focus)
         except (OSError, ValueError) as error:
             logger.warning("Cursor recovery preference saved; apply to the next updated LS session: %s", error)
+        self._cursor_events.wake()
+
+    def start_cursor_recovery(self) -> None:
+        self._cursor_events.start()
+
+    def stop_cursor_recovery(self) -> None:
+        self._cursor_events.stop()
 
     def check_foreground_and_update(self) -> Optional[ProcessInfo]:
         """Polls the foreground window, updates state, and detects profile switches."""
         info = self.get_foreground_window_info()
-        self._cursor_recovery.update(self.state, info.pid if info else 0, info.hwnd if info else 0,
-                                     enabled=getattr(self.profile_manager.config, "restore_game_cursor_on_focus", True))
+        if self._cursor_events.active:
+            # Sync settings/session changes; foreground events and retry timing
+            # belong to the observer thread, not this one-second monitor.
+            self._cursor_events.wake()
+        else:
+            self._cursor_recovery.update(self.state, info.pid if info else 0, info.hwnd if info else 0,
+                                         enabled=getattr(self.profile_manager.config, "restore_game_cursor_on_focus", True))
         if not info:
             return None
 

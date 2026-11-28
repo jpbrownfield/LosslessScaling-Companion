@@ -10,6 +10,7 @@ import sys
 
 VERSION = re.compile(r"\d+\.\d+\.\d+")
 MARKER = re.compile(r"@(\d+\.\d+\.\d+)(?![\d.])")
+RELEASE_TAG = re.compile(r"v?(\d+\.\d+\.\d+)(-beta)?")
 
 
 
@@ -32,6 +33,25 @@ def next_version(value: str, *, channel="beta") -> str:
     raise ReleaseError(f"Unknown release channel: {channel}")
 
 
+def release_tag(version: str, *, channel: str) -> str:
+    patch = version_tuple(version)[2]
+    if channel not in {"beta", "full"} or (patch == 0) != (channel == "full"):
+        raise ReleaseError("Release channel does not match the version")
+    return f"v{version}" + ("-beta" if channel == "beta" else "")
+
+
+def parse_release_tag(tag: str) -> tuple[str, str]:
+    """Read current tags and legacy numeric beta tags without renaming them."""
+    match = RELEASE_TAG.fullmatch(tag)
+    if not match:
+        raise ValueError(f"Invalid release tag: {tag}")
+    version = match[1]
+    patch = version_tuple(version)[2]
+    if match[2] and patch == 0:
+        raise ValueError("Beta tags require a positive patch")
+    return version, "beta" if patch else "full"
+
+
 
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(
@@ -45,12 +65,13 @@ def git(root: Path, *args: str) -> str:
 def latest_version(history: str, local_tags: str, remote_refs: str) -> str:
     versions = set(MARKER.findall(history))
     for tag in local_tags.splitlines():
-        if re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
-            versions.add(tag.removeprefix("v"))
+        match = RELEASE_TAG.fullmatch(tag)
+        if match:
+            versions.add(match[1])
     for line in remote_refs.splitlines():
         fields = line.split()
         if len(fields) == 2:
-            match = re.fullmatch(r"refs/tags/v?(\d+\.\d+\.\d+)(?:\^\{\})?", fields[1])
+            match = re.fullmatch(r"refs/tags/v?(\d+\.\d+\.\d+)(?:-beta)?(?:\^\{\})?", fields[1])
             if match:
                 versions.add(match[1])
     if not versions:
@@ -113,7 +134,7 @@ def release(root: Path, *, remote="origin", message="Release", dry_run=False, ch
             f"After resolving the push problem, push this existing commit with: git push {remote} HEAD:main\n"
             "Do not rerun this script to retry the same release.\n" + str(error)
         ) from error
-    print(f"Pushed {commit_message}. GitHub Actions will build and publish v{upcoming} if its checks pass.")
+    print(f"Pushed {commit_message}. GitHub Actions will build and publish {release_tag(upcoming, channel=channel)} if its checks pass.")
     return upcoming
 
 

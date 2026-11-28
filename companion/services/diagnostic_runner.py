@@ -2193,7 +2193,9 @@ class DiagnosticRunner:
                                 exitCode=code, verdict=verdict, evidenceArchive=Path(archive).name if archive else None,
                                  singleGpuIdentity=report.get("single_gpu_identity"),
                                  singleGpuSettingsRestored=report.get("single_gpu_settings_restored"),
-                                rtssRestored=report.get("rtss_profile_restored"), error=report.get("error"))
+                                 rtssRestored=report.get("rtss_profile_restored"), error=report.get("error"),
+                                 workloadStartup=report.get("workload_startup"),
+                                 workloadExitCode=report.get("workload_exit_code_before_cleanup"))
         finally:
             try:
                 if previous_profile is not None:

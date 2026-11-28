@@ -15,9 +15,15 @@ cl /nologo /std:c++17 /O2 /EHsc /DUNICODE /D_UNICODE `
 ```
 
 Options: `--width`, `--height`, `--shader-load`, `--duration`, `--event-log`,
-`--vsync`, `--adapter-name` (exact DXGI name), and `--adapter-report` (JSON path).
+`--vsync`, `--adapter-name` (exact DXGI name), `--adapter-report` (JSON path),
+and `--startup-report` (JSON path).
 An explicit adapter request must match exactly one hardware adapter; it fails
 instead of falling back. The report contains the actual device name and LUID.
+Startup reports record the current initialization stage, failure exit code and
+HRESULT, or readiness and window visibility. The runner captures stdout/stderr,
+detects early process exits, requests a visible window and uses the normal system
+DLL search during launch. All of this evidence is included even if startup fails;
+startup reporting adds no writes to the measured render loop.
 
 The last Debug / Application tests item in Companion runs adaptive RTSS acceptance
 on the 3090 with NR off. It checks workload/capture/presentation adapter identity,

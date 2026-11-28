@@ -78,6 +78,7 @@ class AutomationController:
         self.deployment_manager = deployment_manager or DeploymentManager(self.asset_store)
         self.graphics_resolver = graphics_resolver or GraphicsResolver(self.asset_store)
         self.window_manager = window_manager or MonitorWindowManager()
+        self._minimize_setting_enabled = bool(profile_manager.config.minimize_other_windows_on_scale)
         self.scaling_state_probe = scaling_state_probe
         self._last_confirmation_wrong_target_pid: Optional[int] = None
         self._scaling_confirmation_failed = False
@@ -276,6 +277,7 @@ class AutomationController:
         if not self.state.scaling_target_verified_for_minimization:
             logger.warning("Skipping peer minimization because the scaling target identity is unverified")
             return
+        self._minimize_setting_enabled = bool(self.profile_manager.config.minimize_other_windows_on_scale)
         verified_hwnd = target_hwnd or self.state.scaling_target_hwnd
         verified_pid = target_pid or self.state.scaling_target_pid
         if not verified_hwnd and not verified_pid:
@@ -1271,6 +1273,8 @@ class AutomationController:
         """Apply window side effects when LS changes state outside our hotkey path."""
         with self._lock:
             previous = self.state.is_scaling_active
+            previously_verified = previous and self.state.scaling_target_verified_for_minimization
+            previous_target_pid = self.state.scaling_target_pid
             candidate = self._pending_native_stop
             if not active and previous and candidate:
                 self._pending_native_stop = None
@@ -1313,9 +1317,12 @@ class AutomationController:
                             observed_hwnd,
                             observed_pid,
                         )
-                self.state.scaling_target_pid = observed_pid
-                self.state.scaling_target_hwnd = observed_hwnd
-                self.state.scaling_target_verified_for_minimization = verified_target
+                # A later foreground/overlay guess must not replace a source
+                # already verified for this active scaling session.
+                if verified_target or not previously_verified:
+                    self.state.scaling_target_pid = observed_pid
+                    self.state.scaling_target_hwnd = observed_hwnd
+                    self.state.scaling_target_verified_for_minimization = verified_target
                 if not previous:
                     self._remember_scaling_display(observed_hwnd)
                 matched = self.profile_manager.match_target_profile(
@@ -1341,6 +1348,10 @@ class AutomationController:
                 f"Observed Lossless Scaling {'active' if active else 'idle'}",
             )
             if previous == active:
+                if (active and self.profile_manager.config.minimize_other_windows_on_scale
+                        and self.state.scaling_target_verified_for_minimization
+                        and (not previously_verified or previous_target_pid != self.state.scaling_target_pid)):
+                    self._minimize_other_windows()
                 return
             if active and self.profile_manager.config.minimize_other_windows_on_scale:
                 self._minimize_other_windows()
@@ -1368,9 +1379,12 @@ class AutomationController:
     def reconcile_window_management_setting(self) -> None:
         """Apply a changed minimize setting immediately to the current scaling state."""
         with self._lock:
+            enabled = bool(self.profile_manager.config.minimize_other_windows_on_scale)
+            newly_enabled = enabled and not self._minimize_setting_enabled
+            self._minimize_setting_enabled = enabled
             if (
                 self.state.is_scaling_active
-                and self.profile_manager.config.minimize_other_windows_on_scale
+                and newly_enabled
             ):
                 self._minimize_other_windows()
 

@@ -161,7 +161,14 @@ ReShade and whether passthrough is enabled. `cursor` telemetry reports guard
 installation, Windows errors and suppressed self-replacement count.
 
 Companion also requests WM_SETCURSOR when the verified scaled game regains
-focus, with at most three attempts on subsequent process-monitor ticks. The
+focus, with at most three attempts at 0, 200 and 600 ms. A Companion-owned,
+out-of-context EVENT_SYSTEM_FOREGROUND observer records transitions even when
+an entire Alt-Tab away/return happens between process-monitor polls. Its callback
+only advances an epoch and wakes the worker; all requests run afterward with
+current foreground and session checks. The worker sleeps until a foreground or
+settings/session notification, or the next bounded retry deadline; it adds no
+fast idle polling or render-thread work. Observer failure retains the existing
+one-second polling fallback. The
 recipient must remain in the target process and its foreground window family,
 with the pointer inside the game's client area. A bounded SendMessageTimeout
 lets the game select its own shape (including intentionally no cursor). This

@@ -74,13 +74,14 @@ class CompanionUpdateServiceTests(unittest.TestCase):
         self.assertEqual(status["latestVersion"], "2.0.0")
 
     def test_beta_and_prerelease_metadata_never_trigger_app_updates(self):
-        versions = [self.release("v2.0.15"), dict(self.release("v3.0.0"), prerelease=True), self.release("v2.0.0")]
+        versions = [self.release("v2.0.15"), self.release("v2.1.1-beta"),
+                    dict(self.release("v3.0.0"), prerelease=True), self.release("v2.0.0")]
         manager = SimpleNamespace(check=lambda *a, **k: versions)
         with tempfile.TemporaryDirectory() as directory, patch(
                 "companion.services.self_update.current_version", return_value="1.9.48"):
             service = CompanionUpdateService(manager, Path(directory), enabled=True)
             self.assertEqual(service.check()["latestVersion"], "2.0.0")
-            for version in ("2.0.15", "3.0.0"):
+            for version in ("2.0.15", "2.1.1-beta", "3.0.0"):
                 with self.subTest(version=version), patch.object(service, "_download_bytes") as download:
                     with self.assertRaises(ValueError):
                         service.download(version)

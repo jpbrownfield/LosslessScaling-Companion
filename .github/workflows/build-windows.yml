@@ -151,6 +151,13 @@ jobs:
           if (-not (Test-Path -LiteralPath build/native/LSBenchmark.exe)) {
             throw "Bundled GPU benchmark was not produced"
           }
+          cl /nologo /std:c++17 /O2 /EHsc /MT /DUNICODE /D_UNICODE /DLSC_BENCHMARK_TEST_WARP=1 `
+            /Fo:build/native/benchmark_startup_fixture.obj /Fe:build/native/LSCBenchmarkStartupFixture.exe `
+            benchmark_app/ls_benchmark.cpp `
+            d3d11.lib dxgi.lib d3dcompiler.lib user32.lib shell32.lib
+          if ($LASTEXITCODE -ne 0) { throw "Benchmark startup fixture build failed" }
+          python scripts/test_benchmark_startup.py --benchmark build/native/LSBenchmark.exe --warp-fixture build/native/LSCBenchmarkStartupFixture.exe
+          if ($LASTEXITCODE -ne 0) { throw "Native benchmark startup checks failed" }
 
       - name: Build adapter reporter
         shell: pwsh

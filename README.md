@@ -476,7 +476,7 @@ installation is enabled. Source and simulation runs never download or launch
 production Companion updates. The checksum guards
 against corruption and mismatched assets. New full releases sign the application,
 installer and uninstaller with the configured Authenticode certificate. Beta
-releases (`x.y.1`, `x.y.2`, ...), GitHub prereleases and cached beta installers
+releases (tags `vx.y.1-beta`, `vx.y.2-beta`, ...), GitHub prereleases and cached beta installers
 never trigger in-app updates. Betas remain available for manual installation.
 
 **Notify me about Companion and add-on updates** is enabled by default.
@@ -612,9 +612,10 @@ python create_full_release.py --message "Describe this full release"
 The helpers check commit-message versions and local/remote release tags. Betas
 increment only the patch, without rollover (`0.9.9` becomes `0.9.10`). Full
 releases increment the minor and reset the patch (`0.9.58` becomes `0.10.0`).
-The next beta is then `0.10.1`. Betas are published as prereleases with
-`latest=false`; full releases are stable and become latest unless a newer full
-release has already finished building. Running either helper stages everything,
+The next beta is then `0.10.1`, tagged `v0.10.1-beta`. Betas are published as
+prereleases with `latest=false`; full releases use tags such as `v0.10.0` and
+become latest unless a newer full release has already finished building.
+Running either helper stages everything,
 including deletions, commits and pushes
 immediately without confirmation. Use `--dry-run` for a read-only preview.
 It refuses an out-of-date/diverged `main`

@@ -19,10 +19,25 @@ from .gpu_telemetry import WindowsGpuTelemetry
 
 CREATE_NO_WINDOW = 0x08000000
 SW_RESTORE = 9
-user32 = ctypes.windll.user32 if os.name == "nt" else None
-gdi32 = ctypes.windll.gdi32 if os.name == "nt" else None
-kernel32 = ctypes.windll.kernel32 if os.name == "nt" else None
+_EnumWindowProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM) if os.name == "nt" else None
+user32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True) if os.name == "nt" else None
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if os.name == "nt" else None
 if user32 is not None:
+    for name, args, result in (
+        ("EnumWindows", [_EnumWindowProc, wintypes.LPARAM], wintypes.BOOL),
+        ("GetWindowThreadProcessId", [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
+        ("GetForegroundWindow", [], wintypes.HWND),
+        ("IsIconic", [wintypes.HWND], wintypes.BOOL),
+        ("ShowWindow", [wintypes.HWND, ctypes.c_int], wintypes.BOOL),
+        ("BringWindowToTop", [wintypes.HWND], wintypes.BOOL),
+        ("SetForegroundWindow", [wintypes.HWND], wintypes.BOOL),
+        ("AttachThreadInput", [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL], wintypes.BOOL),
+    ):
+        function = getattr(user32, name)
+        function.argtypes, function.restype = args, result
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     user32.IsWindow.argtypes = (wintypes.HWND,)
     user32.IsWindow.restype = wintypes.BOOL
     user32.IsWindowVisible.argtypes = (wintypes.HWND,)
@@ -37,33 +52,54 @@ if user32 is not None:
     gdi32.GetPixel.restype = wintypes.DWORD
 
 
-def find_largest_window(process_id: int, timeout: float = 15.0) -> int:
+def find_largest_window(process_id: int, timeout: float = 15.0, *, process=None) -> int:
     """Wait for and return a process's largest visible top-level window."""
     if user32 is None:
         raise RuntimeError("Window discovery requires Windows")
     deadline = time.monotonic() + timeout
+    hidden_windows = 0
     while time.monotonic() < deadline:
+        if process is not None:
+            code = process.poll()
+            if code is not None:
+                raise RuntimeError(f"Benchmark application exited before its window was ready "
+                                   f"(exit code {code}, 0x{code & 0xFFFFFFFF:08X}); see workload startup report and logs")
         matches: List[tuple[int, int]] = []
+        callback_errors = []
+        hidden_windows = 0
 
         def callback(raw_hwnd: int, _extra: int) -> bool:
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(raw_hwnd, ctypes.byref(pid))
-            if pid.value != process_id or not user32.IsWindowVisible(raw_hwnd):
+            nonlocal hidden_windows
+            try:
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(raw_hwnd, ctypes.byref(pid))
+                if pid.value != process_id:
+                    return True
+                if not user32.IsWindowVisible(raw_hwnd):
+                    hidden_windows += 1
+                    return True
+                rect = wintypes.RECT()
+                if user32.GetWindowRect(raw_hwnd, ctypes.byref(rect)):
+                    area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+                    if area:
+                        matches.append((area, int(raw_hwnd)))
                 return True
-            rect = wintypes.RECT()
-            user32.GetWindowRect(raw_hwnd, ctypes.byref(rect))
-            area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
-            if area:
-                matches.append((area, int(raw_hwnd)))
-            return True
+            except Exception as error:
+                callback_errors.append(error)
+                return False
 
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        callback_ref = callback_type(callback)
-        user32.EnumWindows(callback_ref, 0)
+        callback_ref = _EnumWindowProc(callback)
+        ctypes.set_last_error(0)
+        enumerated = user32.EnumWindows(callback_ref, 0)
+        if callback_errors:
+            raise RuntimeError(f"Benchmark window discovery failed: {callback_errors[0]}") from callback_errors[0]
+        if not enumerated:
+            raise ctypes.WinError(ctypes.get_last_error())
         if matches:
             return max(matches)[1]
         time.sleep(0.1)
-    raise RuntimeError("Benchmark application did not create a visible window")
+    raise RuntimeError(f"Benchmark application did not create a visible window within {timeout:g}s "
+                       f"(PID {process_id}, hidden windows: {hidden_windows}); see workload startup report and logs")
 
 
 def focus_window(hwnd: int, timeout: float = 2.0) -> bool:

@@ -1,5 +1,8 @@
 import tempfile
+import json
+import subprocess
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -9,7 +12,7 @@ from companion.services.benchmark_metrics import (
     summarize_presentmon_files,
     summarize_presentmon_rows,
 )
-from companion.services.performance_benchmark import PresentMonCapture, focus_window
+from companion.services.performance_benchmark import PresentMonCapture, find_largest_window, focus_window
 from companion.core.models import Profile, RtssLimiterConfig
 from scripts.benchmark_lossless_scaling import (
     default_profile_limiter_settings,
@@ -22,6 +25,60 @@ from scripts.benchmark_lossless_scaling import (
 
 
 class BenchmarkMetricTests(unittest.TestCase):
+    def test_failed_workload_launch_preserves_exit_stage_and_logs_in_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workload = root / "LSBenchmark.exe"
+            workload.write_bytes(b"fixture")
+            manager = Mock()
+            manager.config.profiles = []
+            process = Mock(pid=123)
+            process.poll.return_value = 11
+            launch_window = {"active": False}
+
+            @contextmanager
+            def dll_search():
+                launch_window["active"] = True
+                try:
+                    yield
+                finally:
+                    launch_window["active"] = False
+
+            def launch(command, **kwargs):
+                self.assertTrue(launch_window["active"])
+                startup = kwargs["startupinfo"]
+                self.assertTrue(startup.dwFlags & subprocess.STARTF_USESHOWWINDOW)
+                self.assertEqual(startup.wShowWindow, 1)
+                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+                kwargs["stderr"].write(b"fixture adapter selection failed\n")
+                report = Path(command[command.index("--startup-report") + 1])
+                report.write_text(json.dumps({"status": "failed", "stage": "select_adapter",
+                                              "exitCode": 11, "hresult": "0x887A0002"}))
+                return process
+
+            with patch("scripts.benchmark_lossless_scaling.ProfileManager", return_value=manager), \
+                    patch("scripts.benchmark_lossless_scaling.ProcessWatcher"), \
+                    patch("scripts.benchmark_lossless_scaling.LosslessScalingInspector"), \
+                    patch("scripts.benchmark_lossless_scaling.AutomationController"), \
+                    patch("scripts.benchmark_lossless_scaling.resolve_presentmon", return_value=root / "PresentMon.exe"), \
+                    patch("scripts.benchmark_lossless_scaling.external_dll_search", dll_search), \
+                    patch("scripts.benchmark_lossless_scaling.subprocess.Popen", side_effect=launch) as launched:
+                code = run_benchmark(["--benchmark-exe", str(workload), "--no-scale", "--yes",
+                                      "--report-dir", str(root / "reports")])
+            self.assertEqual(code, 2)
+            report_path = next((root / "reports").glob("*/result.json"))
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["workload_exit_code_before_cleanup"], 11)
+            self.assertEqual(report["workload_exit_code_after_cleanup"], 11)
+            self.assertEqual(report["workload_startup"]["stage"], "select_adapter")
+            self.assertIn("0x0000000B", report["error"])
+            self.assertIn("HRESULT=0x887A0002", report["error"])
+            self.assertIn("adapter selection failed", (report_path.parent / "workload-stderr.log").read_text())
+            self.assertTrue(launched.call_args.kwargs["stdout"].closed)
+            self.assertTrue(launched.call_args.kwargs["stderr"].closed)
+            process.terminate.assert_not_called()
+            process.wait.assert_not_called()
+
     def test_missing_rtss_fails_before_launching_or_scaling(self):
         manager = Mock()
         manager.config.rtss_install_path = None
@@ -140,6 +197,7 @@ class BenchmarkMetricTests(unittest.TestCase):
         native.AttachThreadInput.assert_any_call(6, 7, False)
         self.assertEqual(native.SetForegroundWindow.call_count, 2)
 
+
     def test_default_profile_limiter_uses_saved_limit_without_mutation(self):
         profile = Profile(
             name="Default",
@@ -221,6 +279,74 @@ class BenchmarkMetricTests(unittest.TestCase):
             self.assertIn("--multi_csv", command)
             self.assertIn("--terminate_after_timed", command)
             self.assertIn("30", command)
+
+class BenchmarkWindowDiscoveryTests(unittest.TestCase):
+    def native(self):
+        native = Mock()
+
+        def enum(callback, extra):
+            for hwnd in (2**40 + 1, 2**40 + 2, 2**40 + 3):
+                if not callback(hwnd, extra):
+                    return False
+            return True
+
+        def pid(hwnd, pointer):
+            pointer._obj.value = 42 if hwnd != 2**40 + 3 else 99
+            return 7
+
+        def bounds(hwnd, pointer):
+            pointer._obj.right = 200 if hwnd == 2**40 + 2 else 100
+            pointer._obj.bottom = 100
+            return True
+
+        native.EnumWindows.side_effect = enum
+        native.GetWindowThreadProcessId.side_effect = pid
+        native.GetWindowRect.side_effect = bounds
+        native.IsWindowVisible.return_value = True
+        return native
+
+    def test_returns_largest_owned_window_with_pointer_sized_handle(self):
+        native = self.native()
+        with patch("companion.services.performance_benchmark.user32", native):
+            self.assertEqual(find_largest_window(42), 2**40 + 2)
+
+    def test_exited_process_fails_before_enumeration_or_sleep(self):
+        for code in (0, 4, 11, -1073741515):
+            with self.subTest(code=code):
+                native = self.native()
+                with patch("companion.services.performance_benchmark.user32", native), patch(
+                        "companion.services.performance_benchmark.time.sleep") as sleep:
+                    with self.assertRaisesRegex(RuntimeError, f"exit code {code}"):
+                        find_largest_window(42, process=Mock(poll=Mock(return_value=code)))
+                native.EnumWindows.assert_not_called()
+                sleep.assert_not_called()
+
+    def test_hidden_windows_are_reported_without_changing_them(self):
+        native = self.native()
+        native.IsWindowVisible.return_value = False
+        with patch("companion.services.performance_benchmark.user32", native), patch(
+                "companion.services.performance_benchmark.time.monotonic", side_effect=[0, 0, 1]), patch(
+                "companion.services.performance_benchmark.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "hidden windows: 2"):
+                find_largest_window(42, timeout=.5)
+        native.ShowWindow.assert_not_called()
+        native.SetForegroundWindow.assert_not_called()
+
+    def test_enum_failure_and_callback_exception_are_not_reported_as_window_timeout(self):
+        native = self.native()
+        native.EnumWindows.side_effect = None
+        native.EnumWindows.return_value = False
+        with patch("companion.services.performance_benchmark.user32", native), patch(
+                "ctypes.get_last_error", return_value=5):
+            with self.assertRaises(OSError) as error:
+                find_largest_window(42)
+        self.assertEqual(error.exception.winerror, 5)
+        native = self.native()
+        native.GetWindowRect.side_effect = RuntimeError("fixture rectangle failure")
+        with patch("companion.services.performance_benchmark.user32", native):
+            with self.assertRaisesRegex(RuntimeError, "window discovery failed: fixture rectangle failure"):
+                find_largest_window(42)
+
 
 if __name__ == "__main__":
     unittest.main()

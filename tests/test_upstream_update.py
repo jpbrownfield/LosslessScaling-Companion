@@ -166,6 +166,7 @@ class UpstreamUpdateTests(unittest.TestCase):
                               real(root, rel, commit, Mock(return_value="1" * 64))):
                 plan = updater.prepare(self.root, api, REPO)
         self.assertEqual(plan["version"], "4.5.10")
+        self.assertEqual(plan["release_tag"], "v4.5.10-beta")
         self.assertEqual(plan["source_sha"], SOURCE)
         commits = [call.args[1] for call in api.api.call_args_list if call.args[0].endswith("/git/commits")]
         self.assertEqual(commits[0]["parents"], [BASE])
@@ -186,15 +187,18 @@ class UpstreamUpdateTests(unittest.TestCase):
         self.assertFalse(any(len(call.args) > 1 for call in api.api.call_args_list))
 
     def test_retry_before_promotion_reuses_draft_version_instead_of_allocating_again(self):
-        pending = dict(draft=True, tag_name="v4.5.10", body=updater.marker("build-6") + f"\nBase commit: `{BASE}`")
-        api = self.api(existing_branch=True, own=[pending])
-        real = updater.updated_files
-        with patch.object(updater, "updated_files", side_effect=lambda root, rel, commit:
-                          real(root, rel, commit, Mock(return_value="1" * 64))), \
-             patch.object(updater, "validate_candidate"):
-            plan = updater.prepare(self.root, api, REPO)
-        self.assertEqual(plan["version"], "4.5.10")
-        self.assertEqual(plan["source_sha"], SOURCE)
+        for tag in ("v4.5.10-beta", "v4.5.10"):
+            with self.subTest(tag=tag):
+                pending = dict(draft=True, tag_name=tag, body=updater.marker("build-6") + f"\nBase commit: `{BASE}`")
+                api = self.api(existing_branch=True, own=[pending])
+                real = updater.updated_files
+                with patch.object(updater, "updated_files", side_effect=lambda root, rel, commit:
+                                  real(root, rel, commit, Mock(return_value="1" * 64))), \
+                     patch.object(updater, "validate_candidate"):
+                    plan = updater.prepare(self.root, api, REPO)
+                self.assertEqual(plan["version"], "4.5.10")
+                self.assertEqual(plan["release_tag"], tag)
+                self.assertEqual(plan["source_sha"], SOURCE)
 
     def test_moved_upstream_tag_fails_instead_of_silently_changing_pins(self):
         api = self.api(upstream=release("build-5"))
@@ -222,18 +226,23 @@ class UpstreamUpdateTests(unittest.TestCase):
         self.assertFalse(any(len(call.args) > 1 for call in api.api.call_args_list))
 
     def test_retry_after_manual_candidate_fix_finds_draft_by_its_exact_commit(self):
-        pending = dict(draft=True, tag_name="v4.5.10", body=updater.marker("build-5"), target_commitish=BASE)
-        plan = updater.prepare(self.root, self.api(upstream=release("build-5"), own=[pending]), REPO)
-        self.assertTrue(plan["recovery"])
-        self.assertEqual(plan["version"], "4.5.10")
+        for tag in ("v4.5.10-beta", "v4.5.10"):
+            with self.subTest(tag=tag):
+                pending = dict(draft=True, tag_name=tag, body=updater.marker("build-5"), target_commitish=BASE)
+                plan = updater.prepare(self.root, self.api(upstream=release("build-5"), own=[pending]), REPO)
+                self.assertTrue(plan["recovery"])
+                self.assertEqual(plan["version"], "4.5.10")
+                self.assertEqual(plan["release_tag"], tag)
 
     def test_published_update_is_not_rebuilt_or_announced_again(self):
         self.git.side_effect = lambda root, *args: (
             "@4.5.10 Update FriedSnowman addon manager to build-5" if args == ("log", "-1", "--format=%B")
             else self.git_result(root, *args))
-        own = [dict(tag_name="v4.5.10", draft=False)]
-        result = updater.prepare(self.root, self.api(upstream=release("build-5"), own=own), REPO)
-        self.assertFalse(result["changed"])
+        for tag in ("v4.5.10-beta", "v4.5.10"):
+            with self.subTest(tag=tag):
+                own = [dict(tag_name=tag, draft=False)]
+                result = updater.prepare(self.root, self.api(upstream=release("build-5"), own=own), REPO)
+                self.assertFalse(result["changed"])
 
 
 class UpstreamPublishTests(unittest.TestCase):
@@ -243,7 +252,7 @@ class UpstreamPublishTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.plan = dict(changed=True, repository=REPO, base_branch="main", base_sha=BASE,
                          source_sha=SOURCE, upstream_tag="build-6", upstream_commit=COMMIT,
-                         version="4.5.10", release_tag="v4.5.10",
+                         version="4.5.10", release_tag="v4.5.10-beta",
                          pin={**pin(), "tag": "build-6", "commit": COMMIT, "version": "build-6-lsc.1"})
         for name in updater.ASSETS:
             data = ("verified " + name).encode()
@@ -258,11 +267,11 @@ class UpstreamPublishTests(unittest.TestCase):
 
     def api(self, *, main=BASE, existing=None, latest=None, fail_promotion=False, tag_exists=True, listed=None):
         def request(path, data=None, **kwargs):
-            if path.endswith("/releases/tags/v4.5.10"):
+            if path.endswith("/releases/tags/" + self.plan["release_tag"]):
                 return existing
             if path.endswith("/releases?per_page=100"):
                 return listed or []
-            if path.endswith("/commits/v4.5.10"):
+            if path.endswith("/commits/" + self.plan["release_tag"]):
                 return {"sha": SOURCE} if tag_exists else None
             if path.endswith("/git/ref/heads/main"):
                 return {"object": {"sha": main}}
@@ -283,6 +292,7 @@ class UpstreamPublishTests(unittest.TestCase):
         updater.publish(self.plan, self.api(), self.root, run=self.run_gh)
         self.assertEqual([event[0] for event in self.events], ["create", "upload", "promote", "edit"])
         self.assertIn("--draft", self.events[0][1])
+        self.assertIn("v4.5.10-beta", self.events[0][1])
         self.assertEqual(self.events[2][1], {"sha": SOURCE, "force": False})
         self.assertIn("--draft=false", self.events[3][1])
         self.assertIn("--latest=false", self.events[3][1])
@@ -305,7 +315,8 @@ class UpstreamPublishTests(unittest.TestCase):
                 self.assertEqual(self.events, [])
 
     def test_changed_main_or_newer_release_is_not_overwritten(self):
-        for api in (self.api(main="f" * 40), self.api(latest={"tag_name": "v4.6.1"})):
+        for api in (self.api(main="f" * 40), self.api(latest={"tag_name": "v4.6.1"}),
+                    self.api(latest={"tag_name": "v4.6.1-beta"})):
             with self.assertRaises(updater.UpdateError):
                 updater.publish(self.plan, api, self.root, run=self.run_gh)
             self.assertEqual(self.events, [])
@@ -347,7 +358,7 @@ class UpstreamPublishTests(unittest.TestCase):
         self.assertEqual(self.events, [])
 
     def test_recovers_owned_draft_before_github_creates_its_tag(self):
-        existing = dict(tag_name="v4.5.10", draft=True, target_commitish=SOURCE,
+        existing = dict(tag_name="v4.5.10-beta", draft=True, target_commitish=SOURCE,
                         body=updater.marker("build-6"))
         updater.publish(self.plan, self.api(tag_exists=False, listed=[existing]), self.root, run=self.run_gh)
         self.assertEqual([event[0] for event in self.events], ["upload", "promote", "edit"])
@@ -356,6 +367,13 @@ class UpstreamPublishTests(unittest.TestCase):
         with self.assertRaisesRegex(updater.UpdateError, "different source"):
             updater.publish(self.plan, self.api(tag_exists=False, listed=[existing]), self.root, run=self.run_gh)
         self.assertEqual(self.events, [])
+
+    def test_legacy_draft_publication_keeps_its_numeric_tag(self):
+        self.plan["release_tag"] = "v4.5.10"
+        existing = dict(draft=True, body=updater.marker("build-6"))
+        updater.publish(self.plan, self.api(existing=existing, main=SOURCE), self.root, run=self.run_gh)
+        self.assertEqual([event[0] for event in self.events], ["upload", "edit"])
+        self.assertIn("v4.5.10", self.events[-1][1])
 
 
 if __name__ == "__main__":

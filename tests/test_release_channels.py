@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -14,16 +17,36 @@ class ReleaseChannelTests(unittest.TestCase):
         for version, channel in (("0.9.10", "beta"), ("0.10.0", "full"), ("4.100.0", "full")):
             with self.subTest(version=version):
                 branch = resolve(ref_type="branch", ref_name="main", message=f"@{version} [{channel}] Release")
-                tag = resolve(ref_type="tag", ref_name="v"+version)
+                expected_tag = "v" + version + ("-beta" if channel == "beta" else "")
+                tag = resolve(ref_type="tag", ref_name=expected_tag)
                 self.assertEqual(branch["channel"], channel)
                 self.assertEqual(tag["channel"], channel)
                 self.assertEqual(branch["tag"], tag["tag"])
+                self.assertEqual(branch["tag"], expected_tag)
+                self.assertEqual(tag["version"], version)  # Installer versions stay numeric.
                 self.assertEqual(branch["from_commit"], "true")
+
+    def test_legacy_beta_tag_retries_keep_their_original_tag(self):
+        result = resolve(ref_type="tag", ref_name="v0.9.10")
+        self.assertEqual(result["tag"], "v0.9.10")
+        self.assertEqual(result["channel"], "beta")
+        self.assertEqual(resolve(requested="0.9.11")["tag"], "v0.9.11-beta")
+
+    def test_workflow_entrypoint_emits_beta_tag_and_numeric_installer_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            env = dict(os.environ, REQUESTED_VERSION="0.10.1", REQUESTED_CHANNEL="beta",
+                       GITHUB_ENV=str(directory/"environment"), GITHUB_OUTPUT=str(directory/"output"))
+            subprocess.run([sys.executable, "scripts/resolve_release.py"],
+                           cwd=Path(__file__).resolve().parents[1], env=env, check=True, capture_output=True)
+            self.assertIn("tag=v0.10.1-beta\n", (directory/"output").read_text())
+            self.assertIn("LS_COMPANION_VERSION=0.10.1\n", (directory/"environment").read_text())
 
     def test_workflow_call_cannot_mislabel_beta_as_full(self):
         self.assertEqual(resolve(requested="0.9.10")["channel"], "beta")
         for kwargs in ({"requested": "0.10.0"}, {"requested": "0.9.10", "requested_channel": "full"},
                        {"requested": "0.10.0; echo bad", "requested_channel": "full"},
+                       {"ref_type": "tag", "ref_name": "v0.10.0-beta"},
                        {"ref_type": "branch", "ref_name": "main", "message": "@0.10.0 [beta] mismatch"}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 resolve(**kwargs)
@@ -51,12 +74,17 @@ class ReleaseChannelTests(unittest.TestCase):
             def run(args, **kwargs):
                 calls.append(args)
                 return SimpleNamespace(returncode=1 if "view" in args else 0, stdout="")
-            publish(directory,tag="v0.9.10",channel="beta",source="a"*40,run=run)
+            publish(directory,tag="v0.9.10-beta",channel="beta",source="a"*40,run=run)
             self.assertIn("--prerelease", calls[-1])
             self.assertIn("--latest=false", calls[-1])
             self.assertIn("--draft", calls[1])
             self.assertEqual(calls[-2][2], "upload")
             self.assertIn("--draft=false", calls[-1])
+            self.assertTrue(all("v0.9.10-beta" in call for call in calls))
+
+    def test_beta_tag_cannot_be_published_as_full(self):
+        with self.assertRaisesRegex(ValueError, "channel"):
+            publish(Path('.'), tag="v0.9.10-beta", channel="full", source="a"*40)
 
     def test_full_requires_signing_evidence_and_does_not_replace_newer_latest(self):
         with tempfile.TemporaryDirectory() as temporary:

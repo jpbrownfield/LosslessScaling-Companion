@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.release_common import version_tuple
+from scripts.release_common import parse_release_tag, version_tuple
 
 
 ASSETS = ("LosslessCompanion-Setup-x64.exe", "LSAddonManager-Companion.zip")
@@ -42,8 +42,9 @@ def verify_artifacts(directory, channel):
 
 
 def publish(directory, *, tag, channel, source, from_commit=False, run=subprocess.run):
-    version = version_tuple(tag.removeprefix("v"))
-    if channel not in {"beta", "full"} or (version[2] == 0) != (channel == "full"):
+    version_text, tag_channel = parse_release_tag(tag)
+    version = version_tuple(version_text)
+    if channel != tag_channel:
         raise ValueError("Release channel does not match the version")
     paths = verify_artifacts(Path(directory), channel)
     def gh(*args, **kwargs):
@@ -56,7 +57,7 @@ def publish(directory, *, tag, channel, source, from_commit=False, run=subproces
         previous = gh("release", "view", "--json", "tagName")
         latest = True
         if previous.returncode == 0:
-            previous_tag = json.loads(previous.stdout)["tagName"].removeprefix("v")
+            previous_tag, _ = parse_release_tag(json.loads(previous.stdout)["tagName"])
             latest = version >= version_tuple(previous_tag)
     flags = ["--prerelease" if channel == "beta" else "--prerelease=false", "--latest" if latest else "--latest=false"]
     if existing.returncode != 0:

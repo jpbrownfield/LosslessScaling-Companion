@@ -1,4 +1,4 @@
-"""Reversibly minimize other application windows on a target monitor."""
+"""Minimize other application windows on a verified target monitor."""
 
 from __future__ import annotations
 
@@ -12,20 +12,61 @@ import psutil
 
 
 logger = logging.getLogger("LSCompanion.WindowManager")
-user32 = ctypes.windll.user32
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
 
 GWL_EXSTYLE = -20
 GW_OWNER = 4
 MONITOR_DEFAULTTONULL = 0
 MONITOR_DEFAULTTONEAREST = 2
-SW_MINIMIZE = 6
+SW_SHOWMINNOACTIVE = 7
 SW_RESTORE = 9
 SW_MAXIMIZE = 3
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 WS_CAPTION = 0x00C00000
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
+DWMWA_CLOAKED = 14
+
+_WindowCallback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+_MonitorCallback = ctypes.WINFUNCTYPE(
+    wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+    ctypes.POINTER(wintypes.RECT), wintypes.LPARAM,
+)
+
+# Use a private DLL instance and pointer-sized handles. Default ctypes integer
+# conversion can truncate HWND/HMONITOR values on 64-bit Windows.
+for _name, _arguments, _result in (
+    ("IsWindow", [wintypes.HWND], wintypes.BOOL),
+    ("IsWindowVisible", [wintypes.HWND], wintypes.BOOL),
+    ("IsIconic", [wintypes.HWND], wintypes.BOOL),
+    ("IsZoomed", [wintypes.HWND], wintypes.BOOL),
+    ("GetForegroundWindow", [], wintypes.HWND),
+    ("GetWindow", [wintypes.HWND, wintypes.UINT], wintypes.HWND),
+    ("GetWindowLongW", [wintypes.HWND, ctypes.c_int], wintypes.LONG),
+    ("GetWindowThreadProcessId", [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)], wintypes.DWORD),
+    ("GetClassNameW", [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+    ("GetWindowTextLengthW", [wintypes.HWND], ctypes.c_int),
+    ("MonitorFromWindow", [wintypes.HWND, wintypes.DWORD], wintypes.HMONITOR),
+    ("GetMonitorInfoW", [wintypes.HMONITOR, ctypes.c_void_p], wintypes.BOOL),
+    ("GetWindowRect", [wintypes.HWND, ctypes.POINTER(wintypes.RECT)], wintypes.BOOL),
+    ("SetWindowPos", [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                      ctypes.c_int, ctypes.c_int, wintypes.UINT], wintypes.BOOL),
+    ("ShowWindow", [wintypes.HWND, ctypes.c_int], wintypes.BOOL),
+    ("ShowWindowAsync", [wintypes.HWND, ctypes.c_int], wintypes.BOOL),
+    ("EnumWindows", [_WindowCallback, wintypes.LPARAM], wintypes.BOOL),
+    ("EnumDisplayMonitors", [wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                             _MonitorCallback, wintypes.LPARAM], wintypes.BOOL),
+):
+    _function = getattr(user32, _name)
+    _function.argtypes = _arguments
+    _function.restype = _result
+dwmapi.DwmGetWindowAttribute.argtypes = [
+    wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+]
+dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
 
 
 class _MonitorInfo(ctypes.Structure):
@@ -102,10 +143,6 @@ class MonitorWindowManager:
     @staticmethod
     def _monitor_details() -> list[dict]:
         monitors: list[dict] = []
-        callback_type = ctypes.WINFUNCTYPE(
-            wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
-            ctypes.POINTER(wintypes.RECT), wintypes.LPARAM,
-        )
 
         def collect(handle, _dc, _rect, _data):
             info = _MonitorInfoEx()
@@ -125,7 +162,7 @@ class MonitorWindowManager:
                 })
             return True
 
-        callback = callback_type(collect)
+        callback = _MonitorCallback(collect)
         if not user32.EnumDisplayMonitors(None, None, callback, 0):
             return []
         return monitors
@@ -214,7 +251,7 @@ class MonitorWindowManager:
             visible_found = False
             try:
                 visible_found = (
-                    ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                    dwmapi.DwmGetWindowAttribute(
                         target,
                         DWMWA_EXTENDED_FRAME_BOUNDS,
                         ctypes.byref(visible),
@@ -295,7 +332,8 @@ class MonitorWindowManager:
                 or not user32.IsWindowVisible(hwnd)
                 or user32.IsIconic(hwnd)
                 or user32.GetWindow(hwnd, GW_OWNER)
-                or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW
+                or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+                or cls._is_cloaked(handle)
                 or cls._class_name(handle) in SHELL_CLASSES
                 or user32.GetWindowTextLengthW(hwnd) <= 0
             ):
@@ -309,11 +347,10 @@ class MonitorWindowManager:
                     candidates.append((area, handle))
             return True
 
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
         # Keep a live reference to the thunk for the duration of the
         # enumeration; passing a temporary lets GC free it mid-callback
         # and AV the interpreter (0xc0000005 in python312.dll).
-        enum_callback_ref = callback_type(callback)
+        enum_callback_ref = _WindowCallback(callback)
         user32.EnumWindows(enum_callback_ref, 0)
         return max(candidates, default=(0, 0))[1] or None
 
@@ -347,10 +384,10 @@ class MonitorWindowManager:
         *,
         target_pid: Optional[int] = None,
     ) -> int:
-        """Minimize eligible peer windows and return the number newly minimized."""
+        """Queue minimization without activating peers; return accepted requests."""
         with self._lock:
             target = self._target_window(target_hwnd, target_pid)
-            if not target:
+            if not target or user32.IsIconic(target) or self._is_cloaked(target):
                 logger.warning(
                     "Skipping peer minimization: no verified target window for HWND %s / PID %s",
                     target_hwnd,
@@ -377,37 +414,58 @@ class MonitorWindowManager:
             excluded_pids = {resolved_target_pid, os.getpid()}
 
             minimized = 0
+            process_names = {}
 
-            def enum_callback(hwnd, _extra):
+            def minimize_peer(hwnd, _extra):
                 nonlocal minimized
                 handle = int(hwnd)
-                if handle == target or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                if (handle == target or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd)
+                        or user32.GetForegroundWindow() == handle):
                     return True
                 if user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) != target_monitor:
                     return True
                 pid = self._window_pid(handle)
                 if not pid or pid in excluded_pids:
                     return True
-                try:
-                    peer_process_name = psutil.Process(pid).name().casefold()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                if pid not in process_names:
+                    try:
+                        process_names[pid] = psutil.Process(pid).name().casefold()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        process_names[pid] = None
+                peer_process_name = process_names[pid]
+                if peer_process_name is None:
                     return True
                 if peer_process_name in {"losslessscaling.exe", target_process_name}:
                     return True
                 if user32.GetWindow(hwnd, GW_OWNER):
                     return True
-                if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
+                if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE):
                     return True
                 if self._class_name(handle) in SHELL_CLASSES:
                     return True
-                if user32.GetWindowTextLengthW(hwnd) <= 0:
+                if user32.GetWindowTextLengthW(hwnd) <= 0 or self._is_cloaked(handle):
+                    return True
+                # A game can exit, minimize, or change displays during enumeration.
+                # Stop rather than minimizing more windows on a stale monitor.
+                if (
+                    self._window_pid(target) != resolved_target_pid
+                    or not user32.IsWindowVisible(target)
+                    or user32.IsIconic(target)
+                    or self._is_cloaked(target)
+                    or user32.MonitorFromWindow(target, MONITOR_DEFAULTTONULL) != target_monitor
+                ):
+                    return False
+                if (self._window_pid(handle) != pid
+                        or user32.MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) != target_monitor
+                        or user32.GetForegroundWindow() == handle):
                     return True
                 try:
-                    user32.ShowWindow(hwnd, SW_MINIMIZE)
-                    if user32.IsIconic(hwnd):
+                    # ShowWindow can block on another app's UI thread and
+                    # SW_MINIMIZE can activate the next window in the Z order.
+                    if user32.ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE):
                         minimized += 1
                         logger.info(
-                            "Minimized peer HWND %s / PID %s on target monitor; "
+                            "Requested peer HWND %s / PID %s minimization on target monitor; "
                             "protected target HWND %s / PID %s",
                             handle,
                             pid,
@@ -418,11 +476,29 @@ class MonitorWindowManager:
                     logger.debug("Could not minimize HWND %s", handle, exc_info=True)
                 return True
 
-            callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            def enum_callback(hwnd, extra):
+                try:
+                    return minimize_peer(hwnd, extra)
+                except Exception:
+                    # Exceptions must not escape a ctypes callback: its return
+                    # value would otherwise be undefined and the error lost.
+                    logger.debug("Skipping unavailable peer HWND %s", hwnd, exc_info=True)
+                    return True
+
             # Keep a live reference to the thunk for the duration of the
             # enumeration; passing a temporary lets GC free it mid-callback
             # and AV the interpreter (0xc0000005 in python312.dll).
-            minimize_callback_ref = callback_type(enum_callback)
+            minimize_callback_ref = _WindowCallback(enum_callback)
             user32.EnumWindows(minimize_callback_ref, 0)
-            logger.info("Minimized %d other window(s) on the scaled application's monitor", minimized)
+            logger.info("Requested minimization of %d other window(s) on the scaled application's monitor", minimized)
             return minimized
+
+    @staticmethod
+    def _is_cloaked(hwnd: int) -> bool:
+        cloaked = wintypes.DWORD()
+        try:
+            return (dwmapi.DwmGetWindowAttribute(
+                hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+            ) == 0 and bool(cloaked.value))
+        except OSError:
+            return False

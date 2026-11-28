@@ -27,6 +27,7 @@ struct Options {
     bool vsync = false;
     std::wstring event_log;
     std::wstring adapter_name, adapter_report;
+    std::wstring startup_report;
 };
 
 Options g_options;
@@ -58,6 +59,7 @@ Options parse_options() {
         else if (arg == L"--event-log") result.event_log = argument_value(argc, argv, i);
         else if (arg == L"--adapter-name") result.adapter_name = argument_value(argc, argv, i);
         else if (arg == L"--adapter-report") result.adapter_report = argument_value(argc, argv, i);
+        else if (arg == L"--startup-report") result.startup_report = argument_value(argc, argv, i);
         else if (arg == L"--vsync") result.vsync = true;
     }
     LocalFree(argv);
@@ -168,16 +170,38 @@ bool write_adapter_report(ID3D11Device* device) {
     stream<<"{\"version\":1,\"adapter\":\""<<escaped<<"\",\"adapterLuid\":\""<<luid<<"\"}\n";
     return bool(stream);
 }
+
+// Startup-only evidence survives failures before ShowWindow and shader compile.
+// No file writes or diagnostics are added to the measured render loop.
+void startup_status(const char* stage, int code = -1, HRESULT error = S_OK, HWND window = nullptr) {
+    if (g_options.startup_report.empty()) return;
+    char hex[16]{};
+    snprintf(hex, sizeof hex, "0x%08X", unsigned(error));
+    std::ofstream stream(std::filesystem::path(g_options.startup_report), std::ios::trunc);
+    stream << "{\"version\":1,\"stage\":\"" << stage << "\",\"status\":\""
+           << (code < 0 ? "starting" : code == 0 ? "ready" : "failed")
+           << "\",\"pid\":" << GetCurrentProcessId() << ",\"exitCode\":";
+    if (code < 0) stream << "null"; else stream << code;
+    stream << ",\"hresult\":\"" << hex << "\",\"hwnd\":" << reinterpret_cast<UINT_PTR>(window)
+           << ",\"visible\":" << (window && IsWindowVisible(window) ? "true" : "false") << "}\n";
+}
+
+int startup_failure(const char* stage, int code, HRESULT error = E_FAIL, HWND window = nullptr) {
+    startup_status(stage, code, error, window);
+    fprintf(stderr, "LSBenchmark startup failed at %s (exit %d, HRESULT 0x%08X)\n", stage, code, unsigned(error));
+    return code;
+}
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     g_options = parse_options();
+    startup_status("register_window");
     WNDCLASSW wc{};
     wc.lpfnWndProc = window_proc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = L"LSHelperBenchmarkWindow";
-    if (!RegisterClassW(&wc)) return 2;
+    if (!RegisterClassW(&wc)) return startup_failure("register_window", 2, HRESULT_FROM_WIN32(GetLastError()));
 
     RECT rect{0, 0, g_options.width, g_options.height};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
@@ -186,7 +210,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         0, wc.lpszClassName, L"LS Helper GPU Benchmark - F15 latency marker",
         style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
         nullptr, nullptr, instance, nullptr);
-    if (!hwnd) return 3;
+    if (!hwnd) return startup_failure("create_window", 3, HRESULT_FROM_WIN32(GetLastError()));
+    startup_status("select_adapter", -1, S_OK, hwnd);
 
     DXGI_SWAP_CHAIN_DESC swap_desc{};
     swap_desc.BufferDesc.Width = static_cast<UINT>(g_options.width);
@@ -207,7 +232,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     IDXGIAdapter1* selected_adapter=nullptr;
     if(!g_options.adapter_name.empty()) {
         IDXGIFactory1* factory=nullptr;
-        if(FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),reinterpret_cast<void**>(&factory))))return 10;
+        const HRESULT factory_hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1),reinterpret_cast<void**>(&factory));
+        if(FAILED(factory_hr))return startup_failure("create_dxgi_factory", 10, factory_hr, hwnd);
         unsigned matches=0;
         for(UINT index=0;;++index) {
             IDXGIAdapter1* candidate=nullptr;if(factory->EnumAdapters1(index,&candidate)!=S_OK)break;
@@ -219,8 +245,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         }
         release(factory);
         // An explicit request must never silently choose another adapter.
-        if(matches!=1){release(selected_adapter);return 11;}
+        if(matches!=1){release(selected_adapter);return startup_failure("select_adapter", 11, DXGI_ERROR_NOT_FOUND, hwnd);}
     }
+    startup_status("create_device_and_swapchain", -1, S_OK, hwnd);
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
         selected_adapter,
 #ifdef LSC_BENCHMARK_TEST_WARP
@@ -233,42 +260,56 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         nullptr, 0, requested, 2,
         D3D11_SDK_VERSION, &swap_desc, &swap_chain, &device, &feature_level, &context);
     release(selected_adapter);
-    if (FAILED(hr)) return 4;
-    if(!write_adapter_report(device))return 12;
+    if (FAILED(hr)) return startup_failure("create_device_and_swapchain", 4, hr, hwnd);
+    if(!write_adapter_report(device))return startup_failure("write_adapter_report", 12, E_FAIL, hwnd);
 
     ID3D11Texture2D* back_buffer = nullptr;
     ID3D11RenderTargetView* render_target = nullptr;
-    swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer));
-    device->CreateRenderTargetView(back_buffer, nullptr, &render_target);
+    hr = swap_chain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&back_buffer));
+    if (FAILED(hr)) return startup_failure("get_back_buffer", 13, hr, hwnd);
+    hr = device->CreateRenderTargetView(back_buffer, nullptr, &render_target);
     release(back_buffer);
+    if (FAILED(hr)) return startup_failure("create_render_target", 13, hr, hwnd);
 
     ID3DBlob* vs_blob = nullptr;
     ID3DBlob* ps_blob = nullptr;
     ID3DBlob* errors = nullptr;
+    startup_status("compile_vertex_shader", -1, S_OK, hwnd);
     hr = D3DCompile(shader_source, strlen(shader_source), nullptr, nullptr, nullptr,
                     "vs_main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs_blob, &errors);
+    if (FAILED(hr) && errors) fwrite(errors->GetBufferPointer(), 1, errors->GetBufferSize(), stderr);
     release(errors);
-    if (FAILED(hr)) return 5;
+    if (FAILED(hr)) return startup_failure("compile_vertex_shader", 5, hr, hwnd);
+    startup_status("compile_pixel_shader", -1, S_OK, hwnd);
     hr = D3DCompile(shader_source, strlen(shader_source), nullptr, nullptr, nullptr,
                     "ps_main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps_blob, &errors);
+    if (FAILED(hr) && errors) fwrite(errors->GetBufferPointer(), 1, errors->GetBufferSize(), stderr);
     release(errors);
-    if (FAILED(hr)) return 6;
+    if (FAILED(hr)) return startup_failure("compile_pixel_shader", 6, hr, hwnd);
 
     ID3D11VertexShader* vertex_shader = nullptr;
     ID3D11PixelShader* pixel_shader = nullptr;
     ID3D11Buffer* constant_buffer = nullptr;
-    device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &vertex_shader);
-    device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &pixel_shader);
+    hr = device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &vertex_shader);
+    if (FAILED(hr)) return startup_failure("create_vertex_shader", 13, hr, hwnd);
+    hr = device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &pixel_shader);
+    if (FAILED(hr)) return startup_failure("create_pixel_shader", 13, hr, hwnd);
     D3D11_BUFFER_DESC cb_desc{};
     cb_desc.ByteWidth = sizeof(Constants);
     cb_desc.Usage = D3D11_USAGE_DYNAMIC;
     cb_desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    device->CreateBuffer(&cb_desc, nullptr, &constant_buffer);
+    hr = device->CreateBuffer(&cb_desc, nullptr, &constant_buffer);
+    if (FAILED(hr)) return startup_failure("create_constant_buffer", 13, hr, hwnd);
     release(vs_blob);
     release(ps_blob);
 
     ShowWindow(hwnd, show_command);
+    // STARTUPINFO can override the first ShowWindow call with SW_HIDE. This
+    // interactive workload must be discoverable even from a hidden GUI parent.
+    if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOWNORMAL);
+    if (!IsWindowVisible(hwnd)) return startup_failure("show_window", 14, E_FAIL, hwnd);
+    startup_status("ready", 0, S_OK, hwnd);
     SetForegroundWindow(hwnd);
     const auto started = std::chrono::steady_clock::now();
     MSG message{};

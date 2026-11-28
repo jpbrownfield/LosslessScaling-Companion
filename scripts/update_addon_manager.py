@@ -20,7 +20,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.release_common import ReleaseError, git, latest_version, next_version, version_tuple
+from scripts.release_common import ReleaseError, git, latest_version, next_version, parse_release_tag, release_tag, version_tuple
 
 UPSTREAM = "FriedSnowman/ls-addon-manager"
 LOCK = "native/addon_manager/upstream.lock.json"
@@ -132,7 +132,8 @@ def validate_plan(plan):
     for key in ("base_sha", "source_sha", "upstream_commit"):
         if not SHA.fullmatch(plan[key]):
             raise UpdateError(f"Invalid {key}")
-    if plan["release_tag"] != "v" + plan["version"] or plan["base_branch"] != "main":
+    # Existing numeric drafts can still be resumed after the tag format change.
+    if plan["release_tag"] not in {release_tag(plan["version"], channel="beta"), "v" + plan["version"]} or plan["base_branch"] != "main":
         raise UpdateError("Unexpected release tag or destination branch")
     pin = plan["pin"]
     if pin["tag"] != plan["upstream_tag"] or pin["commit"] != plan["upstream_commit"]:
@@ -177,14 +178,16 @@ def prepare(root, api, repository):
         if recovery and recovery[2] == tag:
             version = recovery[1]
         elif pending:
-            version = pending["tag_name"].removeprefix("v")
+            version, _ = parse_release_tag(pending["tag_name"])
         else:
             return {"changed": False, "reason": "Upstream release is already pinned"}
-        existing = next((item for item in own_releases if item["tag_name"] == "v" + version), None)
+        tags = {release_tag(version, channel="beta"), "v" + version}
+        existing = next((item for item in own_releases if item["tag_name"] in tags), None)
         if existing and not existing["draft"]:
             return {"changed": False, "reason": "Upstream update is already published"}
         plan = dict(changed=True, repository=repository, base_branch="main", base_sha=base, source_sha=base,
-            upstream_tag=tag, upstream_commit=pin["commit"], version=version, release_tag="v" + version,
+            upstream_tag=tag, upstream_commit=pin["commit"], version=version,
+            release_tag=existing["tag_name"] if existing else release_tag(version, channel="beta"),
             pin=pin, recovery=True)
         validate_plan(plan)
         return plan
@@ -195,7 +198,7 @@ def prepare(root, api, repository):
     # source and pins are checked before using it; unrelated drafts are ignored.
     pending = next((item for item in own_releases if item.get("draft") and
                     marker(tag) in (item.get("body") or "") and f"Base commit: `{base}`" in (item.get("body") or "")), None)
-    version = pending["tag_name"].removeprefix("v") if pending else next_version(current)
+    version = parse_release_tag(pending["tag_name"])[0] if pending else next_version(current)
     version_tuple(version)
     branch = f"automation/friedsnowman-{tag}-v{version}-{base[:12]}"
     ref = api.api(f"/repos/{repository}/git/ref/heads/{branch}", missing_ok=True)
@@ -212,7 +215,8 @@ def prepare(root, api, repository):
             "message": f"@{version} [beta] Update FriedSnowman addon manager to {tag}", "tree": tree, "parents": [base]})["sha"]
         api.api(f"/repos/{repository}/git/refs", {"ref": "refs/heads/" + branch, "sha": source_sha})
     plan = dict(changed=True, repository=repository, base_branch="main", base_sha=base, source_sha=source_sha,
-        upstream_tag=tag, upstream_commit=commit, version=version, release_tag="v" + version,
+        upstream_tag=tag, upstream_commit=commit, version=version,
+        release_tag=pending["tag_name"] if pending else release_tag(version, channel="beta"),
         pin=new_pin, recovery=False)
     validate_plan(plan)
     return plan
@@ -274,8 +278,8 @@ def publish(plan, api, directory, *, run=subprocess.run):
 
     require_unchanged_main()
     latest = api.api(f"/repos/{repo}/releases/latest", missing_ok=True)
-    if latest and re.fullmatch(r"v\d+\.\d+\.\d+", latest["tag_name"]):
-        if version_tuple(latest["tag_name"][1:]) >= version_tuple(plan["version"]):
+    if latest and re.fullmatch(r"v\d+\.\d+\.\d+(?:-beta)?", latest["tag_name"]):
+        if version_tuple(parse_release_tag(latest["tag_name"])[0]) >= version_tuple(plan["version"]):
             raise UpdateError("A newer or equal Companion release was published during validation")
     notes = directory / "upstream-release-notes.md"
     notes.write_text(f"{marker(plan['upstream_tag'])}\n\n"

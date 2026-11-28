@@ -2,17 +2,26 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.release_common import parse_release_tag, release_tag
 
 
 def resolve(*, requested="", requested_channel="beta", ref_type="", ref_name="", message=""):
     version, channel, from_commit = "0.0.0-dev", "development", False
+    existing_tag = ""
     marker = re.match(r"^@(\d+\.\d+\.\d+)(?:\s+\[(beta|full)\])?(?:\s|$)", message)
     if requested:
         version, channel = requested, requested_channel
-    elif ref_type == "tag" and re.fullmatch(r"v\d+\.\d+\.\d+", ref_name):
-        version = ref_name[1:]
-        channel = "full" if int(version.split(".")[2]) == 0 else "beta"
+    elif ref_type == "tag" and re.fullmatch(r"v\d+\.\d+\.\d+(?:-beta)?", ref_name):
+        version, channel = parse_release_tag(ref_name)
+        existing_tag = ref_name
     elif ref_type == "branch" and ref_name == "main" and marker:
         version = marker[1]
         channel = marker[2] or ("full" if int(version.split(".")[2]) == 0 else "beta")
@@ -22,7 +31,8 @@ def resolve(*, requested="", requested_channel="beta", ref_type="", ref_name="",
             raise ValueError("Invalid release version/channel")
         if (int(version.split(".")[2]) == 0) != (channel == "full"):
             raise ValueError("Full releases require patch zero; betas require a positive patch")
-    return {"version": version, "channel": channel, "tag": "v"+version if channel != "development" else "",
+    tag = (existing_tag or release_tag(version, channel=channel)) if channel != "development" else ""
+    return {"version": version, "channel": channel, "tag": tag,
             "from_commit": str(from_commit).lower()}
 
 

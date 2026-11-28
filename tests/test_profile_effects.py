@@ -574,6 +574,30 @@ class ProfileEffectsTests(unittest.TestCase):
 
             windows.restore_managed_windows.assert_not_called()
 
+    def test_window_management_only_reapplies_when_setting_is_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            state.is_scaling_active = True
+            state.scaling_target_pid = 42
+            state.scaling_target_hwnd = 456
+            state.scaling_target_verified_for_minimization = True
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+
+            automation.reconcile_window_management_setting()
+            automation.reconcile_window_management_setting()
+            windows.minimize_others_on_target_monitor.assert_not_called()
+            for count in (1, 2):
+                manager.config.minimize_other_windows_on_scale = False
+                automation.reconcile_window_management_setting()
+                manager.config.minimize_other_windows_on_scale = True
+                automation.reconcile_window_management_setting()
+                automation.reconcile_window_management_setting()
+                self.assertEqual(windows.minimize_others_on_target_monitor.call_count, count)
+            windows.restore_managed_windows.assert_not_called()
+
     def test_smooth_motion_targets_lossless_scaling_profile_and_is_disabled_on_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -933,6 +957,50 @@ class ProfileEffectsTests(unittest.TestCase):
             )
             self.assertEqual(state.scaling_target_pid, 42)
             self.assertIsNone(state.scaling_target_hwnd)
+
+    def test_late_verified_native_target_minimizes_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            state = AppState()
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+            automation.reconcile_observed_scaling_state(True)
+            windows.minimize_others_on_target_monitor.assert_not_called()
+            target = {"pid": 42, "hwnd": 456, "processName": "Game.exe", "detectionSource": "log_file"}
+            automation.reconcile_observed_scaling_state(True, target)
+            automation.reconcile_observed_scaling_state(True, target)
+            windows.minimize_others_on_target_monitor.assert_called_once_with(456, target_pid=42)
+
+    def test_foreground_guess_cannot_replace_verified_minimization_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            state = AppState()
+            windows = Mock()
+            automation = AutomationController(manager, state, window_manager=windows)
+            automation.reconcile_observed_scaling_state(True, {
+                "pid": 42, "hwnd": 456, "processName": "Game.exe", "detectionSource": "log_file"})
+            guess = {"pid": 99, "hwnd": 999, "processName": "Other.exe", "detectionSource": "win32_window_hook"}
+            automation.reconcile_observed_scaling_state(True, guess)
+            manager.config.minimize_other_windows_on_scale = True
+            automation.reconcile_window_management_setting()
+            windows.minimize_others_on_target_monitor.assert_called_once_with(456, target_pid=42)
+            automation.reconcile_observed_scaling_state(False)
+            automation.reconcile_observed_scaling_state(True, guess)
+            self.assertFalse(state.scaling_target_verified_for_minimization)
+            self.assertEqual(windows.minimize_others_on_target_monitor.call_count, 1)
+
+    def test_new_verified_source_in_active_session_minimizes_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = ProfileManager(Path(directory) / "config")
+            manager.config.minimize_other_windows_on_scale = True
+            windows = Mock()
+            automation = AutomationController(manager, AppState(), window_manager=windows)
+            for pid, hwnd in ((42, 456), (43, 457), (43, 457)):
+                automation.reconcile_observed_scaling_state(True, {
+                    "pid": pid, "hwnd": hwnd, "processName": "Game.exe", "detectionSource": "log_file"})
+            self.assertEqual(windows.minimize_others_on_target_monitor.call_count, 2)
+            windows.minimize_others_on_target_monitor.assert_called_with(457, target_pid=43)
 
     def test_observed_scaling_does_not_minimize_with_foreground_guessed_target(self):
         with tempfile.TemporaryDirectory() as directory:

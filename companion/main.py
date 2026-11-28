@@ -374,12 +374,7 @@ class CompanionApplication:
                         target_info = self.ls_inspector.inspect_current_scaling_target(
                             settings_profile_title=settings_title
                         )
-                    self.state.current_scaled_target = target_info.to_dict()
-                    if target_info.source != "unknown" and target_info.is_active != self.state.is_scaling_active:
-                        self.automation.reconcile_observed_scaling_state(
-                            target_info.is_active,
-                            self.state.current_scaled_target,
-                        )
+                    self._observe_scaling_target(target_info)
                     self.automation.reconcile_pending_addon_settings()
                     self.automation.reconcile_gpu_route()
                     self.dynamic_limiter.poll()
@@ -387,6 +382,25 @@ class CompanionApplication:
             except Exception as e:
                 logger.exception("Process monitor tick failed")
             time.sleep(1.0)
+
+    def _observe_scaling_target(self, target_info) -> None:
+        self.state.current_scaled_target = target_info.to_dict()
+        needs_minimize_target = (
+            target_info.is_active
+            and self.profile_manager.config.minimize_other_windows_on_scale
+            and (
+                not self.state.scaling_target_verified_for_minimization
+                or (target_info.source == "log_file" and target_info.pid
+                    and target_info.pid != self.state.scaling_target_pid)
+            )
+        )
+        # Capture can become active before its source is identified. Reconcile
+        # that late identity too, without re-enumerating windows on steady ticks.
+        if target_info.source != "unknown" and (
+            target_info.is_active != self.state.is_scaling_active or needs_minimize_target
+        ):
+            self.automation.reconcile_observed_scaling_state(
+                target_info.is_active, self.state.current_scaled_target)
 
     def start(self):
         try:
@@ -429,6 +443,7 @@ class CompanionApplication:
         if not self.profile_manager.repair_session:
             self.process_watcher.launch_lossless_scaling_if_needed()
             self.hotkey_listener.start()
+            self.process_watcher.start_cursor_recovery()
 
         # Start Server Thread
         self.server_thread = threading.Thread(target=self._run_async_server, daemon=True, name="WSServerThread")
@@ -470,6 +485,10 @@ class CompanionApplication:
                 logger.exception("Could not stop the global hotkey listener")
             if self.monitor_thread and self.monitor_thread is not threading.current_thread():
                 self.monitor_thread.join(timeout=2)
+            try:
+                self.process_watcher.stop_cursor_recovery()
+            except Exception:
+                logger.exception("Could not stop cursor recovery observer")
             try:
                 self.automation.shutdown()
             except Exception:

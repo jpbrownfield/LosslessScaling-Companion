@@ -35,6 +35,7 @@ from companion.services.benchmark_metrics import (
     summarize_values,
 )
 from companion.services.dynamic_limiter import DynamicLimiterController
+from companion.services.external_process import external_dll_search
 from companion.services.ls_inspector import LosslessScalingInspector
 from companion.services.input_simulator import InputSimulator
 from companion.services.performance_benchmark import (
@@ -402,6 +403,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
         scaling_state_probe=lambda: inspector.detect_lossless_scaling_overlay_window()[0],
     )
     workload: Optional[subprocess.Popen] = None
+    workload_stdout = workload_stderr = None
     capture: Optional[PresentMonCapture] = None
     recorder: Optional[GpuSampleRecorder] = None
     limiter: Optional[DynamicLimiterController] = None
@@ -455,6 +457,7 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                     "--shader-load", str(args.shader_load),
                     "--duration", str(int(args.duration + 120 + (4*args.monitoring_phase_seconds+35 if args.adaptive_acceptance else 0))),
                     "--event-log", str(run_dir / "source-input-events.csv"),
+                    "--startup-report", str(run_dir / "workload-startup.json"),
                 )
             )
         if single_gpu_setup:
@@ -462,8 +465,17 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
                                      "--adapter-report", str(run_dir / "source-adapter.json")))
         workload_command.extend(args.benchmark_arg)
         report["workload_command"] = workload_command
-        workload = subprocess.Popen(workload_command, cwd=benchmark_exe.parent)
-        hwnd = find_largest_window(workload.pid, timeout=args.window_timeout)
+        workload_stdout = (run_dir / "workload-stdout.log").open("wb")
+        workload_stderr = (run_dir / "workload-stderr.log").open("wb")
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 1  # SW_SHOWNORMAL: this workload must be visible.
+        with external_dll_search():
+            workload = subprocess.Popen(workload_command, cwd=benchmark_exe.parent,
+                                        stdin=subprocess.DEVNULL, stdout=workload_stdout,
+                                        stderr=workload_stderr, startupinfo=startup)
+        report["benchmark_pid"] = workload.pid
+        hwnd = find_largest_window(workload.pid, timeout=args.window_timeout, process=workload)
         if monitor_bounds:
             ctypes.windll.user32.SetWindowPos(hwnd, 0, monitor_bounds["left"], monitor_bounds["top"], 0, 0, 0x0005)
         if not focus_window(hwnd):
@@ -774,6 +786,9 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
         print(f"Benchmark failed: {error}", file=sys.stderr)
         exit_code = 2
     finally:
+        # Record the natural exit separately from the termination used by cleanup.
+        if workload is not None:
+            report["workload_exit_code_before_cleanup"] = workload.poll()
         if recorder:
             recorder.stop()
         if limiter:
@@ -814,13 +829,35 @@ def main(argv: Optional[Sequence[str]] = None, *, progress_callback: Optional[Ca
             except Exception as error:
                 report["scaling_cleanup_error"] = str(error)
                 exit_code = max(exit_code, 3)
-        if workload and workload.poll() is None:
-            workload.terminate()
+        if workload is not None:
             try:
-                workload.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                workload.kill()
-                workload.wait(timeout=5)
+                if workload.poll() is None:
+                    workload.terminate()
+                    try:
+                        workload.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        workload.kill()
+                        workload.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                report["workload_cleanup_error"] = str(error)
+                exit_code = max(exit_code, 3)
+            report["workload_exit_code_after_cleanup"] = workload.poll()
+        for stream in (workload_stdout, workload_stderr):
+            if stream is not None:
+                stream.close()
+        startup_report = run_dir / "workload-startup.json"
+        if startup_report.is_file():
+            try:
+                startup_evidence = json.loads(startup_report.read_text(encoding="utf-8"))
+                if not isinstance(startup_evidence, dict):
+                    raise ValueError("Workload startup report must be a JSON object")
+                report["workload_startup"] = startup_evidence
+                if startup_evidence.get("status") == "failed" and "benchmark_hwnd" not in report:
+                    report["error"] = (report.get("error", "Workload startup failed")
+                                       + f"; stage={startup_evidence.get('stage')}, "
+                                       + f"HRESULT={startup_evidence.get('hresult')}")
+            except (OSError, ValueError) as error:
+                report["workload_startup_read_error"] = str(error)
         if single_gpu_setup:
             try:
                 single_gpu_setup.restore()

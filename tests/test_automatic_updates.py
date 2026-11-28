@@ -247,7 +247,7 @@ class AutomaticUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_beta_status_never_queues_an_automatic_companion_install(self):
         self.server.addon_update_status = {"updates": []}
         self.server._process_message = AsyncMock()
-        for version, prerelease in (("2.0.15", False), ("2.1.0", True)):
+        for version, prerelease in (("2.0.15", False), ("2.0.15-beta", False), ("2.1.0", True)):
             self.server.companion_update_status = {"supported": True, "updateAvailable": True,
                 "latestVersion": version, "prerelease": prerelease}
             await self.server.automatic_updates.run_pending()

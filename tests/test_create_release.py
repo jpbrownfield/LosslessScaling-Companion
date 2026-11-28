@@ -34,6 +34,11 @@ class ReleaseVersionTests(unittest.TestCase):
                                         "abc refs/tags/v0.5.0\nabc refs/tags/v0.5.0^{}\nabc refs/heads/main"), "0.5.0")
         self.assertEqual(latest_version("@9.9.9\n@10.0.0", "", ""), "10.0.0")
 
+    def test_beta_tags_reserve_versions_locally_and_remotely(self):
+        self.assertEqual(latest_version("@0.9.5 old", "v0.9.10-beta", ""), "0.9.10")
+        self.assertEqual(latest_version("@0.9.5 old", "v0.9.10-beta",
+            "abc refs/tags/v0.9.11-beta\nabc refs/tags/v0.9.11-beta^{}"), "0.9.11")
+
     def test_no_version_fails_instead_of_guessing(self):
         with self.assertRaises(ReleaseError):
             latest_version("ordinary commit", "nightly", "abc refs/heads/main")
@@ -73,6 +78,7 @@ class ReleaseGitTests(unittest.TestCase):
         self.assertEqual(git(self.root, "ls-remote", "origin", "refs/heads/main").split()[0],
                          git(self.root, "rev-parse", "HEAD"))
         self.assertEqual(git(self.root, "tag", "--list"), "")  # CI owns release tag creation.
+        self.assertIn("publish v4.5.10-beta", self.output.getvalue())
 
     def test_dry_run_does_not_change_head_index_or_remote(self):
         before = git(self.root, "rev-parse", "HEAD")
@@ -93,6 +99,12 @@ class ReleaseGitTests(unittest.TestCase):
         git(self.root, "push", "origin", "v4.6.0")
         git(self.root, "tag", "--delete", "v4.6.0")
         self.assertEqual(release(self.root, dry_run=True), "4.6.1")
+
+    def test_remote_beta_tag_reserves_version_even_before_fetch(self):
+        git(self.root, "tag", "v4.5.10-beta")
+        git(self.root, "push", "origin", "v4.5.10-beta")
+        git(self.root, "tag", "--delete", "v4.5.10-beta")
+        self.assertEqual(release(self.root, dry_run=True), "4.5.11")
 
     def test_push_failure_keeps_local_release_for_manual_retry(self):
         real_git = create_release.git
